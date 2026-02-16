@@ -20,6 +20,8 @@ members = [
     "crates/tau-compile",
     "crates/tau-prob",
     "crates/tau-world",
+    "crates/tau-real2sim",
+    "crates/tau-format",
     "crates/tau",
     "crates/tau-wasm",
 ]
@@ -52,4 +54,6 @@ tau-lbm = { path = "crates/tau-lbm" }
 tau-compile = { path = "crates/tau-compile" }
 tau-prob = { path = "crates/tau-prob" }
 tau-world = { path = "crates/tau-world" }
+tau-real2sim = { path = "crates/tau-real2sim" }
+tau-format = { path = "crates/tau-format" }
 tau = { path = "crates/tau" }

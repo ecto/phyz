@@ -977,6 +977,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-format"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "serde",
+ "serde_json",
+ "tau-math",
+ "tau-mjcf",
+ "tau-model",
+ "tau-rigid",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tau-gpu"
 version = "0.1.0"
 dependencies = [
@@ -1080,6 +1094,19 @@ dependencies = [
  "nalgebra",
  "rand",
  "tau-math",
+]
+
+[[package]]
+name = "tau-real2sim"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "serde",
+ "serde_json",
+ "tau-diff",
+ "tau-math",
+ "tau-model",
+ "tau-rigid",
 ]
 
 [[package]]
