@@ -960,6 +960,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-gravity"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-math",
+]
+
+[[package]]
 name = "tau-math"
 version = "0.1.0"
 dependencies = [
