@@ -995,6 +995,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-qft"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "rand",
+ "tau-math",
+]
+
+[[package]]
 name = "tau-rigid"
 version = "0.1.0"
 dependencies = [
