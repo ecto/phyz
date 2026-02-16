@@ -1,0 +1,18 @@
+[package]
+name = "tau-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tau-math = { workspace = true }
+tau-model = { workspace = true }
+tau-rigid = { workspace = true }
+nalgebra = { workspace = true }
+wgpu = "23.0"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4"
+futures-intrusive = "0.5"
+
+[dev-dependencies]
+approx = "0.5"

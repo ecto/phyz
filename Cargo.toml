@@ -8,6 +8,7 @@ members = [
     "crates/tau-mjcf",
     "crates/tau-collision",
     "crates/tau-contact",
+    "crates/tau-gpu",
     "crates/tau",
 ]
 
@@ -25,4 +26,5 @@ tau-diff = { path = "crates/tau-diff" }
 tau-mjcf = { path = "crates/tau-mjcf" }
 tau-collision = { path = "crates/tau-collision" }
 tau-contact = { path = "crates/tau-contact" }
+tau-gpu = { path = "crates/tau-gpu" }
 tau = { path = "crates/tau" }
