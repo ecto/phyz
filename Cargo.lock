@@ -917,6 +917,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-coupling"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "tau-math",
+]
+
+[[package]]
 name = "tau-diff"
 version = "0.1.0"
 dependencies = [

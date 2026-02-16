@@ -13,6 +13,7 @@ members = [
     "crates/tau-em",
     "crates/tau-md",
     "crates/tau-qft",
+    "crates/tau-coupling",
     "crates/tau-world",
     "crates/tau",
     "crates/tau-wasm",
@@ -39,5 +40,6 @@ tau-particle = { path = "crates/tau-particle" }
 tau-em = { path = "crates/tau-em" }
 tau-md = { path = "crates/tau-md" }
 tau-qft = { path = "crates/tau-qft" }
+tau-coupling = { path = "crates/tau-coupling" }
 tau-world = { path = "crates/tau-world" }
 tau = { path = "crates/tau" }
