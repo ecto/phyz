@@ -889,6 +889,7 @@ dependencies = [
  "tau-collision",
  "tau-contact",
  "tau-diff",
+ "tau-lbm",
  "tau-math",
  "tau-mjcf",
  "tau-model",
@@ -975,6 +976,14 @@ dependencies = [
  "tau-math",
  "tau-model",
  "tau-rigid",
+]
+
+[[package]]
+name = "tau-lbm"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-math",
 ]
 
 [[package]]

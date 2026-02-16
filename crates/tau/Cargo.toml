@@ -15,6 +15,7 @@ tau-mjcf.workspace = true
 tau-collision.workspace = true
 tau-contact.workspace = true
 tau-particle.workspace = true
+tau-lbm.workspace = true
 tau-world.workspace = true
 
 [[example]]
@@ -60,3 +61,11 @@ path = "../../examples/training_data.rs"
 [[example]]
 name = "tendon_demo"
 path = "../../examples/tendon_demo.rs"
+
+[[example]]
+name = "lbm_cavity"
+path = "../../examples/lbm_cavity.rs"
+
+[[example]]
+name = "equation_free_demo"
+path = "../../examples/equation_free_demo.rs"
