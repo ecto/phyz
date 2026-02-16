@@ -1,0 +1,27 @@
+[package]
+name = "tau-py"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for tau physics engine"
+
+# Opt out of workspace
+[workspace]
+
+[lib]
+name = "tau"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
+nalgebra = "0.33"
+tau = { path = "../tau" }
+tau-math = { path = "../tau-math" }
+tau-model = { path = "../tau-model" }
+tau-rigid = { path = "../tau-rigid" }
+tau-diff = { path = "../tau-diff" }
+tau-mjcf = { path = "../tau-mjcf" }
+
+[build-dependencies]
+pyo3-build-config = "0.28"
