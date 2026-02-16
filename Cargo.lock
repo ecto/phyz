@@ -968,6 +968,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-guardian"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-math",
+ "tau-model",
+ "tau-rigid",
+]
+
+[[package]]
 name = "tau-math"
 version = "0.1.0"
 dependencies = [

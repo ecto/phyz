@@ -1,0 +1,23 @@
+[package]
+name = "tau-guardian"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tau-math = { workspace = true }
+tau-model = { workspace = true }
+tau-rigid = { workspace = true }
+nalgebra.workspace = true
+
+[[example]]
+name = "adaptive_pendulum"
+path = "examples/adaptive_pendulum.rs"
+
+[[example]]
+name = "conservation_monitor"
+path = "examples/conservation_monitor.rs"
+
+[[example]]
+name = "multi_rate"
+path = "examples/multi_rate.rs"
