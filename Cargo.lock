@@ -191,11 +191,32 @@ name = "tau"
 version = "0.1.0"
 dependencies = [
  "nalgebra",
+ "tau-collision",
+ "tau-contact",
  "tau-diff",
  "tau-math",
  "tau-mjcf",
  "tau-model",
  "tau-rigid",
+]
+
+[[package]]
+name = "tau-collision"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-math",
+ "tau-model",
+]
+
+[[package]]
+name = "tau-contact"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-collision",
+ "tau-math",
+ "tau-model",
 ]
 
 [[package]]

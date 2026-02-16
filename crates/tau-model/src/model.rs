@@ -86,6 +86,7 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
         });
         self
     }
@@ -106,6 +107,7 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
         });
         self
     }
@@ -125,6 +127,7 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
         });
         self
     }
@@ -144,6 +147,7 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
         });
         self
     }
@@ -163,6 +167,7 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
         });
         self
     }
@@ -182,6 +187,28 @@ impl ModelBuilder {
             inertia,
             parent,
             joint_idx,
+            geometry: None,
+        });
+        self
+    }
+
+    /// Add a free body with collision geometry (useful for dropping objects).
+    pub fn add_free_body_with_geometry(
+        mut self,
+        name: &str,
+        parent: i32,
+        parent_to_joint: SpatialTransform,
+        inertia: SpatialInertia,
+        geometry: crate::Body,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(Joint::free(parent_to_joint));
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+            geometry: geometry.geometry,
         });
         self
     }

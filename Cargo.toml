@@ -6,6 +6,8 @@ members = [
     "crates/tau-rigid",
     "crates/tau-diff",
     "crates/tau-mjcf",
+    "crates/tau-collision",
+    "crates/tau-contact",
     "crates/tau",
 ]
 
@@ -21,4 +23,6 @@ tau-model = { path = "crates/tau-model" }
 tau-rigid = { path = "crates/tau-rigid" }
 tau-diff = { path = "crates/tau-diff" }
 tau-mjcf = { path = "crates/tau-mjcf" }
+tau-collision = { path = "crates/tau-collision" }
+tau-contact = { path = "crates/tau-contact" }
 tau = { path = "crates/tau" }

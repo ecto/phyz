@@ -12,6 +12,8 @@ tau-model.workspace = true
 tau-rigid.workspace = true
 tau-diff.workspace = true
 tau-mjcf.workspace = true
+tau-collision.workspace = true
+tau-contact.workspace = true
 
 [[example]]
 name = "pendulum"
@@ -28,3 +30,7 @@ path = "../../examples/multi_joint.rs"
 [[example]]
 name = "ant"
 path = "../../examples/ant.rs"
+
+[[example]]
+name = "ball_drop"
+path = "../../examples/ball_drop.rs"

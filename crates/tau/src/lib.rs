@@ -3,10 +3,12 @@
 //! This is the umbrella crate that provides the `Simulator` and re-exports
 //! core types from sub-crates.
 
+pub use tau_collision::{self};
+pub use tau_contact::{self, ContactMaterial};
 pub use tau_diff::{self, StepJacobians};
 pub use tau_math::{self, Vec3};
 pub use tau_mjcf::{self};
-pub use tau_model::{self, Model, ModelBuilder, State};
+pub use tau_model::{self, Geometry, Model, ModelBuilder, State};
 pub use tau_rigid::{self, aba, crba, forward_kinematics, rnea};
 
 /// Pluggable solver trait.

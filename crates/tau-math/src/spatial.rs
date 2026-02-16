@@ -70,6 +70,12 @@ impl SpatialVec {
     pub fn dot(&self, other: &SpatialVec) -> f64 {
         self.data.dot(&other.data)
     }
+
+    /// Create from linear and angular parts (convenient alternative order).
+    #[inline]
+    pub fn from_linear_angular(linear: Vec3, angular: Vec3) -> Self {
+        Self::new(angular, linear)
+    }
 }
 
 impl std::ops::Add for SpatialVec {
@@ -349,6 +355,16 @@ impl SpatialTransform {
             rot: rt,
             pos: -(self.rot * self.pos),
         }
+    }
+
+    /// Get the translation vector.
+    pub fn translation_vector(&self) -> Vec3 {
+        self.pos
+    }
+
+    /// Get the rotation matrix.
+    pub fn rotation_matrix(&self) -> Mat3 {
+        self.rot
     }
 }
 
