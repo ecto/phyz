@@ -1,0 +1,10 @@
+[package]
+name = "tau-particle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+tau-math.workspace = true
+tau-model.workspace = true

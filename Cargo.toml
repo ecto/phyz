@@ -9,6 +9,7 @@ members = [
     "crates/tau-collision",
     "crates/tau-contact",
     "crates/tau-gpu",
+    "crates/tau-particle",
     "crates/tau",
 ]
 
@@ -27,4 +28,5 @@ tau-mjcf = { path = "crates/tau-mjcf" }
 tau-collision = { path = "crates/tau-collision" }
 tau-contact = { path = "crates/tau-contact" }
 tau-gpu = { path = "crates/tau-gpu" }
+tau-particle = { path = "crates/tau-particle" }
 tau = { path = "crates/tau" }

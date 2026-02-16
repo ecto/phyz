@@ -793,6 +793,7 @@ dependencies = [
  "tau-math",
  "tau-mjcf",
  "tau-model",
+ "tau-particle",
  "tau-rigid",
 ]
 
@@ -864,6 +865,15 @@ version = "0.1.0"
 dependencies = [
  "nalgebra",
  "tau-math",
+]
+
+[[package]]
+name = "tau-particle"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "tau-math",
+ "tau-model",
 ]
 
 [[package]]
