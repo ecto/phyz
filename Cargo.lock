@@ -1318,6 +1318,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-regge"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "rand 0.8.5",
+ "tau-math",
+]
+
+[[package]]
 name = "tau-rigid"
 version = "0.1.0"
 dependencies = [

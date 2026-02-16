@@ -643,6 +643,176 @@ footer .license {
       </div>
     </div>
 
+    <!-- tau-coupling -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-coupling</span>
+        <span class="crate-desc">Multi-scale coupling. Lorentz force, Boris integrator for charged particles in EM fields.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-spiral"></canvas>
+          <div class="example-meta">
+            <span class="label">lorentz_spiral</span>
+            <span class="desc">Charged particle spiraling in uniform B field. Classic helical trajectory.</span>
+            <span class="stat" id="stat-spiral">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-crossed"></canvas>
+          <div class="example-meta">
+            <span class="label">crossed_fields</span>
+            <span class="desc">E x B drift: particle in crossed E and B fields, showing drift velocity.</span>
+            <span class="stat" id="stat-crossed">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-mirror"></canvas>
+          <div class="example-meta">
+            <span class="label">magnetic_mirror</span>
+            <span class="desc">Particle bouncing between converging B field lines.</span>
+            <span class="stat" id="stat-mirror">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-gravity -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-gravity</span>
+        <span class="crate-desc">N-body gravitational dynamics. Barnes-Hut tree, post-Newtonian GR corrections.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-binary"></canvas>
+          <div class="example-meta">
+            <span class="label">binary_orbit</span>
+            <span class="desc">Two-body gravitational orbit with trails. Equal mass binary.</span>
+            <span class="stat" id="stat-binary">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-solar"></canvas>
+          <div class="example-meta">
+            <span class="label">solar_system</span>
+            <span class="desc">5 planets orbiting a central mass. Kepler orbits at different speeds.</span>
+            <span class="stat" id="stat-solar">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-precess"></canvas>
+          <div class="example-meta">
+            <span class="label">precession</span>
+            <span class="desc">Mercury-like orbit with perihelion precession from post-Newtonian correction.</span>
+            <span class="stat" id="stat-precess">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-guardian -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-guardian</span>
+        <span class="crate-desc">Conservation monitoring, adaptive timestep control, energy-correcting integrators.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-emonitor"></canvas>
+          <div class="example-meta">
+            <span class="label">energy_monitor</span>
+            <span class="desc">Pendulum with real-time KE/PE/Total energy gauge overlay.</span>
+            <span class="stat" id="stat-emonitor">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-adaptdt"></canvas>
+          <div class="example-meta">
+            <span class="label">adaptive_dt</span>
+            <span class="desc">Fixed vs adaptive timestep. Watch energy drift in the fixed-dt sim.</span>
+            <span class="stat" id="stat-adaptdt">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-correction"></canvas>
+          <div class="example-meta">
+            <span class="label">correction_demo</span>
+            <span class="desc">Energy injection with guardian correcting drift. Conservation enforced.</span>
+            <span class="stat" id="stat-correction">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-lbm -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-lbm</span>
+        <span class="crate-desc">Lattice Boltzmann Method. D2Q9 BGK collision, Zou-He boundaries, obstacle bounce-back.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-cavity"></canvas>
+          <div class="example-meta">
+            <span class="label">cavity_flow</span>
+            <span class="desc">Lid-driven cavity. Velocity magnitude heatmap with recirculation.</span>
+            <span class="stat" id="stat-cavity">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-channel"></canvas>
+          <div class="example-meta">
+            <span class="label">channel_flow</span>
+            <span class="desc">Poiseuille flow between walls. Parabolic velocity profile.</span>
+            <span class="stat" id="stat-channel">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-vortex"></canvas>
+          <div class="example-meta">
+            <span class="label">vortex_street</span>
+            <span class="desc">Flow around obstacle generating von Karman vortex street.</span>
+            <span class="stat" id="stat-vortex">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-prob -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-prob</span>
+        <span class="crate-desc">Probabilistic simulation. SVGD sampling, ensemble propagation, Monte Carlo uncertainty.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-ucone"></canvas>
+          <div class="example-meta">
+            <span class="label">uncertainty_cone</span>
+            <span class="desc">Ensemble of trajectories diverging from near-identical ICs. Spreading uncertainty.</span>
+            <span class="stat" id="stat-ucone">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-svgd"></canvas>
+          <div class="example-meta">
+            <span class="label">svgd_particles</span>
+            <span class="desc">SVGD particles converging to a 2D Gaussian mixture target distribution.</span>
+            <span class="stat" id="stat-svgd">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-mcballs"></canvas>
+          <div class="example-meta">
+            <span class="label">monte_carlo</span>
+            <span class="desc">Ensemble of bouncing balls with parameter uncertainty. Distribution spread.</span>
+            <span class="stat" id="stat-mcballs">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
@@ -796,7 +966,7 @@ function copyInstall(el) {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim } from './pkg/tau_wasm.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim } from './pkg/tau_wasm.js';
 
 // ---- Shared ----
 const BG = 0xfaf9f7;
@@ -846,8 +1016,21 @@ function globalLoop() {
     ensureInitialized(canvasId);
     if (!entry.scene) continue;
 
-    // Run sim update
-    entry.update();
+    // Run sim update. If update returns a number, it's a motion metric for stall detection.
+    const motion = entry.update();
+    if (typeof motion === 'number') {
+      if (motion < 0.0005) {
+        entry._stallFrames = (entry._stallFrames || 0) + 1;
+        if (entry._stallFrames > 180) { // ~3 seconds at 60fps
+          entry.initialized = false;
+          entry._stallFrames = 0;
+          ensureInitialized(canvasId);
+          if (!entry.scene) continue;
+        }
+      } else {
+        entry._stallFrames = 0;
+      }
+    }
 
     // Size shared renderer to match this canvas
     const rect = entry.canvas.getBoundingClientRect();
@@ -953,6 +1136,7 @@ registerViz('ex-pendulum', () => {
   const bob = makeSphere(0.08, ACCENT); scene.add(bob);
   const trail = makeTrail(300, ACCENT, 0.3); scene.add(trail.line);
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(8);
     const th = sim.joint_angles()[0];
@@ -965,6 +1149,10 @@ registerViz('ex-pendulum', () => {
     const pct = (E / E0.pendulum * 100).toFixed(0);
     const el = document.getElementById('stat-pendulum');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+    const _cur = sim.joint_angles()[0];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -988,6 +1176,7 @@ registerViz('ex-double', () => {
   scene.add(rod1); scene.add(rod2); scene.add(joint); scene.add(bob);
   const trail = makeTrail(500, ACCENT, 0.25); scene.add(trail.line);
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
     const epos = sim.body_endpoint_positions();
@@ -1006,6 +1195,10 @@ registerViz('ex-double', () => {
     const pct = (E / E0.double * 100).toFixed(0);
     const el = document.getElementById('stat-double');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+    const _cur = sim.body_endpoint_positions()[3];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1028,6 +1221,7 @@ registerViz('ex-chain', () => {
   const trail = makeTrail(400, ACCENT, 0.2); scene.add(trail.line);
   E0.chain = sim.total_energy();
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
     const epos = sim.body_endpoint_positions();
@@ -1047,6 +1241,10 @@ registerViz('ex-chain', () => {
     const pct = (E / E0.chain * 100).toFixed(0);
     const el = document.getElementById('stat-chain');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+    const _cur = prevX;
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1068,6 +1266,7 @@ registerViz('ex-bouncing', () => {
     const t = makeTrail(150, colors[i], 0.2); scene.add(t.line); trails.push(t);
   }
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(32);
     const pos = sim.positions();
@@ -1078,6 +1277,10 @@ registerViz('ex-bouncing', () => {
     }
     const el = document.getElementById('stat-bouncing');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  elastic / medium / dead`;
+    const _cur = sim.positions()[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1100,12 +1303,17 @@ registerViz('ex-cascade', () => {
     const s = makeSphere(R, color); scene.add(s); spheres.push(s);
   }
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(32);
     const pos = sim.positions();
     for (let i = 0; i < N; i++) spheres[i].position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
     const el = document.getElementById('stat-cascade');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  GJK/penalty`;
+    const _cur = sim.positions()[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1133,6 +1341,7 @@ registerViz('ex-cradle', () => {
     scene.add(bob); bobs.push(bob);
   }
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(32);
     const bobPos = sim.bob_positions(), pivotPos = sim.pivot_positions();
@@ -1145,6 +1354,10 @@ registerViz('ex-cradle', () => {
     }
     const el = document.getElementById('stat-cradle');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  elastic e=0.999`;
+    const _cur = sim.bob_positions()[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1251,6 +1464,7 @@ registerViz('ex-policy', () => {
     nLine.position.set(x, y, 0.01); scene.add(nLine); needles.push(nLine);
   }
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
     const rewards = sim.rewards();
@@ -1266,6 +1480,10 @@ registerViz('ex-policy', () => {
     const el = document.getElementById('stat-policy');
     const stable = rewards.filter(r => r > 0.9).length;
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${stable}/${N} balanced  kp/kd sweep`;
+    const _cur = sim.angles()[0];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1288,6 +1506,7 @@ registerViz('ex-granular', () => {
   geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
   scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false })));
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(48);
     const pos = sim.positions();
@@ -1301,6 +1520,10 @@ registerViz('ex-granular', () => {
     geo.attributes.color.needsUpdate = true;
     const el = document.getElementById('stat-granular');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  Drucker-Prager`;
+    const _cur = pos[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1323,6 +1546,7 @@ registerViz('ex-fluid', () => {
   geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
   scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false })));
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(48);
     const pos = sim.positions();
@@ -1336,6 +1560,10 @@ registerViz('ex-fluid', () => {
     geo.attributes.color.needsUpdate = true;
     const el = document.getElementById('stat-fluid');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  SPH fluid`;
+    const _cur = pos[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1362,6 +1590,7 @@ registerViz('ex-elastic', () => {
   springGeo.setAttribute('position', new THREE.BufferAttribute(springPos, 3));
   scene.add(new THREE.LineSegments(springGeo, new THREE.LineBasicMaterial({ color: 0x4caf50, transparent: true, opacity: 0.3 })));
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(48);
     const pos = sim.positions();
@@ -1377,6 +1606,10 @@ registerViz('ex-elastic', () => {
     springGeo.attributes.position.needsUpdate = true;
     const el = document.getElementById('stat-elastic');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  ${nSprings} springs`;
+    const _cur = pos[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1402,6 +1635,7 @@ registerViz('ex-randchain', () => {
   }
   const trail = makeTrail(400, 0x7c4dff, 0.25); scene.add(trail.line);
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
     const epos = sim.body_endpoint_positions();
@@ -1418,6 +1652,10 @@ registerViz('ex-randchain', () => {
     pushTrail(trail, px, py, 0);
     const el = document.getElementById('stat-randchain');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} links  procedural gen`;
+    const _cur = px;
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1437,6 +1675,7 @@ registerViz('ex-phase', () => {
   const trail = makeTrail(800, ACCENT, 0.5); scene.add(trail.line);
   const dot = makeSphere(0.06, ACCENT); scene.add(dot);
 
+  let _prev = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(8);
     const q = sim.q(), v = sim.v();
@@ -1444,6 +1683,10 @@ registerViz('ex-phase', () => {
     pushTrail(trail, q * 0.5, v * 0.2, 0);
     const el = document.getElementById('stat-phase');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  q=${q.toFixed(2)}  v=${v.toFixed(2)}`;
+    const _cur = sim.q();
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
   }};
 });
 
@@ -1694,6 +1937,528 @@ registerViz('ex-wilson', () => {
 registerViz('ex-phasescan', () => makeQftViz('ex-phasescan', WasmQftSim.phase_scan(), 'stat-phasescan',
   s => `beta=${s.beta().toFixed(2)}  <P>=${s.average_plaquette().toFixed(3)}  sweep ${s.time().toFixed(0)}`
 ));
+
+// =========================================
+// tau-coupling: Lorentz Spiral
+// =========================================
+registerViz('ex-spiral', () => {
+  const sim = WasmLorentzSim.spiral();
+  const { scene, camera, controls, canvas } = createScene('ex-spiral');
+  camera.position.set(0, 0, 4);
+  controls.target.set(0, 0, 1);
+  controls.enableRotate = true;
+
+  const dot = makeSphere(0.06, ACCENT);
+  scene.add(dot);
+  const trailMax = 600;
+  const trailGeo = new THREE.BufferGeometry();
+  const trailPos = new Float32Array(trailMax * 3);
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeo.setDrawRange(0, 0);
+  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.4 })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const pos = sim.position();
+    dot.position.set(pos[0], pos[1], pos[2]);
+    const trail = sim.trail();
+    const n = sim.trail_len();
+    for (let i = 0; i < n; i++) {
+      trailPos[i*3] = trail[i*3]; trailPos[i*3+1] = trail[i*3+1]; trailPos[i*3+2] = trail[i*3+2];
+    }
+    trailGeo.attributes.position.needsUpdate = true;
+    trailGeo.setDrawRange(0, n);
+    const el = document.getElementById('stat-spiral');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  v=${sim.speed().toFixed(2)}  Boris integrator`;
+  }};
+});
+
+
+// =========================================
+// tau-coupling: Crossed Fields (E x B drift)
+// =========================================
+registerViz('ex-crossed', () => {
+  const sim = WasmLorentzSim.crossed_fields();
+  const { scene, camera, controls, canvas } = createScene('ex-crossed');
+  camera.position.set(0, 1, 5);
+  controls.target.set(0, 1, 0);
+
+  const dot = makeSphere(0.06, 0xe74c3c);
+  scene.add(dot);
+  const trailMax = 600;
+  const trailGeo = new THREE.BufferGeometry();
+  const trailPos = new Float32Array(trailMax * 3);
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeo.setDrawRange(0, 0);
+  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.4 })));
+
+  // E and B field arrows
+  const arrowE = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(-2,0,0), 1.0, 0x2e7d32, 0.15, 0.1);
+  const arrowB = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(-2,0,0), 1.0, ACCENT, 0.15, 0.1);
+  scene.add(arrowE); scene.add(arrowB);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const pos = sim.position();
+    dot.position.set(pos[0], pos[1], pos[2]);
+    const trail = sim.trail();
+    const n = sim.trail_len();
+    for (let i = 0; i < n; i++) {
+      trailPos[i*3] = trail[i*3]; trailPos[i*3+1] = trail[i*3+1]; trailPos[i*3+2] = trail[i*3+2];
+    }
+    trailGeo.attributes.position.needsUpdate = true;
+    trailGeo.setDrawRange(0, n);
+    const el = document.getElementById('stat-crossed');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E×B drift  v=${sim.speed().toFixed(2)}`;
+  }};
+});
+
+
+// =========================================
+// tau-coupling: Magnetic Mirror
+// =========================================
+registerViz('ex-mirror', () => {
+  const sim = WasmLorentzSim.magnetic_mirror();
+  const { scene, camera, controls, canvas } = createScene('ex-mirror');
+  camera.position.set(2, 1, 5);
+  controls.target.set(0, 0, 0);
+
+  const dot = makeSphere(0.06, 0x7c4dff);
+  scene.add(dot);
+  const trailMax = 800;
+  const trailGeo = new THREE.BufferGeometry();
+  const trailPos = new Float32Array(trailMax * 3);
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+  trailGeo.setDrawRange(0, 0);
+  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x7c4dff, transparent: true, opacity: 0.35 })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(6);
+    const pos = sim.position();
+    dot.position.set(pos[0], pos[1], pos[2]);
+    const trail = sim.trail();
+    const n = sim.trail_len();
+    for (let i = 0; i < n; i++) {
+      trailPos[i*3] = trail[i*3]; trailPos[i*3+1] = trail[i*3+1]; trailPos[i*3+2] = trail[i*3+2];
+    }
+    trailGeo.attributes.position.needsUpdate = true;
+    trailGeo.setDrawRange(0, n);
+    const el = document.getElementById('stat-mirror');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  magnetic mirror  converging B`;
+  }};
+});
+
+
+// =========================================
+// tau-gravity: Binary Orbit
+// =========================================
+registerViz('ex-binary', () => {
+  const sim = WasmGravitySim.binary_orbit();
+  const { scene, camera, controls, canvas } = createScene('ex-binary');
+  camera.position.set(0, 0, 7);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const masses = sim.masses();
+  const s1 = makeSphere(0.12, ACCENT); scene.add(s1);
+  const s2 = makeSphere(0.12, 0xe74c3c); scene.add(s2);
+  const t1 = makeTrail(500, ACCENT, 0.3); scene.add(t1.line);
+  const t2 = makeTrail(500, 0xe74c3c, 0.3); scene.add(t2.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const pos = sim.positions();
+    s1.position.set(pos[0], pos[1], 0);
+    s2.position.set(pos[2], pos[3], 0);
+    pushTrail(t1, pos[0], pos[1], 0);
+    pushTrail(t2, pos[2], pos[3], 0);
+    const el = document.getElementById('stat-binary');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  2-body  Newtonian gravity`;
+  }};
+});
+
+
+// =========================================
+// tau-gravity: Solar System
+// =========================================
+registerViz('ex-solar', () => {
+  const sim = WasmGravitySim.solar_system();
+  const N = sim.num_bodies();
+  const { scene, camera, controls, canvas } = createScene('ex-solar');
+  camera.position.set(0, 0, 10);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const colors = [0xffcc00, 0xe74c3c, ACCENT, 0x2e7d32, 0x7c4dff, 0x00897b];
+  const radii = [0.2, 0.06, 0.08, 0.1, 0.07, 0.055];
+  const spheres = [], trails = [];
+  for (let i = 0; i < N; i++) {
+    const s = makeSphere(radii[i], colors[i]); scene.add(s); spheres.push(s);
+    if (i > 0) { const t = makeTrail(400, colors[i], 0.25); scene.add(t.line); trails.push(t); }
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(32);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      spheres[i].position.set(pos[i*2], pos[i*2+1], 0);
+      if (i > 0) pushTrail(trails[i-1], pos[i*2], pos[i*2+1], 0);
+    }
+    const el = document.getElementById('stat-solar');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  Kepler orbits`;
+  }};
+});
+
+
+// =========================================
+// tau-gravity: Precession
+// =========================================
+registerViz('ex-precess', () => {
+  const sim = WasmGravitySim.precession();
+  const { scene, camera, controls, canvas } = createScene('ex-precess');
+  camera.position.set(0, 0, 6);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const sun = makeSphere(0.15, 0xffcc00); scene.add(sun);
+  const planet = makeSphere(0.06, 0xe74c3c); scene.add(planet);
+  const trail = makeTrail(1200, 0xe74c3c, 0.3); scene.add(trail.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(32);
+    const pos = sim.positions();
+    sun.position.set(pos[0], pos[1], 0);
+    planet.position.set(pos[2], pos[3], 0);
+    pushTrail(trail, pos[2], pos[3], 0);
+    const el = document.getElementById('stat-precess');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  perihelion precession  post-Newtonian`;
+  }};
+});
+
+
+// =========================================
+// tau-guardian: Energy Monitor
+// =========================================
+registerViz('ex-emonitor', () => {
+  const sim = WasmGuardianSim.energy_monitor();
+  const L = sim.length();
+  const { scene, camera, controls, canvas } = createScene('ex-emonitor');
+  camera.position.set(0, -0.3, 4.5);
+  controls.target.set(0, -0.5, 0);
+
+  scene.add(makeSphere(0.04, DARK));
+  const rod = makeCyl(0.02, L, MUTED); scene.add(rod);
+  const bob = makeSphere(0.08, ACCENT); scene.add(bob);
+
+  // Energy bars (3D boxes for KE, PE, Total)
+  const barKE = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: 0xe74c3c }));
+  const barPE = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: ACCENT }));
+  const barTot = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  barKE.position.set(1.5, 0, 0); barPE.position.set(1.7, 0, 0); barTot.position.set(1.9, 0, 0);
+  scene.add(barKE); scene.add(barPE); scene.add(barTot);
+
+  let _prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const q = sim.q_val();
+    const bx = L * Math.sin(q), by = -L * Math.cos(q);
+    bob.position.set(bx, by, 0);
+    rod.position.set(bx/2, by/2, 0);
+    rod.rotation.z = q;
+
+    const ke = sim.ke(), pe = sim.pe(), tot = sim.total_energy();
+    const maxE = Math.max(tot * 1.2, 0.1);
+    barKE.scale.y = Math.max(ke / maxE, 0.01); barKE.position.y = -1 + barKE.scale.y * 0.5;
+    barPE.scale.y = Math.max(pe / maxE, 0.01); barPE.position.y = -1 + barPE.scale.y * 0.5;
+    barTot.scale.y = Math.max(tot / maxE, 0.01); barTot.position.y = -1 + barTot.scale.y * 0.5;
+
+    const el = document.getElementById('stat-emonitor');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  KE=${ke.toFixed(3)}  PE=${pe.toFixed(3)}  E=${tot.toFixed(3)}`;
+    const _cur = sim.q_val();
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
+  }};
+});
+
+
+// =========================================
+// tau-guardian: Adaptive dt
+// =========================================
+registerViz('ex-adaptdt', () => {
+  const sim = WasmGuardianSim.adaptive_dt();
+  const L = sim.length();
+  const { scene, camera, controls, canvas } = createScene('ex-adaptdt');
+  camera.position.set(0, -0.3, 4.5);
+  controls.target.set(0, -0.5, 0);
+
+  // Fixed dt pendulum (left)
+  const pivot1 = makeSphere(0.03, DARK); pivot1.position.set(-0.8, 0, 0); scene.add(pivot1);
+  const rod1 = makeCyl(0.018, L, 0xe74c3c); scene.add(rod1);
+  const bob1 = makeSphere(0.07, 0xe74c3c); scene.add(bob1);
+
+  // Adaptive dt pendulum (right)
+  const pivot2 = makeSphere(0.03, DARK); pivot2.position.set(0.8, 0, 0); scene.add(pivot2);
+  const rod2 = makeCyl(0.018, L, 0x2e7d32); scene.add(rod2);
+  const bob2 = makeSphere(0.07, 0x2e7d32); scene.add(bob2);
+
+  let _prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const q1 = sim.q_val(), q2 = sim.q2_val();
+    const bx1 = -0.8 + L*Math.sin(q1), by1 = -L*Math.cos(q1);
+    bob1.position.set(bx1, by1, 0);
+    rod1.position.set(-0.8 + L*Math.sin(q1)/2, -L*Math.cos(q1)/2, 0);
+    rod1.rotation.z = q1;
+
+    const bx2 = 0.8 + L*Math.sin(q2), by2 = -L*Math.cos(q2);
+    bob2.position.set(bx2, by2, 0);
+    rod2.position.set(0.8 + L*Math.sin(q2)/2, -L*Math.cos(q2)/2, 0);
+    rod2.rotation.z = q2;
+
+    const hist1 = sim.total_history();
+    const hist2 = sim.total_history2();
+    const e1 = hist1.length > 0 ? hist1[hist1.length-1] : 0;
+    const e2 = hist2.length > 0 ? hist2[hist2.length-1] : 0;
+    const el = document.getElementById('stat-adaptdt');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  fixed E=${e1.toFixed(3)}  adaptive E=${e2.toFixed(3)}`;
+    const _cur = sim.q_val();
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
+  }};
+});
+
+
+// =========================================
+// tau-guardian: Correction Demo
+// =========================================
+registerViz('ex-correction', () => {
+  const sim = WasmGuardianSim.correction_demo();
+  const L = sim.length();
+  const { scene, camera, controls, canvas } = createScene('ex-correction');
+  camera.position.set(0, -0.3, 4.5);
+  controls.target.set(0, -0.5, 0);
+
+  scene.add(makeSphere(0.04, DARK));
+  const rod = makeCyl(0.02, L, MUTED); scene.add(rod);
+  const bob = makeSphere(0.08, 0x2e7d32); scene.add(bob);
+  const trail = makeTrail(300, 0x2e7d32, 0.25); scene.add(trail.line);
+
+  // Energy line chart (using points)
+  const histMax = 200;
+  const histPos = new Float32Array(histMax * 3);
+  const histGeo = new THREE.BufferGeometry();
+  histGeo.setAttribute('position', new THREE.BufferAttribute(histPos, 3));
+  histGeo.setDrawRange(0, 0);
+  scene.add(new THREE.Line(histGeo, new THREE.LineBasicMaterial({ color: 0x2e7d32 })));
+
+  let _prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const q = sim.q_val();
+    const bx = L*Math.sin(q), by = -L*Math.cos(q);
+    bob.position.set(bx, by, 0);
+    rod.position.set(bx/2, by/2, 0);
+    rod.rotation.z = q;
+    pushTrail(trail, bx, by, 0);
+
+    const hist = sim.total_history();
+    const n = hist.length;
+    const e0 = sim.e0();
+    for (let i = 0; i < n; i++) {
+      histPos[i*3] = 1.2 + i * (1.0/histMax);
+      histPos[i*3+1] = -1.0 + (hist[i] / (e0 * 2)) * 1.5;
+      histPos[i*3+2] = 0;
+    }
+    histGeo.attributes.position.needsUpdate = true;
+    histGeo.setDrawRange(0, n);
+
+    const el = document.getElementById('stat-correction');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${sim.total_energy().toFixed(4)}  E₀=${e0.toFixed(4)}  guardian ON`;
+    const _cur = sim.q_val();
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
+  }};
+});
+
+
+// =========================================
+// tau-lbm: Helper for LBM heatmap viz
+// =========================================
+function makeLbmViz(canvasId, sim, statId, label, useVorticity) {
+  const nx = sim.grid_nx(), ny = sim.grid_ny();
+  const { scene, camera, controls, canvas } = createScene(canvasId);
+  camera.position.set(0, 0, 2.2);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const texW = nx, texH = ny;
+  const data = new Uint8Array(texW * texH * 4);
+  const smooth = new Float32Array(texW * texH);
+  const texture = new THREE.DataTexture(data, texW, texH, THREE.RGBAFormat);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const aspect = nx / ny;
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2 * aspect / Math.max(aspect, 1), 2 / Math.max(1, 1/aspect)), new THREE.MeshBasicMaterial({ map: texture })));
+  const bg = 247;
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const field = useVorticity ? sim.vorticity_field() : sim.velocity_field();
+    for (let i = 0; i < texW * texH; i++) {
+      if (field[i] < 0 && !useVorticity) {
+        // Obstacle
+        data[i*4] = 50; data[i*4+1] = 50; data[i*4+2] = 55; data[i*4+3] = 255;
+      } else {
+        smooth[i] = smooth[i] * 0.7 + field[i] * 0.3;
+        if (useVorticity) {
+          const v = smooth[i];
+          const s = Math.min(Math.abs(v) * 300, 1.0);
+          if (v > 0) {
+            data[i*4]   = Math.floor(bg + (200 - bg) * s);
+            data[i*4+1] = Math.floor(bg + (100 - bg) * s);
+            data[i*4+2] = Math.floor(bg + (100 - bg) * s);
+          } else {
+            data[i*4]   = Math.floor(bg + (100 - bg) * s);
+            data[i*4+1] = Math.floor(bg + (100 - bg) * s);
+            data[i*4+2] = Math.floor(bg + (200 - bg) * s);
+          }
+        } else {
+          const s = Math.min(smooth[i] * 8.0, 1.0);
+          // Warm velocity colormap
+          data[i*4]   = Math.floor(bg * (1-s) + 200 * s);
+          data[i*4+1] = Math.floor(bg * (1-s) + 80 * s);
+          data[i*4+2] = Math.floor(bg * (1-s) + 60 * s);
+        }
+        data[i*4+3] = 255;
+      }
+    }
+    texture.needsUpdate = true;
+    const el = document.getElementById(statId);
+    if (el) el.textContent = `t=${sim.time().toFixed(0)}  ${nx}×${ny} D2Q9  ${label}`;
+  }};
+}
+
+registerViz('ex-cavity', () => makeLbmViz('ex-cavity', WasmLbmSim.cavity_flow(), 'stat-cavity', 'lid-driven cavity', false));
+registerViz('ex-channel', () => makeLbmViz('ex-channel', WasmLbmSim.channel_flow(), 'stat-channel', 'Poiseuille flow', false));
+registerViz('ex-vortex', () => makeLbmViz('ex-vortex', WasmLbmSim.vortex_street(), 'stat-vortex', 'von Karman', true));
+
+
+// =========================================
+// tau-prob: Uncertainty Cone
+// =========================================
+registerViz('ex-ucone', () => {
+  const sim = WasmProbSim.uncertainty_cone();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-ucone');
+  camera.position.set(2, 0, 12);
+  controls.target.set(2, 0, 0);
+  controls.enableRotate = false;
+
+  // Origin marker
+  scene.add(makeSphere(0.06, DARK));
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      const t = i / N;
+      dotCol[i*3] = 0.29 + t * 0.6; dotCol[i*3+1] = 0.37 * (1-t); dotCol[i*3+2] = 0.84 * (1-t);
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-ucone');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} trajectories  spread=${sim.spread().toFixed(2)}`;
+  }};
+});
+
+
+// =========================================
+// tau-prob: SVGD Particles
+// =========================================
+registerViz('ex-svgd', () => {
+  const sim = WasmProbSim.svgd_particles();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-svgd');
+  camera.position.set(0, 0.2, 5);
+  controls.target.set(0, 0.2, 0);
+  controls.enableRotate = false;
+
+  // Target distribution markers
+  const t1 = makeSphere(0.08, 0x2e7d32, { transparent: true, opacity: 0.3 }); t1.position.set(-1, 0, 0); scene.add(t1);
+  const t2 = makeSphere(0.08, 0x2e7d32, { transparent: true, opacity: 0.3 }); t2.position.set(1, 0.5, 0); scene.add(t2);
+
+  const dotPos = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, color: ACCENT, sizeAttenuation: false })));
+
+  let _prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(2);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+    }
+    geo.attributes.position.needsUpdate = true;
+    const el = document.getElementById('stat-svgd');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  SVGD → GMM`;
+    const _cur = sim.positions()[0];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
+  }};
+});
+
+
+// =========================================
+// tau-prob: Monte Carlo Bouncing Balls
+// =========================================
+registerViz('ex-mcballs', () => {
+  const sim = WasmProbSim.monte_carlo();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-mcballs');
+  camera.position.set(0, 1.5, 10);
+  controls.target.set(0, 1, 0);
+  controls.enableRotate = false;
+
+  scene.add(makeGround(10, 1, 0));
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false })));
+
+  let _prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      const t = i / N;
+      dotCol[i*3] = 0.9 * t; dotCol[i*3+1] = 0.3 + 0.4 * (1-t); dotCol[i*3+2] = 0.85 * (1-t);
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-mcballs');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} samples  spread=${sim.spread().toFixed(2)}`;
+    const _cur = sim.positions()[1];
+    const _delta = Math.abs(_cur - _prev);
+    _prev = _cur;
+    return _delta;
+  }};
+});
+
 
 // Start observing all registered canvases
 for (const canvasId of vizEntries.keys()) {

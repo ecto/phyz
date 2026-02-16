@@ -468,7 +468,7 @@ impl WasmCradleSim {
         let length = 1.5;
         let mass = 1.0;
         let bob_radius = 0.12;
-        let spacing = bob_radius * 2.0;
+        let spacing = bob_radius * 1.98; // slightly less than 2r so resting bobs overlap
 
         let mut builder = ModelBuilder::new()
             .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
@@ -588,9 +588,12 @@ impl WasmCradleSim {
         let l = self.pend_length;
         let r = self.bob_radius;
 
-        // Multiple passes so the impulse wave propagates through the chain
-        for _ in 0..self.n {
-            for i in 0..(self.n - 1) {
+        // Multiple passes so the impulse wave propagates through the chain.
+        // Process from both ends alternately for better propagation.
+        for pass in 0..(self.n * 2) {
+            let forward = pass % 2 == 0;
+            for step in 0..(self.n - 1) {
+                let i = if forward { step } else { self.n - 2 - step };
                 let j = i + 1;
 
                 let pivot_xi = (i as f64 - 2.0) * self.spacing;
@@ -605,23 +608,24 @@ impl WasmCradleSim {
                 let dy = byj - byi;
                 let dist = (dx * dx + dy * dy).sqrt();
 
-                if dist < 2.0 * r && dist > 1e-10 {
-                    let nx = dx / dist;
-
-                    // Project angular velocities to bob velocities along contact normal
+                if dist < 2.0 * r + 0.001 && dist > 1e-10 {
+                    // Project angular velocities to bob linear velocities
                     let vxi = self.state.v[i] * l * self.state.q[i].cos();
                     let vxj = self.state.v[j] * l * self.state.q[j].cos();
+                    let nx = dx / dist;
                     let rel_vn = (vxj - vxi) * nx;
 
                     if rel_vn < 0.0 {
-                        // Near-elastic collision: swap angular velocities
+                        // Equal-mass elastic collision: swap velocities
                         let e = 0.999;
                         let vi = self.state.v[i];
                         let vj = self.state.v[j];
                         self.state.v[i] = vj * e;
                         self.state.v[j] = vi * e;
+                    }
 
-                        // Separate bobs by adjusting angles
+                    // Separate overlapping bobs
+                    if dist < 2.0 * r {
                         let overlap = 2.0 * r - dist;
                         let sep = overlap / (2.0 * l);
                         self.state.q[i] -= sep;
