@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tau-math",
+    "crates/tau-model",
+    "crates/tau-rigid",
+    "crates/tau-diff",
+    "crates/tau",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+nalgebra = "0.33"
+tau-math = { path = "crates/tau-math" }
+tau-model = { path = "crates/tau-model" }
+tau-rigid = { path = "crates/tau-rigid" }
+tau-diff = { path = "crates/tau-diff" }
+tau = { path = "crates/tau" }

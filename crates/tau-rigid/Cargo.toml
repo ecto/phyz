@@ -1,0 +1,11 @@
+[package]
+name = "tau-rigid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Featherstone articulated rigid body dynamics for tau"
+
+[dependencies]
+nalgebra.workspace = true
+tau-math.workspace = true
+tau-model.workspace = true

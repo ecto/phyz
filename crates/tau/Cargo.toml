@@ -1,0 +1,21 @@
+[package]
+name = "tau"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Multi-physics differentiable simulation engine"
+
+[dependencies]
+nalgebra.workspace = true
+tau-math.workspace = true
+tau-model.workspace = true
+tau-rigid.workspace = true
+tau-diff.workspace = true
+
+[[example]]
+name = "pendulum"
+path = "../../examples/pendulum.rs"
+
+[[example]]
+name = "double_pendulum"
+path = "../../examples/double_pendulum.rs"
