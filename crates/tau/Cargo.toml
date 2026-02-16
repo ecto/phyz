@@ -15,6 +15,7 @@ tau-mjcf.workspace = true
 tau-collision.workspace = true
 tau-contact.workspace = true
 tau-particle.workspace = true
+tau-world.workspace = true
 
 [[example]]
 name = "pendulum"
@@ -47,3 +48,15 @@ path = "../../examples/water_container.rs"
 [[example]]
 name = "sphere_in_sand"
 path = "../../examples/sphere_in_sand.rs"
+
+[[example]]
+name = "world_generation"
+path = "../../examples/world_generation.rs"
+
+[[example]]
+name = "training_data"
+path = "../../examples/training_data.rs"
+
+[[example]]
+name = "tendon_demo"
+path = "../../examples/tendon_demo.rs"

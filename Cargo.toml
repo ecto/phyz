@@ -10,7 +10,9 @@ members = [
     "crates/tau-contact",
     "crates/tau-gpu",
     "crates/tau-particle",
+    "crates/tau-world",
     "crates/tau",
+    "crates/tau-wasm",
 ]
 
 [workspace.package]
@@ -20,6 +22,8 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 nalgebra = "0.33"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tau-math = { path = "crates/tau-math" }
 tau-model = { path = "crates/tau-model" }
 tau-rigid = { path = "crates/tau-rigid" }
@@ -29,4 +33,5 @@ tau-collision = { path = "crates/tau-collision" }
 tau-contact = { path = "crates/tau-contact" }
 tau-gpu = { path = "crates/tau-gpu" }
 tau-particle = { path = "crates/tau-particle" }
+tau-world = { path = "crates/tau-world" }
 tau = { path = "crates/tau" }
