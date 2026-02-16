@@ -8,4 +8,8 @@ license.workspace = true
 tau-math = { workspace = true }
 nalgebra.workspace = true
 
+[[example]]
+name = "mercury_precession"
+path = "../../examples/mercury_precession.rs"
+
 [dev-dependencies]

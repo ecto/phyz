@@ -17,4 +17,4 @@ pub use coupling::{Coupling, CouplingType, ForceTransfer};
 pub use domain::{Domain, DomainType, RigidBodyDomain};
 pub use error::{Result, TauFormatError};
 pub use importers::{from_mjcf, from_urdf};
-pub use schema::{TauSpec, WorldConfig, load_tau_model};
+pub use schema::{TauSpec, WorldConfig, export_tau, load_tau_model};

@@ -12,4 +12,6 @@ pub mod trajectory_matcher;
 
 pub use observation::{EndEffectorPoseObserver, JointAngleObserver, ObservationAdapter};
 pub use optimizer::{GradientDescentOptimizer, Optimizer, OptimizerConfig};
-pub use trajectory_matcher::{LossWeights, Trajectory, TrajectoryMatcher, TrajectoryObservation};
+pub use trajectory_matcher::{
+    LossWeights, PhysicsParams, Trajectory, TrajectoryMatcher, TrajectoryObservation,
+};

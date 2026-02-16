@@ -4,6 +4,7 @@
     <worldbody>
         <!-- Torso -->
         <body name="torso" pos="0 0 0.75">
+            <joint name="root" type="free"/>
             <inertial pos="0 0 0" mass="10" diaginertia="1.0 1.0 1.0"/>
 
             <!-- Front left leg -->

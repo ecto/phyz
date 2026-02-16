@@ -54,7 +54,8 @@ fn main() {
 
     println!("Generating reference trajectory...");
     for step in 0..100 {
-        forward_kinematics(&true_model, &mut state);
+        let (xforms, _) = forward_kinematics(&true_model, &state);
+        state.body_xform = xforms;
 
         // Record observation every 10 steps
         if step % 10 == 0 {
@@ -205,12 +206,12 @@ fn model_to_tau_spec(model: &tau_model::Model, params: &PhysicsParams) -> TauSpe
         name: "link".to_string(),
         mass: model.bodies[0].inertia.mass,
         inertia: [
-            model.bodies[0].inertia.I[(0, 0)],
-            model.bodies[0].inertia.I[(1, 1)],
-            model.bodies[0].inertia.I[(2, 2)],
-            model.bodies[0].inertia.I[(0, 1)],
-            model.bodies[0].inertia.I[(0, 2)],
-            model.bodies[0].inertia.I[(1, 2)],
+            model.bodies[0].inertia.inertia[(0, 0)],
+            model.bodies[0].inertia.inertia[(1, 1)],
+            model.bodies[0].inertia.inertia[(2, 2)],
+            model.bodies[0].inertia.inertia[(0, 1)],
+            model.bodies[0].inertia.inertia[(0, 2)],
+            model.bodies[0].inertia.inertia[(1, 2)],
         ],
         center_of_mass: [
             model.bodies[0].inertia.com.x,
@@ -244,7 +245,7 @@ fn model_to_tau_spec(model: &tau_model::Model, params: &PhysicsParams) -> TauSpe
     );
 
     // Build parameters
-    let mut parameters = HashMap::new();
+    let mut parameters: HashMap<String, ParameterSpec> = HashMap::new();
     for (name, value) in &params.model_params {
         parameters.insert(
             name.clone(),

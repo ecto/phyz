@@ -18,8 +18,21 @@ tau-collision.workspace = true
 tau-contact.workspace = true
 tau-particle.workspace = true
 tau-lbm.workspace = true
+tau-em.workspace = true
+tau-md.workspace = true
+tau-qft.workspace = true
+tau-gravity.workspace = true
+tau-coupling.workspace = true
+tau-guardian.workspace = true
+tau-gpu.workspace = true
+tau-compile.workspace = true
+tau-real2sim.workspace = true
+tau-format.workspace = true
 tau-prob.workspace = true
 tau-world.workspace = true
+
+[dev-dependencies]
+approx = "0.5"
 
 [[example]]
 name = "pendulum"

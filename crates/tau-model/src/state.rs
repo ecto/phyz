@@ -17,6 +17,8 @@ pub struct State {
     // Cached quantities (filled by forward kinematics / dynamics)
     /// Body-to-world transforms for each body.
     pub body_xform: Vec<SpatialTransform>,
+    /// External generalized forces (e.g., from contacts).
+    pub qfrc_external: DVec,
 }
 
 impl State {
@@ -28,6 +30,7 @@ impl State {
             ctrl: DVec::zeros(nv),
             time: 0.0,
             body_xform: vec![SpatialTransform::identity(); nbodies],
+            qfrc_external: DVec::zeros(nv),
         }
     }
 

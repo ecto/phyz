@@ -12,3 +12,8 @@ tau-math.workspace = true
 tau-model.workspace = true
 tau-rigid.workspace = true
 tau-diff.workspace = true
+tau-format.workspace = true
+
+[[example]]
+name = "real2sim_pendulum"
+path = "../../examples/real2sim_pendulum.rs"

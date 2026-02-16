@@ -6,7 +6,7 @@ pub mod material;
 pub mod solver;
 
 pub use material::ContactMaterial;
-pub use solver::{contact_forces, find_contacts};
+pub use solver::{contact_forces, find_contacts, find_ground_contacts};
 
 use tau_collision::Collision;
 use tau_math::{SpatialVec, Vec3};

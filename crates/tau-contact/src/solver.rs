@@ -77,8 +77,6 @@ pub fn find_contacts(
             );
 
             if dist < 0.0 {
-                // Penetrating - compute contact details
-                // For now, use simple approximation
                 let normal = (pos_j - pos_i).normalize();
                 let contact_point = (pos_i + pos_j) * 0.5;
                 let penetration_depth = -dist;
@@ -97,12 +95,15 @@ pub fn find_contacts(
     contacts
 }
 
-/// Compute contact forces for all contacts.
-/// Returns spatial forces for each body.
+/// Compute contact forces for all contacts using body spatial velocities.
+///
+/// `body_velocities` should come from forward_kinematics (linear part of spatial velocity).
+/// Returns spatial forces for each body in body frame.
 pub fn contact_forces(
     contacts: &[Collision],
     state: &State,
     materials: &[ContactMaterial],
+    body_velocities: Option<&[SpatialVec]>,
 ) -> Vec<SpatialVec> {
     let nbodies = state.body_xform.len();
     let mut forces = vec![SpatialVec::zero(); nbodies];
@@ -111,19 +112,37 @@ pub fn contact_forces(
         let i = contact.body_i;
         let j = contact.body_j;
 
-        // Get material (use first body's material for now)
-        let material = &materials[i.min(materials.len() - 1)];
+        // Get material (use first body's material, or default)
+        let material = if materials.is_empty() {
+            &ContactMaterial::default()
+        } else {
+            &materials[i.min(materials.len() - 1)]
+        };
 
-        // Approximate body velocities (would need proper velocity extraction)
-        let vel_i = Vec3::zeros();
-        let vel_j = Vec3::zeros();
+        // Extract linear velocities from spatial velocities
+        let vel_i = body_velocities
+            .and_then(|vels| vels.get(i))
+            .map(|v| v.linear())
+            .unwrap_or(Vec3::zeros());
+
+        let vel_j = if j == usize::MAX {
+            // Ground — zero velocity
+            Vec3::zeros()
+        } else {
+            body_velocities
+                .and_then(|vels| vels.get(j))
+                .map(|v| v.linear())
+                .unwrap_or(Vec3::zeros())
+        };
 
         // Compute force
         let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
 
         // Apply equal and opposite forces
         forces[i] = forces[i] + force;
-        forces[j] = forces[j] - force;
+        if j != usize::MAX {
+            forces[j] = forces[j] - force;
+        }
     }
 
     forces

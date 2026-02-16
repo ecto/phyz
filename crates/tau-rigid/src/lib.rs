@@ -13,7 +13,7 @@ pub mod energy;
 pub mod kinematics;
 pub mod rnea;
 
-pub use aba::aba;
+pub use aba::{aba, aba_with_external_forces};
 pub use crba::crba;
 pub use energy::{kinetic_energy, potential_energy, total_energy};
 pub use kinematics::forward_kinematics;

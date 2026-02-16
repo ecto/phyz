@@ -2039,3 +2039,1290 @@ impl WasmQftSim {
         self.beta * s
     }
 }
+
+// ================================================================
+// Lorentz Force / Charged Particle (Phase 11: tau-coupling)
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmLorentzSim {
+    px: f64,
+    py: f64,
+    pz: f64,
+    vx: f64,
+    vy: f64,
+    vz: f64,
+    charge: f64,
+    mass: f64,
+    bx: f64,
+    by: f64,
+    bz: f64,
+    ex: f64,
+    ey: f64,
+    ez: f64,
+    time: f64,
+    dt: f64,
+    trail_x: Vec<f64>,
+    trail_y: Vec<f64>,
+    trail_z: Vec<f64>,
+    max_trail: usize,
+    variant: u8,
+    mirror_length: f64,
+}
+
+#[wasm_bindgen]
+impl WasmLorentzSim {
+    /// Helical spiral in uniform B field along z.
+    pub fn spiral() -> WasmLorentzSim {
+        WasmLorentzSim {
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            vx: 1.0,
+            vy: 0.0,
+            vz: 0.3,
+            charge: 1.0,
+            mass: 1.0,
+            bx: 0.0,
+            by: 0.0,
+            bz: 2.0,
+            ex: 0.0,
+            ey: 0.0,
+            ez: 0.0,
+            time: 0.0,
+            dt: 0.01,
+            trail_x: Vec::new(),
+            trail_y: Vec::new(),
+            trail_z: Vec::new(),
+            max_trail: 600,
+            variant: 0,
+            mirror_length: 0.0,
+        }
+    }
+
+    /// E x B drift: crossed electric and magnetic fields.
+    pub fn crossed_fields() -> WasmLorentzSim {
+        WasmLorentzSim {
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            vx: 0.5,
+            vy: 0.0,
+            vz: 0.0,
+            charge: 1.0,
+            mass: 1.0,
+            bx: 0.0,
+            by: 0.0,
+            bz: 2.0,
+            ex: 0.0,
+            ey: 0.5,
+            ez: 0.0,
+            time: 0.0,
+            dt: 0.01,
+            trail_x: Vec::new(),
+            trail_y: Vec::new(),
+            trail_z: Vec::new(),
+            max_trail: 600,
+            variant: 1,
+            mirror_length: 0.0,
+        }
+    }
+
+    /// Magnetic mirror: converging B field lines.
+    pub fn magnetic_mirror() -> WasmLorentzSim {
+        WasmLorentzSim {
+            px: 0.0,
+            py: 0.0,
+            pz: 0.0,
+            vx: 0.8,
+            vy: 0.0,
+            vz: 0.6,
+            charge: 1.0,
+            mass: 1.0,
+            bx: 0.0,
+            by: 0.0,
+            bz: 1.0,
+            ex: 0.0,
+            ey: 0.0,
+            ez: 0.0,
+            time: 0.0,
+            dt: 0.008,
+            trail_x: Vec::new(),
+            trail_y: Vec::new(),
+            trail_z: Vec::new(),
+            max_trail: 800,
+            variant: 2,
+            mirror_length: 4.0,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let qm = self.charge / self.mass;
+        for _ in 0..steps {
+            // Get local B field (variant 2 has position-dependent B)
+            let (lbx, lby, lbz) = if self.variant == 2 {
+                // Mirror: B_z increases near ends
+                let z_norm = self.pz / self.mirror_length;
+                let mirror_factor = 1.0 + 3.0 * z_norm * z_norm;
+                // Radial component from div B = 0
+                let br = -3.0 * z_norm / self.mirror_length * self.bz;
+                let r = (self.px * self.px + self.py * self.py).sqrt().max(1e-10);
+                (
+                    br * self.px / r,
+                    br * self.py / r,
+                    self.bz * mirror_factor,
+                )
+            } else {
+                (self.bx, self.by, self.bz)
+            };
+
+            // Boris integrator
+            let half_dt = self.dt * 0.5;
+            // Half-step E acceleration
+            self.vx += qm * self.ex * half_dt;
+            self.vy += qm * self.ey * half_dt;
+            self.vz += qm * self.ez * half_dt;
+
+            // Rotation
+            let tx = qm * lbx * half_dt;
+            let ty = qm * lby * half_dt;
+            let tz = qm * lbz * half_dt;
+            let t_mag2 = tx * tx + ty * ty + tz * tz;
+            let sx = 2.0 * tx / (1.0 + t_mag2);
+            let sy = 2.0 * ty / (1.0 + t_mag2);
+            let sz = 2.0 * tz / (1.0 + t_mag2);
+
+            let vpx = self.vx + self.vy * tz - self.vz * ty;
+            let vpy = self.vy + self.vz * tx - self.vx * tz;
+            let vpz = self.vz + self.vx * ty - self.vy * tx;
+
+            self.vx += vpy * sz - vpz * sy;
+            self.vy += vpz * sx - vpx * sz;
+            self.vz += vpx * sy - vpy * sx;
+
+            // Half-step E acceleration
+            self.vx += qm * self.ex * half_dt;
+            self.vy += qm * self.ey * half_dt;
+            self.vz += qm * self.ez * half_dt;
+
+            // Position update
+            self.px += self.vx * self.dt;
+            self.py += self.vy * self.dt;
+            self.pz += self.vz * self.dt;
+
+            self.time += self.dt;
+        }
+
+        // Record trail point
+        self.trail_x.push(self.px);
+        self.trail_y.push(self.py);
+        self.trail_z.push(self.pz);
+        if self.trail_x.len() > self.max_trail {
+            self.trail_x.remove(0);
+            self.trail_y.remove(0);
+            self.trail_z.remove(0);
+        }
+    }
+
+    pub fn position(&self) -> Vec<f64> {
+        vec![self.px, self.py, self.pz]
+    }
+
+    pub fn trail(&self) -> Vec<f64> {
+        let n = self.trail_x.len();
+        let mut out = Vec::with_capacity(n * 3);
+        for i in 0..n {
+            out.push(self.trail_x[i]);
+            out.push(self.trail_y[i]);
+            out.push(self.trail_z[i]);
+        }
+        out
+    }
+
+    pub fn trail_len(&self) -> usize {
+        self.trail_x.len()
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    pub fn speed(&self) -> f64 {
+        (self.vx * self.vx + self.vy * self.vy + self.vz * self.vz).sqrt()
+    }
+}
+
+// ================================================================
+// N-Body Gravity (Phase 12: tau-gravity)
+// ================================================================
+
+#[wasm_bindgen]
+#[allow(dead_code)]
+pub struct WasmGravitySim {
+    n: usize,
+    px: Vec<f64>,
+    py: Vec<f64>,
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    mass: Vec<f64>,
+    softening: f64,
+    time: f64,
+    dt: f64,
+    trail_x: Vec<Vec<f64>>,
+    trail_y: Vec<Vec<f64>>,
+    max_trail: usize,
+    variant: u8,
+    g_const: f64,
+    gr_strength: f64,
+}
+
+#[wasm_bindgen]
+impl WasmGravitySim {
+    /// Two bodies in mutual orbit.
+    pub fn binary_orbit() -> WasmGravitySim {
+        let g: f64 = 10.0;
+        let m1 = 5.0;
+        let m2 = 5.0;
+        let sep = 2.0;
+        // Circular orbit velocity
+        let v = (g * m2 / (sep * 2.0)).sqrt();
+        WasmGravitySim {
+            n: 2,
+            px: vec![-sep / 2.0, sep / 2.0],
+            py: vec![0.0, 0.0],
+            vx: vec![0.0, 0.0],
+            vy: vec![v, -v],
+            mass: vec![m1, m2],
+            softening: 0.05,
+            time: 0.0,
+            dt: 0.001,
+            trail_x: vec![Vec::new(); 2],
+            trail_y: vec![Vec::new(); 2],
+            max_trail: 500,
+            variant: 0,
+            g_const: g,
+            gr_strength: 0.0,
+        }
+    }
+
+    /// 5 planets orbiting a central mass.
+    pub fn solar_system() -> WasmGravitySim {
+        let g: f64 = 20.0;
+        let m_sun = 20.0;
+        let n = 6; // sun + 5 planets
+        let mut px = vec![0.0; n];
+        let mut py = vec![0.0; n];
+        let mut vx = vec![0.0; n];
+        let mut vy = vec![0.0; n];
+        let mut mass = vec![0.0; n];
+        mass[0] = m_sun;
+        let radii = [0.8, 1.2, 1.8, 2.5, 3.3];
+        let planet_mass = [0.1, 0.3, 0.5, 0.2, 0.15];
+        for i in 0..5 {
+            let r = radii[i];
+            let angle = i as f64 * 1.2566; // ~72 degrees apart
+            px[i + 1] = r * angle.cos();
+            py[i + 1] = r * angle.sin();
+            let v = (g * m_sun / r).sqrt();
+            vx[i + 1] = -v * angle.sin();
+            vy[i + 1] = v * angle.cos();
+            mass[i + 1] = planet_mass[i];
+        }
+        WasmGravitySim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            mass,
+            softening: 0.05,
+            time: 0.0,
+            dt: 0.0005,
+            trail_x: vec![Vec::new(); n],
+            trail_y: vec![Vec::new(); n],
+            max_trail: 600,
+            variant: 1,
+            g_const: g,
+            gr_strength: 0.0,
+        }
+    }
+
+    /// Mercury-like orbit with post-Newtonian precession.
+    pub fn precession() -> WasmGravitySim {
+        let g: f64 = 20.0;
+        let m_sun = 20.0;
+        let r = 1.5;
+        // Slightly elliptical
+        let v = (g * m_sun / r).sqrt() * 0.85;
+        WasmGravitySim {
+            n: 2,
+            px: vec![0.0, r],
+            py: vec![0.0, 0.0],
+            vx: vec![0.0, 0.0],
+            vy: vec![0.0, v],
+            mass: vec![m_sun, 0.1],
+            softening: 0.05,
+            time: 0.0,
+            dt: 0.0005,
+            trail_x: vec![Vec::new(); 2],
+            trail_y: vec![Vec::new(); 2],
+            max_trail: 1200,
+            variant: 2,
+            g_const: g,
+            gr_strength: 0.15, // exaggerated for visibility
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let eps2 = self.softening * self.softening;
+        for _ in 0..steps {
+            // Compute accelerations
+            let mut ax = vec![0.0; self.n];
+            let mut ay = vec![0.0; self.n];
+            for i in 0..self.n {
+                for j in (i + 1)..self.n {
+                    let dx = self.px[j] - self.px[i];
+                    let dy = self.py[j] - self.py[i];
+                    let r2 = dx * dx + dy * dy + eps2;
+                    let r = r2.sqrt();
+                    let r3 = r * r2;
+                    let mut f = self.g_const / r3;
+
+                    // Post-Newtonian correction for precession demo
+                    if self.gr_strength > 0.0 {
+                        f *= 1.0 + self.gr_strength / r2;
+                    }
+
+                    ax[i] += f * self.mass[j] * dx;
+                    ay[i] += f * self.mass[j] * dy;
+                    ax[j] -= f * self.mass[i] * dx;
+                    ay[j] -= f * self.mass[i] * dy;
+                }
+            }
+
+            // Leapfrog integration
+            for i in 0..self.n {
+                self.vx[i] += ax[i] * self.dt;
+                self.vy[i] += ay[i] * self.dt;
+                self.px[i] += self.vx[i] * self.dt;
+                self.py[i] += self.vy[i] * self.dt;
+            }
+            self.time += self.dt;
+        }
+
+        // Record trails
+        for i in 0..self.n {
+            self.trail_x[i].push(self.px[i]);
+            self.trail_y[i].push(self.py[i]);
+            if self.trail_x[i].len() > self.max_trail {
+                self.trail_x[i].remove(0);
+                self.trail_y[i].remove(0);
+            }
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * 2);
+        for i in 0..self.n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    pub fn masses(&self) -> Vec<f64> {
+        self.mass.clone()
+    }
+
+    pub fn trail_for(&self, idx: usize) -> Vec<f64> {
+        let n = self.trail_x[idx].len();
+        let mut out = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            out.push(self.trail_x[idx][i]);
+            out.push(self.trail_y[idx][i]);
+        }
+        out
+    }
+
+    pub fn trail_len(&self, idx: usize) -> usize {
+        self.trail_x[idx].len()
+    }
+
+    pub fn num_bodies(&self) -> usize {
+        self.n
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+}
+
+// ================================================================
+// Guardian / Conservation Monitor (Phase 13: tau-guardian)
+// ================================================================
+
+#[wasm_bindgen]
+#[allow(dead_code)]
+pub struct WasmGuardianSim {
+    q: f64,
+    v: f64,
+    dt: f64,
+    time: f64,
+    length: f64,
+    ke_history: Vec<f64>,
+    pe_history: Vec<f64>,
+    total_history: Vec<f64>,
+    max_history: usize,
+    variant: u8,
+    // For adaptive dt demo
+    q2: f64,
+    v2: f64,
+    dt_adaptive: f64,
+    total_history2: Vec<f64>,
+    // For correction demo
+    correction_on: bool,
+    e0: f64,
+    injection_rate: f64,
+}
+
+#[wasm_bindgen]
+impl WasmGuardianSim {
+    /// Pendulum with energy monitoring gauge.
+    pub fn energy_monitor() -> WasmGuardianSim {
+        let q: f64 = 2.0;
+        let length = 1.5;
+        let pe = GRAVITY / length * (1.0 - q.cos());
+        WasmGuardianSim {
+            q,
+            v: 0.0,
+            dt: 0.002,
+            time: 0.0,
+            length,
+            ke_history: Vec::new(),
+            pe_history: Vec::new(),
+            total_history: Vec::new(),
+            max_history: 200,
+            variant: 0,
+            q2: 0.0,
+            v2: 0.0,
+            dt_adaptive: 0.0,
+            total_history2: Vec::new(),
+            correction_on: false,
+            e0: 0.5 * 0.0 * 0.0 + pe,
+            injection_rate: 0.0,
+        }
+    }
+
+    /// Fixed vs adaptive timestep comparison.
+    pub fn adaptive_dt() -> WasmGuardianSim {
+        let q: f64 = 2.5;
+        let length = 1.5;
+        let pe = GRAVITY / length * (1.0 - q.cos());
+        WasmGuardianSim {
+            q,
+            v: 0.0,
+            dt: 0.015, // intentionally large fixed dt
+            time: 0.0,
+            length,
+            ke_history: Vec::new(),
+            pe_history: Vec::new(),
+            total_history: Vec::new(),
+            max_history: 200,
+            variant: 1,
+            q2: q,
+            v2: 0.0,
+            dt_adaptive: 0.01,
+            total_history2: Vec::new(),
+            correction_on: false,
+            e0: pe,
+            injection_rate: 0.0,
+        }
+    }
+
+    /// Correction demo with energy injection and guardian fix.
+    pub fn correction_demo() -> WasmGuardianSim {
+        let q: f64 = 1.5;
+        let length = 1.5;
+        let pe = GRAVITY / length * (1.0 - q.cos());
+        WasmGuardianSim {
+            q,
+            v: 0.0,
+            dt: 0.003,
+            time: 0.0,
+            length,
+            ke_history: Vec::new(),
+            pe_history: Vec::new(),
+            total_history: Vec::new(),
+            max_history: 200,
+            variant: 2,
+            q2: 0.0,
+            v2: 0.0,
+            dt_adaptive: 0.0,
+            total_history2: Vec::new(),
+            correction_on: true,
+            e0: pe,
+            injection_rate: 0.005,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let omega2 = GRAVITY / self.length;
+        match self.variant {
+            0 => {
+                // Simple symplectic Euler for energy monitor
+                for _ in 0..steps {
+                    let acc = -omega2 * self.q.sin();
+                    self.v += acc * self.dt;
+                    self.q += self.v * self.dt;
+                    self.time += self.dt;
+                }
+            }
+            1 => {
+                // Fixed dt (Euler, drifts)
+                for _ in 0..steps {
+                    let acc = -omega2 * self.q.sin();
+                    self.v += acc * self.dt;
+                    self.q += self.v * self.dt;
+
+                    // Adaptive dt (symplectic Euler with smaller step)
+                    let sub = 4;
+                    let adt = self.dt / sub as f64;
+                    for _ in 0..sub {
+                        let acc2 = -omega2 * self.q2.sin();
+                        self.v2 += acc2 * adt;
+                        self.q2 += self.v2 * adt;
+                    }
+                    self.time += self.dt;
+                }
+            }
+            2 => {
+                // With deliberate energy injection + guardian correction
+                for _ in 0..steps {
+                    let acc = -omega2 * self.q.sin();
+                    self.v += acc * self.dt;
+                    // Inject energy
+                    self.v += self.injection_rate;
+                    self.q += self.v * self.dt;
+
+                    // Guardian correction: rescale velocity to maintain E0
+                    if self.correction_on {
+                        let pe = omega2 * (1.0 - self.q.cos());
+                        let target_ke = (self.e0 - pe).max(0.0);
+                        let current_ke = 0.5 * self.v * self.v;
+                        if current_ke > 1e-10 {
+                            let scale = (target_ke / current_ke).sqrt();
+                            self.v *= scale;
+                        }
+                    }
+                    self.time += self.dt;
+                }
+            }
+            _ => {}
+        }
+
+        // Record energy history
+        let omega2 = GRAVITY / self.length;
+        let ke = 0.5 * self.v * self.v;
+        let pe = omega2 * (1.0 - self.q.cos());
+        self.ke_history.push(ke);
+        self.pe_history.push(pe);
+        self.total_history.push(ke + pe);
+        if self.ke_history.len() > self.max_history {
+            self.ke_history.remove(0);
+            self.pe_history.remove(0);
+            self.total_history.remove(0);
+        }
+
+        if self.variant == 1 {
+            let ke2 = 0.5 * self.v2 * self.v2;
+            let pe2 = omega2 * (1.0 - self.q2.cos());
+            self.total_history2.push(ke2 + pe2);
+            if self.total_history2.len() > self.max_history {
+                self.total_history2.remove(0);
+            }
+        }
+    }
+
+    pub fn q_val(&self) -> f64 {
+        self.q
+    }
+    pub fn v_val(&self) -> f64 {
+        self.v
+    }
+    pub fn q2_val(&self) -> f64 {
+        self.q2
+    }
+
+    pub fn ke(&self) -> f64 {
+        0.5 * self.v * self.v
+    }
+    pub fn pe(&self) -> f64 {
+        (GRAVITY / self.length) * (1.0 - self.q.cos())
+    }
+    pub fn total_energy(&self) -> f64 {
+        self.ke() + self.pe()
+    }
+
+    pub fn ke_history(&self) -> Vec<f64> {
+        self.ke_history.clone()
+    }
+    pub fn pe_history(&self) -> Vec<f64> {
+        self.pe_history.clone()
+    }
+    pub fn total_history(&self) -> Vec<f64> {
+        self.total_history.clone()
+    }
+    pub fn total_history2(&self) -> Vec<f64> {
+        self.total_history2.clone()
+    }
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+    pub fn e0(&self) -> f64 {
+        self.e0
+    }
+    pub fn length(&self) -> f64 {
+        self.length
+    }
+}
+
+// ================================================================
+// Lattice Boltzmann Method (Phase 14: tau-lbm)
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmLbmSim {
+    nx: usize,
+    ny: usize,
+    f: Vec<f64>,
+    tau: f64,
+    time: f64,
+    variant: u8,
+    obstacle: Vec<bool>,
+}
+
+// D2Q9 directions: (0,0), (1,0), (0,1), (-1,0), (0,-1), (1,1), (-1,1), (-1,-1), (1,-1)
+const D2Q9_CX: [i32; 9] = [0, 1, 0, -1, 0, 1, -1, -1, 1];
+const D2Q9_CY: [i32; 9] = [0, 0, 1, 0, -1, 1, 1, -1, -1];
+const D2Q9_W: [f64; 9] = [
+    4.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 9.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+    1.0 / 36.0,
+];
+const D2Q9_OPP: [usize; 9] = [0, 3, 4, 1, 2, 7, 8, 5, 6];
+
+#[wasm_bindgen]
+impl WasmLbmSim {
+    /// Lid-driven cavity flow.
+    pub fn cavity_flow() -> WasmLbmSim {
+        let nx = 80;
+        let ny = 80;
+        let n9 = nx * ny * 9;
+        let mut f = vec![0.0; n9];
+        // Initialize to equilibrium at rest
+        for y in 0..ny {
+            for x in 0..nx {
+                for k in 0..9 {
+                    f[(y * nx + x) * 9 + k] = D2Q9_W[k];
+                }
+            }
+        }
+        WasmLbmSim {
+            nx,
+            ny,
+            f,
+            tau: 0.56,
+            time: 0.0,
+            variant: 0,
+            obstacle: vec![false; nx * ny],
+        }
+    }
+
+    /// Poiseuille channel flow.
+    pub fn channel_flow() -> WasmLbmSim {
+        let nx = 120;
+        let ny = 40;
+        let n9 = nx * ny * 9;
+        let mut f = vec![0.0; n9];
+        for y in 0..ny {
+            for x in 0..nx {
+                for k in 0..9 {
+                    f[(y * nx + x) * 9 + k] = D2Q9_W[k];
+                }
+            }
+        }
+        WasmLbmSim {
+            nx,
+            ny,
+            f,
+            tau: 0.8,
+            time: 0.0,
+            variant: 1,
+            obstacle: vec![false; nx * ny],
+        }
+    }
+
+    /// Flow around obstacle (von Karman vortex street).
+    pub fn vortex_street() -> WasmLbmSim {
+        let nx = 160;
+        let ny = 60;
+        let n9 = nx * ny * 9;
+        let mut f = vec![0.0; n9];
+        let mut obstacle = vec![false; nx * ny];
+        // Circular obstacle
+        let cx = nx / 4;
+        let cy = ny / 2;
+        let r = ny as f64 / 8.0;
+        for y in 0..ny {
+            for x in 0..nx {
+                let idx = y * nx + x;
+                let dx = x as f64 - cx as f64;
+                let dy = y as f64 - cy as f64;
+                if dx * dx + dy * dy < r * r {
+                    obstacle[idx] = true;
+                }
+                // Initialize with slight rightward flow
+                let ux = 0.04_f64;
+                for k in 0..9 {
+                    let cu = D2Q9_CX[k] as f64 * ux;
+                    f[idx * 9 + k] = D2Q9_W[k] * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * ux * ux);
+                }
+            }
+        }
+        WasmLbmSim {
+            nx,
+            ny,
+            f,
+            tau: 0.52,
+            time: 0.0,
+            variant: 2,
+            obstacle,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let (nx, ny) = (self.nx, self.ny);
+        let omega = 1.0 / self.tau;
+
+        for _ in 0..steps {
+            // --- Collision ---
+            let mut f_new = self.f.clone();
+            for y in 0..ny {
+                for x in 0..nx {
+                    let idx = y * nx + x;
+                    if self.obstacle[idx] {
+                        continue;
+                    }
+                    // Compute macroscopic quantities
+                    let mut rho = 0.0;
+                    let mut ux = 0.0;
+                    let mut uy = 0.0;
+                    for k in 0..9 {
+                        let fi = self.f[idx * 9 + k];
+                        rho += fi;
+                        ux += fi * D2Q9_CX[k] as f64;
+                        uy += fi * D2Q9_CY[k] as f64;
+                    }
+                    if rho > 1e-10 {
+                        ux /= rho;
+                        uy /= rho;
+                    }
+
+                    // Body force for channel flow
+                    if self.variant == 1 {
+                        ux += 0.0001;
+                    }
+
+                    // BGK collision
+                    let usq = ux * ux + uy * uy;
+                    for k in 0..9 {
+                        let cu = D2Q9_CX[k] as f64 * ux + D2Q9_CY[k] as f64 * uy;
+                        let feq = D2Q9_W[k] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq);
+                        f_new[idx * 9 + k] =
+                            self.f[idx * 9 + k] * (1.0 - omega) + feq * omega;
+                    }
+                }
+            }
+
+            // --- Streaming ---
+            let mut f_streamed = vec![0.0; nx * ny * 9];
+            for y in 0..ny {
+                for x in 0..nx {
+                    let idx = y * nx + x;
+                    for k in 0..9 {
+                        let nx2 = (x as i32 + D2Q9_CX[k] + nx as i32) as usize % nx;
+                        let ny2 = (y as i32 + D2Q9_CY[k] + ny as i32) as usize % ny;
+                        let dst = ny2 * nx + nx2;
+                        f_streamed[dst * 9 + k] = f_new[idx * 9 + k];
+                    }
+                }
+            }
+
+            // --- Bounce-back on obstacles ---
+            for y in 0..ny {
+                for x in 0..nx {
+                    let idx = y * nx + x;
+                    if self.obstacle[idx] {
+                        for k in 0..9 {
+                            f_streamed[idx * 9 + k] = f_new[idx * 9 + D2Q9_OPP[k]];
+                        }
+                    }
+                }
+            }
+
+            // --- Boundary conditions ---
+            match self.variant {
+                0 => {
+                    // Cavity: top wall moves right
+                    let u_lid = 0.08;
+                    let y = ny - 1;
+                    for x in 0..nx {
+                        let idx = y * nx + x;
+                        let mut rho = 0.0;
+                        for k in 0..9 {
+                            rho += f_streamed[idx * 9 + k];
+                        }
+                        // Zou-He top wall
+                        for k in 0..9 {
+                            let cu = D2Q9_CX[k] as f64 * u_lid;
+                            let feq = D2Q9_W[k] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u_lid * u_lid);
+                            f_streamed[idx * 9 + k] = feq;
+                        }
+                    }
+                    // No-slip on other walls
+                    for x in 0..nx {
+                        let idx_bot = x;
+                        for k in 0..9 {
+                            let feq = D2Q9_W[k];
+                            f_streamed[idx_bot * 9 + k] = feq;
+                        }
+                    }
+                    for y in 0..ny {
+                        let idx_l = y * nx;
+                        let idx_r = y * nx + nx - 1;
+                        for k in 0..9 {
+                            f_streamed[idx_l * 9 + k] = D2Q9_W[k];
+                            f_streamed[idx_r * 9 + k] = D2Q9_W[k];
+                        }
+                    }
+                }
+                1 => {
+                    // Channel: no-slip top/bottom walls
+                    for x in 0..nx {
+                        for k in 0..9 {
+                            f_streamed[x * 9 + k] = D2Q9_W[k]; // bottom
+                            f_streamed[((ny - 1) * nx + x) * 9 + k] = D2Q9_W[k]; // top
+                        }
+                    }
+                }
+                2 => {
+                    // Vortex street: inlet/outlet
+                    let u_in = 0.04;
+                    for y in 1..(ny - 1) {
+                        // Inlet
+                        let idx = y * nx;
+                        let rho = 1.0;
+                        for k in 0..9 {
+                            let cu = D2Q9_CX[k] as f64 * u_in;
+                            f_streamed[idx * 9 + k] = D2Q9_W[k] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * u_in * u_in);
+                        }
+                        // Outlet: extrapolate
+                        let idx_out = y * nx + nx - 1;
+                        let idx_prev = y * nx + nx - 2;
+                        for k in 0..9 {
+                            f_streamed[idx_out * 9 + k] = f_streamed[idx_prev * 9 + k];
+                        }
+                    }
+                    // No-slip top/bottom
+                    for x in 0..nx {
+                        for k in 0..9 {
+                            f_streamed[x * 9 + k] = D2Q9_W[k];
+                            f_streamed[((ny - 1) * nx + x) * 9 + k] = D2Q9_W[k];
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            self.f = f_streamed;
+            self.time += 1.0;
+        }
+    }
+
+    /// Velocity magnitude field as flat array [nx*ny].
+    pub fn velocity_field(&self) -> Vec<f64> {
+        let (nx, ny) = (self.nx, self.ny);
+        let mut out = vec![0.0; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                let idx = y * nx + x;
+                if self.obstacle[idx] {
+                    out[idx] = -1.0; // sentinel for obstacle
+                    continue;
+                }
+                let mut rho = 0.0;
+                let mut ux = 0.0;
+                let mut uy = 0.0;
+                for k in 0..9 {
+                    let fi = self.f[idx * 9 + k];
+                    rho += fi;
+                    ux += fi * D2Q9_CX[k] as f64;
+                    uy += fi * D2Q9_CY[k] as f64;
+                }
+                if rho > 1e-10 {
+                    ux /= rho;
+                    uy /= rho;
+                }
+                out[idx] = (ux * ux + uy * uy).sqrt();
+            }
+        }
+        out
+    }
+
+    /// Vorticity field (curl of velocity).
+    pub fn vorticity_field(&self) -> Vec<f64> {
+        let (nx, ny) = (self.nx, self.ny);
+        // First compute velocity components
+        let mut ux_field = vec![0.0; nx * ny];
+        let mut uy_field = vec![0.0; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                let idx = y * nx + x;
+                let mut rho = 0.0;
+                let mut ux = 0.0;
+                let mut uy = 0.0;
+                for k in 0..9 {
+                    let fi = self.f[idx * 9 + k];
+                    rho += fi;
+                    ux += fi * D2Q9_CX[k] as f64;
+                    uy += fi * D2Q9_CY[k] as f64;
+                }
+                if rho > 1e-10 {
+                    ux /= rho;
+                    uy /= rho;
+                }
+                ux_field[idx] = ux;
+                uy_field[idx] = uy;
+            }
+        }
+        // Compute curl
+        let mut vort = vec![0.0; nx * ny];
+        for y in 1..(ny - 1) {
+            for x in 1..(nx - 1) {
+                let idx = y * nx + x;
+                let duy_dx = (uy_field[idx + 1] - uy_field[idx - 1]) * 0.5;
+                let dux_dy = (ux_field[idx + nx] - ux_field[idx - nx]) * 0.5;
+                vort[idx] = duy_dx - dux_dy;
+            }
+        }
+        vort
+    }
+
+    pub fn grid_nx(&self) -> usize {
+        self.nx
+    }
+    pub fn grid_ny(&self) -> usize {
+        self.ny
+    }
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+}
+
+// ================================================================
+// Probabilistic Simulation (Phase 16: tau-prob)
+// ================================================================
+
+#[wasm_bindgen]
+#[allow(dead_code)]
+pub struct WasmProbSim {
+    n: usize,
+    px: Vec<f64>,
+    py: Vec<f64>,
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    time: f64,
+    dt: f64,
+    variant: u8,
+    rng: u64,
+    trail_x: Vec<Vec<f64>>,
+    trail_y: Vec<Vec<f64>>,
+    max_trail: usize,
+}
+
+#[wasm_bindgen]
+impl WasmProbSim {
+    /// Ensemble trajectories diverging from near-identical ICs.
+    /// No gravity — pure spreading to show uncertainty cone.
+    pub fn uncertainty_cone() -> WasmProbSim {
+        let n = 60;
+        let mut px = vec![0.0; n];
+        let mut py = vec![0.0; n];
+        let mut vx = Vec::with_capacity(n);
+        let mut vy = Vec::with_capacity(n);
+        let base_v = 1.0;
+        let base_angle = 0.0; // rightward
+        for i in 0..n {
+            // Small angular perturbation creates the cone
+            let eps = (i as f64 - n as f64 / 2.0) * 0.008;
+            let angle = base_angle + eps;
+            // Small speed perturbation too
+            let dv = (i as f64 - n as f64 / 2.0) * 0.003;
+            vx.push((base_v + dv) * angle.cos());
+            vy.push((base_v + dv) * angle.sin());
+            px[i] = 0.0;
+            py[i] = 0.0;
+        }
+        WasmProbSim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            time: 0.0,
+            dt: 0.008,
+            variant: 0,
+            rng: 42,
+            trail_x: vec![Vec::new(); n],
+            trail_y: vec![Vec::new(); n],
+            max_trail: 400,
+        }
+    }
+
+    /// SVGD particles converging to a target distribution (2D Gaussian mixture).
+    pub fn svgd_particles() -> WasmProbSim {
+        let n = 80;
+        let mut px = Vec::with_capacity(n);
+        let mut py = Vec::with_capacity(n);
+        // Initialize in a grid pattern
+        let side = (n as f64).sqrt() as usize;
+        let mut rng: u64 = 123456789;
+        for i in 0..n {
+            let row = i / side;
+            let col = i % side;
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let noise_x = ((rng >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.3;
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            let noise_y = ((rng >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.3;
+            px.push((col as f64 - side as f64 / 2.0) * 0.4 + noise_x);
+            py.push((row as f64 - side as f64 / 2.0) * 0.4 + noise_y);
+        }
+        WasmProbSim {
+            n,
+            px,
+            py,
+            vx: vec![0.0; n],
+            vy: vec![0.0; n],
+            time: 0.0,
+            dt: 0.02,
+            variant: 1,
+            rng,
+            trail_x: vec![Vec::new(); n],
+            trail_y: vec![Vec::new(); n],
+            max_trail: 100,
+        }
+    }
+
+    /// Ensemble of bouncing balls with parameter uncertainty.
+    pub fn monte_carlo() -> WasmProbSim {
+        let n = 50;
+        let mut px = vec![0.0; n];
+        let py = vec![1.5; n];
+        let mut vx = Vec::with_capacity(n);
+        let mut vy = Vec::with_capacity(n);
+        for i in 0..n {
+            // Wide spread of launch angles and speeds
+            let t = (i as f64 / (n - 1) as f64) - 0.5; // -0.5 to 0.5
+            let angle = 0.4 + t * 1.4; // ~-0.3 to ~1.1 rad
+            let speed = 3.0 + t.abs() * 2.0;
+            vx.push(speed * angle.cos());
+            vy.push(speed * angle.sin());
+            px[i] = t * 0.1;
+        }
+        WasmProbSim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            time: 0.0,
+            dt: 0.003,
+            variant: 2,
+            rng: 9876543,
+            trail_x: vec![Vec::new(); n],
+            trail_y: vec![Vec::new(); n],
+            max_trail: 400,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        match self.variant {
+            0 => {
+                // Free-streaming particles with slight nonlinear perturbation.
+                // Periodically reset to show the spreading cone repeatedly.
+                for _ in 0..steps {
+                    for i in 0..self.n {
+                        // Gentle nonlinear coupling to amplify divergence
+                        let r2 = self.px[i] * self.px[i] + self.py[i] * self.py[i];
+                        let bend = 0.0005 * r2;
+                        self.vy[i] += bend * self.vx[i].signum() * self.dt;
+                        self.px[i] += self.vx[i] * self.dt;
+                        self.py[i] += self.vy[i] * self.dt;
+                    }
+                    self.time += self.dt;
+                }
+                // Reset when particles spread too far (cycle the demo)
+                let max_x = self.px.iter().cloned().fold(0.0_f64, f64::max);
+                if max_x > 5.0 {
+                    let base_v = 1.0;
+                    for i in 0..self.n {
+                        let eps = (i as f64 - self.n as f64 / 2.0) * 0.008;
+                        let dv = (i as f64 - self.n as f64 / 2.0) * 0.003;
+                        self.px[i] = 0.0;
+                        self.py[i] = 0.0;
+                        self.vx[i] = (base_v + dv) * eps.cos();
+                        self.vy[i] = (base_v + dv) * eps.sin();
+                    }
+                    for t in &mut self.trail_x { t.clear(); }
+                    for t in &mut self.trail_y { t.clear(); }
+                }
+            }
+            1 => {
+                // SVGD: gradient descent toward Gaussian mixture + repulsion
+                // Target: two Gaussians at (-1, 0) and (1, 0.5)
+                let centers = [(-1.0, 0.0), (1.0, 0.5)];
+                let sigma2 = 0.3;
+                let h = 0.5; // kernel bandwidth
+
+                for _ in 0..steps {
+                    let mut grad_x = vec![0.0; self.n];
+                    let mut grad_y = vec![0.0; self.n];
+
+                    for i in 0..self.n {
+                        // Gradient of log target
+                        let mut dlp_x = 0.0;
+                        let mut dlp_y = 0.0;
+                        for &(cx, cy) in &centers {
+                            let dx = self.px[i] - cx;
+                            let dy = self.py[i] - cy;
+                            let w = (-0.5 * (dx * dx + dy * dy) / sigma2).exp();
+                            dlp_x -= w * dx / sigma2;
+                            dlp_y -= w * dy / sigma2;
+                        }
+
+                        // SVGD kernel interactions
+                        for j in 0..self.n {
+                            let dx = self.px[j] - self.px[i];
+                            let dy = self.py[j] - self.py[i];
+                            let k = (-0.5 * (dx * dx + dy * dy) / (h * h)).exp() / self.n as f64;
+                            // Kernel * grad_log_p + grad_kernel
+                            grad_x[j] += k * dlp_x + k * dx / (h * h);
+                            grad_y[j] += k * dlp_y + k * dy / (h * h);
+                        }
+                    }
+
+                    for i in 0..self.n {
+                        self.px[i] += grad_x[i] * self.dt;
+                        self.py[i] += grad_y[i] * self.dt;
+                    }
+                    self.time += self.dt;
+                }
+            }
+            2 => {
+                // Bouncing balls with gravity — elastic enough to stay lively
+                for _ in 0..steps {
+                    for i in 0..self.n {
+                        self.vy[i] -= GRAVITY * self.dt;
+                        self.px[i] += self.vx[i] * self.dt;
+                        self.py[i] += self.vy[i] * self.dt;
+                        // Bounce off ground (elastic)
+                        if self.py[i] < 0.0 {
+                            self.py[i] = -self.py[i];
+                            self.vy[i] = -self.vy[i] * 0.85;
+                            self.vx[i] *= 0.98;
+                        }
+                        // Side walls
+                        if self.px[i] < -4.0 {
+                            self.px[i] = -4.0;
+                            self.vx[i] = self.vx[i].abs() * 0.7;
+                        }
+                        if self.px[i] > 4.0 {
+                            self.px[i] = 4.0;
+                            self.vx[i] = -self.vx[i].abs() * 0.7;
+                        }
+                    }
+                    self.time += self.dt;
+                }
+            }
+            _ => {}
+        }
+
+        // Record trails
+        for i in 0..self.n {
+            self.trail_x[i].push(self.px[i]);
+            self.trail_y[i].push(self.py[i]);
+            if self.trail_x[i].len() > self.max_trail {
+                self.trail_x[i].remove(0);
+                self.trail_y[i].remove(0);
+            }
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * 2);
+        for i in 0..self.n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    pub fn trail_flat(&self) -> Vec<f64> {
+        let mut out = Vec::new();
+        for i in 0..self.n {
+            let n = self.trail_x[i].len();
+            out.push(n as f64);
+            for j in 0..n {
+                out.push(self.trail_x[i][j]);
+                out.push(self.trail_y[i][j]);
+            }
+        }
+        out
+    }
+
+    pub fn num_particles(&self) -> usize {
+        self.n
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    pub fn spread(&self) -> f64 {
+        let mut cx = 0.0;
+        let mut cy = 0.0;
+        for i in 0..self.n {
+            cx += self.px[i];
+            cy += self.py[i];
+        }
+        cx /= self.n as f64;
+        cy /= self.n as f64;
+        let mut var = 0.0;
+        for i in 0..self.n {
+            let dx = self.px[i] - cx;
+            let dy = self.py[i] - cy;
+            var += dx * dx + dy * dy;
+        }
+        (var / self.n as f64).sqrt()
+    }
+}

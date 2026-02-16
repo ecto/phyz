@@ -535,3 +535,154 @@ mod tests {
         assert_relative_eq!(si.inertia[(2, 2)], expected_i, epsilon = 1e-10);
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use crate::quaternion::Quat;
+    use proptest::prelude::*;
+
+    const EPS: f64 = 1e-9;
+
+    fn arb_pos() -> impl Strategy<Value = Vec3> {
+        (-10.0..10.0_f64, -10.0..10.0_f64, -10.0..10.0_f64)
+            .prop_map(|(x, y, z)| Vec3::new(x, y, z))
+    }
+
+    fn arb_angle() -> impl Strategy<Value = f64> {
+        -std::f64::consts::PI..std::f64::consts::PI
+    }
+
+    fn arb_unit_axis() -> impl Strategy<Value = na::Unit<Vec3>> {
+        // Generate a non-zero vector, then normalize
+        (-1.0..1.0_f64, -1.0..1.0_f64, -1.0..1.0_f64)
+            .prop_filter("non-zero axis", |(x, y, z)| x * x + y * y + z * z > 0.01)
+            .prop_map(|(x, y, z)| na::Unit::new_normalize(Vec3::new(x, y, z)))
+    }
+
+    fn arb_transform() -> impl Strategy<Value = SpatialTransform> {
+        (arb_unit_axis(), arb_angle(), arb_pos()).prop_map(|(axis, angle, pos)| {
+            let rot = na::Rotation3::from_axis_angle(&axis, angle);
+            SpatialTransform::new(*rot.matrix(), pos)
+        })
+    }
+
+    fn arb_spatial_vec() -> impl Strategy<Value = SpatialVec> {
+        (arb_pos(), arb_pos()).prop_map(|(a, l)| SpatialVec::new(a, l))
+    }
+
+    proptest! {
+        #[test]
+        fn compose_with_inverse_is_identity(xf in arb_transform()) {
+            let result = xf.compose(&xf.inverse());
+            let id = SpatialTransform::identity();
+            for i in 0..3 {
+                for j in 0..3 {
+                    prop_assert!((result.rot[(i, j)] - id.rot[(i, j)]).abs() < EPS,
+                        "rot[{},{}]: {} vs {}", i, j, result.rot[(i, j)], id.rot[(i, j)]);
+                }
+            }
+            for i in 0..3 {
+                prop_assert!((result.pos[i] - id.pos[i]).abs() < EPS,
+                    "pos[{}]: {} vs {}", i, result.pos[i], id.pos[i]);
+            }
+        }
+
+        #[test]
+        fn compose_is_associative(
+            a in arb_transform(),
+            b in arb_transform(),
+            c in arb_transform(),
+        ) {
+            let ab_c = a.compose(&b).compose(&c);
+            let a_bc = a.compose(&b.compose(&c));
+            for i in 0..3 {
+                for j in 0..3 {
+                    prop_assert!((ab_c.rot[(i, j)] - a_bc.rot[(i, j)]).abs() < EPS,
+                        "rot[{},{}]: {} vs {}", i, j, ab_c.rot[(i, j)], a_bc.rot[(i, j)]);
+                }
+            }
+            for i in 0..3 {
+                prop_assert!((ab_c.pos[i] - a_bc.pos[i]).abs() < EPS,
+                    "pos[{}]: {} vs {}", i, ab_c.pos[i], a_bc.pos[i]);
+            }
+        }
+
+        #[test]
+        fn apply_force_matches_matrix(xf in arb_transform(), f in arb_spatial_vec()) {
+            let applied = xf.apply_force(&f);
+            let mat_result = SpatialMat::from_mat6(xf.to_force_matrix()).mul_vec(&f);
+            for i in 0..6 {
+                prop_assert!((applied.data[i] - mat_result.data[i]).abs() < EPS,
+                    "component {}: {} vs {}", i, applied.data[i], mat_result.data[i]);
+            }
+        }
+
+        #[test]
+        fn apply_motion_matches_matrix(xf in arb_transform(), v in arb_spatial_vec()) {
+            let applied = xf.apply_motion(&v);
+            let mat_result = SpatialMat::from_mat6(xf.to_motion_matrix()).mul_vec(&v);
+            for i in 0..6 {
+                prop_assert!((applied.data[i] - mat_result.data[i]).abs() < EPS,
+                    "component {}: {} vs {}", i, applied.data[i], mat_result.data[i]);
+            }
+        }
+
+        #[test]
+        fn sphere_inertia_matrix_is_symmetric(
+            mass in 0.1..100.0_f64,
+            radius in 0.01..10.0_f64,
+        ) {
+            let si = SpatialInertia::sphere(mass, radius);
+            let mat = si.to_matrix().data;
+            for i in 0..6 {
+                for j in 0..6 {
+                    prop_assert!((mat[(i, j)] - mat[(j, i)]).abs() < EPS,
+                        "not symmetric at ({},{}): {} vs {}", i, j, mat[(i, j)], mat[(j, i)]);
+                }
+            }
+        }
+
+        #[test]
+        fn quat_to_matrix_is_rotation(
+            axis in arb_unit_axis(),
+            angle in arb_angle(),
+        ) {
+            let q = Quat::from_axis_angle(&axis.into_inner(), angle).normalize();
+            let m = q.to_matrix();
+            // determinant should be 1
+            let det = m.determinant();
+            prop_assert!((det - 1.0).abs() < EPS, "det = {}", det);
+            // R * R^T should be identity
+            let rrt = m * m.transpose();
+            let id = Mat3::identity();
+            for i in 0..3 {
+                for j in 0..3 {
+                    prop_assert!((rrt[(i, j)] - id[(i, j)]).abs() < EPS,
+                        "R*R^T[{},{}]: {} vs {}", i, j, rrt[(i, j)], id[(i, j)]);
+                }
+            }
+        }
+
+        #[test]
+        fn quat_matrix_roundtrip(
+            axis in arb_unit_axis(),
+            angle in arb_angle(),
+        ) {
+            let q = Quat::from_axis_angle(&axis.into_inner(), angle).normalize();
+            let m = q.to_matrix();
+            let q2 = Quat::from_matrix(&m).normalize();
+            // q and -q represent the same rotation
+            let same = (q.w - q2.w).abs() < EPS
+                && (q.v.x - q2.v.x).abs() < EPS
+                && (q.v.y - q2.v.y).abs() < EPS
+                && (q.v.z - q2.v.z).abs() < EPS;
+            let neg = (q.w + q2.w).abs() < EPS
+                && (q.v.x + q2.v.x).abs() < EPS
+                && (q.v.y + q2.v.y).abs() < EPS
+                && (q.v.z + q2.v.z).abs() < EPS;
+            prop_assert!(same || neg,
+                "roundtrip failed: q={:?}, q2={:?}", q, q2);
+        }
+    }
+}

@@ -3,7 +3,7 @@
 //! Simulates Mercury's orbit around the Sun with 1PN post-Newtonian corrections.
 //! Demonstrates the famous 43 arcsec/century perihelion precession predicted by GR.
 
-use tau_gravity::{GravityParticle, PostNewtonianSolver, orbital_elements, perihelion_precession_rate};
+use tau_gravity::{GravitySolver, GravityParticle, PostNewtonianSolver, orbital_elements, perihelion_precession_rate};
 use tau_math::Vec3;
 
 fn main() {

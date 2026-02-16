@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use tau_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use tau_model::{Joint, JointType, Model, ModelBuilder};
+use tau_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
 
 /// Parsed body element from MJCF.
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ struct BodyElement {
     parent_idx: Option<usize>,
     inertial: Option<InertialElement>,
     joints: Vec<JointElement>,
+    geoms: Vec<GeomElement>,
 }
 
 /// Parsed inertial element.
@@ -32,7 +33,6 @@ struct InertialElement {
 /// Parsed joint element.
 #[derive(Debug, Clone)]
 struct JointElement {
-    #[allow(dead_code)]
     name: String,
     joint_type: JointType,
     pos: Vec3,
@@ -41,13 +41,36 @@ struct JointElement {
     damping: f64,
 }
 
+/// Parsed geom element.
+#[derive(Debug, Clone)]
+struct GeomElement {
+    #[allow(dead_code)]
+    name: String,
+    geom_type: String,
+    size: Vec<f64>,
+    pos: Vec3,
+}
+
+/// Parsed actuator (motor) element.
+#[derive(Debug, Clone)]
+struct ActuatorElement {
+    name: String,
+    joint_name: String,
+    gear: f64,
+    ctrl_range: Option<[f64; 2]>,
+}
+
 /// MJCF loader.
 pub struct MjcfLoader {
     #[allow(dead_code)]
     defaults: DefaultsManager,
     bodies: Vec<BodyElement>,
+    actuators: Vec<ActuatorElement>,
     gravity_vec: Vec3,
     timestep: f64,
+    angle_in_degrees: bool,
+    #[allow(dead_code)]
+    coordinate: String,
 }
 
 impl MjcfLoader {
@@ -62,8 +85,11 @@ impl MjcfLoader {
         let mut loader = Self {
             defaults: DefaultsManager::new(),
             bodies: Vec::new(),
+            actuators: Vec::new(),
             gravity_vec: Vec3::new(0.0, 0.0, -GRAVITY),
             timestep: 0.002,
+            angle_in_degrees: false,
+            coordinate: "local".to_string(),
         };
 
         loader.parse_xml(xml)?;
@@ -76,6 +102,7 @@ impl MjcfLoader {
 
         let mut buf = Vec::new();
         let mut in_worldbody = false;
+        let mut in_actuator = false;
         let mut body_stack: Vec<usize> = Vec::new(); // Stack of body indices
 
         loop {
@@ -84,11 +111,17 @@ impl MjcfLoader {
                     let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
 
                     match tag_name.as_str() {
+                        "compiler" => {
+                            self.parse_compiler(&e)?;
+                        }
                         "option" => {
                             self.parse_option(&e)?;
                         }
                         "worldbody" => {
                             in_worldbody = true;
+                        }
+                        "actuator" => {
+                            in_actuator = true;
                         }
                         "body" if in_worldbody => {
                             let body_idx = self.parse_body(&e, body_stack.last().copied())?;
@@ -102,6 +135,13 @@ impl MjcfLoader {
                             let body_idx = *body_stack.last().unwrap();
                             self.parse_inertial(&e, body_idx)?;
                         }
+                        "geom" if in_worldbody && !body_stack.is_empty() => {
+                            let body_idx = *body_stack.last().unwrap();
+                            self.parse_geom(&e, body_idx)?;
+                        }
+                        "motor" if in_actuator => {
+                            self.parse_motor(&e)?;
+                        }
                         _ => {}
                     }
                 }
@@ -111,6 +151,8 @@ impl MjcfLoader {
                         body_stack.pop();
                     } else if tag_name == "worldbody" {
                         in_worldbody = false;
+                    } else if tag_name == "actuator" {
+                        in_actuator = false;
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -120,6 +162,44 @@ impl MjcfLoader {
             buf.clear();
         }
 
+        // If angles were specified in degrees, convert joint ranges to radians
+        if self.angle_in_degrees {
+            for body in &mut self.bodies {
+                for joint in &mut body.joints {
+                    if let Some(ref mut range) = joint.range {
+                        range[0] = range[0].to_radians();
+                        range[1] = range[1].to_radians();
+                    }
+                }
+            }
+            // Convert actuator ctrl_range too
+            for act in &mut self.actuators {
+                if let Some(ref mut range) = act.ctrl_range {
+                    range[0] = range[0].to_radians();
+                    range[1] = range[1].to_radians();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_compiler(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        for attr in e.attributes() {
+            let attr = attr.map_err(|e| MjcfError::InvalidMjcf(e.to_string()))?;
+            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+            let value = String::from_utf8_lossy(&attr.value).to_string();
+
+            match key.as_str() {
+                "angle" => {
+                    self.angle_in_degrees = value == "degree";
+                }
+                "coordinate" => {
+                    self.coordinate = value.to_string();
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -193,6 +273,7 @@ impl MjcfLoader {
             parent_idx,
             inertial: None,
             joints: Vec::new(),
+            geoms: Vec::new(),
         };
 
         let idx = self.bodies.len();
@@ -316,6 +397,94 @@ impl MjcfLoader {
         Ok(())
     }
 
+    fn parse_geom(&mut self, e: &quick_xml::events::BytesStart, body_idx: usize) -> Result<()> {
+        let mut name = format!("geom_{}", body_idx);
+        let mut geom_type = "sphere".to_string();
+        let mut size = vec![0.05]; // default radius
+        let mut pos = Vec3::zeros();
+
+        for attr in e.attributes() {
+            let attr = attr.map_err(|e| MjcfError::InvalidMjcf(e.to_string()))?;
+            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+            let value = String::from_utf8_lossy(&attr.value).to_string();
+
+            match key.as_str() {
+                "name" => name = value.to_string(),
+                "type" => geom_type = value.to_string(),
+                "size" => {
+                    size = value
+                        .split_whitespace()
+                        .map(|s| s.parse().unwrap_or(0.0))
+                        .collect();
+                }
+                "pos" => {
+                    let parts: Vec<f64> = value
+                        .split_whitespace()
+                        .map(|s| s.parse().unwrap_or(0.0))
+                        .collect();
+                    if parts.len() == 3 {
+                        pos = Vec3::new(parts[0], parts[1], parts[2]);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let geom = GeomElement {
+            name,
+            geom_type,
+            size,
+            pos,
+        };
+
+        self.bodies[body_idx].geoms.push(geom);
+        Ok(())
+    }
+
+    fn parse_motor(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        let mut name = String::new();
+        let mut joint_name = String::new();
+        let mut gear = 1.0;
+        let mut ctrl_range: Option<[f64; 2]> = None;
+
+        for attr in e.attributes() {
+            let attr = attr.map_err(|e| MjcfError::InvalidMjcf(e.to_string()))?;
+            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+            let value = String::from_utf8_lossy(&attr.value).to_string();
+
+            match key.as_str() {
+                "name" => name = value.to_string(),
+                "joint" => joint_name = value.to_string(),
+                "gear" => {
+                    gear = value.parse().unwrap_or(1.0);
+                }
+                "ctrlrange" => {
+                    let parts: Vec<f64> = value
+                        .split_whitespace()
+                        .map(|s| s.parse().unwrap_or(0.0))
+                        .collect();
+                    if parts.len() == 2 {
+                        ctrl_range = Some([parts[0], parts[1]]);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if name.is_empty() {
+            name = format!("motor_{}", joint_name);
+        }
+
+        self.actuators.push(ActuatorElement {
+            name,
+            joint_name,
+            gear,
+            ctrl_range,
+        });
+
+        Ok(())
+    }
+
     /// Build a tau Model from the parsed MJCF.
     pub fn build_model(&self) -> Model {
         let mut builder = ModelBuilder::new()
@@ -325,6 +494,8 @@ impl MjcfLoader {
         // Map from body index to model body index
         let mut body_map: HashMap<usize, i32> = HashMap::new();
         let mut next_model_idx: i32 = 0;
+        // Map from joint name to model joint index
+        let mut joint_name_map: HashMap<String, usize> = HashMap::new();
 
         // Process bodies in order (assumes parent comes before child in list)
         for (body_idx, body) in self.bodies.iter().enumerate() {
@@ -386,6 +557,9 @@ impl MjcfLoader {
                     joint.damping = joint_elem.damping;
                     joint.limits = joint_elem.range;
 
+                    let model_joint_idx = next_model_idx as usize;
+                    joint_name_map.insert(joint_elem.name.clone(), model_joint_idx);
+
                     builder = builder.add_body(&joint_name, parent, joint, inertia);
 
                     if joint_idx == 0 {
@@ -394,9 +568,72 @@ impl MjcfLoader {
                     next_model_idx += 1;
                 }
             }
+
+            // Geometry is set post-build below
         }
 
-        builder.build()
+        let mut model = builder.build();
+
+        // Set geometry on bodies post-build
+        for (body_idx, body) in self.bodies.iter().enumerate() {
+            if let Some(geom) = body.geoms.first() {
+                if let Some(&model_idx) = body_map.get(&body_idx) {
+                    if let Some(geometry) = geom_to_geometry(geom) {
+                        model.bodies[model_idx as usize].geometry = Some(geometry);
+                    }
+                }
+            }
+        }
+
+        // Build actuators
+        for act_elem in &self.actuators {
+            if let Some(&joint_idx) = joint_name_map.get(&act_elem.joint_name) {
+                model.actuators.push(Actuator {
+                    name: act_elem.name.clone(),
+                    joint_name: act_elem.joint_name.clone(),
+                    joint_idx,
+                    gear: act_elem.gear,
+                    ctrl_range: act_elem.ctrl_range,
+                });
+            }
+        }
+
+        model
+    }
+}
+
+/// Convert a parsed GeomElement to a tau_model Geometry.
+fn geom_to_geometry(geom: &GeomElement) -> Option<Geometry> {
+    match geom.geom_type.as_str() {
+        "sphere" => {
+            let radius = geom.size.first().copied().unwrap_or(0.05);
+            Some(Geometry::Sphere { radius })
+        }
+        "capsule" => {
+            let radius = geom.size.first().copied().unwrap_or(0.05);
+            let length = geom.size.get(1).copied().unwrap_or(0.1);
+            Some(Geometry::Capsule { radius, length })
+        }
+        "box" => {
+            if geom.size.len() >= 3 {
+                Some(Geometry::Box {
+                    half_extents: Vec3::new(geom.size[0], geom.size[1], geom.size[2]),
+                })
+            } else {
+                Some(Geometry::Box {
+                    half_extents: Vec3::new(0.05, 0.05, 0.05),
+                })
+            }
+        }
+        "cylinder" => {
+            let radius = geom.size.first().copied().unwrap_or(0.05);
+            let height = geom.size.get(1).copied().unwrap_or(0.1);
+            Some(Geometry::Cylinder { radius, height })
+        }
+        "plane" => Some(Geometry::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+        }),
+        _ => None,
     }
 }
 
@@ -447,5 +684,98 @@ mod tests {
 
         assert_eq!(model.nbodies(), 2);
         assert_eq!(model.nv, 2); // One revolute + one prismatic
+    }
+
+    #[test]
+    fn test_geom_parsing() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <joint type="free"/>
+                    <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        let model = loader.build_model();
+
+        assert_eq!(model.nbodies(), 1);
+        assert!(model.bodies[0].geometry.is_some());
+        match &model.bodies[0].geometry {
+            Some(Geometry::Sphere { radius }) => assert!((*radius - 0.1).abs() < 1e-10),
+            _ => panic!("Expected sphere geometry"),
+        }
+    }
+
+    #[test]
+    fn test_actuator_parsing() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <motor name="m1" joint="j1" gear="100" ctrlrange="-1 1"/>
+            </actuator>
+        </mujoco>
+        "#;
+
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        let model = loader.build_model();
+
+        assert_eq!(model.actuators.len(), 1);
+        assert_eq!(model.actuators[0].name, "m1");
+        assert_eq!(model.actuators[0].joint_name, "j1");
+        assert!((model.actuators[0].gear - 100.0).abs() < 1e-10);
+        assert_eq!(model.actuators[0].ctrl_range, Some([-1.0, 1.0]));
+    }
+
+    #[test]
+    fn test_compiler_degree() {
+        let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <joint name="j1" type="hinge" axis="0 0 1" range="-90 90"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        assert!(loader.angle_in_degrees);
+
+        let model = loader.build_model();
+        // Check that the joint range was converted to radians
+        let joint = &model.joints[0];
+        let range = joint.limits.unwrap();
+        assert!((range[0] - (-std::f64::consts::FRAC_PI_2)).abs() < 1e-10);
+        assert!((range[1] - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ant_model() {
+        let loader = MjcfLoader::from_file("../../models/ant.xml").unwrap();
+        let model = loader.build_model();
+
+        // 9 bodies: 1 torso + 8 leg segments (4 hips + 4 ankles)
+        assert_eq!(model.nbodies(), 9);
+
+        // 14 DOFs: 6 (free joint on torso) + 8 (hinge joints on legs)
+        assert_eq!(model.nv, 14);
+
+        // Gravity
+        assert!((model.gravity[0] - 0.0).abs() < 1e-10);
+        assert!((model.gravity[1] - 0.0).abs() < 1e-10);
+        assert!((model.gravity[2] - (-9.81)).abs() < 1e-10);
     }
 }

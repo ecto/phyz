@@ -10,3 +10,4 @@ nalgebra.workspace = true
 
 [dev-dependencies]
 approx = "0.5"
+proptest = "1"

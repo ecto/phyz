@@ -8,13 +8,25 @@ pub use tau_contact::{self, ContactMaterial};
 pub use tau_diff::{self, StepJacobians};
 pub use tau_math::{self, Vec3};
 pub use tau_mjcf::{self};
-pub use tau_model::{self, Geometry, Model, ModelBuilder, State};
+pub use tau_model::{self, Actuator, Geometry, Model, ModelBuilder, State};
 pub use tau_particle::{self, Material, MpmSolver, Particle, material};
 pub use tau_prob::{self};
-pub use tau_rigid::{self, aba, crba, forward_kinematics, rnea};
+pub use tau_rigid::{self, aba, aba_with_external_forces, crba, forward_kinematics, rnea};
 pub use tau_world::{
     self, Sensor, SensorOutput, Tendon, TrajectoryRecorder, World, WorldGenerator,
 };
+
+pub use tau_compile::{self};
+pub use tau_coupling::{self};
+pub use tau_em::{self};
+pub use tau_format::{self};
+pub use tau_gpu::{self};
+pub use tau_gravity::{self};
+pub use tau_guardian::{self};
+pub use tau_lbm::{self};
+pub use tau_md::{self};
+pub use tau_qft::{self};
+pub use tau_real2sim::{self};
 
 /// Pluggable solver trait.
 ///
@@ -39,6 +51,10 @@ impl Solver for SemiImplicitEulerSolver {
         state.v += &qdd * dt;
         state.q += &state.v * dt;
         state.time += dt;
+
+        // Update body transforms via FK
+        let (xforms, _) = forward_kinematics(model, state);
+        state.body_xform = xforms;
     }
 
     fn step_with_jacobians(&self, model: &Model, state: &mut State) -> StepJacobians {
@@ -91,6 +107,10 @@ impl Solver for Rk4Solver {
         state.q += &(&dq1 + &dq2 * 2.0 + &dq3 * 2.0 + &dq4) * (dt / 6.0);
         state.v += &(&dv1 + &dv2 * 2.0 + &dv3 * 2.0 + &dv4) * (dt / 6.0);
         state.time += dt;
+
+        // Update body transforms via FK
+        let (xforms, _) = forward_kinematics(model, state);
+        state.body_xform = xforms;
     }
 
     fn step_with_jacobians(&self, model: &Model, state: &mut State) -> StepJacobians {
@@ -141,6 +161,65 @@ impl Simulator {
         for _ in 0..n {
             self.step(model, state);
         }
+    }
+
+    /// Advance simulation with contact detection and resolution.
+    ///
+    /// 1. Runs FK to get body transforms and velocities
+    /// 2. Detects ground contacts (and body-body contacts if geometries provided)
+    /// 3. Computes contact forces
+    /// 4. Runs ABA with contact forces as external forces
+    /// 5. Integrates and updates FK
+    pub fn step_with_contacts(
+        &self,
+        model: &Model,
+        state: &mut State,
+        ground_height: f64,
+        material: &ContactMaterial,
+    ) {
+        let dt = model.dt;
+
+        // Run FK to get current transforms and velocities
+        let (xforms, velocities) = forward_kinematics(model, state);
+        state.body_xform = xforms;
+
+        // Collect body geometries
+        let geometries: Vec<Option<tau_model::Geometry>> = model
+            .bodies
+            .iter()
+            .map(|b| b.geometry.clone())
+            .collect();
+
+        // Find ground contacts
+        let mut contacts =
+            tau_contact::find_ground_contacts(state, &geometries, ground_height);
+
+        // Find body-body contacts
+        let body_contacts = tau_contact::find_contacts(model, state, &geometries);
+        contacts.extend(body_contacts);
+
+        if contacts.is_empty() {
+            // No contacts — standard step
+            let qdd = aba(model, state);
+            state.v += &qdd * dt;
+            state.q += &state.v * dt;
+        } else {
+            // Compute contact spatial forces per body
+            let materials = vec![material.clone()];
+            let spatial_forces =
+                tau_contact::contact_forces(&contacts, state, &materials, Some(&velocities));
+
+            // Run ABA with external forces
+            let qdd = aba_with_external_forces(model, state, Some(&spatial_forces));
+            state.v += &qdd * dt;
+            state.q += &state.v * dt;
+        }
+
+        state.time += dt;
+
+        // Update body transforms
+        let (xforms, _) = forward_kinematics(model, state);
+        state.body_xform = xforms;
     }
 }
 

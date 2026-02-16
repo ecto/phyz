@@ -10,5 +10,5 @@ pub mod state;
 
 pub use body::{Body, Geometry};
 pub use joint::{Joint, JointType};
-pub use model::{Model, ModelBuilder};
+pub use model::{Actuator, Model, ModelBuilder};
 pub use state::State;

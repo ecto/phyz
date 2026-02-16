@@ -3,6 +3,16 @@
 use crate::{Body, Joint, State};
 use tau_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
+/// A motor actuator attached to a joint.
+#[derive(Debug, Clone)]
+pub struct Actuator {
+    pub name: String,
+    pub joint_name: String,
+    pub joint_idx: usize,
+    pub gear: f64,
+    pub ctrl_range: Option<[f64; 2]>,
+}
+
 /// Static model describing the topology and parameters of a physical system.
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -22,6 +32,8 @@ pub struct Model {
     pub q_offsets: Vec<usize>,
     /// Velocity DOF offset for each joint.
     pub v_offsets: Vec<usize>,
+    /// Actuators (motors) acting on joints.
+    pub actuators: Vec<Actuator>,
 }
 
 impl Model {
@@ -236,6 +248,7 @@ impl ModelBuilder {
             nv,
             q_offsets,
             v_offsets,
+            actuators: Vec::new(),
         }
     }
 }

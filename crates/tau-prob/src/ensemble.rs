@@ -29,6 +29,7 @@ pub fn ensemble_step<S: EnsembleSolver>(
             ctrl: tau_math::DVec::zeros(model.nv),
             time: prob_state.time,
             body_xform: vec![tau_math::SpatialTransform::identity(); model.nbodies()],
+            qfrc_external: tau_math::DVec::zeros(model.nv),
         };
 
         // If parameters are provided, we would apply them here
@@ -66,6 +67,7 @@ pub fn ensemble_step_with_params<S, F>(
             ctrl: tau_math::DVec::zeros(base_model.nv),
             time: prob_state.time,
             body_xform: vec![tau_math::SpatialTransform::identity(); base_model.nbodies()],
+            qfrc_external: tau_math::DVec::zeros(base_model.nv),
         };
 
         // Apply parameters to model
