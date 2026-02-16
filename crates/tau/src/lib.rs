@@ -5,6 +5,7 @@
 
 pub use tau_diff::{self, StepJacobians};
 pub use tau_math::{self, Vec3};
+pub use tau_mjcf::{self};
 pub use tau_model::{self, Model, ModelBuilder, State};
 pub use tau_rigid::{self, aba, crba, forward_kinematics, rnea};
 

@@ -1,0 +1,12 @@
+[package]
+name = "tau-mjcf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MuJoCo MJCF XML parser for tau physics engine"
+
+[dependencies]
+tau-math.workspace = true
+tau-model.workspace = true
+quick-xml = "0.37"
+thiserror = "2.0"

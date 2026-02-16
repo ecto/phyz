@@ -3,8 +3,10 @@
 //! Implements 6D spatial vectors, Plücker transforms, and spatial inertia
 //! following Featherstone's conventions.
 
+pub mod quaternion;
 pub mod spatial;
 
+pub use quaternion::Quat;
 pub use spatial::{SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
 
 use nalgebra as na;

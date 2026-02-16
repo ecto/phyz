@@ -1,0 +1,54 @@
+<mujoco model="ant">
+    <option gravity="0 0 -9.81" timestep="0.002"/>
+
+    <worldbody>
+        <!-- Torso -->
+        <body name="torso" pos="0 0 0.75">
+            <inertial pos="0 0 0" mass="10" diaginertia="1.0 1.0 1.0"/>
+
+            <!-- Front left leg -->
+            <body name="fl_hip" pos="0.2 0.2 0">
+                <inertial pos="0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                <joint name="fl_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+
+                <body name="fl_ankle" pos="0.2 0 0">
+                    <inertial pos="0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <joint name="fl_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+                </body>
+            </body>
+
+            <!-- Front right leg -->
+            <body name="fr_hip" pos="0.2 -0.2 0">
+                <inertial pos="0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                <joint name="fr_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+
+                <body name="fr_ankle" pos="0.2 0 0">
+                    <inertial pos="0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <joint name="fr_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+                </body>
+            </body>
+
+            <!-- Back left leg -->
+            <body name="bl_hip" pos="-0.2 0.2 0">
+                <inertial pos="-0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                <joint name="bl_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+
+                <body name="bl_ankle" pos="-0.2 0 0">
+                    <inertial pos="-0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <joint name="bl_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+                </body>
+            </body>
+
+            <!-- Back right leg -->
+            <body name="br_hip" pos="-0.2 -0.2 0">
+                <inertial pos="-0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                <joint name="br_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+
+                <body name="br_ankle" pos="-0.2 0 0">
+                    <inertial pos="-0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <joint name="br_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>

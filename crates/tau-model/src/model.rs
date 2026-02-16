@@ -90,6 +90,102 @@ impl ModelBuilder {
         self
     }
 
+    /// Add a body with a prismatic joint attached to the given parent.
+    pub fn add_prismatic_body(
+        mut self,
+        name: &str,
+        parent: i32,
+        parent_to_joint: SpatialTransform,
+        axis: Vec3,
+        inertia: SpatialInertia,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(Joint::prismatic(parent_to_joint, axis));
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+        });
+        self
+    }
+
+    /// Add a body with a spherical (ball) joint attached to the given parent.
+    pub fn add_spherical_body(
+        mut self,
+        name: &str,
+        parent: i32,
+        parent_to_joint: SpatialTransform,
+        inertia: SpatialInertia,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(Joint::spherical(parent_to_joint));
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+        });
+        self
+    }
+
+    /// Add a body with a free joint (6 DOF) attached to the given parent.
+    pub fn add_free_body(
+        mut self,
+        name: &str,
+        parent: i32,
+        parent_to_joint: SpatialTransform,
+        inertia: SpatialInertia,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(Joint::free(parent_to_joint));
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+        });
+        self
+    }
+
+    /// Add a body with a fixed joint (0 DOF) attached to the given parent.
+    pub fn add_fixed_body(
+        mut self,
+        name: &str,
+        parent: i32,
+        parent_to_joint: SpatialTransform,
+        inertia: SpatialInertia,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(Joint::fixed(parent_to_joint));
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+        });
+        self
+    }
+
+    /// Add a generic joint and body.
+    pub fn add_body(
+        mut self,
+        name: &str,
+        parent: i32,
+        joint: Joint,
+        inertia: SpatialInertia,
+    ) -> Self {
+        let joint_idx = self.joints.len();
+        self.joints.push(joint);
+        self.bodies.push(Body {
+            name: name.to_string(),
+            inertia,
+            parent,
+            joint_idx,
+        });
+        self
+    }
+
     /// Build the model.
     pub fn build(self) -> Model {
         let mut nq = 0;

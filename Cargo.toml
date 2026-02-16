@@ -5,6 +5,7 @@ members = [
     "crates/tau-model",
     "crates/tau-rigid",
     "crates/tau-diff",
+    "crates/tau-mjcf",
     "crates/tau",
 ]
 
@@ -19,4 +20,5 @@ tau-math = { path = "crates/tau-math" }
 tau-model = { path = "crates/tau-model" }
 tau-rigid = { path = "crates/tau-rigid" }
 tau-diff = { path = "crates/tau-diff" }
+tau-mjcf = { path = "crates/tau-mjcf" }
 tau = { path = "crates/tau" }

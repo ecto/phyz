@@ -232,9 +232,10 @@ Stage only the files you created or modified."
 
     LOG_FILE="$LOG_DIR/phase-${num}-attempt-${attempt}.log"
 
-    if claude -p "$PROMPT" \
+    if env -u CLAUDECODE claude -p "$PROMPT" \
         --model "$MODEL" \
         --output-format text \
+        --dangerously-skip-permissions \
         --verbose 2>&1 | tee "$LOG_FILE"; then
       success=true
       break
