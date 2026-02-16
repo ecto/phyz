@@ -10,6 +10,7 @@ pub use tau_math::{self, Vec3};
 pub use tau_mjcf::{self};
 pub use tau_model::{self, Geometry, Model, ModelBuilder, State};
 pub use tau_particle::{self, Material, MpmSolver, Particle, material};
+pub use tau_prob::{self};
 pub use tau_rigid::{self, aba, crba, forward_kinematics, rnea};
 pub use tau_world::{
     self, Sensor, SensorOutput, Tendon, TrajectoryRecorder, World, WorldGenerator,
