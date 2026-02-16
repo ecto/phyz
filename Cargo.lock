@@ -908,6 +908,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-compile"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "naga",
+ "nalgebra",
+ "tau-math",
+ "wgpu",
+]
+
+[[package]]
 name = "tau-contact"
 version = "0.1.0"
 dependencies = [
