@@ -927,6 +927,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tau-em"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "tau-math",
+]
+
+[[package]]
 name = "tau-gpu"
 version = "0.1.0"
 dependencies = [
