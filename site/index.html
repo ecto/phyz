@@ -1,0 +1,1706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tau - Multi-physics differentiable simulation</title>
+<meta name="description" content="A differentiable simulation engine for rigid bodies, particles, electromagnetic fields, molecular dynamics, and beyond. Pure Rust. GPU-accelerated.">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #faf9f7;
+  --fg: #1a1a1a;
+  --fg-muted: #555;
+  --fg-faint: #999;
+  --accent: #4a5fd7;
+  --accent-hover: #3a4fc0;
+  --code-bg: #f0efed;
+  --border: #e0dfdd;
+  --mono: 'IBM Plex Mono', 'Menlo', monospace;
+  --serif: 'IBM Plex Serif', 'Georgia', serif;
+}
+
+html {
+  font-size: 18px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--serif);
+  line-height: 1.7;
+}
+
+::selection {
+  background: var(--accent);
+  color: white;
+}
+
+.container {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.container-wide {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+
+/* ---- Hero ---- */
+
+.hero {
+  position: relative;
+  padding: 120px 0 100px;
+  overflow: hidden;
+}
+
+.hero canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.12;
+  pointer-events: none;
+}
+
+.hero-content {
+  position: relative;
+  z-index: 1;
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-size: 4.5rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin-bottom: 20px;
+}
+
+.tagline {
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  color: var(--fg-muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.tagline-sub {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+  letter-spacing: 0.04em;
+  margin-bottom: 36px;
+}
+
+.install {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: var(--fg);
+  color: var(--bg);
+  padding: 10px 20px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s;
+  letter-spacing: 0.01em;
+}
+
+.install:hover {
+  background: var(--accent);
+}
+
+.install-copied {
+  background: var(--accent) !important;
+}
+
+
+/* ---- Sections ---- */
+
+section {
+  padding: 80px 0;
+}
+
+
+/* ---- Pitch ---- */
+
+.pitch p {
+  font-size: 1.05rem;
+  margin-bottom: 1.5em;
+  color: var(--fg);
+}
+
+.pitch p:last-child {
+  margin-bottom: 0;
+}
+
+
+/* ---- Code ---- */
+
+.section-label {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--fg-faint);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  background: var(--code-bg);
+  padding: 24px 28px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+pre .kw { color: #7c4dff; }
+pre .fn { color: #1a1a1a; font-weight: 500; }
+pre .str { color: #2e7d32; }
+pre .num { color: #c62828; }
+pre .cm { color: #999; font-style: italic; }
+pre .ty { color: #4a5fd7; }
+pre .mac { color: #6d4c41; }
+
+
+/* ---- Crate Examples ---- */
+
+.crate-row {
+  margin-bottom: 64px;
+}
+
+.crate-row:last-child {
+  margin-bottom: 0;
+}
+
+.crate-header {
+  margin-bottom: 20px;
+}
+
+.crate-name {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.crate-desc {
+  font-family: var(--serif);
+  font-size: 0.85rem;
+  color: var(--fg-muted);
+  display: block;
+  margin-top: 4px;
+}
+
+.examples-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 32px;
+}
+
+.example-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.example-card canvas {
+  width: 100%;
+  aspect-ratio: 1;
+  background: var(--code-bg);
+  display: block;
+  cursor: grab;
+}
+
+.example-card canvas:active {
+  cursor: grabbing;
+}
+
+.example-meta {
+  padding-top: 12px;
+}
+
+.example-meta .label {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.example-meta .desc {
+  font-family: var(--serif);
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.example-meta .stat {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--fg-faint);
+  margin-top: 6px;
+  display: block;
+}
+
+
+/* ---- Features ---- */
+
+.features-list {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px 48px;
+}
+
+.features-list li {
+  line-height: 1.5;
+}
+
+.features-list .label {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.features-list .desc {
+  font-family: var(--serif);
+  font-size: 0.9rem;
+  color: var(--fg-muted);
+}
+
+
+/* ---- Footer ---- */
+
+footer {
+  padding: 60px 0 80px;
+}
+
+footer .footer-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+footer a {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--fg-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+footer a:hover {
+  color: var(--accent);
+}
+
+footer .license {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--fg-faint);
+}
+
+
+/* ---- Responsive ---- */
+
+@media (max-width: 800px) {
+  .examples-grid { grid-template-columns: 1fr; max-width: 400px; }
+}
+
+@media (max-width: 600px) {
+  .wordmark { font-size: 3rem; }
+  .tagline { font-size: 1.1rem; }
+  .hero { padding: 80px 0 60px; }
+  section { padding: 56px 0; }
+  .features-list { grid-template-columns: 1fr; gap: 24px; }
+  pre { font-size: 0.72rem; padding: 18px 16px; }
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<div class="hero">
+  <canvas id="sim"></canvas>
+  <div class="container hero-content">
+    <div class="wordmark">tau</div>
+    <div class="tagline">Multi-physics differentiable simulation.</div>
+    <div class="tagline-sub">Pure Rust. GPU-accelerated. Hackable.</div>
+    <button class="install" onclick="copyInstall(this)" title="Copy to clipboard">cargo add tau</button>
+  </div>
+</div>
+
+<!-- Pitch -->
+<section class="pitch">
+  <div class="container">
+    <p>
+      tau is a differentiable simulation engine for articulated rigid bodies,
+      particles, electromagnetic fields, molecular dynamics, and beyond.
+      Every algorithm computes gradients for optimization,
+      control, and learning.
+    </p>
+    <p>
+      Built on Featherstone's spatial algebra, tau runs O(n) forward dynamics
+      with analytical Jacobians. Plug in semi-implicit Euler, RK4, or your own
+      solver. Load MuJoCo MJCF models. Batch thousands of environments on GPU.
+    </p>
+    <p>
+      tau is early, ambitious, and open source.
+    </p>
+  </div>
+</section>
+
+<!-- Crate Examples -->
+<section class="examples">
+  <div class="container-wide">
+
+    <!-- tau-rigid -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-rigid</span>
+        <span class="crate-desc">Featherstone O(n) articulated body dynamics. ABA, RNEA, CRBA with viscous damping.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-pendulum"></canvas>
+          <div class="example-meta">
+            <span class="label">pendulum</span>
+            <span class="desc">Single revolute joint. RK4 integration with viscous damping.</span>
+            <span class="stat" id="stat-pendulum">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-double"></canvas>
+          <div class="example-meta">
+            <span class="label">double_pendulum</span>
+            <span class="desc">Two-link chain. Chaotic dynamics with joint dissipation.</span>
+            <span class="stat" id="stat-double">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-chain"></canvas>
+          <div class="example-meta">
+            <span class="label">chain</span>
+            <span class="desc">8-body articulated chain. O(n) ABA with damping.</span>
+            <span class="stat" id="stat-chain">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-contact -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-collision + tau-contact</span>
+        <span class="crate-desc">GJK/EPA collision detection. Penalty contacts with Coulomb friction and restitution.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-bouncing"></canvas>
+          <div class="example-meta">
+            <span class="label">bouncing_spheres</span>
+            <span class="desc">Three materials: elastic, medium, dead. Penalty contacts with restitution.</span>
+            <span class="stat" id="stat-bouncing">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-cascade"></canvas>
+          <div class="example-meta">
+            <span class="label">sphere_cascade</span>
+            <span class="desc">20 spheres pile up under gravity. Sphere-sphere and ground contacts.</span>
+            <span class="stat" id="stat-cascade">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-cradle"></canvas>
+          <div class="example-meta">
+            <span class="label">newtons_cradle</span>
+            <span class="desc">Five pendulums, elastic collisions. Momentum transfer through contact chain.</span>
+            <span class="stat" id="stat-cradle">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-gpu -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-gpu</span>
+        <span class="crate-desc">wgpu compute shaders. Batch 1000+ parallel environments for RL training.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-wavefield"></canvas>
+          <div class="example-meta">
+            <span class="label">wave_field</span>
+            <span class="desc">1024 pendulums with varying frequency. Phase interference on a 32x32 grid.</span>
+            <span class="stat" id="stat-wavefield">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-ensemble"></canvas>
+          <div class="example-meta">
+            <span class="label">ensemble_divergence</span>
+            <span class="desc">100 double pendulums, near-identical ICs. Lyapunov divergence in real time.</span>
+            <span class="stat" id="stat-ensemble">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-policy"></canvas>
+          <div class="example-meta">
+            <span class="label">policy_search</span>
+            <span class="desc">100 PD controllers sweeping gain space. Green = balanced inverted.</span>
+            <span class="stat" id="stat-policy">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-particle -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-particle</span>
+        <span class="crate-desc">Material Point Method. P2G/G2P transfers with Neo-Hookean, Drucker-Prager, and fluid constitutive models.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-granular"></canvas>
+          <div class="example-meta">
+            <span class="label">granular_column</span>
+            <span class="desc">280 frictional particles. Column collapses under gravity with Drucker-Prager yield.</span>
+            <span class="stat" id="stat-granular">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-fluid"></canvas>
+          <div class="example-meta">
+            <span class="label">fluid_dam</span>
+            <span class="desc">250 fluid particles. Dam break with viscous coupling and wall contacts.</span>
+            <span class="stat" id="stat-fluid">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-elastic"></canvas>
+          <div class="example-meta">
+            <span class="label">elastic_blob</span>
+            <span class="desc">Spring-mesh soft body. Neo-Hookean elastic response with ground restitution.</span>
+            <span class="stat" id="stat-elastic">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-world -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-world</span>
+        <span class="crate-desc">Procedural world generation. Sensors, tendons, trajectory recording for ML training data.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-randchain"></canvas>
+          <div class="example-meta">
+            <span class="label">random_chain</span>
+            <span class="desc">Procedurally generated 6-link chain. Varying masses and link lengths.</span>
+            <span class="stat" id="stat-randchain">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-phase"></canvas>
+          <div class="example-meta">
+            <span class="label">phase_portrait</span>
+            <span class="desc">Pendulum trajectory in (q, v) phase space. Spiral attractor from damping.</span>
+            <span class="stat" id="stat-phase">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-tendon"></canvas>
+          <div class="example-meta">
+            <span class="label">tendon_demo</span>
+            <span class="desc">4-link chain with sinusoidal tendon actuation. Multi-frequency control signals.</span>
+            <span class="stat" id="stat-tendon">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-em -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-em</span>
+        <span class="crate-desc">Yee grid FDTD solving Maxwell's equations. PML absorbing boundaries, differentiable via adjoint method.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-dipole"></canvas>
+          <div class="example-meta">
+            <span class="label">dipole_radiation</span>
+            <span class="desc">Oscillating point dipole. Circular wavefronts with PML absorption at edges.</span>
+            <span class="stat" id="stat-dipole">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-guide"></canvas>
+          <div class="example-meta">
+            <span class="label">waveguide</span>
+            <span class="desc">EM wave channeled between conducting walls. TM mode propagation.</span>
+            <span class="stat" id="stat-guide">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-slit"></canvas>
+          <div class="example-meta">
+            <span class="label">double_slit</span>
+            <span class="desc">Plane wave diffracting through two slits. Interference fringes in real time.</span>
+            <span class="stat" id="stat-slit">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-md -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-md</span>
+        <span class="crate-desc">Velocity Verlet molecular dynamics. Lennard-Jones, Coulomb, harmonic bonds with neighbor lists.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-argon"></canvas>
+          <div class="example-meta">
+            <span class="label">argon_gas</span>
+            <span class="desc">80 LJ particles in periodic box. High temperature chaotic dynamics.</span>
+            <span class="stat" id="stat-argon">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-crystal"></canvas>
+          <div class="example-meta">
+            <span class="label">crystal_lattice</span>
+            <span class="desc">10x10 square lattice at LJ equilibrium. Phonon vibrations at low temperature.</span>
+            <span class="stat" id="stat-crystal">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-polymer"></canvas>
+          <div class="example-meta">
+            <span class="label">polymer_chain</span>
+            <span class="desc">40-bead bonded chain with LJ excluded volume. Coil-stretch dynamics.</span>
+            <span class="stat" id="stat-polymer">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tau-qft -->
+    <div class="crate-row">
+      <div class="crate-header">
+        <span class="crate-name">tau-qft</span>
+        <span class="crate-desc">Lattice gauge theory with HMC sampling. U(1), SU(2), SU(3) gauge groups with Wilson action.</span>
+      </div>
+      <div class="examples-grid">
+        <div class="example-card">
+          <canvas id="ex-plaq"></canvas>
+          <div class="example-meta">
+            <span class="label">u1_plaquette</span>
+            <span class="desc">16x16 U(1) lattice at beta=2.0. Plaquette field evolving under Metropolis updates.</span>
+            <span class="stat" id="stat-plaq">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-wilson"></canvas>
+          <div class="example-meta">
+            <span class="label">wilson_loops</span>
+            <span class="desc">Wilson loop expectation values at various sizes. Probing confinement.</span>
+            <span class="stat" id="stat-wilson">loading wasm...</span>
+          </div>
+        </div>
+        <div class="example-card">
+          <canvas id="ex-phasescan"></canvas>
+          <div class="example-meta">
+            <span class="label">phase_transition</span>
+            <span class="desc">Sweeping coupling constant beta. Watch order-disorder phase transition.</span>
+            <span class="stat" id="stat-phasescan">loading wasm...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- Code -->
+<section class="code-section">
+  <div class="container">
+    <h2 class="section-label">Code</h2>
+<pre><span class="kw">use</span> tau::{<span class="ty">ModelBuilder</span>, <span class="ty">Simulator</span>, <span class="ty">Vec3</span>};
+
+<span class="kw">let</span> model = <span class="ty">ModelBuilder</span>::new()
+    .add_revolute_body(
+        <span class="str">"pendulum"</span>, -<span class="num">1</span>,
+        <span class="num">1.0</span>,                      <span class="cm">// mass</span>
+        <span class="ty">Vec3</span>::new(<span class="num">0.0</span>, <span class="num">0.0</span>, -<span class="num">1.0</span>), <span class="cm">// offset</span>
+    )
+    .build();
+
+<span class="kw">let mut</span> state = model.default_state();
+state.q[<span class="num">0</span>] = <span class="num">0.5</span>; <span class="cm">// initial angle</span>
+
+<span class="kw">let</span> sim = <span class="ty">Simulator</span>::rk4();
+<span class="kw">let</span> jac = sim.step_with_jacobians(&model, &<span class="kw">mut</span> state);
+
+<span class="mac">println!</span>(<span class="str">"q = {:.4}, dq'/dq = {:.4}"</span>,
+    state.q[<span class="num">0</span>], jac.dqnext_dq[(<span class="num">0</span>, <span class="num">0</span>)]);</pre>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="features">
+  <div class="container">
+    <h2 class="section-label">Features</h2>
+    <ul class="features-list">
+      <li>
+        <span class="label">differentiable</span>
+        <span class="desc">Analytical Jacobians through every solver. Backprop through physics.</span>
+      </li>
+      <li>
+        <span class="label">O(n) dynamics</span>
+        <span class="desc">Featherstone ABA, RNEA, CRBA. Scales to complex articulated bodies.</span>
+      </li>
+      <li>
+        <span class="label">pluggable solvers</span>
+        <span class="desc">Semi-implicit Euler, RK4, or implement your own with the Solver trait.</span>
+      </li>
+      <li>
+        <span class="label">MJCF loading</span>
+        <span class="desc">Parse MuJoCo XML models. Drop in existing robot definitions.</span>
+      </li>
+      <li>
+        <span class="label">multi-physics</span>
+        <span class="desc">Rigid bodies, particles, EM fields, molecular dynamics, lattice QFT.</span>
+      </li>
+      <li>
+        <span class="label">GPU batching</span>
+        <span class="desc">wgpu compute shaders. Thousands of parallel environments for RL training.</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container footer-inner">
+    <a href="https://github.com/camhenderson/tau">GitHub</a>
+    <a href="https://docs.rs/tau">docs.rs</a>
+    <span class="license">MIT / Apache-2.0</span>
+  </div>
+</footer>
+
+<script>
+function copyInstall(el) {
+  navigator.clipboard.writeText('cargo add tau');
+  el.textContent = 'copied';
+  el.classList.add('install-copied');
+  setTimeout(() => {
+    el.textContent = 'cargo add tau';
+    el.classList.remove('install-copied');
+  }, 1500);
+}
+</script>
+
+<!-- Hero background: lightweight 2D trace (no WASM needed) -->
+<script>
+(function() {
+  const canvas = document.getElementById('sim');
+  const ctx = canvas.getContext('2d');
+  let w, h, dpr;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    w = rect.width; h = rect.height;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+  const g = 9.81, l1 = 0.35, l2 = 0.30, m1 = 1.0, m2 = 1.0;
+  let th1 = Math.PI*0.75, th2 = Math.PI*0.5, w1 = 0, w2 = 0;
+  const dt = 0.004, spf = 4, trail = [], maxTrail = 600;
+  function derivs(t1,t2,o1,o2) {
+    const s=Math.sin(t1-t2),c=Math.cos(t1-t2),den=2*m1+m2-m2*Math.cos(2*(t1-t2));
+    return [o1,o2,
+      (-g*(2*m1+m2)*Math.sin(t1)-m2*g*Math.sin(t1-2*t2)-2*s*m2*(o2*o2*l2+o1*o1*l1*c))/(l1*den),
+      (2*s*(o1*o1*l1*(m1+m2)+g*(m1+m2)*Math.cos(t1)+o2*o2*l2*m2*c))/(l2*den)];
+  }
+  function step() {
+    for (let i=0;i<spf;i++) {
+      const k1=derivs(th1,th2,w1,w2);
+      const k2=derivs(th1+dt/2*k1[0],th2+dt/2*k1[1],w1+dt/2*k1[2],w2+dt/2*k1[3]);
+      const k3=derivs(th1+dt/2*k2[0],th2+dt/2*k2[1],w1+dt/2*k2[2],w2+dt/2*k2[3]);
+      const k4=derivs(th1+dt*k3[0],th2+dt*k3[1],w1+dt*k3[2],w2+dt*k3[3]);
+      th1+=dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]);
+      th2+=dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]);
+      w1+=dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]);
+      w2+=dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3]);
+    }
+    const sc=Math.min(w,h)*0.9,ox=w*0.7,oy=h*0.35;
+    trail.push([ox+l1*sc*Math.sin(th1)+l2*sc*Math.sin(th2),oy+l1*sc*Math.cos(th1)+l2*sc*Math.cos(th2)]);
+    if(trail.length>maxTrail) trail.shift();
+  }
+  function draw() {
+    ctx.clearRect(0,0,w,h);
+    for(let i=1;i<trail.length;i++){
+      ctx.beginPath();ctx.moveTo(trail[i-1][0],trail[i-1][1]);ctx.lineTo(trail[i][0],trail[i][1]);
+      ctx.strokeStyle=`rgba(74,95,215,${i/trail.length*0.7})`;ctx.lineWidth=0.8;ctx.stroke();
+    }
+    const sc=Math.min(w,h)*0.9,ox=w*0.7,oy=h*0.35;
+    const x1=ox+l1*sc*Math.sin(th1),y1=oy+l1*sc*Math.cos(th1);
+    const x2=x1+l2*sc*Math.sin(th2),y2=y1+l2*sc*Math.cos(th2);
+    ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);
+    ctx.strokeStyle='rgba(26,26,26,0.25)';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='rgba(26,26,26,0.3)';
+    [[ox,oy],[x1,y1],[x2,y2]].forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fill();});
+  }
+  (function loop(){step();draw();requestAnimationFrame(loop);})();
+})();
+</script>
+
+<!-- Three.js examples powered by tau WASM -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim } from './pkg/tau_wasm.js';
+
+// ---- Shared ----
+const BG = 0xfaf9f7;
+const ACCENT = 0x4a5fd7;
+const DARK = 0x1a1a1a;
+const MUTED = 0x888888;
+
+// Single shared WebGL renderer. Renders each scene to an offscreen canvas,
+// then blits to the visible canvas via 2D drawImage. One WebGL context total.
+const sharedCanvas = document.createElement('canvas');
+const sharedRenderer = new THREE.WebGLRenderer({ canvas: sharedCanvas, antialias: true });
+sharedRenderer.setPixelRatio(1); // we handle dpr manually via setSize
+sharedRenderer.setClearColor(BG);
+
+// All active visualizations: canvasId -> { scene, camera, controls, canvas, ctx2d, update, visible }
+const vizEntries = new Map();
+const visibleSet = new Set();
+
+// IntersectionObserver tracks which canvases are on-screen
+const vizObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (e.isIntersecting) visibleSet.add(e.target.id);
+    else visibleSet.delete(e.target.id);
+  }
+}, { rootMargin: '100px 0px' });
+
+function registerViz(canvasId, setupFn) {
+  vizEntries.set(canvasId, { setup: setupFn, initialized: false });
+}
+
+function ensureInitialized(canvasId) {
+  const entry = vizEntries.get(canvasId);
+  if (!entry || entry.initialized) return;
+  entry.initialized = true;
+  const result = entry.setup(); // returns { scene, camera, controls, canvas, update }
+  Object.assign(entry, result);
+  // Get a 2D context for blitting
+  entry.ctx2d = entry.canvas.getContext('2d');
+}
+
+// Central render loop: update + render only visible scenes
+function globalLoop() {
+  requestAnimationFrame(globalLoop);
+  for (const canvasId of visibleSet) {
+    const entry = vizEntries.get(canvasId);
+    if (!entry) continue;
+    ensureInitialized(canvasId);
+    if (!entry.scene) continue;
+
+    // Run sim update
+    entry.update();
+
+    // Size shared renderer to match this canvas
+    const rect = entry.canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    if (w === 0 || h === 0) continue;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.floor(w * dpr), ph = Math.floor(h * dpr);
+    sharedRenderer.setSize(pw, ph, false);
+    entry.camera.aspect = w / h;
+    entry.camera.updateProjectionMatrix();
+    entry.controls.update();
+
+    // Render to shared canvas
+    sharedRenderer.render(entry.scene, entry.camera);
+
+    // Blit to visible canvas (only resize if needed to avoid clearing)
+    if (entry.canvas.width !== pw || entry.canvas.height !== ph) {
+      entry.canvas.width = pw;
+      entry.canvas.height = ph;
+    }
+    entry.ctx2d.drawImage(sharedCanvas, 0, 0);
+  }
+}
+requestAnimationFrame(globalLoop);
+
+// createScene: sets up scene/camera/controls but NO renderer (shared renderer is used)
+function createScene(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  const scene = new THREE.Scene();
+  const rect = canvas.getBoundingClientRect();
+  const camera = new THREE.PerspectiveCamera(35, rect.width / rect.height, 0.1, 100);
+  const controls = new OrbitControls(camera, canvas);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+  controls.enableZoom = false;
+  controls.enablePan = false;
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+  dir.position.set(3, 5, 4);
+  scene.add(dir);
+  return { scene, camera, controls, canvas };
+}
+
+function makeCyl(radius, length, color) {
+  return new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, length, 12),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.7, metalness: 0.1 })
+  );
+}
+
+function makeSphere(radius, color, opts) {
+  const mat = { color, roughness: 0.5, metalness: 0.15, ...(opts || {}) };
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 16, 16),
+    new THREE.MeshStandardMaterial(mat)
+  );
+}
+
+function makeTrail(maxPts, color, opacity) {
+  const pts = [];
+  for (let i = 0; i < maxPts; i++) pts.push(new THREE.Vector3());
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity });
+  return { line: new THREE.Line(geo, mat), geo, maxPts };
+}
+
+function pushTrail(trail, x, y, z) {
+  const pos = trail.geo.attributes.position.array;
+  for (let i = 0; i < (trail.maxPts - 1) * 3; i++) pos[i] = pos[i + 3];
+  pos[(trail.maxPts - 1) * 3]     = x;
+  pos[(trail.maxPts - 1) * 3 + 1] = y;
+  pos[(trail.maxPts - 1) * 3 + 2] = z;
+  trail.geo.attributes.position.needsUpdate = true;
+}
+
+function makeGround(width, depth, y) {
+  const geo = new THREE.BoxGeometry(width, 0.02, depth);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xd0cfcd, roughness: 0.9, metalness: 0.0 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.y = y - 0.01;
+  return mesh;
+}
+
+// ---- Init WASM then start examples ----
+await init();
+
+const E0 = {};
+
+
+// =========================================
+// tau-rigid: Single Pendulum
+// =========================================
+registerViz('ex-pendulum', () => {
+  const sim = WasmSim.pendulum();
+  E0.pendulum = sim.total_energy();
+  const { scene, camera, controls, canvas } = createScene('ex-pendulum');
+  camera.position.set(0, 0, 4.5);
+  controls.target.set(0, -0.5, 0);
+
+  const L = 1.5;
+  scene.add(makeSphere(0.04, DARK));
+  const rod = makeCyl(0.02, L, MUTED); scene.add(rod);
+  const bob = makeSphere(0.08, ACCENT); scene.add(bob);
+  const trail = makeTrail(300, ACCENT, 0.3); scene.add(trail.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const th = sim.joint_angles()[0];
+    const bx = L * Math.sin(th), by = -L * Math.cos(th);
+    bob.position.set(bx, by, 0);
+    rod.position.set(bx / 2, by / 2, 0);
+    rod.rotation.z = th;
+    pushTrail(trail, bx, by, 0);
+    const E = sim.total_energy();
+    const pct = (E / E0.pendulum * 100).toFixed(0);
+    const el = document.getElementById('stat-pendulum');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+  }};
+});
+
+
+// =========================================
+// tau-rigid: Double Pendulum
+// =========================================
+registerViz('ex-double', () => {
+  const sim = WasmSim.double_pendulum();
+  E0.double = sim.total_energy();
+  const { scene, camera, controls, canvas } = createScene('ex-double');
+  camera.position.set(0, -0.5, 5);
+  controls.target.set(0, -1, 0);
+
+  const L1 = 1.0, L2 = 1.0;
+  scene.add(makeSphere(0.04, DARK));
+  const rod1 = makeCyl(0.02, L1, MUTED);
+  const rod2 = makeCyl(0.02, L2, MUTED);
+  const joint = makeSphere(0.04, DARK);
+  const bob = makeSphere(0.07, ACCENT);
+  scene.add(rod1); scene.add(rod2); scene.add(joint); scene.add(bob);
+  const trail = makeTrail(500, ACCENT, 0.25); scene.add(trail.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const epos = sim.body_endpoint_positions();
+    const e0x = epos[0], e0y = epos[1], e1x = epos[3], e1y = epos[4];
+    joint.position.set(e0x, e0y, 0);
+    bob.position.set(e1x, e1y, 0);
+    rod1.position.set(e0x / 2, e0y / 2, 0);
+    rod1.rotation.z = Math.atan2(e0x, -e0y);
+    rod1.scale.y = Math.sqrt(e0x * e0x + e0y * e0y) / L1;
+    const dx = e1x - e0x, dy = e1y - e0y;
+    rod2.position.set(e0x + dx / 2, e0y + dy / 2, 0);
+    rod2.rotation.z = Math.atan2(dx, -dy);
+    rod2.scale.y = Math.sqrt(dx * dx + dy * dy) / L2;
+    pushTrail(trail, e1x, e1y, 0);
+    const E = sim.total_energy();
+    const pct = (E / E0.double * 100).toFixed(0);
+    const el = document.getElementById('stat-double');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+  }};
+});
+
+
+// =========================================
+// tau-rigid: 8-link Chain
+// =========================================
+registerViz('ex-chain', () => {
+  const N = 8, L = 0.6;
+  const sim = WasmSim.chain(N);
+  const { scene, camera, controls, canvas } = createScene('ex-chain');
+  camera.position.set(0, -2, 7);
+  controls.target.set(0, -2.5, 0);
+  scene.add(makeSphere(0.04, DARK));
+  const rods = [], joints = [];
+  for (let i = 0; i < N; i++) {
+    const rod = makeCyl(0.015, L, MUTED); scene.add(rod); rods.push(rod);
+    const j = makeSphere(0.03, i === N - 1 ? ACCENT : DARK); scene.add(j); joints.push(j);
+  }
+  const trail = makeTrail(400, ACCENT, 0.2); scene.add(trail.line);
+  E0.chain = sim.total_energy();
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const epos = sim.body_endpoint_positions();
+    let prevX = 0, prevY = 0;
+    for (let i = 0; i < N; i++) {
+      const ex = epos[i * 3], ey = epos[i * 3 + 1];
+      joints[i].position.set(ex, ey, 0);
+      const dx = ex - prevX, dy = ey - prevY;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      rods[i].position.set((prevX + ex) / 2, (prevY + ey) / 2, 0);
+      rods[i].rotation.z = Math.atan2(dx, -dy);
+      rods[i].scale.y = len / L;
+      prevX = ex; prevY = ey;
+    }
+    pushTrail(trail, prevX, prevY, 0);
+    const E = sim.total_energy();
+    const pct = (E / E0.chain * 100).toFixed(0);
+    const el = document.getElementById('stat-chain');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  E=${E.toFixed(2)}J (${pct}%)`;
+  }};
+});
+
+
+// =========================================
+// tau-contact: Bouncing Spheres
+// =========================================
+registerViz('ex-bouncing', () => {
+  const sim = WasmParticleSim.bouncing_spheres();
+  const { scene, camera, controls, canvas } = createScene('ex-bouncing');
+  camera.position.set(0, 1.2, 4.5);
+  controls.target.set(0, 0.8, 0);
+  scene.add(makeGround(3, 1, 0));
+  const R = sim.radii()[0];
+  const colors = [0xe74c3c, ACCENT, 0x888888];
+  const spheres = [], trails = [];
+  for (let i = 0; i < 3; i++) {
+    const s = makeSphere(R, colors[i]); scene.add(s); spheres.push(s);
+    const t = makeTrail(150, colors[i], 0.2); scene.add(t.line); trails.push(t);
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(32);
+    const pos = sim.positions();
+    for (let i = 0; i < 3; i++) {
+      const x = pos[i*3], y = pos[i*3+1], z = pos[i*3+2];
+      spheres[i].position.set(x, y, z);
+      pushTrail(trails[i], x, y, z);
+    }
+    const el = document.getElementById('stat-bouncing');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  elastic / medium / dead`;
+  }};
+});
+
+
+// =========================================
+// tau-contact: Sphere Cascade
+// =========================================
+registerViz('ex-cascade', () => {
+  const sim = WasmParticleSim.sphere_cascade();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-cascade');
+  camera.position.set(0, 1.5, 3.5);
+  controls.target.set(0, 0.4, 0);
+  scene.add(makeGround(2, 1, 0));
+  const R = sim.radii()[0];
+  const spheres = [];
+  for (let i = 0; i < N; i++) {
+    const hue = 0.6 + i * 0.012;
+    const color = new THREE.Color().setHSL(hue % 1, 0.55, 0.55);
+    const s = makeSphere(R, color); scene.add(s); spheres.push(s);
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(32);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) spheres[i].position.set(pos[i*3], pos[i*3+1], pos[i*3+2]);
+    const el = document.getElementById('stat-cascade');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  GJK/penalty`;
+  }};
+});
+
+
+// =========================================
+// tau-contact: Newton's Cradle
+// =========================================
+registerViz('ex-cradle', () => {
+  const sim = WasmCradleSim.new();
+  const N = sim.num_bobs(), R = sim.bob_radius();
+  const { scene, camera, controls, canvas } = createScene('ex-cradle');
+  camera.position.set(0, -0.3, 4);
+  controls.target.set(0, -0.7, 0);
+  const pivots = sim.pivot_positions();
+  const barLen = pivots[(N-1)*3] - pivots[0] + 0.3;
+  const bar = makeCyl(0.015, barLen, DARK);
+  bar.rotation.z = Math.PI / 2;
+  scene.add(bar);
+  const strings = [], bobs = [];
+  for (let i = 0; i < N; i++) {
+    const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,-1,0)]);
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.5 }));
+    scene.add(line); strings.push(line);
+    const bob = makeSphere(R, 0x999999, { roughness: 0.2, metalness: 0.8 });
+    scene.add(bob); bobs.push(bob);
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(32);
+    const bobPos = sim.bob_positions(), pivotPos = sim.pivot_positions();
+    for (let i = 0; i < N; i++) {
+      const px = pivotPos[i*3], py = pivotPos[i*3+1], bx = bobPos[i*3], by = bobPos[i*3+1];
+      bobs[i].position.set(bx, by, 0);
+      const arr = strings[i].geometry.attributes.position.array;
+      arr[0]=px; arr[1]=py; arr[2]=0; arr[3]=bx; arr[4]=by; arr[5]=0;
+      strings[i].geometry.attributes.position.needsUpdate = true;
+    }
+    const el = document.getElementById('stat-cradle');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  elastic e=0.999`;
+  }};
+});
+
+
+// =========================================
+// tau-gpu: Wave Field (1024 batched pendulums)
+// =========================================
+registerViz('ex-wavefield', () => {
+  const sim = WasmWaveFieldSim.new();
+  const N = sim.num_pendulums();
+  const GRID = 32;
+  const { scene, camera, controls, canvas } = createScene('ex-wavefield');
+  camera.position.set(0, 2.5, 3.5);
+  controls.target.set(0, 0, 0);
+
+  const positions = new Float32Array(N * 3);
+  const colors = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false })));
+  const spacing = 0.08;
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const angles = sim.angles();
+    const vels = sim.velocities();
+    for (let i = 0; i < N; i++) {
+      const row = Math.floor(i / GRID), col = i % GRID;
+      positions[i*3] = (col - GRID/2) * spacing;
+      positions[i*3+1] = Math.sin(angles[i]) * 0.4;
+      positions[i*3+2] = (row - GRID/2) * spacing;
+      const v = Math.min(Math.abs(vels[i]) / 4.0, 1.0);
+      colors[i*3] = 0.2 + v * 0.7;
+      colors[i*3+1] = 0.25 * (1-v);
+      colors[i*3+2] = 0.85 * (1-v);
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-wavefield');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} envs  batched ABA`;
+  }};
+});
+
+
+// =========================================
+// tau-gpu: Ensemble Divergence (100 double pendulums)
+// =========================================
+registerViz('ex-ensemble', () => {
+  const sim = WasmEnsembleSim.new();
+  const N = sim.num_instances();
+  const { scene, camera, controls, canvas } = createScene('ex-ensemble');
+  camera.position.set(0, -0.8, 5);
+  controls.target.set(0, -1, 0);
+
+  const dotGeo = new THREE.BufferGeometry();
+  const dotPos = new Float32Array(N * 3);
+  dotGeo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  scene.add(new THREE.Points(dotGeo, new THREE.PointsMaterial({ size: 3, color: ACCENT, sizeAttenuation: false, transparent: true, opacity: 0.6 })));
+
+  const trailIdx = [0, 25, 50, 75, 99];
+  const trailColors = [0x4a5fd7, 0x7c4dff, 0x2196f3, 0x00897b, 0xe74c3c];
+  const trails = trailIdx.map((_, k) => makeTrail(400, trailColors[k], 0.3));
+  trails.forEach(t => scene.add(t.line));
+  scene.add(makeSphere(0.03, DARK));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const pos = sim.endpoint_positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*3]; dotPos[i*3+1] = pos[i*3+1]; dotPos[i*3+2] = pos[i*3+2];
+    }
+    dotGeo.attributes.position.needsUpdate = true;
+    for (let k = 0; k < trailIdx.length; k++) {
+      const i = trailIdx[k];
+      pushTrail(trails[k], pos[i*3], pos[i*3+1], pos[i*3+2]);
+    }
+    const el = document.getElementById('stat-ensemble');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} envs  Lyapunov divergence`;
+  }};
+});
+
+
+// =========================================
+// tau-gpu: Policy Search Grid (100 PD controllers)
+// =========================================
+registerViz('ex-policy', () => {
+  const sim = WasmPolicyGridSim.new();
+  const N = sim.num_envs();
+  const GRID = 10;
+  const { scene, camera, controls, canvas } = createScene('ex-policy');
+  camera.position.set(0, 0, 5);
+  controls.target.set(0, 0, 0);
+
+  const cellSize = 0.28;
+  const spheres = [], needles = [];
+  for (let i = 0; i < N; i++) {
+    const row = Math.floor(i / GRID), col = i % GRID;
+    const x = (col - 4.5) * cellSize, y = (row - 4.5) * cellSize;
+    const s = makeSphere(0.06, 0x888888);
+    s.position.set(x, y, 0); scene.add(s); spheres.push(s);
+    const nGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0.1, 0)]);
+    const nLine = new THREE.Line(nGeo, new THREE.LineBasicMaterial({ color: 0xffffff }));
+    nLine.position.set(x, y, 0.01); scene.add(nLine); needles.push(nLine);
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const rewards = sim.rewards();
+    const angles = sim.angles();
+    for (let i = 0; i < N; i++) {
+      const r = rewards[i];
+      const color = new THREE.Color();
+      color.setHSL(r * 0.33, 0.75, 0.35 + r * 0.25);
+      spheres[i].material.color = color;
+      spheres[i].scale.setScalar(0.7 + r * 0.6);
+      needles[i].rotation.z = -angles[i] + Math.PI;
+    }
+    const el = document.getElementById('stat-policy');
+    const stable = rewards.filter(r => r > 0.9).length;
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${stable}/${N} balanced  kp/kd sweep`;
+  }};
+});
+
+
+// =========================================
+// tau-particle: Granular Column
+// =========================================
+registerViz('ex-granular', () => {
+  const sim = WasmMpmSim.granular_column();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-granular');
+  camera.position.set(0, 0.5, 2.5);
+  controls.target.set(0, 0.3, 0);
+  scene.add(makeGround(2, 1, 0));
+
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(48);
+    const pos = sim.positions();
+    const vel = sim.velocities();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      const v = Math.min(Math.sqrt(vel[i*2]*vel[i*2] + vel[i*2+1]*vel[i*2+1]) / 2.0, 1.0);
+      dotCol[i*3] = 0.6 + v*0.4; dotCol[i*3+1] = 0.35 - v*0.1; dotCol[i*3+2] = 0.1;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-granular');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  Drucker-Prager`;
+  }};
+});
+
+
+// =========================================
+// tau-particle: Fluid Dam Break
+// =========================================
+registerViz('ex-fluid', () => {
+  const sim = WasmMpmSim.fluid_dam();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-fluid');
+  camera.position.set(0, 0.4, 2.0);
+  controls.target.set(0, 0.25, 0);
+  scene.add(makeGround(1.5, 1, 0));
+
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(48);
+    const pos = sim.positions();
+    const vel = sim.velocities();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      const v = Math.min(Math.sqrt(vel[i*2]*vel[i*2] + vel[i*2+1]*vel[i*2+1]) / 3.0, 1.0);
+      dotCol[i*3] = 0.1 + v*0.3; dotCol[i*3+1] = 0.3 + v*0.3; dotCol[i*3+2] = 0.8;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-fluid');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  SPH fluid`;
+  }};
+});
+
+
+// =========================================
+// tau-particle: Elastic Blob
+// =========================================
+registerViz('ex-elastic', () => {
+  const sim = WasmMpmSim.elastic_blob();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-elastic');
+  camera.position.set(0, 0.5, 2.5);
+  controls.target.set(0, 0.3, 0);
+  scene.add(makeGround(2, 1, 0));
+
+  const dotPos = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, color: 0x2e7d32, sizeAttenuation: false })));
+
+  const nSprings = sim.num_springs();
+  const springPos = new Float32Array(nSprings * 6);
+  const springGeo = new THREE.BufferGeometry();
+  springGeo.setAttribute('position', new THREE.BufferAttribute(springPos, 3));
+  scene.add(new THREE.LineSegments(springGeo, new THREE.LineBasicMaterial({ color: 0x4caf50, transparent: true, opacity: 0.3 })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(48);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+    }
+    geo.attributes.position.needsUpdate = true;
+    const ep = sim.spring_endpoints();
+    for (let s = 0; s < nSprings; s++) {
+      springPos[s*6] = ep[s*4]; springPos[s*6+1] = ep[s*4+1]; springPos[s*6+2] = 0;
+      springPos[s*6+3] = ep[s*4+2]; springPos[s*6+4] = ep[s*4+3]; springPos[s*6+5] = 0;
+    }
+    springGeo.attributes.position.needsUpdate = true;
+    const el = document.getElementById('stat-elastic');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} particles  ${nSprings} springs`;
+  }};
+});
+
+
+// =========================================
+// tau-world: Random Chain
+// =========================================
+registerViz('ex-randchain', () => {
+  const sim = WasmWorldSim.random_chain();
+  const N = sim.nbodies();
+  const lengths = sim.link_lengths();
+  const { scene, camera, controls, canvas } = createScene('ex-randchain');
+  camera.position.set(0, -1.5, 6);
+  controls.target.set(0, -1.5, 0);
+
+  scene.add(makeSphere(0.04, DARK));
+  const hues = [0.0, 0.08, 0.16, 0.55, 0.7, 0.85];
+  const rods = [], joints = [];
+  for (let i = 0; i < N; i++) {
+    const c = new THREE.Color().setHSL(hues[i], 0.6, 0.5);
+    const rod = makeCyl(0.015, lengths[i], MUTED); scene.add(rod); rods.push(rod);
+    const j = makeSphere(0.035, c); scene.add(j); joints.push(j);
+  }
+  const trail = makeTrail(400, 0x7c4dff, 0.25); scene.add(trail.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const epos = sim.body_endpoint_positions();
+    let px = 0, py = 0;
+    for (let i = 0; i < N; i++) {
+      const ex = epos[i*3], ey = epos[i*3+1];
+      joints[i].position.set(ex, ey, 0);
+      const dx = ex - px, dy = ey - py, len = Math.sqrt(dx*dx + dy*dy);
+      rods[i].position.set((px+ex)/2, (py+ey)/2, 0);
+      rods[i].rotation.z = Math.atan2(dx, -dy);
+      rods[i].scale.y = len / lengths[i];
+      px = ex; py = ey;
+    }
+    pushTrail(trail, px, py, 0);
+    const el = document.getElementById('stat-randchain');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} links  procedural gen`;
+  }};
+});
+
+
+// =========================================
+// tau-world: Phase Portrait
+// =========================================
+registerViz('ex-phase', () => {
+  const sim = WasmWorldSim.phase_portrait();
+  const { scene, camera, controls, canvas } = createScene('ex-phase');
+  camera.position.set(0, 0, 5);
+  controls.target.set(0, 0, 0);
+
+  const axMat = new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.3 });
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-2,0,0), new THREE.Vector3(2,0,0)]), axMat));
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,-1.5,0), new THREE.Vector3(0,1.5,0)]), axMat));
+  const trail = makeTrail(800, ACCENT, 0.5); scene.add(trail.line);
+  const dot = makeSphere(0.06, ACCENT); scene.add(dot);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const q = sim.q(), v = sim.v();
+    dot.position.set(q * 0.5, v * 0.2, 0);
+    pushTrail(trail, q * 0.5, v * 0.2, 0);
+    const el = document.getElementById('stat-phase');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  q=${q.toFixed(2)}  v=${v.toFixed(2)}`;
+  }};
+});
+
+
+// =========================================
+// tau-world: Tendon Actuated
+// =========================================
+registerViz('ex-tendon', () => {
+  const sim = WasmWorldSim.tendon_actuated();
+  const N = sim.nbodies();
+  const L = sim.link_lengths()[0];
+  const { scene, camera, controls, canvas } = createScene('ex-tendon');
+  camera.position.set(0, -1, 5);
+  controls.target.set(0, -1.2, 0);
+
+  scene.add(makeSphere(0.04, DARK));
+  const rods = [], joints = [];
+  for (let i = 0; i < N; i++) {
+    const rod = makeCyl(0.018, L, MUTED); scene.add(rod); rods.push(rod);
+    const j = makeSphere(0.035, i === N-1 ? 0xe74c3c : DARK); scene.add(j); joints.push(j);
+  }
+  const tendonGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+  const tendonLine = new THREE.Line(tendonGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.6 }));
+  scene.add(tendonLine);
+  const trail = makeTrail(300, 0xe74c3c, 0.2); scene.add(trail.line);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const epos = sim.body_endpoint_positions();
+    let px = 0, py = 0;
+    for (let i = 0; i < N; i++) {
+      const ex = epos[i*3], ey = epos[i*3+1];
+      joints[i].position.set(ex, ey, 0);
+      const dx = ex-px, dy = ey-py, len = Math.sqrt(dx*dx+dy*dy);
+      rods[i].position.set((px+ex)/2, (py+ey)/2, 0);
+      rods[i].rotation.z = Math.atan2(dx, -dy);
+      rods[i].scale.y = len / L;
+      px = ex; py = ey;
+    }
+    pushTrail(trail, px, py, 0);
+    const ta = tendonLine.geometry.attributes.position.array;
+    ta[0] = px; ta[1] = py; ta[2] = 0;
+    ta[3] = 0; ta[4] = 0; ta[5] = 0;
+    tendonLine.geometry.attributes.position.needsUpdate = true;
+    const el = document.getElementById('stat-tendon');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} links  sinusoidal ctrl`;
+  }};
+});
+
+
+// =========================================
+// tau-em: Helper
+// =========================================
+function makeEmViz(canvasId, sim, statId, label) {
+  const N = sim.grid_size();
+  const { scene, camera, controls, canvas } = createScene(canvasId);
+  camera.position.set(0, 0, 2.2);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const data = new Uint8Array(N * N * 4);
+  const smooth = new Float32Array(N * N); // temporal smoothing buffer
+  const texture = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: texture })));
+  const mask = sim.mask_data();
+  // Neutral background matching page bg (#faf9f7 ~ 250,249,247)
+  const bg = 247;
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(4);
+    const field = sim.field();
+    for (let i = 0; i < N * N; i++) {
+      const m = mask[i];
+      if (m < 0.5) {
+        data[i*4] = 50; data[i*4+1] = 50; data[i*4+2] = 55; data[i*4+3] = 255;
+      } else {
+        // Exponential smoothing to avoid flashing (alpha=0.3)
+        smooth[i] = smooth[i] * 0.7 + field[i] * 0.3;
+        const v = smooth[i];
+        const s = Math.min(Math.abs(v) * 1.8, 1.0);
+        // Soft diverging colormap: warm beige -> muted rose / muted blue
+        if (v > 0) {
+          data[i*4]   = Math.floor(bg + (200 - bg) * s); // rose red
+          data[i*4+1] = Math.floor(bg + (160 - bg) * s);
+          data[i*4+2] = Math.floor(bg + (150 - bg) * s);
+        } else {
+          data[i*4]   = Math.floor(bg + (150 - bg) * s);
+          data[i*4+1] = Math.floor(bg + (165 - bg) * s);
+          data[i*4+2] = Math.floor(bg + (210 - bg) * s); // steel blue
+        }
+        data[i*4+3] = 255;
+      }
+    }
+    texture.needsUpdate = true;
+    const el = document.getElementById(statId);
+    if (el) el.textContent = `t=${sim.time().toFixed(2)}s  ${N}x${N} Yee grid  ${label}`;
+  }};
+}
+
+registerViz('ex-dipole', () => makeEmViz('ex-dipole', WasmEmSim.dipole(), 'stat-dipole', 'PML boundary'));
+registerViz('ex-guide', () => makeEmViz('ex-guide', WasmEmSim.waveguide(), 'stat-guide', 'TM waveguide'));
+registerViz('ex-slit', () => makeEmViz('ex-slit', WasmEmSim.double_slit(), 'stat-slit', 'interference'));
+
+
+// =========================================
+// tau-md: Helper for 2D particle viz
+// =========================================
+function makeMdViz(canvasId, sim, statId, label, baseColor) {
+  const N = sim.num_particles();
+  const bs = sim.box_size();
+  const { scene, camera, controls, canvas } = createScene(canvasId);
+  camera.position.set(bs/2, bs/2, bs * 2);
+  controls.target.set(bs/2, bs/2, 0);
+
+  const boxPts = [
+    new THREE.Vector3(0,0,0), new THREE.Vector3(bs,0,0),
+    new THREE.Vector3(bs,bs,0), new THREE.Vector3(0,bs,0), new THREE.Vector3(0,0,0)
+  ];
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(boxPts),
+    new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.3 })));
+
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false })));
+
+  const nBonds = sim.num_bonds();
+  let bondGeo = null, bondPos = null;
+  if (nBonds > 0) {
+    bondPos = new Float32Array(nBonds * 6);
+    bondGeo = new THREE.BufferGeometry();
+    bondGeo.setAttribute('position', new THREE.BufferAttribute(bondPos, 3));
+    scene.add(new THREE.LineSegments(bondGeo, new THREE.LineBasicMaterial({ color: baseColor, transparent: true, opacity: 0.4 })));
+  }
+  const bc = new THREE.Color(baseColor);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const pos = sim.positions();
+    const vel = sim.velocities();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      const v = Math.min(Math.sqrt(vel[i*2]*vel[i*2] + vel[i*2+1]*vel[i*2+1]) / 4.0, 1.0);
+      dotCol[i*3] = bc.r * (0.5 + v*0.5); dotCol[i*3+1] = bc.g * (0.5 + v*0.5); dotCol[i*3+2] = bc.b * (0.5 + v*0.5);
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    if (nBonds > 0) {
+      const ep = sim.bond_endpoints();
+      for (let s = 0; s < nBonds; s++) {
+        bondPos[s*6] = ep[s*4]; bondPos[s*6+1] = ep[s*4+1]; bondPos[s*6+2] = 0;
+        bondPos[s*6+3] = ep[s*4+2]; bondPos[s*6+4] = ep[s*4+3]; bondPos[s*6+5] = 0;
+      }
+      bondGeo.attributes.position.needsUpdate = true;
+    }
+    const T = sim.temperature();
+    const el = document.getElementById(statId);
+    if (el) el.textContent = `t=${sim.time().toFixed(2)}s  T=${T.toFixed(3)}  ${label}`;
+  }};
+}
+
+registerViz('ex-argon', () => makeMdViz('ex-argon', WasmMdSim.argon_gas(), 'stat-argon', 'LJ 12-6', ACCENT));
+registerViz('ex-crystal', () => makeMdViz('ex-crystal', WasmMdSim.crystal(), 'stat-crystal', 'phonons', 0x00897b));
+registerViz('ex-polymer', () => makeMdViz('ex-polymer', WasmMdSim.polymer(), 'stat-polymer', 'bonded chain', 0x7c4dff));
+
+
+// =========================================
+// tau-qft: Helper for lattice heatmap viz
+// =========================================
+function makeQftViz(canvasId, sim, statId, labelFn) {
+  const N = sim.lattice_size();
+  const { scene, camera, controls, canvas } = createScene(canvasId);
+  camera.position.set(0, 0, 2.2);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const data = new Uint8Array(N * N * 4);
+  const smooth = new Float32Array(N * N); // temporal smoothing
+  const texture = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: texture })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(3);
+    const plaq = sim.plaquettes();
+    for (let i = 0; i < N * N; i++) {
+      const raw = (plaq[i] + 1) * 0.5;
+      // Smooth over time to avoid flicker
+      smooth[i] = smooth[i] * 0.6 + raw * 0.4;
+      const t = Math.max(0, Math.min(1, smooth[i]));
+      // Muted palette: dark indigo -> teal -> warm sand
+      data[i*4]   = Math.floor(45 + t * 195);
+      data[i*4+1] = Math.floor(40 + t * 180);
+      data[i*4+2] = Math.floor(80 * (1-t) + 90 * t);
+      data[i*4+3] = 255;
+    }
+    texture.needsUpdate = true;
+    const el = document.getElementById(statId);
+    if (el) el.textContent = labelFn(sim);
+  }};
+}
+
+registerViz('ex-plaq', () => makeQftViz('ex-plaq', WasmQftSim.u1_plaquette(), 'stat-plaq',
+  s => `sweep ${s.time().toFixed(0)}  <P>=${s.average_plaquette().toFixed(3)}  beta=${s.beta().toFixed(1)}`
+));
+
+registerViz('ex-wilson', () => {
+  const sim = WasmQftSim.wilson_loops();
+  const N = sim.lattice_size();
+  const { scene, camera, controls, canvas } = createScene('ex-wilson');
+  camera.position.set(0, 0, 2.2);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const data = new Uint8Array(N * N * 4);
+  const smooth = new Float32Array(N * N);
+  const texture = new THREE.DataTexture(data, N, N, THREE.RGBAFormat);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: texture })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(3);
+    const plaq = sim.plaquettes();
+    for (let i = 0; i < N * N; i++) {
+      const raw = (plaq[i] + 1) * 0.5;
+      smooth[i] = smooth[i] * 0.6 + raw * 0.4;
+      const t = Math.max(0, Math.min(1, smooth[i]));
+      data[i*4]   = Math.floor(45 + t * 195);
+      data[i*4+1] = Math.floor(40 + t * 180);
+      data[i*4+2] = Math.floor(80 * (1-t) + 90 * t);
+      data[i*4+3] = 255;
+    }
+    texture.needsUpdate = true;
+    const w11 = sim.wilson_loop(1,1);
+    const w22 = sim.wilson_loop(2,2);
+    const w33 = sim.wilson_loop(3,3);
+    const el = document.getElementById('stat-wilson');
+    if (el) el.textContent = `W(1,1)=${w11.toFixed(2)}  W(2,2)=${w22.toFixed(2)}  W(3,3)=${w33.toFixed(2)}`;
+  }};
+});
+
+registerViz('ex-phasescan', () => makeQftViz('ex-phasescan', WasmQftSim.phase_scan(), 'stat-phasescan',
+  s => `beta=${s.beta().toFixed(2)}  <P>=${s.average_plaquette().toFixed(3)}  sweep ${s.time().toFixed(0)}`
+));
+
+// Start observing all registered canvases
+for (const canvasId of vizEntries.keys()) {
+  const canvas = document.getElementById(canvasId);
+  if (canvas) vizObserver.observe(canvas);
+}
+</script>
+
+</body>
+</html>
