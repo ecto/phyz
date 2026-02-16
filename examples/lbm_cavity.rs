@@ -92,7 +92,11 @@ fn main() {
     }
 
     println!("\nPrimary vortex center:");
-    println!("  x/L = {:.3}, y/H = {:.3}", vortex_x as f64 / nx as f64, vortex_y as f64 / ny as f64);
+    println!(
+        "  x/L = {:.3}, y/H = {:.3}",
+        vortex_x as f64 / nx as f64,
+        vortex_y as f64 / ny as f64
+    );
     println!("  Max vorticity: {:.6}", max_vorticity);
 
     println!("\n✓ LBM cavity flow complete");
