@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "WASM bindings for phyz physics engine"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
