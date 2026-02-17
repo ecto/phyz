@@ -3,6 +3,8 @@ name = "phyz-world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Procedural world generation for phyz physics engine"
 
 [dependencies]

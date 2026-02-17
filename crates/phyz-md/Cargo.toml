@@ -3,6 +3,9 @@ name = "phyz-md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Molecular dynamics with Lennard-Jones, Coulomb, and bonded potentials for phyz"
 
 [dependencies]
 nalgebra.workspace = true

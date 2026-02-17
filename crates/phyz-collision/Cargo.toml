@@ -3,6 +3,9 @@ name = "phyz-collision"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "GJK/EPA collision detection and broad-phase spatial hashing for phyz"
 
 [dependencies]
 nalgebra.workspace = true

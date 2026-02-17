@@ -3,6 +3,9 @@ name = "phyz-compile"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "JIT compilation of physics kernels to GPU compute shaders for phyz"
 
 [dependencies]
 nalgebra.workspace = true

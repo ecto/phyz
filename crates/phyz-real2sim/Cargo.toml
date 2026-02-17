@@ -3,6 +3,9 @@ name = "phyz-real2sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Inverse problems and parameter estimation for real-to-sim transfer in phyz"
 
 [dependencies]
 nalgebra.workspace = true

@@ -3,6 +3,9 @@ name = "phyz-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "GPU-accelerated batch simulation using wgpu compute shaders for phyz"
 
 [dependencies]
 phyz-math = { workspace = true }

@@ -3,6 +3,9 @@ name = "phyz-gravity"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Layered gravity solver from constant-g to post-Newtonian corrections for phyz"
 
 [dependencies]
 phyz-math = { workspace = true }

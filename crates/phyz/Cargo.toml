@@ -3,6 +3,8 @@ name = "phyz"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Multi-physics differentiable simulation engine"
 
 [dependencies]

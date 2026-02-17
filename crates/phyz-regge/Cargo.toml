@@ -3,6 +3,9 @@ name = "phyz-regge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory"
 
 [dependencies]
 phyz-math.workspace = true

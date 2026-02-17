@@ -3,6 +3,8 @@ name = "phyz-rigid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Featherstone articulated rigid body dynamics for phyz"
 
 [dependencies]

@@ -3,6 +3,9 @@ name = "phyz-qft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Lattice gauge theory with Hybrid Monte Carlo sampling for phyz"
 
 [dependencies]
 nalgebra.workspace = true

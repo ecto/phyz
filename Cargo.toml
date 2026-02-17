@@ -31,31 +31,33 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/ecto/phyz"
+homepage = "https://phyz.dev"
 
 [workspace.dependencies]
 nalgebra = "0.33"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-phyz-math = { path = "crates/phyz-math" }
-phyz-model = { path = "crates/phyz-model" }
-phyz-rigid = { path = "crates/phyz-rigid" }
-phyz-diff = { path = "crates/phyz-diff" }
-phyz-mjcf = { path = "crates/phyz-mjcf" }
-phyz-collision = { path = "crates/phyz-collision" }
-phyz-contact = { path = "crates/phyz-contact" }
-phyz-gpu = { path = "crates/phyz-gpu" }
-phyz-particle = { path = "crates/phyz-particle" }
-phyz-em = { path = "crates/phyz-em" }
-phyz-md = { path = "crates/phyz-md" }
-phyz-qft = { path = "crates/phyz-qft" }
-phyz-gravity = { path = "crates/phyz-gravity" }
-phyz-coupling = { path = "crates/phyz-coupling" }
-phyz-guardian = { path = "crates/phyz-guardian" }
-phyz-lbm = { path = "crates/phyz-lbm" }
-phyz-compile = { path = "crates/phyz-compile" }
-phyz-prob = { path = "crates/phyz-prob" }
-phyz-world = { path = "crates/phyz-world" }
-phyz-real2sim = { path = "crates/phyz-real2sim" }
-phyz-format = { path = "crates/phyz-format" }
-phyz-regge = { path = "crates/phyz-regge" }
-phyz = { path = "crates/phyz" }
+phyz-math = { version = "0.1.0", path = "crates/phyz-math" }
+phyz-model = { version = "0.1.0", path = "crates/phyz-model" }
+phyz-rigid = { version = "0.1.0", path = "crates/phyz-rigid" }
+phyz-diff = { version = "0.1.0", path = "crates/phyz-diff" }
+phyz-mjcf = { version = "0.1.0", path = "crates/phyz-mjcf" }
+phyz-collision = { version = "0.1.0", path = "crates/phyz-collision" }
+phyz-contact = { version = "0.1.0", path = "crates/phyz-contact" }
+phyz-gpu = { version = "0.1.0", path = "crates/phyz-gpu" }
+phyz-particle = { version = "0.1.0", path = "crates/phyz-particle" }
+phyz-em = { version = "0.1.0", path = "crates/phyz-em" }
+phyz-md = { version = "0.1.0", path = "crates/phyz-md" }
+phyz-qft = { version = "0.1.0", path = "crates/phyz-qft" }
+phyz-gravity = { version = "0.1.0", path = "crates/phyz-gravity" }
+phyz-coupling = { version = "0.1.0", path = "crates/phyz-coupling" }
+phyz-guardian = { version = "0.1.0", path = "crates/phyz-guardian" }
+phyz-lbm = { version = "0.1.0", path = "crates/phyz-lbm" }
+phyz-compile = { version = "0.1.0", path = "crates/phyz-compile" }
+phyz-prob = { version = "0.1.0", path = "crates/phyz-prob" }
+phyz-world = { version = "0.1.0", path = "crates/phyz-world" }
+phyz-real2sim = { version = "0.1.0", path = "crates/phyz-real2sim" }
+phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
+phyz-regge = { version = "0.1.0", path = "crates/phyz-regge" }
+phyz = { version = "0.1.0", path = "crates/phyz" }

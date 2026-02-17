@@ -3,6 +3,8 @@ name = "phyz-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "WASM bindings for phyz physics engine"
 
 [lib]

@@ -3,6 +3,9 @@ name = "phyz-format"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Universal multi-domain physics file format (.phyz) with MJCF/URDF import"
 
 [dependencies]
 nalgebra.workspace = true
