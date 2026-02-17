@@ -24,6 +24,7 @@ members = [
     "crates/tau-format",
     "crates/tau",
     "crates/tau-wasm",
+    "crates/tau-regge",
 ]
 
 [workspace.package]
@@ -56,4 +57,5 @@ tau-prob = { path = "crates/tau-prob" }
 tau-world = { path = "crates/tau-world" }
 tau-real2sim = { path = "crates/tau-real2sim" }
 tau-format = { path = "crates/tau-format" }
+tau-regge = { path = "crates/tau-regge" }
 tau = { path = "crates/tau" }

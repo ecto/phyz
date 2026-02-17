@@ -1322,6 +1322,7 @@ name = "tau-regge"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "nalgebra",
  "rand 0.8.5",
  "tau-math",
 ]
