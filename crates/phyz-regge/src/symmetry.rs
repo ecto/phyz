@@ -145,7 +145,7 @@ pub fn translation_generator(
     }
 }
 
-fn vertex_coords_4d(idx: usize, n: usize) -> [usize; 4] {
+pub fn vertex_coords_4d(idx: usize, n: usize) -> [usize; 4] {
     [
         idx % n,
         (idx / n) % n,
@@ -154,7 +154,7 @@ fn vertex_coords_4d(idx: usize, n: usize) -> [usize; 4] {
     ]
 }
 
-fn vertex_index_4d(coords: &[usize; 4], n: usize) -> usize {
+pub fn vertex_index_4d(coords: &[usize; 4], n: usize) -> usize {
     coords[0] + n * coords[1] + n * n * coords[2] + n * n * n * coords[3]
 }
 
@@ -314,6 +314,171 @@ pub fn project_out_span(vector: &mut [f64], orthonormal_generators: &[Generator]
             *vi -= dot * gi;
         }
     }
+}
+
+// === Discrete symmetries ===
+
+/// Discrete symmetries of the Einstein-Maxwell system.
+#[derive(Debug, Clone, Copy)]
+pub enum DiscreteSymmetry {
+    /// Charge conjugation: θ_e → -θ_e.
+    ChargeConjugation,
+    /// Time reversal: t → -t (vertex permutation on axis 0).
+    TimeReversal,
+    /// Parity flip along a spatial axis (1, 2, or 3).
+    Parity(usize),
+    /// C·P (charge conjugation × parity).
+    CP(usize),
+    /// C·T (charge conjugation × time reversal).
+    CT,
+    /// P·T (parity × time reversal).
+    PT(usize),
+    /// C·P·T.
+    CPT(usize),
+}
+
+impl std::fmt::Display for DiscreteSymmetry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChargeConjugation => write!(f, "C"),
+            Self::TimeReversal => write!(f, "T"),
+            Self::Parity(a) => write!(f, "P{a}"),
+            Self::CP(a) => write!(f, "CP{a}"),
+            Self::CT => write!(f, "CT"),
+            Self::PT(a) => write!(f, "PT{a}"),
+            Self::CPT(a) => write!(f, "CPT{a}"),
+        }
+    }
+}
+
+/// Build vertex permutation map from a coordinate transformation.
+///
+/// For each vertex, apply the coordinate transform and find the new vertex index.
+fn build_vertex_map(
+    n_vertices: usize,
+    n: usize,
+    coord_transform: impl Fn([usize; 4]) -> [usize; 4],
+) -> Vec<usize> {
+    let mut vertex_map = vec![0usize; n_vertices];
+    for v in 0..n_vertices {
+        let coords = vertex_coords_4d(v, n);
+        let new_coords = coord_transform(coords);
+        vertex_map[v] = vertex_index_4d(&new_coords, n);
+    }
+    vertex_map
+}
+
+/// Apply a vertex permutation to fields, remapping edges.
+///
+/// Returns new (lengths, phases) with edges remapped according to vertex_map.
+/// Edges whose mapped version doesn't exist in the complex keep their original values.
+/// (This happens for reflections on Kuhn triangulations, where some reflected
+/// vertex pairs don't appear in the same simplex.)
+pub fn apply_vertex_permutation(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    vertex_map: &[usize],
+) -> Fields {
+    let mut new_lengths = fields.lengths.clone();
+    let mut new_phases = fields.phases.clone();
+
+    for (ei, edge) in complex.edges.iter().enumerate() {
+        let mut mapped = [vertex_map[edge[0]], vertex_map[edge[1]]];
+        mapped.sort_unstable();
+        if let Some(&mapped_ei) = complex.edge_index.get(&mapped) {
+            new_lengths[mapped_ei] = fields.lengths[ei];
+            new_phases[mapped_ei] = fields.phases[ei];
+        }
+    }
+
+    Fields::new(new_lengths, new_phases)
+}
+
+/// Apply a discrete symmetry to fields.
+pub fn apply_discrete_symmetry(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    sym: DiscreteSymmetry,
+    n: usize,
+) -> Fields {
+    match sym {
+        DiscreteSymmetry::ChargeConjugation => {
+            // C: negate all phases, lengths unchanged.
+            let new_phases: Vec<f64> = fields.phases.iter().map(|&p| -p).collect();
+            Fields::new(fields.lengths.clone(), new_phases)
+        }
+        DiscreteSymmetry::TimeReversal => {
+            // T: flip time coordinate.
+            let vertex_map = build_vertex_map(complex.n_vertices, n, |mut c| {
+                c[0] = (n - c[0]) % n;
+                c
+            });
+            apply_vertex_permutation(complex, fields, &vertex_map)
+        }
+        DiscreteSymmetry::Parity(axis) => {
+            assert!((1..=3).contains(&axis), "parity axis must be 1, 2, or 3");
+            let vertex_map = build_vertex_map(complex.n_vertices, n, |mut c| {
+                c[axis] = (n - c[axis]) % n;
+                c
+            });
+            apply_vertex_permutation(complex, fields, &vertex_map)
+        }
+        DiscreteSymmetry::CP(axis) => {
+            let p_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
+            apply_discrete_symmetry(complex, &p_result, DiscreteSymmetry::ChargeConjugation, n)
+        }
+        DiscreteSymmetry::CT => {
+            let t_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::TimeReversal, n);
+            apply_discrete_symmetry(complex, &t_result, DiscreteSymmetry::ChargeConjugation, n)
+        }
+        DiscreteSymmetry::PT(axis) => {
+            let p_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
+            apply_discrete_symmetry(complex, &p_result, DiscreteSymmetry::TimeReversal, n)
+        }
+        DiscreteSymmetry::CPT(axis) => {
+            let pt_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::PT(axis), n);
+            apply_discrete_symmetry(complex, &pt_result, DiscreteSymmetry::ChargeConjugation, n)
+        }
+    }
+}
+
+/// Check how badly a discrete symmetry is broken: |S[T(φ)] - S[φ]|.
+pub fn check_discrete_symmetry(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    sym: DiscreteSymmetry,
+    n: usize,
+    params: &crate::action::ActionParams,
+) -> f64 {
+    let transformed = apply_discrete_symmetry(complex, fields, sym, n);
+    crate::action::action_variation(complex, fields, &transformed, params)
+}
+
+/// Check all discrete symmetries and return (symmetry, violation) pairs.
+pub fn check_all_discrete_symmetries(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    n: usize,
+    params: &crate::action::ActionParams,
+) -> Vec<(DiscreteSymmetry, f64)> {
+    let syms = [
+        DiscreteSymmetry::ChargeConjugation,
+        DiscreteSymmetry::TimeReversal,
+        DiscreteSymmetry::Parity(1),
+        DiscreteSymmetry::Parity(2),
+        DiscreteSymmetry::Parity(3),
+        DiscreteSymmetry::CP(1),
+        DiscreteSymmetry::CT,
+        DiscreteSymmetry::PT(1),
+        DiscreteSymmetry::CPT(1),
+    ];
+
+    syms.iter()
+        .map(|&sym| {
+            let violation = check_discrete_symmetry(complex, fields, sym, n, params);
+            (sym, violation)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -626,5 +791,87 @@ mod tests {
             max_boost_dl > max_rot_dl,
             "boost max δl ({max_boost_dl}) should exceed rotation max δl ({max_rot_dl}) on RN"
         );
+    }
+
+    // === Discrete symmetry tests ===
+
+    #[test]
+    fn test_c_exact_flat() {
+        // C is exact on flat space with zero field.
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        assert!(v < 1e-12, "C violation on flat = {v}");
+    }
+
+    #[test]
+    fn test_t_exact_flat() {
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::TimeReversal, n, &params);
+        assert!(v < 1e-10, "T violation on flat = {v}");
+    }
+
+    #[test]
+    fn test_p_exact_flat() {
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        for axis in 1..=3 {
+            let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::Parity(axis), n, &params);
+            assert!(v < 1e-10, "P{axis} violation on flat = {v}");
+        }
+    }
+
+    #[test]
+    fn test_c_exact_rn() {
+        // C is exact on RN with zero gauge field (S is even in θ).
+        let n = 3;
+        let (complex, lengths) = mesh::reissner_nordstrom(n, 1.0, 0.1, 0.0, 0.5);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        assert!(v < 1e-12, "C violation on RN = {v}");
+    }
+
+    #[test]
+    fn test_cpt_flat() {
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::CPT(1), n, &params);
+        assert!(v < 1e-10, "CPT violation on flat = {v}");
+    }
+
+    #[test]
+    fn test_t_kerr_broken() {
+        // T should be broken on Kerr (frame-dragging breaks time-reversal).
+        let n = 3;
+        let (complex, lengths) = mesh::kerr(n, 1.0, 0.1, 0.3, 0.5);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+        let params = ActionParams::default();
+
+        let v_t = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::TimeReversal, n, &params);
+        let v_c = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        // C is still exact (zero gauge field), T is broken.
+        assert!(v_c < 1e-12, "C should be exact on Kerr with zero gauge field");
+        assert!(v_t > v_c, "T should be more broken than C on Kerr: T={v_t}, C={v_c}");
     }
 }

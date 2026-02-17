@@ -10,6 +10,8 @@
 //!   DS_SPACING  base grid spacing        (default 1.0)
 //!   DS_SAMPLES  random samples           (default 500)
 //!   DS_SEED     RNG seed                 (default 42)
+//!   DS_FORM     conformal|static         (default "conformal")
+//!   DS_RMIN     min r for static patch   (default 0.1)
 
 use std::env;
 use std::time::Instant;
@@ -34,14 +36,19 @@ fn main() {
     let spacing: f64 = env_or("DS_SPACING", 1.0);
     let n_samples: usize = env_or("DS_SAMPLES", 500);
     let seed: u64 = env_or("DS_SEED", 42);
+    let form: String = env_or("DS_FORM", "conformal".to_string());
+    let r_min: f64 = env_or("DS_RMIN", 0.1);
 
-    println!("=== de Sitter Symmetry Search ===");
+    println!("=== de Sitter Symmetry Search ({form}) ===");
     println!("  n={n}, L={cosmological_length}, spacing={spacing}");
     println!("  samples={n_samples}, seed={seed}");
     println!();
 
     let t0 = Instant::now();
-    let (complex, lengths) = mesh::de_sitter(n, spacing, cosmological_length);
+    let (complex, lengths) = match form.as_str() {
+        "static" => mesh::de_sitter_static(n, spacing, cosmological_length, r_min),
+        _ => mesh::de_sitter(n, spacing, cosmological_length),
+    };
     let mesh_time = t0.elapsed();
     println!(
         "Mesh: {} vertices, {} edges  ({:.1?})",

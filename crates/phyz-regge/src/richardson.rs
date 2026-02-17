@@ -24,6 +24,8 @@ pub struct ResolutionData {
     pub n_dof: usize,
     /// Number of known generators.
     pub n_known: usize,
+    /// Wall-clock time for this resolution (seconds).
+    pub elapsed_secs: f64,
 }
 
 /// Results from Richardson extrapolation across resolutions.
@@ -35,6 +37,10 @@ pub struct RichardsonResults {
     pub extrapolated: Vec<f64>,
     /// Estimated convergence order p for each k (from 3-point fit).
     pub convergence_orders: Vec<f64>,
+    /// Fit residuals for each spectral index (only meaningful with ≥3 resolutions).
+    pub fit_residuals: Vec<f64>,
+    /// R² (coefficient of determination) for each fit.
+    pub fit_r_squared: Vec<f64>,
 }
 
 impl RichardsonResults {
@@ -44,7 +50,8 @@ impl RichardsonResults {
         s.push_str("=== Richardson Extrapolation ===\n");
         s.push_str(&format!("Resolutions: {:?}\n", self.resolutions.iter().map(|r| r.n).collect::<Vec<_>>()));
         s.push_str(&format!("Spacings h:  {:?}\n", self.resolutions.iter().map(|r| format!("{:.4}", r.h)).collect::<Vec<_>>()));
-        s.push_str(&format!("Spectrum lengths: {:?}\n\n", self.resolutions.iter().map(|r| r.violations.len()).collect::<Vec<_>>()));
+        s.push_str(&format!("Spectrum lengths: {:?}\n", self.resolutions.iter().map(|r| r.violations.len()).collect::<Vec<_>>()));
+        s.push_str(&format!("Elapsed (s): {:?}\n\n", self.resolutions.iter().map(|r| format!("{:.1}", r.elapsed_secs)).collect::<Vec<_>>()));
 
         let n_extrap = self.extrapolated.len();
         if n_extrap == 0 {
@@ -52,12 +59,19 @@ impl RichardsonResults {
             return s;
         }
 
+        let has_fit_quality = !self.fit_residuals.is_empty();
+
         s.push_str(&format!("{:<6} ", "k"));
         for rd in &self.resolutions {
             s.push_str(&format!("{:>12} ", format!("n={}", rd.n)));
         }
-        s.push_str(&format!("{:>12} {:>8}\n", "extrap", "order"));
-        s.push_str(&"-".repeat(6 + 13 * self.resolutions.len() + 22));
+        s.push_str(&format!("{:>12} {:>8}", "extrap", "order"));
+        if has_fit_quality {
+            s.push_str(&format!("{:>12} {:>8}", "residual", "R²"));
+        }
+        s.push('\n');
+        let width = 6 + 13 * self.resolutions.len() + 22 + if has_fit_quality { 22 } else { 0 };
+        s.push_str(&"-".repeat(width));
         s.push('\n');
 
         for k in 0..n_extrap {
@@ -69,7 +83,11 @@ impl RichardsonResults {
                     s.push_str(&format!("{:>12} ", "---"));
                 }
             }
-            s.push_str(&format!("{:>12.2e} {:>8.1}\n", self.extrapolated[k], self.convergence_orders[k]));
+            s.push_str(&format!("{:>12.2e} {:>8.1}", self.extrapolated[k], self.convergence_orders[k]));
+            if has_fit_quality && k < self.fit_residuals.len() {
+                s.push_str(&format!("{:>12.2e} {:>8.4}", self.fit_residuals[k], self.fit_r_squared[k]));
+            }
+            s.push('\n');
         }
 
         // Highlight candidates.
@@ -105,11 +123,27 @@ pub fn richardson_extrapolation(
     params: &ActionParams,
     base_seed: u64,
 ) -> RichardsonResults {
+    richardson_extrapolation_with(ns, spacing, background_builder, known_builder, params, base_seed, None)
+}
+
+/// Like `richardson_extrapolation` with an optional sample cap.
+pub fn richardson_extrapolation_with(
+    ns: &[usize],
+    spacing: f64,
+    background_builder: impl Fn(usize) -> (SimplicialComplex, Vec<f64>),
+    known_builder: impl Fn(&SimplicialComplex, &Fields, usize) -> Vec<Generator>,
+    params: &ActionParams,
+    base_seed: u64,
+    max_samples: Option<usize>,
+) -> RichardsonResults {
     assert!(ns.len() >= 2, "need at least 2 resolutions");
 
+    let sample_cap = max_samples.unwrap_or(usize::MAX);
     let mut resolutions = Vec::with_capacity(ns.len());
 
     for &n in ns {
+        let t0 = std::time::Instant::now();
+
         let (complex, lengths) = background_builder(n);
         let phases = vec![0.0; complex.n_edges()];
         let fields = Fields::new(lengths, phases);
@@ -118,8 +152,8 @@ pub fn richardson_extrapolation(
         let n_known = orthonormalize(&known).len();
         let n_dof = fields.n_dof();
 
-        // Auto-scale samples: at least 500, at least 2× (DOF - known).
-        let n_samples = 500.max(2 * n_dof.saturating_sub(n_known));
+        // Auto-scale samples: at least 500, at least 2× (DOF - known), capped.
+        let n_samples = 500.max(2 * n_dof.saturating_sub(n_known)).min(sample_cap);
 
         eprintln!(
             "Richardson n={n}: {n_dof} DOF, {n_known} known, {n_samples} samples...",
@@ -142,6 +176,7 @@ pub fn richardson_extrapolation(
             .collect();
 
         let h = spacing / n as f64;
+        let elapsed_secs = t0.elapsed().as_secs_f64();
 
         resolutions.push(ResolutionData {
             n,
@@ -149,14 +184,17 @@ pub fn richardson_extrapolation(
             violations,
             n_dof,
             n_known,
+            elapsed_secs,
         });
     }
 
-    // Extrapolate: for each spectral index k, fit σ_k(h) = a + b·h².
+    // Extrapolate: for each spectral index k, fit σ_k(h) = a + b·h^p.
     let min_len = resolutions.iter().map(|r| r.violations.len()).min().unwrap_or(0);
 
     let mut extrapolated = Vec::with_capacity(min_len);
     let mut convergence_orders = Vec::with_capacity(min_len);
+    let mut fit_residuals = Vec::with_capacity(min_len);
+    let mut fit_r_squared = Vec::with_capacity(min_len);
 
     for k in 0..min_len {
         let points: Vec<(f64, f64)> = resolutions
@@ -165,11 +203,11 @@ pub fn richardson_extrapolation(
             .collect();
 
         if points.len() >= 3 {
-            // Three-point least-squares fit: σ = a + b·h^p
-            // First estimate p from the three-point ratio, then fit a + b·h².
-            let (a, p) = fit_three_point(&points);
+            let (a, p, residual, r_sq) = fit_three_point(&points);
             extrapolated.push(a);
             convergence_orders.push(p);
+            fit_residuals.push(residual);
+            fit_r_squared.push(r_sq);
         } else {
             // Two-point Richardson: σ_extrap = (n₂²·σ₂ − n₁²·σ₁) / (n₂² − n₁²)
             let (h1, s1) = points[0];
@@ -177,7 +215,6 @@ pub fn richardson_extrapolation(
             let h1_sq = h1 * h1;
             let h2_sq = h2 * h2;
             let a = (h1_sq * s2 - h2_sq * s1) / (h1_sq - h2_sq);
-            // Estimate order from ratio.
             let p = if (s1 - s2).abs() > 1e-15 {
                 ((s1 / s2).abs().ln() / (h1 / h2).abs().ln()).max(0.0)
             } else {
@@ -192,25 +229,22 @@ pub fn richardson_extrapolation(
         resolutions,
         extrapolated,
         convergence_orders,
+        fit_residuals,
+        fit_r_squared,
     }
 }
 
 /// Three-point fit: σ = a + b·h^p.
 ///
-/// Estimates p from the three points, then computes a via least squares
-/// with σ = a + b·h².
-fn fit_three_point(points: &[(f64, f64)]) -> (f64, f64) {
-    // Estimate convergence order p from ratio of differences.
+/// Returns (a, p, residual, R²).
+fn fit_three_point(points: &[(f64, f64)]) -> (f64, f64, f64, f64) {
     let (h0, s0) = points[0];
     let (h1, s1) = points[1];
     let (h2, s2) = points[2];
 
-    // Try to estimate p from (s0-s1)/(s1-s2) = (h0^p - h1^p)/(h1^p - h2^p).
-    // Fall back to p=2 if degenerate.
     let p = estimate_order(h0, s0, h1, s1, h2, s2);
 
     // Least-squares fit: σ_k = a + b·h^p.
-    // Normal equations for [a, b] given data (h_i^p, σ_i).
     let mut sum_1 = 0.0;
     let mut sum_hp = 0.0;
     let mut sum_hp2 = 0.0;
@@ -227,20 +261,32 @@ fn fit_three_point(points: &[(f64, f64)]) -> (f64, f64) {
     }
 
     let det = sum_1 * sum_hp2 - sum_hp * sum_hp;
-    let a = if det.abs() > 1e-30 {
-        (sum_s * sum_hp2 - sum_s_hp * sum_hp) / det
+    let (a, b) = if det.abs() > 1e-30 {
+        let a = (sum_s * sum_hp2 - sum_s_hp * sum_hp) / det;
+        let b = (sum_1 * sum_s_hp - sum_hp * sum_s) / det;
+        (a, b)
     } else {
-        s2 // fallback: finest resolution value
+        (s2, 0.0) // fallback
     };
 
-    (a, p)
+    // Compute residual and R².
+    let mean_s = sum_s / sum_1;
+    let mut ss_res = 0.0;
+    let mut ss_tot = 0.0;
+    for &(h, s) in points {
+        let predicted = a + b * h.powf(p);
+        ss_res += (s - predicted) * (s - predicted);
+        ss_tot += (s - mean_s) * (s - mean_s);
+    }
+
+    let residual = (ss_res / sum_1).sqrt();
+    let r_squared = if ss_tot > 1e-30 { 1.0 - ss_res / ss_tot } else { 1.0 };
+
+    (a, p, residual, r_squared)
 }
 
 /// Estimate convergence order from three (h, σ) pairs.
 fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
-    // Use the Aitken method: if σ = a + b·h^p, then
-    //   (s0 - s1) / (s1 - s2) ≈ (h0^p - h1^p) / (h1^p - h2^p)
-    // Solve for p numerically. Fall back to 2.0 if degenerate.
     let ds01 = s0 - s1;
     let ds12 = s1 - s2;
 
@@ -250,7 +296,6 @@ fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
 
     let target_ratio = ds01 / ds12;
 
-    // Binary search for p in [0.5, 6.0].
     let ratio_at = |p: f64| -> f64 {
         let num = h0.powf(p) - h1.powf(p);
         let den = h1.powf(p) - h2.powf(p);
@@ -260,7 +305,6 @@ fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
     let mut lo = 0.5_f64;
     let mut hi = 6.0_f64;
 
-    // Check monotonicity; if ratio_at is not bracketing target, return 2.0.
     let r_lo = ratio_at(lo);
     let r_hi = ratio_at(hi);
     if (r_lo - target_ratio) * (r_hi - target_ratio) > 0.0 {
@@ -278,4 +322,38 @@ fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
     }
 
     (lo + hi) / 2.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_richardson_synthetic_three_point() {
+        // Synthetic data: σ = 0.001 + 2.5 * h^2.0
+        let points = vec![
+            (0.5, 0.001 + 2.5 * 0.5_f64.powf(2.0)),
+            (1.0 / 3.0, 0.001 + 2.5 * (1.0 / 3.0_f64).powf(2.0)),
+            (0.25, 0.001 + 2.5 * 0.25_f64.powf(2.0)),
+        ];
+
+        let (a, p, residual, r_sq) = fit_three_point(&points);
+
+        assert!(
+            (a - 0.001).abs() < 1e-4,
+            "expected a ≈ 0.001, got {a}"
+        );
+        assert!(
+            (p - 2.0).abs() < 0.5,
+            "expected p ≈ 2.0, got {p}"
+        );
+        assert!(
+            residual < 1e-4,
+            "expected small residual, got {residual}"
+        );
+        assert!(
+            r_sq > 0.99,
+            "expected R² ≈ 1.0, got {r_sq}"
+        );
+    }
 }

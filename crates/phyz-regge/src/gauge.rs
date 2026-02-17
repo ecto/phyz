@@ -24,6 +24,90 @@ use crate::complex::SimplicialComplex;
 use crate::geometry::{pent_volume, pent_volume_grad, triangle_area, triangle_area_grad_lsq};
 use std::f64::consts::PI;
 
+// === GaugeField trait ===
+
+/// Trait for gauge field types (U(1), SU(2), etc.) on a simplicial complex.
+pub trait GaugeField: Clone {
+    /// Number of DOF per edge (1 for U(1), 3 for SU(2)).
+    const DOF_PER_EDGE: usize;
+
+    /// Flat connection (identity/zero).
+    fn flat(n_edges: usize) -> Self;
+
+    /// Gauge/Yang-Mills action on curved background.
+    fn action(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> f64;
+
+    /// Gradient w.r.t. gauge DOF (packed flat: DOF_PER_EDGE * n_edges).
+    fn grad_field(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> Vec<f64>;
+
+    /// Gradient w.r.t. edge lengths.
+    fn grad_lengths(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> Vec<f64>;
+
+    /// Pack into flat vector.
+    fn pack(&self) -> Vec<f64>;
+
+    /// Unpack from flat vector.
+    fn unpack(flat: &[f64], n_edges: usize) -> Self;
+
+    /// Number of gauge generators per vertex.
+    fn n_gauge_generators_per_vertex() -> usize;
+
+    /// Gauge generator at vertex v, direction a (0..n_gauge_generators).
+    /// Returns a flat vector of length DOF_PER_EDGE * n_edges.
+    fn gauge_generator(complex: &SimplicialComplex, vertex: usize, direction: usize) -> Vec<f64>;
+}
+
+// === U(1) implementation ===
+
+/// U(1) gauge field: one phase per edge.
+#[derive(Debug, Clone)]
+pub struct U1Field(pub Vec<f64>);
+
+impl GaugeField for U1Field {
+    const DOF_PER_EDGE: usize = 1;
+
+    fn flat(n_edges: usize) -> Self {
+        U1Field(vec![0.0; n_edges])
+    }
+
+    fn action(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> f64 {
+        maxwell_action(complex, lengths, &field.0)
+    }
+
+    fn grad_field(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> Vec<f64> {
+        maxwell_action_grad_phases(complex, lengths, &field.0)
+    }
+
+    fn grad_lengths(complex: &SimplicialComplex, lengths: &[f64], field: &Self) -> Vec<f64> {
+        maxwell_action_grad_lengths(complex, lengths, &field.0)
+    }
+
+    fn pack(&self) -> Vec<f64> {
+        self.0.clone()
+    }
+
+    fn unpack(flat: &[f64], _n_edges: usize) -> Self {
+        U1Field(flat.to_vec())
+    }
+
+    fn n_gauge_generators_per_vertex() -> usize {
+        1
+    }
+
+    fn gauge_generator(complex: &SimplicialComplex, vertex: usize, _direction: usize) -> Vec<f64> {
+        let n = complex.n_edges();
+        let mut g = vec![0.0; n];
+        for (ei, edge) in complex.edges.iter().enumerate() {
+            if edge[0] == vertex {
+                g[ei] = -1.0;
+            } else if edge[1] == vertex {
+                g[ei] = 1.0;
+            }
+        }
+        g
+    }
+}
+
 /// Compute field strengths F_t on all triangles.
 ///
 /// F_t = oriented sum of edge phases around triangle boundary,
@@ -65,6 +149,8 @@ fn wrap_angle(x: f64) -> f64 {
 }
 
 /// Compute the metric weight W_t for each triangle.
+///
+/// Public for use by other gauge field implementations (e.g., SU(2)).
 ///
 /// In the continuum, the Maxwell action density is (1/2) F_μν F^μν √g.
 /// In the discrete setting, this becomes:

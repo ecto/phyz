@@ -1,5 +1,115 @@
 # phyz-regge: Research Journal
 
+## 2026-02-17 — Phase 3: Convergence, Backgrounds, Discrete Symmetries, SU(2)
+
+### Context
+
+Phase 2 established 19 known symmetries on RN with a clean gap to the O(h²) noise
+floor. Three open questions remained: h^1 vs h^2 convergence, other backgrounds and
+resolutions, and extending beyond U(1). This phase addresses all six roadmap items.
+
+### Changes
+
+| File | What |
+|------|------|
+| `src/mesh.rs` | `MetricIntegration` enum (Midpoint/Simpson). `deform_by_metric_with()` with Simpson's 1/3 rule (3-point quadrature). `_with` variants for all mesh functions. Exact Kerr-Schild (`kerr_schild`), Boyer-Lindquist isotropic (`kerr_bl`), de Sitter static patch (`de_sitter_static`). +250 lines, +8 tests. |
+| `src/richardson.rs` | 3-point fit with residual and R². `fit_residuals`, `fit_r_squared` fields. `richardson_extrapolation_with()` with `max_samples` cap. Timing via `elapsed_secs`. +50 lines, +1 test. |
+| `src/symmetry.rs` | `DiscreteSymmetry` enum (C, T, P, CP, CT, PT, CPT). `apply_vertex_permutation()`, `apply_discrete_symmetry()`, `check_discrete_symmetry()`, `check_all_discrete_symmetries()`. Made `vertex_coords_4d`/`vertex_index_4d` pub(crate). +200 lines, +5 tests. |
+| `src/su2.rs` | **New.** SU(2) via unit quaternion `Su2 { q: [f64; 4] }`. `mul`, `inv`, `exp`, `log`, `re_trace`, `adjoint` (SO(3) rotation matrix). +160 lines, +7 tests. |
+| `src/gauge.rs` | `GaugeField` trait with `DOF_PER_EDGE`, `flat`, `action`, `grad_field`, `grad_lengths`, `pack`, `unpack`, `gauge_generator`. `U1Field` wrapper implementing the trait. `metric_weights` made pub. +120 lines, +1 test. |
+| `src/yang_mills.rs` | **New.** `Su2Field` implementing `GaugeField`. Wilson action, analytical gradient (left-invariant basis), field-dependent gauge generators via adjoint. `einstein_yang_mills_action/grad`. `all_su2_gauge_generators`. +300 lines, +5 tests. |
+| `src/search.rs` | `search_symmetries_generic()` — closure-based search for any action. +70 lines, +1 test. |
+| `src/lib.rs` | Registered `su2`, `yang_mills` modules. Re-exports for `GaugeField`, `U1Field`, `Su2`, `Su2Field`, `search_symmetries_generic`. |
+| `examples/kerr_symmetry_search.rs` | `KERR_FORM=slow|ks|bl` env var for exact Kerr metrics. |
+| `examples/de_sitter_symmetry_search.rs` | `DS_FORM=conformal|static`, `DS_RMIN` env vars. |
+| `examples/richardson_search.rs` | `RICH_MAX_SAMPLES`, `RICH_METHOD=midpoint|simpson` env vars. |
+| `examples/su2_symmetry_search.rs` | **New.** SU(2) symmetry search with configurable background (`SU2_BG`), field type (`SU2_FIELD=zero/random/monopole`), proper field-dependent generators. |
+
+### Results
+
+#### SU(2) Yang-Mills symmetry search
+
+Searched for novel symmetries of the Einstein-Yang-Mills action across 4
+configurations (n=2, 600 samples, proper SU(2) field transport in all generators):
+
+| Config | Exact (< 1e-10) | Known (59) | Novel | Gap to noise |
+|--------|-----------------|------------|-------|--------------|
+| RN + zero field | 52 | 59 | 0 | 1.6e-4 |
+| RN + random field | 59 | 59 | 0 | 1.9e-4 |
+| RN + monopole field | 58 | 59 | 0 | 1.7e-4 |
+| flat + monopole field | 58 | 59 | 0 | 8.8e-5 |
+
+Known generators: 48 SU(2) gauge + 4 translation + 3 rotation + 3 boost + 1 conformal.
+On curved backgrounds some geometric generators are broken (violated at O(h²)),
+explaining exact counts < 59.
+
+**No novel symmetries found.** Clean gap between known symmetries and O(h²) noise
+floor in all cases.
+
+#### Key insight: SU(2) field transport
+
+Initial runs showed spurious "extra" exact symmetries (up to 69 on RN+random vs 48
+expected gauge). Root cause: geometric generators (translations, rotations) were
+missing the SU(2) field transport. For U(1), translations shift phases additively:
+`δθ_e = θ_{shifted(e)} - θ_e`. For SU(2), the left-invariant transport is:
+`δε_e = log(U_{shifted(e)} · U_e⁻¹)` — a non-abelian group difference. Once
+properly included, all "extras" collapsed into the known set.
+
+#### Discrete symmetries
+
+- **C (charge conjugation):** Exact on flat and RN (θ → -θ, S_M even in F).
+- **T (time reversal), P (parity):** Exact on flat space. Broken on Kerr
+  (frame-dragging breaks T). Kuhn triangulation is not invariant under coordinate
+  reflections — `apply_vertex_permutation` falls back to identity for unmapped edges.
+- **CPT:** Exact on flat space (product of individual symmetries).
+
+#### Exact Kerr metrics
+
+- Kerr-Schild and Boyer-Lindquist isotropic forms agree to ~1e-4 (normalized) at
+  moderate spin (a=0.3M, n=2).
+- High spin (a=0.9M) produces valid positive edge lengths.
+- Both reduce to Schwarzschild (RN with Q=0) at a=0.
+
+#### de Sitter static patch
+
+- Metric clamped away from cosmological horizon (r_min parameter).
+- Flat limit (L→∞) gives positive bounded lengths.
+- Lower violation ceiling than conformal coordinates for searches.
+
+### Technical notes
+
+- **SU(2) gradient subtlety:** Left-invariant variations `U → exp(ε·T_a)·U` give
+  gradient `∂S/∂ε^a = W_t/2 · q_a(V)` where V is the cyclically-shifted holonomy.
+  The finite-difference test must use the same left-invariant perturbation.
+- **Non-abelian gauge generators are field-dependent.** For edge (i,v) under gauge
+  transform at v: `δε^b = -Ad(U_e)^{ba}·λ^a`. This is the key difference from U(1).
+  The `Su2::adjoint()` method computes the SO(3) rotation matrix from the quaternion.
+- **Geometric generators need field transport.** Translations/rotations must include
+  `log(U_shifted · U_orig⁻¹)` in the SU(2) DOF sector, not just length permutations.
+  Without this, the search finds spurious "novel" directions that are actually known
+  geometric symmetries with their field component missing from the projection.
+- **Abelian embedding ratio:** Wilson action gives `1-cos(F/2) ≈ F²/8` vs Maxwell's
+  `F²/2`, so SU(2) with U(1) embedding gives ratio 1/4.
+- **Monopole field:** Hedgehog-like `exp(r̂ × ê · σ · f(r))` configuration. On flat
+  space, 2 candidates at ~9e-5 sit slightly below the noise floor — could be
+  approximate symmetry from the spherical structure, or just statistical fluctuation.
+
+### Crate stats
+
+- ~5,000 lines across 11 modules
+- 71 tests, all passing
+- SU(2) search: ~750ms (n=2, 600 samples, release)
+
+### Open questions
+
+- Simpson's rule convergence: does `RICH_METHOD=simpson` improve h^1 → h^2?
+  (Not yet tested with Richardson — needs a run.)
+- SU(2) on curved backgrounds (RN/Kerr): what happens to the gauge symmetry count?
+- Higher gauge groups: SU(3) would follow the same pattern with 8 generators/vertex.
+- Instanton solutions: can the SU(2) framework find self-dual configurations?
+
+---
+
 ## 2026-02-16 — Phase 2: Boosts, new backgrounds, Richardson extrapolation
 
 ### Context

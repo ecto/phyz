@@ -1,7 +1,9 @@
-//! Symmetry search on a slow-rotation Kerr background.
+//! Symmetry search on a Kerr background.
 //!
-//! Only the z-axis rotation should survive as approximate symmetry.
-//! Other rotations and all boosts are broken at O(a) > O(h²).
+//! Supports three Kerr metric forms:
+//! - slow: slow-rotation approximation (linear in a)
+//! - ks: exact Kerr-Schild (Euclidean)
+//! - bl: exact Boyer-Lindquist isotropic
 //!
 //! Configuration via env vars (all optional):
 //!   KERR_N        grid points per axis   (default 2)
@@ -11,6 +13,7 @@
 //!   KERR_SPACING  base grid spacing      (default 1.0)
 //!   KERR_SAMPLES  random samples         (default 500)
 //!   KERR_SEED     RNG seed               (default 42)
+//!   KERR_FORM     slow|ks|bl             (default "slow")
 
 use std::env;
 use std::time::Instant;
@@ -37,14 +40,19 @@ fn main() {
     let spacing: f64 = env_or("KERR_SPACING", 1.0);
     let n_samples: usize = env_or("KERR_SAMPLES", 500);
     let seed: u64 = env_or("KERR_SEED", 42);
+    let form: String = env_or("KERR_FORM", "slow".to_string());
 
-    println!("=== Kerr Symmetry Search (slow rotation) ===");
+    println!("=== Kerr Symmetry Search ({form}) ===");
     println!("  n={n}, M={mass}, a={spin}, r_min={r_min}, spacing={spacing}");
     println!("  samples={n_samples}, seed={seed}");
     println!();
 
     let t0 = Instant::now();
-    let (complex, lengths) = mesh::kerr(n, spacing, mass, spin, r_min);
+    let (complex, lengths) = match form.as_str() {
+        "ks" => mesh::kerr_schild(n, spacing, mass, spin, r_min),
+        "bl" => mesh::kerr_bl(n, spacing, mass, spin, r_min),
+        _ => mesh::kerr(n, spacing, mass, spin, r_min),
+    };
     let mesh_time = t0.elapsed();
     println!(
         "Mesh: {} vertices, {} edges  ({:.1?})",

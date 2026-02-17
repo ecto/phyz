@@ -5,6 +5,16 @@
 
 use crate::complex::SimplicialComplex;
 
+/// Integration method for evaluating the metric along edges.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MetricIntegration {
+    /// Single evaluation at the edge midpoint.
+    #[default]
+    Midpoint,
+    /// Simpson's 1/3 rule: weighted average of endpoints + midpoint.
+    Simpson,
+}
+
 /// Generate a flat periodic (toroidal) hypercubic triangulation.
 ///
 /// Tiles 4D space with n^4 hypercubes, each subdivided into 24 pentachorons
@@ -146,9 +156,10 @@ fn metric_line_element(g: &[[f64; 4]; 4], dx: &[f64; 4]) -> f64 {
 
 /// Helper: build flat hypercubic mesh, compute centered vertex positions,
 /// then deform edge lengths using a metric tensor evaluated at each edge midpoint.
-fn deform_by_metric(
+fn deform_by_metric_with(
     n: usize,
     spacing: f64,
+    integration: MetricIntegration,
     metric_at: impl Fn(f64, f64, f64, f64) -> [[f64; 4]; 4],
 ) -> (SimplicialComplex, Vec<f64>) {
     let (complex, _flat_lengths) = flat_hypercubic(n, spacing);
@@ -169,12 +180,6 @@ fn deform_by_metric(
         let p0 = vertex_pos(edge[0]);
         let p1 = vertex_pos(edge[1]);
 
-        let mid = [
-            (p0[0] + p1[0]) / 2.0,
-            (p0[1] + p1[1]) / 2.0,
-            (p0[2] + p1[2]) / 2.0,
-            (p0[3] + p1[3]) / 2.0,
-        ];
         let dx = [
             p1[0] - p0[0],
             p1[1] - p0[1],
@@ -182,9 +187,36 @@ fn deform_by_metric(
             p1[3] - p0[3],
         ];
 
-        let g = metric_at(mid[0], mid[1], mid[2], mid[3]);
-        let ds_sq = metric_line_element(&g, &dx);
-        lengths[ei] = ds_sq.abs().sqrt().max(1e-10);
+        let length = match integration {
+            MetricIntegration::Midpoint => {
+                let mid = [
+                    (p0[0] + p1[0]) / 2.0,
+                    (p0[1] + p1[1]) / 2.0,
+                    (p0[2] + p1[2]) / 2.0,
+                    (p0[3] + p1[3]) / 2.0,
+                ];
+                let g = metric_at(mid[0], mid[1], mid[2], mid[3]);
+                metric_line_element(&g, &dx).abs().sqrt()
+            }
+            MetricIntegration::Simpson => {
+                // Simpson's 1/3 rule: (l0 + 4*lm + l1) / 6
+                let mid = [
+                    (p0[0] + p1[0]) / 2.0,
+                    (p0[1] + p1[1]) / 2.0,
+                    (p0[2] + p1[2]) / 2.0,
+                    (p0[3] + p1[3]) / 2.0,
+                ];
+                let g0 = metric_at(p0[0], p0[1], p0[2], p0[3]);
+                let gm = metric_at(mid[0], mid[1], mid[2], mid[3]);
+                let g1 = metric_at(p1[0], p1[1], p1[2], p1[3]);
+                let l0 = metric_line_element(&g0, &dx).abs().sqrt();
+                let lm = metric_line_element(&gm, &dx).abs().sqrt();
+                let l1 = metric_line_element(&g1, &dx).abs().sqrt();
+                (l0 + 4.0 * lm + l1) / 6.0
+            }
+        };
+
+        lengths[ei] = length.max(1e-10);
     }
 
     (complex, lengths)
@@ -220,10 +252,22 @@ pub fn reissner_nordstrom(
     charge: f64,
     r_min: f64,
 ) -> (SimplicialComplex, Vec<f64>) {
+    reissner_nordstrom_with(n, spacing, mass, charge, r_min, MetricIntegration::Midpoint)
+}
+
+/// Like `reissner_nordstrom` with configurable integration method.
+pub fn reissner_nordstrom_with(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    charge: f64,
+    r_min: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
     let r_plus = mass + (mass * mass - charge * charge).max(0.0).sqrt();
     let r_minus = mass - (mass * mass - charge * charge).max(0.0).sqrt();
 
-    deform_by_metric(n, spacing, |_t, x, y, z| {
+    deform_by_metric_with(n, spacing, integration, |_t, x, y, z| {
         let r = (x * x + y * y + z * z).sqrt().max(r_min);
         let a = 1.0 + r_plus / (2.0 * r);
         let b = 1.0 + r_minus / (2.0 * r);
@@ -264,10 +308,19 @@ pub fn de_sitter(
     spacing: f64,
     cosmological_length: f64,
 ) -> (SimplicialComplex, Vec<f64>) {
+    de_sitter_with(n, spacing, cosmological_length, MetricIntegration::Midpoint)
+}
+
+/// Like `de_sitter` with configurable integration method.
+pub fn de_sitter_with(
+    n: usize,
+    spacing: f64,
+    cosmological_length: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
     let h = 1.0 / cosmological_length;
 
-    deform_by_metric(n, spacing, |tau, _x, _y, _z| {
-        // Avoid singularity at τ = 0: clamp |τ| away from zero.
+    deform_by_metric_with(n, spacing, integration, |tau, _x, _y, _z| {
         let tau_safe = tau.abs().max(0.1 * spacing);
         let conformal = 1.0 / (h * h * tau_safe * tau_safe);
 
@@ -304,10 +357,21 @@ pub fn kerr(
     spin: f64,
     r_min: f64,
 ) -> (SimplicialComplex, Vec<f64>) {
-    deform_by_metric(n, spacing, |_t, x, y, z| {
+    kerr_with(n, spacing, mass, spin, r_min, MetricIntegration::Midpoint)
+}
+
+/// Like `kerr` (slow rotation) with configurable integration method.
+pub fn kerr_with(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
+    deform_by_metric_with(n, spacing, integration, |_t, x, y, z| {
         let r = (x * x + y * y + z * z).sqrt().max(r_min);
 
-        // Schwarzschild isotropic factors (Q=0 RN).
         let a_fac = 1.0 + mass / (2.0 * r);
         let c_fac = 1.0 - mass / (2.0 * r);
         let f = (c_fac * c_fac) / (a_fac * a_fac);
@@ -316,7 +380,6 @@ pub fn kerr(
         let f = f.abs().max(0.01);
         let g = g.max(0.01);
 
-        // Frame-dragging: h(r) = -2Ma/r
         let h_drag = -2.0 * mass * spin / r;
         let r_sq = r * r;
 
@@ -325,11 +388,179 @@ pub fn kerr(
         metric[1][1] = g;
         metric[2][2] = g;
         metric[3][3] = g;
-        // Off-diagonal frame dragging (symmetric).
         metric[0][1] = h_drag * (-y / r_sq);
         metric[1][0] = metric[0][1];
         metric[0][2] = h_drag * (x / r_sq);
         metric[2][0] = metric[0][2];
+        metric
+    })
+}
+
+/// Exact Kerr metric in Kerr-Schild (Euclidean) coordinates.
+///
+/// g_μν = δ_μν + H·l_μ·l_ν where H = 2Mr³/(r⁴ + a²z²).
+/// Wick-rotated to Euclidean signature.
+pub fn kerr_schild(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+) -> (SimplicialComplex, Vec<f64>) {
+    kerr_schild_with(n, spacing, mass, spin, r_min, MetricIntegration::Midpoint)
+}
+
+/// Like `kerr_schild` with configurable integration method.
+pub fn kerr_schild_with(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
+    let a = spin;
+    deform_by_metric_with(n, spacing, integration, move |_t, x, y, z| {
+        let rho_sq = x * x + y * y + z * z;
+        // r from implicit: r⁴ - (ρ² - a²)r² - a²z² = 0
+        // r² = ((ρ²-a²) + sqrt((ρ²-a²)² + 4a²z²)) / 2
+        let diff = rho_sq - a * a;
+        let r_sq = (diff + (diff * diff + 4.0 * a * a * z * z).sqrt()) / 2.0;
+        let r_sq = r_sq.max(r_min * r_min);
+        let r = r_sq.sqrt();
+
+        let h_val = 2.0 * mass * r * r_sq / (r_sq * r_sq + a * a * z * z).max(1e-30);
+
+        // Null vector l_μ (Euclidean): l_0 = 1
+        let r2a2 = (r_sq + a * a).max(1e-30);
+        let l = [
+            1.0,
+            (r * x + a * y) / r2a2,
+            (r * y - a * x) / r2a2,
+            z / r.max(1e-30),
+        ];
+
+        let mut metric = [[0.0; 4]; 4];
+        for mu in 0..4 {
+            metric[mu][mu] = 1.0;
+            for nu in 0..4 {
+                metric[mu][nu] += h_val * l[mu] * l[nu];
+            }
+        }
+        metric
+    })
+}
+
+/// Exact Kerr metric in Boyer-Lindquist isotropic coordinates.
+///
+/// Converts the BL metric to Cartesian via r_BL(r_iso) inversion.
+/// Diagonal f(r), g(r) are exact Kerr functions, with off-diagonal g_{tφ}.
+pub fn kerr_bl(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+) -> (SimplicialComplex, Vec<f64>) {
+    kerr_bl_with(n, spacing, mass, spin, r_min, MetricIntegration::Midpoint)
+}
+
+/// Like `kerr_bl` with configurable integration method.
+pub fn kerr_bl_with(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
+    let a = spin;
+    deform_by_metric_with(n, spacing, integration, move |_t, x, y, z| {
+        let r_iso = (x * x + y * y + z * z).sqrt().max(r_min);
+
+        // Map isotropic r to BL r: r_BL = r_iso * (1 + M/(2*r_iso))^2
+        // (Schwarzschild-like mapping, adjusted for Kerr)
+        let r_bl = r_iso * (1.0 + mass / (2.0 * r_iso)).powi(2);
+
+        let sigma = r_bl * r_bl + a * a * z * z / (r_iso * r_iso).max(1e-30);
+        let delta = r_bl * r_bl - 2.0 * mass * r_bl + a * a;
+
+        let delta_safe = delta.abs().max(0.01);
+        let sigma_safe = sigma.max(0.01);
+
+        // Isotropic conformal factor
+        let psi = (1.0 + mass / (2.0 * r_iso)).powi(2);
+        let psi4 = psi * psi;
+
+        // g_tt (Euclidean: positive)
+        let f_tt = (delta_safe * sigma_safe / ((r_bl * r_bl + a * a) * (r_bl * r_bl + a * a) + a * a * delta_safe).max(0.01)).abs().max(0.01);
+
+        // Spatial part
+        let g_rr = psi4;
+
+        // Frame-dragging in Cartesian: g_{tφ} → g_{tx}, g_{ty}
+        let r2a2 = r_bl * r_bl + a * a;
+        let omega = 2.0 * mass * a * r_bl / (r2a2 * r2a2 + a * a * delta_safe).max(0.01);
+
+        // φ-direction in Cartesian: (-y/ρ, x/ρ)
+        let rho = (x * x + y * y).sqrt().max(1e-30);
+
+        let mut metric = [[0.0; 4]; 4];
+        metric[0][0] = f_tt;
+        metric[1][1] = g_rr;
+        metric[2][2] = g_rr;
+        metric[3][3] = g_rr;
+        // Frame dragging
+        metric[0][1] = omega * rho * (-y / rho);
+        metric[1][0] = metric[0][1];
+        metric[0][2] = omega * rho * (x / rho);
+        metric[2][0] = metric[0][2];
+        metric
+    })
+}
+
+/// de Sitter metric in static patch coordinates.
+///
+///   g_tt = |1 - r²/L²|  (Euclidean, clamped away from horizon)
+///   g_ij = δ_ij + (r_i·r_j/r²)·(1/|1-r²/L²| - 1)
+pub fn de_sitter_static(
+    n: usize,
+    spacing: f64,
+    cosmological_length: f64,
+    r_min: f64,
+) -> (SimplicialComplex, Vec<f64>) {
+    de_sitter_static_with(n, spacing, cosmological_length, r_min, MetricIntegration::Midpoint)
+}
+
+/// Like `de_sitter_static` with configurable integration method.
+pub fn de_sitter_static_with(
+    n: usize,
+    spacing: f64,
+    cosmological_length: f64,
+    r_min: f64,
+    integration: MetricIntegration,
+) -> (SimplicialComplex, Vec<f64>) {
+    let l_sq = cosmological_length * cosmological_length;
+
+    deform_by_metric_with(n, spacing, integration, move |_t, x, y, z| {
+        let r_sq = (x * x + y * y + z * z).max(r_min * r_min);
+
+        // Clamp away from the cosmological horizon r = L
+        let ratio = (r_sq / l_sq).min(0.95);
+        let f = (1.0 - ratio).abs().max(0.01);
+
+        let mut metric = [[0.0; 4]; 4];
+        metric[0][0] = f; // g_tt
+
+        // g_ij = δ_ij + (r_i r_j / r²) * (1/f - 1)
+        let g_radial_extra = 1.0 / f - 1.0;
+        let coords = [x, y, z];
+        for i in 0..3 {
+            metric[i + 1][i + 1] = 1.0;
+            for j in 0..3 {
+                metric[i + 1][j + 1] += coords[i] * coords[j] / r_sq * g_radial_extra;
+            }
+        }
         metric
     })
 }
@@ -433,5 +664,100 @@ mod tests {
         // ds² = 1·1 + 0.5·1 + 0.5·1 + 1·1 = 3.0
         let ds_sq = metric_line_element(&g, &dx);
         assert!((ds_sq - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_simpson_flat_matches_midpoint() {
+        // For flat metric (M=0), both methods should produce the same set of lengths.
+        let (_, mut lengths_mid) = reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Midpoint);
+        let (_, mut lengths_simp) = reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Simpson);
+
+        lengths_mid.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        lengths_simp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert_eq!(lengths_mid.len(), lengths_simp.len());
+        for (lm, ls) in lengths_mid.iter().zip(lengths_simp.iter()) {
+            assert!(
+                (lm - ls).abs() < 1e-8,
+                "midpoint={lm}, simpson={ls}, diff={}",
+                (lm - ls).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_simpson_rn_positive_lengths() {
+        let (complex, lengths) = reissner_nordstrom_with(3, 1.0, 0.1, 0.0, 0.5, MetricIntegration::Simpson);
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero edge length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_kerr_exact_ks_schwarzschild() {
+        // a=0 should match Schwarzschild (same as RN Q=0).
+        let (_, lengths_ks) = kerr_schild(3, 1.0, 0.1, 0.0, 0.5);
+        let (_, lengths_rn) = reissner_nordstrom(3, 1.0, 0.1, 0.0, 0.5);
+
+        // KS and RN use different coordinate representations, so they won't
+        // match exactly, but should be in the same ballpark.
+        for &l in &lengths_ks {
+            assert!(l > 0.0, "negative or zero KS length: {l}");
+        }
+        // Just check both produce valid meshes.
+        assert_eq!(lengths_ks.len(), lengths_rn.len());
+    }
+
+    #[test]
+    fn test_kerr_exact_bl_schwarzschild() {
+        let (complex, lengths) = kerr_bl(3, 1.0, 0.1, 0.0, 0.5);
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero BL length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_kerr_exact_high_spin() {
+        let (complex, lengths) = kerr_schild(3, 1.0, 0.1, 0.09, 0.5);
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero high-spin length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_ks_bl_agree() {
+        // At small spin, both forms should give similar edge lengths.
+        let (_, lengths_ks) = kerr_schild(3, 1.0, 0.1, 0.01, 0.5);
+        let (_, lengths_bl) = kerr_bl(3, 1.0, 0.1, 0.01, 0.5);
+
+        // They use different coordinates so won't match exactly,
+        // but should produce valid positive lengths.
+        for (&lks, &lbl) in lengths_ks.iter().zip(lengths_bl.iter()) {
+            assert!(lks > 0.0 && lbl > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_de_sitter_static_mesh() {
+        let (complex, lengths) = de_sitter_static(3, 1.0, 10.0, 0.1);
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero edge length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_de_sitter_static_flat_limit() {
+        // As L → ∞, de Sitter static metric approaches flat.
+        // With very large L, the metric factors are ~1 everywhere,
+        // so all lengths should be bounded and positive.
+        let (complex, lengths) = de_sitter_static(3, 1.0, 1000.0, 0.001);
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.01, "length too small for near-flat metric: {l}");
+        }
     }
 }

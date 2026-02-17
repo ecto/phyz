@@ -204,6 +204,88 @@ pub fn search_symmetries(
     }
 }
 
+/// Generic symmetry search taking a gradient closure and perturbation closure.
+///
+/// This enables searching for symmetries of any action (e.g., Einstein-Yang-Mills
+/// with SU(2)) without requiring the `Fields` type.
+///
+/// - `dim`: total number of DOF in the packed vector
+/// - `perturb_and_grad`: given `&mut StdRng`, returns a gradient vector at a
+///   randomly perturbed configuration
+pub fn search_symmetries_generic(
+    dim: usize,
+    known_generators: &[Generator],
+    config: &SearchConfig,
+    perturb_and_grad: impl Fn(&mut StdRng) -> Vec<f64>,
+) -> SearchResults {
+    let k = config.n_samples;
+
+    let ortho_known = orthonormalize(known_generators);
+    let mut rng = StdRng::seed_from_u64(config.seed);
+
+    let mut m_data = vec![0.0; k * dim];
+
+    for row in 0..k {
+        let mut grad = perturb_and_grad(&mut rng);
+        project_out_span(&mut grad, &ortho_known);
+
+        for (j, &val) in grad.iter().enumerate() {
+            m_data[row * dim + j] = val;
+        }
+    }
+
+    let m = DMatrix::from_row_slice(k, dim, &m_data);
+    let svd = m.svd(false, true);
+
+    let vt = svd.v_t.expect("SVD should produce V^T");
+    let singular_values = &svd.singular_values;
+
+    let n_sv = singular_values.len();
+    let mut sv_indices: Vec<(f64, usize)> = singular_values
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, i))
+        .collect();
+    sv_indices.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let known_normalized: Vec<(String, Vec<f64>)> = known_generators
+        .iter()
+        .map(|g| {
+            let p = g.normalized().pack();
+            (g.name.clone(), p)
+        })
+        .collect();
+
+    let n_candidates = n_sv.min(dim);
+    let mut candidates = Vec::with_capacity(n_candidates);
+
+    for &(sigma, idx) in sv_indices.iter().take(n_candidates) {
+        let gen_vec: Vec<f64> = (0..dim).map(|j| vt[(idx, j)]).collect();
+
+        let overlaps: Vec<(String, f64)> = known_normalized
+            .iter()
+            .map(|(name, kp)| {
+                let dot: f64 = gen_vec.iter().zip(kp.iter()).map(|(a, b)| a * b).sum();
+                (name.clone(), dot)
+            })
+            .collect();
+
+        candidates.push(CandidateSymmetry {
+            generator: gen_vec,
+            violation: sigma,
+            overlaps,
+        });
+    }
+
+    let known_names = known_generators.iter().map(|g| g.name.clone()).collect();
+
+    SearchResults {
+        candidates,
+        n_samples: k,
+        known_generators: known_names,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +434,77 @@ mod tests {
                     (v1 - v2).abs() < 1e-15,
                     "non-deterministic generator components"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_su2_gauge_null_space() {
+        // SU(2) gauge generators should lie in the null space of the
+        // Einstein-Yang-Mills gradient matrix. For SU(2), gauge generators
+        // are field-dependent (involve the adjoint representation).
+        use crate::su2::Su2;
+        use crate::yang_mills::{einstein_yang_mills_grad, su2_gauge_generator};
+
+        let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
+        let n_edges = complex.n_edges();
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let elements: Vec<Su2> = (0..n_edges)
+            .map(|_| {
+                Su2::exp(&[
+                    rng.r#gen::<f64>() * 0.2 - 0.1,
+                    rng.r#gen::<f64>() * 0.2 - 0.1,
+                    rng.r#gen::<f64>() * 0.2 - 0.1,
+                ])
+            })
+            .collect();
+
+        let alpha = 1.0;
+        let eps = 1e-3;
+        let k = 30;
+        let mut sample_rng = StdRng::seed_from_u64(99);
+
+        for _ in 0..k {
+            let perturbed_lengths: Vec<f64> = lengths
+                .iter()
+                .map(|&l| l * (1.0 + eps * (2.0 * sample_rng.r#gen::<f64>() - 1.0)))
+                .collect();
+            let perturbed_elements: Vec<Su2> = elements
+                .iter()
+                .map(|u| {
+                    let delta = [
+                        eps * (2.0 * sample_rng.r#gen::<f64>() - 1.0),
+                        eps * (2.0 * sample_rng.r#gen::<f64>() - 1.0),
+                        eps * (2.0 * sample_rng.r#gen::<f64>() - 1.0),
+                    ];
+                    Su2::exp(&delta).mul(u)
+                })
+                .collect();
+
+            let grad = einstein_yang_mills_grad(
+                &complex,
+                &perturbed_lengths,
+                &perturbed_elements,
+                alpha,
+            );
+
+            // Compute field-dependent gauge generators at this config.
+            for v in 0..complex.n_vertices {
+                for dir in 0..3 {
+                    let gauge_dof =
+                        su2_gauge_generator(&complex, &perturbed_elements, v, dir);
+                    // Full generator: zero for lengths, gauge_dof for field.
+                    let dot: f64 = grad[n_edges..]
+                        .iter()
+                        .zip(gauge_dof.iter())
+                        .map(|(a, b)| a * b)
+                        .sum();
+                    assert!(
+                        dot.abs() < 1e-8,
+                        "gradient · su2_gauge_v{v}_d{dir} = {dot} (expected 0)"
+                    );
+                }
             }
         }
     }
