@@ -44,6 +44,7 @@ pub mod mesh;
 pub mod regge;
 pub mod richardson;
 pub mod search;
+pub mod solver;
 pub mod su2;
 pub mod symmetry;
 pub mod yang_mills;

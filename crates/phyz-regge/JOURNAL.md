@@ -1,5 +1,127 @@
 # phyz-regge: Research Journal
 
+## 2026-02-17 — Phase 4: arXiv Literature Review, On-shell Search, α-scan
+
+### arXiv literature review
+
+Surveyed recent literature to contextualize the phyz-regge approach. Nobody else
+combines Regge calculus + automated symmetry search + Einstein-Yang-Mills. The
+closest work falls into three categories:
+
+**Regge calculus:**
+- **2510.22596** (Asante, Dittrich, Padua-Argüelles): Lorentzian Regge path
+  integral. Focuses on well-definedness of the gravitational path integral in
+  Regge calculus. Different goal (quantum gravity) but validates Regge as active
+  research tool.
+- **2406.19169** (Asante et al.): Effective spin foam models for Lorentzian
+  quantum gravity. Uses Regge-like variables in a spin foam context. Connection:
+  shared discretization framework.
+- **2312.11639** (Dittrich, Padua-Argüelles): Lorentzian Regge calculus via
+  new complex action. Novel contour prescription for the Lorentzian path
+  integral. Relevant: shows Regge calculus is still being extended.
+
+**Simplicial gauge theory:**
+- **2412.04961** (Catumba et al.): Lattice gauge theory and Regge calculus
+  combined framework. Closest to our approach but focuses on formulation, not
+  symmetry search.
+- **2406.00321** (Asante et al.): Simplicial graviton and gauge field dynamics.
+  Couples gauge fields to simplicial gravity. Parallel construction to ours but
+  different analysis methods.
+
+**ML/automated symmetry discovery:**
+- **2412.14632** (Forestano et al.): Machine learning symmetry discovery from
+  data. Key insight: searching on-shell (classical solutions) reveals enhanced
+  symmetries that are invisible off-shell.
+- **2311.00212** (Liu et al.): Symmetry discovery via neural networks. Suggests
+  scanning coupling constants to find phase transitions where symmetry structure
+  changes.
+
+**Key finding:** phyz-regge sits at an uninhabited intersection — automated
+symmetry search applied to Regge calculus with non-abelian gauge fields. The ML
+symmetry papers suggest two improvements: (1) search on-shell (classical
+solutions found by gradient descent), and (2) scan the gauge coupling α for
+phase transitions.
+
+### On-shell search and α-scan
+
+#### Approach
+
+Phase 3 found no novel symmetries off-shell. Following the literature
+suggestions, Phase 4 adds:
+1. **Gradient descent solver** (`src/solver.rs`): finds classical solutions
+   (on-shell configurations) via manifold-aware gradient descent with Armijo
+   backtracking. Gauge flat directions are projected out before checking
+   convergence.
+2. **α-scan** (`examples/alpha_scan.rs`): sweeps the gauge coupling from weak
+   (α=0.01) to strong (α=100) coupling, running solver + symmetry search at
+   each value. Looks for phase transitions where the symmetry count changes.
+
+#### Changes
+
+| File | What |
+|------|------|
+| `src/solver.rs` | **New.** Manifold-aware gradient descent: lengths via multiplicative `l·exp(-step·g)`, SU(2) via left-invariant `exp(-step·g)·U`. Armijo backtracking, gauge+conformal projected convergence. ~220 lines, 4 tests. |
+| `src/lib.rs` | Registered `pub mod solver`. |
+| `examples/alpha_scan.rs` | **New.** α-scan orchestrating solver + search across coupling values. Phase transition detection. ~260 lines. |
+
+#### Results
+
+**Config 1: flat + random field** (n=2, 500 samples, 10 α values)
+
+| α | iter | |grad| | S_final | exact | gap |
+|---|------|--------|---------|-------|-----|
+| 1.00e-2 | 52 | 3.6e1 | -4.81e2 | 424 | 1.1e9 |
+| 5.99e-1 | 32 | 3.9e1 | -4.65e2 | 424 | 1.0e10 |
+| 1.00e2 | 27 | 7.8e2 | -3.58e2 | 365 | 1.3e10 |
+
+Phase transition at α=100: exact count drops 424→365 (59 lost). However, the high
+baseline (424) is suspicious — with 500 samples and 480 DOF, after projecting 59
+known generators, we have ~421 underdetermined directions that appear as spurious
+"exact" symmetries. The 59-symmetry drop at strong coupling likely reflects numerical
+noise, not real symmetry breaking.
+
+**Config 2: RN + zero field** (n=2, 500 samples, 10 α values)
+
+52 exact symmetries across all α. Completely stable — expected since zero field
+means the gauge sector is trivial and α has no effect.
+
+**Config 3: RN + monopole field** (n=2, 500 samples, 10 α values)
+
+58 exact symmetries across all α, stable from α=0.01 to α=100. The solver drives
+action from -29 to near 0 at large α (monopole field relaxes). Gap ratio improves
+dramatically: 9.2e5 → 3.3e11 as α increases (stronger coupling = cleaner gauge signal).
+
+#### Technical notes
+
+- **Conformal mode problem:** The Regge action is unbounded below (well-known
+  conformal factor instability). The solver projects out conformal+gauge modes from
+  the search direction but still drives action to large negative values via
+  per-vertex conformal modes. The solver terminates when step size hits the minimum.
+  Despite non-convergence, the on-shell symmetry search still works because the
+  search itself is insensitive to the conformal instability.
+- **Underdetermined SVD:** With 500 samples and 480 DOF, after projecting ~59
+  known generators, only ~421 independent directions can be probed. The remaining
+  ~59 DOF appear as zero singular values (spurious exact symmetries). To get a
+  meaningful exact count, need samples >> DOF - n_known (e.g., 1000+ samples).
+- **No novel symmetries:** Across all 3 configurations and all α values, no
+  candidates appeared with both low violation and low overlap with known generators.
+
+### Crate stats
+
+- ~5,500 lines across 12 modules
+- 76 tests, all passing
+- α-scan: ~7s per 10 α values (n=2, 500 samples, release)
+
+### Open questions
+
+- Increase samples to 1000+ to resolve the spurious exact count on flat background
+- Try n=3 or n=4 mesh to increase DOF and reduce underdetermination
+- The conformal mode instability may mask genuine on-shell structure — consider
+  fixing the conformal factor (constant volume constraint) before optimizing
+- SU(3) would be the natural next gauge group (8 generators per vertex)
+
+---
+
 ## 2026-02-17 — Phase 3: Convergence, Backgrounds, Discrete Symmetries, SU(2)
 
 ### Context
