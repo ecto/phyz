@@ -1,0 +1,42 @@
+# phyz
+
+> Open-source differentiable multi-physics simulation engine. Pure Rust. GPU-accelerated. Analytical gradients for optimization, control, and learning.
+
+## Overview
+
+phyz gives you analytical derivatives through physics simulation for free. Simulate a robot, compute gradients through the entire trajectory, and optimize a controller — in one loop. No finite differencing needed.
+
+## Features
+
+- Rigid Bodies: Featherstone ABA, O(n) forward dynamics, articulated joints
+- Differentiable: Analytical Jacobians at every timestep for optimization, control, and learning
+- Particles: SPH fluids, granular media, molecular dynamics
+- Electromagnetism: Maxwell's equations on Yee lattice
+- General Relativity: Regge calculus with Einstein-Maxwell action
+- Probabilistic: SVGD, HMC for Bayesian inference over physics
+- MJCF Loading: Import MuJoCo XML models directly
+- GPU Batching: WGPU compute for thousands of parallel environments
+- Kernel Compiler: Fuse physics ops into optimized GPU kernels
+- Multi-physics Coupling: Compose rigid bodies, particles, EM fields in one simulation
+- Real2Sim: Inverse problems, parameter fitting from observations
+
+## Architecture
+
+- phyz: Umbrella crate, re-exports everything
+- phyz-math: Spatial algebra, vectors, matrices
+- phyz-model: Articulated body models, joints, inertia
+- phyz-rigid: Featherstone ABA, forward/inverse dynamics
+- phyz-diff: Analytical Jacobians, differentiable stepping
+- phyz-mjcf: MuJoCo MJCF model loading
+- phyz-collision: GJK/EPA collision detection
+- phyz-contact: Contact resolution, friction
+- phyz-gpu: WGPU compute, batched simulation
+- phyz-compile: Physics kernel compiler, op fusion
+- phyz-particle: SPH fluids, granular media
+- phyz-em: Maxwell's equations on Yee lattice
+- phyz-wasm: WASM bindings for browser demos
+
+## Links
+
+- [Demos](https://phyz.dev): Interactive browser demos
+- [GitHub](https://github.com/ecto/phyz): Source code and documentation
