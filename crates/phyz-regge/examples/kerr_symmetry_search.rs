@@ -1,33 +1,26 @@
-//! Symmetry search on a Reissner-Nordström background.
+//! Symmetry search on a slow-rotation Kerr background.
 //!
-//! Builds a discretised RN black hole geometry, constructs all known
-//! generators (gauge + translations + conformal), then runs a random
-//! search for novel symmetries with the known ones projected out.
+//! Only the z-axis rotation should survive as approximate symmetry.
+//! Other rotations and all boosts are broken at O(a) > O(h²).
 //!
 //! Configuration via env vars (all optional):
-//!   RN_N        grid points per axis   (default 3)
-//!   RN_MASS     black hole mass M      (default 0.1)
-//!   RN_CHARGE   black hole charge Q    (default 0.0)
-//!   RN_RMIN     minimum isotropic r    (default 0.5)
-//!   RN_SPACING  base grid spacing      (default 1.0)
-//!   RN_SAMPLES  random samples         (default 200)
-//!   RN_SEED     RNG seed               (default 42)
-//!
-//! Run:
-//!   cargo run --example rn_symmetry_search -p phyz-regge
-//!   RN_N=2 RN_MASS=0.2 cargo run --example rn_symmetry_search -p phyz-regge
+//!   KERR_N        grid points per axis   (default 2)
+//!   KERR_MASS     black hole mass M      (default 0.1)
+//!   KERR_SPIN     spin parameter a       (default 0.3)
+//!   KERR_RMIN     minimum isotropic r    (default 0.5)
+//!   KERR_SPACING  base grid spacing      (default 1.0)
+//!   KERR_SAMPLES  random samples         (default 500)
+//!   KERR_SEED     RNG seed               (default 42)
 
 use std::env;
 use std::time::Instant;
 
+use phyz_regge::mesh;
 use phyz_regge::symmetry::{
     all_boost_generators, all_gauge_generators, all_rotation_generators, conformal_generator,
     translation_generator,
 };
-use phyz_regge::{
-    search_symmetries, ActionParams, Fields, SearchConfig,
-};
-use phyz_regge::mesh;
+use phyz_regge::{search_symmetries, ActionParams, Fields, SearchConfig};
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
@@ -37,22 +30,21 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 }
 
 fn main() {
-    let n: usize = env_or("RN_N", 2);
-    let mass: f64 = env_or("RN_MASS", 0.1);
-    let charge: f64 = env_or("RN_CHARGE", 0.0);
-    let r_min: f64 = env_or("RN_RMIN", 0.5);
-    let spacing: f64 = env_or("RN_SPACING", 1.0);
-    let n_samples: usize = env_or("RN_SAMPLES", 500);
-    let seed: u64 = env_or("RN_SEED", 42);
+    let n: usize = env_or("KERR_N", 2);
+    let mass: f64 = env_or("KERR_MASS", 0.1);
+    let spin: f64 = env_or("KERR_SPIN", 0.3);
+    let r_min: f64 = env_or("KERR_RMIN", 0.5);
+    let spacing: f64 = env_or("KERR_SPACING", 1.0);
+    let n_samples: usize = env_or("KERR_SAMPLES", 500);
+    let seed: u64 = env_or("KERR_SEED", 42);
 
-    println!("=== Reissner-Nordström Symmetry Search ===");
-    println!("  n={n}, M={mass}, Q={charge}, r_min={r_min}, spacing={spacing}");
+    println!("=== Kerr Symmetry Search (slow rotation) ===");
+    println!("  n={n}, M={mass}, a={spin}, r_min={r_min}, spacing={spacing}");
     println!("  samples={n_samples}, seed={seed}");
     println!();
 
-    // --- mesh ---
     let t0 = Instant::now();
-    let (complex, lengths) = mesh::reissner_nordstrom(n, spacing, mass, charge, r_min);
+    let (complex, lengths) = mesh::kerr(n, spacing, mass, spin, r_min);
     let mesh_time = t0.elapsed();
     println!(
         "Mesh: {} vertices, {} edges  ({:.1?})",
@@ -61,13 +53,16 @@ fn main() {
         mesh_time,
     );
 
-    // --- background fields (zero gauge field — geometry carries the charge) ---
     let phases = vec![0.0; complex.n_edges()];
     let fields = Fields::new(lengths, phases);
-    println!("DOF: {} ({} lengths + {} phases)", fields.n_dof(), complex.n_edges(), complex.n_edges());
+    println!(
+        "DOF: {} ({} lengths + {} phases)",
+        fields.n_dof(),
+        complex.n_edges(),
+        complex.n_edges()
+    );
     println!();
 
-    // --- known generators ---
     let t0 = Instant::now();
     let mut known = all_gauge_generators(&complex);
     let n_gauge = known.len();
@@ -89,32 +84,20 @@ fn main() {
 
     println!(
         "Known generators: {} gauge + 4 translation + {} rotation + {} boost + 1 conformal = {}  ({:.1?})",
-        n_gauge,
-        n_rot,
-        n_boost,
-        known.len(),
-        gen_time,
+        n_gauge, n_rot, n_boost, known.len(), gen_time,
     );
     println!();
 
-    // Warn if samples are too few for the DOF.
     let dof = fields.n_dof();
     let n_known = known.len();
     if n_samples < dof.saturating_sub(n_known) {
         eprintln!(
-            "WARNING: n_samples ({}) < DOF - n_known ({} - {} = {}). \
-             Results may be dominated by rank-deficient artifacts. \
-             Consider increasing RN_SAMPLES to at least {}.",
-            n_samples,
-            dof,
-            n_known,
-            dof.saturating_sub(n_known),
-            2 * dof.saturating_sub(n_known),
+            "WARNING: n_samples ({}) < DOF - n_known ({} - {} = {}). Consider increasing KERR_SAMPLES to at least {}.",
+            n_samples, dof, n_known, dof.saturating_sub(n_known), 2 * dof.saturating_sub(n_known),
         );
         eprintln!();
     }
 
-    // --- search ---
     let config = SearchConfig {
         n_samples,
         perturbation_scale: 1e-3,
@@ -130,7 +113,6 @@ fn main() {
     println!("Search time: {search_time:.1?}");
     println!();
 
-    // --- highlight novel candidates ---
     let novel = results.novel_candidates(1e-6);
     if novel.is_empty() {
         println!("No novel symmetry candidates (violation < 1e-6).");
@@ -147,8 +129,5 @@ fn main() {
     }
 
     println!();
-    println!(
-        "Total: {:.1?}",
-        mesh_time + gen_time + search_time,
-    );
+    println!("Total: {:.1?}", mesh_time + gen_time + search_time);
 }

@@ -133,6 +133,63 @@ fn permute(
     }
 }
 
+/// Compute ds² = g_μν dx^μ dx^ν for a full 4×4 metric tensor.
+fn metric_line_element(g: &[[f64; 4]; 4], dx: &[f64; 4]) -> f64 {
+    let mut ds_sq = 0.0;
+    for mu in 0..4 {
+        for nu in 0..4 {
+            ds_sq += g[mu][nu] * dx[mu] * dx[nu];
+        }
+    }
+    ds_sq
+}
+
+/// Helper: build flat hypercubic mesh, compute centered vertex positions,
+/// then deform edge lengths using a metric tensor evaluated at each edge midpoint.
+fn deform_by_metric(
+    n: usize,
+    spacing: f64,
+    metric_at: impl Fn(f64, f64, f64, f64) -> [[f64; 4]; 4],
+) -> (SimplicialComplex, Vec<f64>) {
+    let (complex, _flat_lengths) = flat_hypercubic(n, spacing);
+
+    let half = n as f64 / 2.0;
+    let vertex_pos = |idx: usize| -> [f64; 4] {
+        let (t, x, y, z) = vertex_coords(idx, n);
+        [
+            (t as f64 - half) * spacing,
+            (x as f64 - half) * spacing,
+            (y as f64 - half) * spacing,
+            (z as f64 - half) * spacing,
+        ]
+    };
+
+    let mut lengths = vec![0.0; complex.n_edges()];
+    for (ei, edge) in complex.edges.iter().enumerate() {
+        let p0 = vertex_pos(edge[0]);
+        let p1 = vertex_pos(edge[1]);
+
+        let mid = [
+            (p0[0] + p1[0]) / 2.0,
+            (p0[1] + p1[1]) / 2.0,
+            (p0[2] + p1[2]) / 2.0,
+            (p0[3] + p1[3]) / 2.0,
+        ];
+        let dx = [
+            p1[0] - p0[0],
+            p1[1] - p0[1],
+            p1[2] - p0[2],
+            p1[3] - p0[3],
+        ];
+
+        let g = metric_at(mid[0], mid[1], mid[2], mid[3]);
+        let ds_sq = metric_line_element(&g, &dx);
+        lengths[ei] = ds_sq.abs().sqrt().max(1e-10);
+    }
+
+    (complex, lengths)
+}
+
 /// Generate a Reissner-Nordström-like triangulation.
 ///
 /// Takes a flat hypercubic mesh and deforms edge lengths to approximate
@@ -163,65 +220,118 @@ pub fn reissner_nordstrom(
     charge: f64,
     r_min: f64,
 ) -> (SimplicialComplex, Vec<f64>) {
-    let (complex, _flat_lengths) = flat_hypercubic(n, spacing);
-
     let r_plus = mass + (mass * mass - charge * charge).max(0.0).sqrt();
     let r_minus = mass - (mass * mass - charge * charge).max(0.0).sqrt();
 
-    // Compute vertex positions in isotropic coordinates.
-    // Center the grid: coordinates go from -L/2 to +L/2.
-    let half = n as f64 / 2.0;
-
-    let vertex_pos = |idx: usize| -> (f64, f64, f64, f64) {
-        let (t, x, y, z) = vertex_coords(idx, n);
-        let tc = (t as f64 - half) * spacing;
-        let xc = (x as f64 - half) * spacing;
-        let yc = (y as f64 - half) * spacing;
-        let zc = (z as f64 - half) * spacing;
-        (tc, xc, yc, zc)
-    };
-
-    // Metric factors at a point.
-    let metric_factors = |_t: f64, x: f64, y: f64, z: f64| -> (f64, f64) {
+    deform_by_metric(n, spacing, |_t, x, y, z| {
         let r = (x * x + y * y + z * z).sqrt().max(r_min);
         let a = 1.0 + r_plus / (2.0 * r);
         let b = 1.0 + r_minus / (2.0 * r);
         let c = 1.0 - r_plus / (2.0 * r);
         let d = 1.0 - r_minus / (2.0 * r);
 
-        let f = (c * d) / (a * b); // -g_tt = f
-        let g = (a * b) * (a * b); // g_xx = g_yy = g_zz = g
+        let f = (c * d) / (a * b);       // g_tt
+        let g = (a * b) * (a * b);       // g_xx = g_yy = g_zz
 
-        (f.abs().max(0.01), g.max(0.01)) // Clamp to avoid singularity
-    };
+        let f = f.abs().max(0.01);
+        let g = g.max(0.01);
 
-    // Deform edge lengths using metric at the midpoint of each edge.
-    let mut lengths = vec![0.0; complex.n_edges()];
-    for (ei, edge) in complex.edges.iter().enumerate() {
-        let (t0, x0, y0, z0) = vertex_pos(edge[0]);
-        let (t1, x1, y1, z1) = vertex_pos(edge[1]);
+        let mut metric = [[0.0; 4]; 4];
+        metric[0][0] = f;
+        metric[1][1] = g;
+        metric[2][2] = g;
+        metric[3][3] = g;
+        metric
+    })
+}
 
-        // Midpoint metric.
-        let tm = (t0 + t1) / 2.0;
-        let xm = (x0 + x1) / 2.0;
-        let ym = (y0 + y1) / 2.0;
-        let zm = (z0 + z1) / 2.0;
-        let (f, g) = metric_factors(tm, xm, ym, zm);
+/// Generate a de Sitter triangulation in conformally flat (cosmological) coordinates.
+///
+/// The de Sitter metric in cosmological coordinates:
+///   ds² = (1/(H²τ²)) (dτ² + dx² + dy² + dz²)
+/// where H = 1/L (cosmological_length).
+///
+/// This is conformally flat: f = g = 1/(H²τ²), so it is maximally symmetric.
+/// All 6 "rotation" symmetries (3 spatial + 3 boost) should have comparable
+/// O(h²) violation from the lattice discretization.
+///
+/// # Arguments
+/// * `n` - Grid size along each axis
+/// * `spacing` - Base grid spacing
+/// * `cosmological_length` - L = 1/H (de Sitter radius)
+pub fn de_sitter(
+    n: usize,
+    spacing: f64,
+    cosmological_length: f64,
+) -> (SimplicialComplex, Vec<f64>) {
+    let h = 1.0 / cosmological_length;
 
-        // Edge displacement.
-        let dt = t1 - t0;
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        let dz = z1 - z0;
+    deform_by_metric(n, spacing, |tau, _x, _y, _z| {
+        // Avoid singularity at τ = 0: clamp |τ| away from zero.
+        let tau_safe = tau.abs().max(0.1 * spacing);
+        let conformal = 1.0 / (h * h * tau_safe * tau_safe);
 
-        // ds² = f dt² + g (dx² + dy² + dz²)
-        // (Using Euclidean signature for Regge calculus; the Lorentzian
-        // signature requires more careful treatment.)
-        let ds_sq = f * dt * dt + g * (dx * dx + dy * dy + dz * dz);
-        lengths[ei] = ds_sq.abs().sqrt().max(1e-10);
-    }
+        let mut metric = [[0.0; 4]; 4];
+        metric[0][0] = conformal;
+        metric[1][1] = conformal;
+        metric[2][2] = conformal;
+        metric[3][3] = conformal;
+        metric
+    })
+}
 
-    (complex, lengths)
+/// Generate a slow-rotation Kerr triangulation.
+///
+/// Uses Schwarzschild isotropic factors for the diagonal plus linear-in-a
+/// frame-dragging off-diagonal terms:
+/// - Diagonal: g_tt = f(r), g_ii = g(r) (same as Schwarzschild)
+/// - Off-diagonal: g_tx = h(r)·(−y/r²), g_ty = h(r)·(x/r²)
+///   where h(r) = −2Ma/r
+///
+/// Only the z-axis rotation survives as approximate symmetry. Other rotations
+/// and all boosts are broken at O(a) > O(h²).
+///
+/// # Arguments
+/// * `n` - Grid size along each axis
+/// * `spacing` - Base grid spacing
+/// * `mass` - Black hole mass M
+/// * `spin` - Dimensionless spin parameter a (slow rotation: |a| << M)
+/// * `r_min` - Minimum isotropic radius (should be > M/2)
+pub fn kerr(
+    n: usize,
+    spacing: f64,
+    mass: f64,
+    spin: f64,
+    r_min: f64,
+) -> (SimplicialComplex, Vec<f64>) {
+    deform_by_metric(n, spacing, |_t, x, y, z| {
+        let r = (x * x + y * y + z * z).sqrt().max(r_min);
+
+        // Schwarzschild isotropic factors (Q=0 RN).
+        let a_fac = 1.0 + mass / (2.0 * r);
+        let c_fac = 1.0 - mass / (2.0 * r);
+        let f = (c_fac * c_fac) / (a_fac * a_fac);
+        let g = a_fac * a_fac * a_fac * a_fac;
+
+        let f = f.abs().max(0.01);
+        let g = g.max(0.01);
+
+        // Frame-dragging: h(r) = -2Ma/r
+        let h_drag = -2.0 * mass * spin / r;
+        let r_sq = r * r;
+
+        let mut metric = [[0.0; 4]; 4];
+        metric[0][0] = f;
+        metric[1][1] = g;
+        metric[2][2] = g;
+        metric[3][3] = g;
+        // Off-diagonal frame dragging (symmetric).
+        metric[0][1] = h_drag * (-y / r_sq);
+        metric[1][0] = metric[0][1];
+        metric[0][2] = h_drag * (x / r_sq);
+        metric[2][0] = metric[0][2];
+        metric
+    })
 }
 
 #[cfg(test)]
@@ -275,5 +385,53 @@ mod tests {
         for &l in &lengths {
             assert!(l > 0.0, "negative or zero edge length: {l}");
         }
+    }
+
+    #[test]
+    fn test_de_sitter_mesh() {
+        let (complex, lengths) = de_sitter(3, 1.0, 10.0);
+
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero edge length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_kerr_mesh() {
+        let (complex, lengths) = kerr(3, 1.0, 0.1, 0.3, 0.5);
+
+        assert!(complex.n_pents() > 0);
+        for &l in &lengths {
+            assert!(l > 0.0, "negative or zero edge length: {l}");
+        }
+    }
+
+    #[test]
+    fn test_metric_line_element_diagonal() {
+        // Flat Euclidean: g = diag(1,1,1,1).
+        let g = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let dx = [1.0, 2.0, 3.0, 4.0];
+        let ds_sq = metric_line_element(&g, &dx);
+        assert!((ds_sq - 30.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_metric_line_element_off_diagonal() {
+        // Metric with off-diagonal terms.
+        let mut g = [[0.0; 4]; 4];
+        g[0][0] = 1.0;
+        g[1][1] = 1.0;
+        g[0][1] = 0.5;
+        g[1][0] = 0.5;
+        let dx = [1.0, 1.0, 0.0, 0.0];
+        // ds² = 1·1 + 0.5·1 + 0.5·1 + 1·1 = 3.0
+        let ds_sq = metric_line_element(&g, &dx);
+        assert!((ds_sq - 3.0).abs() < 1e-12);
     }
 }

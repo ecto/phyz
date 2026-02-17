@@ -42,6 +42,7 @@ pub mod gauge;
 pub mod geometry;
 pub mod mesh;
 pub mod regge;
+pub mod richardson;
 pub mod search;
 pub mod symmetry;
 

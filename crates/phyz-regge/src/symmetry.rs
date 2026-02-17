@@ -158,16 +158,20 @@ fn vertex_index_4d(coords: &[usize; 4], n: usize) -> usize {
     coords[0] + n * coords[1] + n * n * coords[2] + n * n * n * coords[3]
 }
 
-/// SO(3) rotation generator via 90° lattice rotation in a spatial plane.
+/// Rotation generator via 90° lattice rotation in a coordinate plane.
 ///
 /// For a periodic n×n×n×n mesh, rotates all vertices by 90° in the
-/// (axis1, axis2) spatial plane. Axis indices: 1=x, 2=y, 3=z.
+/// (axis1, axis2) plane. Axis indices: 0=t, 1=x, 2=y, 3=z.
 /// The generator is δφ = φ(rotated) − φ(original).
 ///
 /// On a cubic lattice, 90° rotations are exact discrete symmetries of flat
 /// space, so this generator has δl = 0 on flat backgrounds. On curved
 /// spherically-symmetric backgrounds (RN/Schwarzschild), violations are
 /// O(h²) from the lattice discretization.
+///
+/// For spatial axes (1-3), this gives SO(3) rotation generators.
+/// For time-space planes (0 vs 1-3), this gives Lorentz boost generators
+/// (which are ordinary rotations in Euclidean signature).
 pub fn rotation_generator(
     complex: &SimplicialComplex,
     fields: &Fields,
@@ -175,14 +179,8 @@ pub fn rotation_generator(
     axis2: usize,
     n: usize,
 ) -> Generator {
-    assert!(
-        (1..=3).contains(&axis1),
-        "axis1 must be 1, 2, or 3 (spatial)"
-    );
-    assert!(
-        (1..=3).contains(&axis2),
-        "axis2 must be 1, 2, or 3 (spatial)"
-    );
+    assert!(axis1 <= 3, "axis1 must be 0..=3");
+    assert!(axis2 <= 3, "axis2 must be 0..=3");
     assert_ne!(axis1, axis2, "axes must be distinct");
 
     // Build vertex permutation: 90° rotation in (axis1, axis2) plane.
@@ -229,6 +227,37 @@ pub fn all_rotation_generators(
         rotation_generator(complex, fields, 1, 3, n),
         rotation_generator(complex, fields, 2, 3, n),
     ]
+}
+
+/// Lorentz boost generator in the (t, spatial_axis) plane.
+///
+/// On a Euclidean-signature lattice, a "boost" is just a 90° rotation in a
+/// (time, space) plane. This is a thin wrapper around `rotation_generator`.
+pub fn boost_generator(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    spatial_axis: usize,
+    n: usize,
+) -> Generator {
+    assert!(
+        (1..=3).contains(&spatial_axis),
+        "spatial_axis must be 1, 2, or 3"
+    );
+    let mut g = rotation_generator(complex, fields, 0, spatial_axis, n);
+    let axis_names = ["t", "x", "y", "z"];
+    g.name = format!("boost_t{}", axis_names[spatial_axis]);
+    g
+}
+
+/// All three Lorentz boost generators: tx, ty, tz.
+pub fn all_boost_generators(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    n: usize,
+) -> Vec<Generator> {
+    (1..=3)
+        .map(|sa| boost_generator(complex, fields, sa, n))
+        .collect()
 }
 
 /// Gram-Schmidt orthonormalization of generators.
@@ -525,5 +554,77 @@ mod tests {
                 g.name
             );
         }
+    }
+
+    #[test]
+    fn test_boost_flat_space() {
+        // On flat space, boosts (= rotations in t-space planes) are exact
+        // lattice symmetries, so δl = 0 and Noether current = 0.
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+
+        let boosts = all_boost_generators(&complex, &fields, n);
+        assert_eq!(boosts.len(), 3);
+
+        let params = ActionParams::default();
+        for g in &boosts {
+            let max_dl: f64 = g
+                .delta_lengths
+                .iter()
+                .map(|x| x.abs())
+                .fold(0.0, f64::max);
+            assert!(
+                max_dl < 1e-12,
+                "{} on flat space: max δl = {max_dl} (expected 0)",
+                g.name
+            );
+
+            let j = noether_current(
+                &complex,
+                &fields,
+                &g.delta_lengths,
+                &g.delta_phases,
+                &params,
+            );
+            assert!(
+                j.abs() < 1e-10,
+                "{}: Noether current = {j} (expected ~0)",
+                g.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_boost_rn_broken() {
+        // On RN background, boosts should be more broken than spatial rotations
+        // since f(r) ≠ g(r) breaks time-space isotropy.
+        let n = 3;
+        let (complex, lengths) = mesh::reissner_nordstrom(n, 1.0, 0.1, 0.0, 0.5);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+
+        let boosts = all_boost_generators(&complex, &fields, n);
+        let rotations = all_rotation_generators(&complex, &fields, n);
+        assert_eq!(boosts.len(), 3);
+        assert_eq!(rotations.len(), 3);
+
+        // Boosts should have larger δl norms than rotations on RN
+        // (rotations only break at O(h²) from discretization,
+        //  boosts break at O(1) from f ≠ g).
+        let max_boost_dl: f64 = boosts
+            .iter()
+            .map(|g| g.delta_lengths.iter().map(|x| x.abs()).fold(0.0, f64::max))
+            .fold(0.0, f64::max);
+        let max_rot_dl: f64 = rotations
+            .iter()
+            .map(|g| g.delta_lengths.iter().map(|x| x.abs()).fold(0.0, f64::max))
+            .fold(0.0, f64::max);
+
+        assert!(
+            max_boost_dl > max_rot_dl,
+            "boost max δl ({max_boost_dl}) should exceed rotation max δl ({max_rot_dl}) on RN"
+        );
     }
 }
