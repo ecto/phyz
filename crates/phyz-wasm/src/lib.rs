@@ -1009,6 +1009,48 @@ impl WasmMpmSim {
         }
     }
 
+    pub fn fluid_slosh() -> WasmMpmSim {
+        let cols = 25;
+        let rows = 20;
+        let n = cols * rows;
+        let r = 0.012;
+        let spacing = r * 2.2;
+        let mut px = Vec::with_capacity(n);
+        let mut py = Vec::with_capacity(n);
+        let mut vx = Vec::with_capacity(n);
+        for i in 0..n {
+            let col = i % cols;
+            let row = i / cols;
+            let x = -0.55 + (col as f64 + 0.5) * spacing;
+            let y = r + row as f64 * spacing;
+            px.push(x);
+            py.push(y);
+            // initial rightward velocity, stronger at top
+            let t = row as f64 / rows as f64;
+            vx.push(2.0 + t * 3.0);
+        }
+        WasmMpmSim {
+            n,
+            px,
+            py,
+            vx,
+            vy: vec![0.0; n],
+            radius: r,
+            stiffness: 30000.0,
+            contact_damp: 400.0,
+            friction: 0.005,
+            wall_bounce: 0.15,
+            sp_a: vec![],
+            sp_b: vec![],
+            sp_rest: vec![],
+            sp_k: 0.0,
+            x_min: -0.6,
+            x_max: 0.6,
+            time: 0.0,
+            dt: 0.00012,
+        }
+    }
+
     pub fn elastic_blob() -> WasmMpmSim {
         let r = 0.022;
         let spacing = r * 2.1;
