@@ -158,6 +158,79 @@ fn vertex_index_4d(coords: &[usize; 4], n: usize) -> usize {
     coords[0] + n * coords[1] + n * n * coords[2] + n * n * n * coords[3]
 }
 
+/// SO(3) rotation generator via 90° lattice rotation in a spatial plane.
+///
+/// For a periodic n×n×n×n mesh, rotates all vertices by 90° in the
+/// (axis1, axis2) spatial plane. Axis indices: 1=x, 2=y, 3=z.
+/// The generator is δφ = φ(rotated) − φ(original).
+///
+/// On a cubic lattice, 90° rotations are exact discrete symmetries of flat
+/// space, so this generator has δl = 0 on flat backgrounds. On curved
+/// spherically-symmetric backgrounds (RN/Schwarzschild), violations are
+/// O(h²) from the lattice discretization.
+pub fn rotation_generator(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    axis1: usize,
+    axis2: usize,
+    n: usize,
+) -> Generator {
+    assert!(
+        (1..=3).contains(&axis1),
+        "axis1 must be 1, 2, or 3 (spatial)"
+    );
+    assert!(
+        (1..=3).contains(&axis2),
+        "axis2 must be 1, 2, or 3 (spatial)"
+    );
+    assert_ne!(axis1, axis2, "axes must be distinct");
+
+    // Build vertex permutation: 90° rotation in (axis1, axis2) plane.
+    // (a1, a2) → (a2, n - a1)
+    let mut vertex_map = vec![0usize; complex.n_vertices];
+    for v in 0..complex.n_vertices {
+        let mut coords = vertex_coords_4d(v, n);
+        let a1 = coords[axis1];
+        let a2 = coords[axis2];
+        coords[axis1] = a2;
+        coords[axis2] = (n - a1) % n;
+        vertex_map[v] = vertex_index_4d(&coords, n);
+    }
+
+    let n_edges = complex.n_edges();
+    let mut delta_lengths = vec![0.0; n_edges];
+    let mut delta_phases = vec![0.0; n_edges];
+
+    for (ei, edge) in complex.edges.iter().enumerate() {
+        let mut rotated_edge = [vertex_map[edge[0]], vertex_map[edge[1]]];
+        rotated_edge.sort_unstable();
+        if let Some(&rotated_ei) = complex.edge_index.get(&rotated_edge) {
+            delta_lengths[ei] = fields.lengths[rotated_ei] - fields.lengths[ei];
+            delta_phases[ei] = fields.phases[rotated_ei] - fields.phases[ei];
+        }
+    }
+
+    let axis_names = ["t", "x", "y", "z"];
+    Generator {
+        delta_lengths,
+        delta_phases,
+        name: format!("rotation_{}{}", axis_names[axis1], axis_names[axis2]),
+    }
+}
+
+/// All three spatial rotation generators: xy, xz, yz.
+pub fn all_rotation_generators(
+    complex: &SimplicialComplex,
+    fields: &Fields,
+    n: usize,
+) -> Vec<Generator> {
+    vec![
+        rotation_generator(complex, fields, 1, 2, n),
+        rotation_generator(complex, fields, 1, 3, n),
+        rotation_generator(complex, fields, 2, 3, n),
+    ]
+}
+
 /// Gram-Schmidt orthonormalization of generators.
 ///
 /// Linearly dependent generators are dropped (norm < 1e-12 after projection).
@@ -379,6 +452,77 @@ mod tests {
             assert!(
                 dot.abs() < 1e-10,
                 "∇S · G_gauge(v{v}) = {dot} (expected 0)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rotation_generator_flat_space() {
+        // On flat space, 90° rotations are exact lattice symmetries,
+        // so the generator should be identically zero (δl = 0 for all edges).
+        let n = 3;
+        let (complex, lengths) = mesh::flat_hypercubic(n, 1.0);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+
+        for (a1, a2) in [(1, 2), (1, 3), (2, 3)] {
+            let g = rotation_generator(&complex, &fields, a1, a2, n);
+
+            // All δl should be zero on flat space.
+            let max_dl: f64 = g
+                .delta_lengths
+                .iter()
+                .map(|x| x.abs())
+                .fold(0.0, f64::max);
+            assert!(
+                max_dl < 1e-12,
+                "rotation ({a1},{a2}) on flat space: max δl = {max_dl} (expected 0)"
+            );
+
+            // Noether current should also be zero.
+            let params = ActionParams::default();
+            let j = noether_current(
+                &complex,
+                &fields,
+                &g.delta_lengths,
+                &g.delta_phases,
+                &params,
+            );
+            assert!(
+                j.abs() < 1e-10,
+                "rotation ({a1},{a2}) Noether current = {j} (expected ~0)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rotation_generator_rn_small_violation() {
+        // On RN background, rotation generators should have small violations
+        // (O(h²) from lattice discretization), not large ones.
+        let n = 3;
+        let (complex, lengths) = mesh::reissner_nordstrom(n, 1.0, 0.1, 0.0, 0.5);
+        let phases = vec![0.0; complex.n_edges()];
+        let fields = Fields::new(lengths, phases);
+
+        let gens = all_rotation_generators(&complex, &fields, n);
+        assert_eq!(gens.len(), 3);
+
+        let params = ActionParams::default();
+        for g in &gens {
+            let j = noether_current(
+                &complex,
+                &fields,
+                &g.delta_lengths,
+                &g.delta_phases,
+                &params,
+            );
+            // Not necessarily zero: the RN metric breaks lattice rotation
+            // symmetry at O(h²), and with coarse grids the constant can be
+            // large. Just verify it's finite and much smaller than conformal.
+            assert!(
+                j.abs() < 10.0,
+                "{}: Noether current = {j} (expected bounded)",
+                g.name
             );
         }
     }

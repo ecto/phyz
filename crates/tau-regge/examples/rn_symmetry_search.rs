@@ -21,7 +21,7 @@ use std::env;
 use std::time::Instant;
 
 use tau_regge::symmetry::{
-    all_gauge_generators, conformal_generator, translation_generator,
+    all_gauge_generators, all_rotation_generators, conformal_generator, translation_generator,
 };
 use tau_regge::{
     search_symmetries, ActionParams, Fields, SearchConfig,
@@ -36,12 +36,12 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
 }
 
 fn main() {
-    let n: usize = env_or("RN_N", 3);
+    let n: usize = env_or("RN_N", 2);
     let mass: f64 = env_or("RN_MASS", 0.1);
     let charge: f64 = env_or("RN_CHARGE", 0.0);
     let r_min: f64 = env_or("RN_RMIN", 0.5);
     let spacing: f64 = env_or("RN_SPACING", 1.0);
-    let n_samples: usize = env_or("RN_SAMPLES", 200);
+    let n_samples: usize = env_or("RN_SAMPLES", 500);
     let seed: u64 = env_or("RN_SEED", 42);
 
     println!("=== Reissner-Nordström Symmetry Search ===");
@@ -75,16 +75,38 @@ fn main() {
         known.push(translation_generator(&complex, &fields, axis, n));
     }
 
+    let rotation_gens = all_rotation_generators(&complex, &fields, n);
+    let n_rot = rotation_gens.len();
+    known.extend(rotation_gens);
+
     known.push(conformal_generator(&complex, &fields));
     let gen_time = t0.elapsed();
 
     println!(
-        "Known generators: {} gauge + 4 translation + 1 conformal = {}  ({:.1?})",
+        "Known generators: {} gauge + 4 translation + {} rotation + 1 conformal = {}  ({:.1?})",
         n_gauge,
+        n_rot,
         known.len(),
         gen_time,
     );
     println!();
+
+    // Warn if samples are too few for the DOF.
+    let dof = fields.n_dof();
+    let n_known = known.len();
+    if n_samples < dof.saturating_sub(n_known) {
+        eprintln!(
+            "WARNING: n_samples ({}) < DOF - n_known ({} - {} = {}). \
+             Results may be dominated by rank-deficient artifacts. \
+             Consider increasing RN_SAMPLES to at least {}.",
+            n_samples,
+            dof,
+            n_known,
+            dof.saturating_sub(n_known),
+            2 * dof.saturating_sub(n_known),
+        );
+        eprintln!();
+    }
 
     // --- search ---
     let config = SearchConfig {
