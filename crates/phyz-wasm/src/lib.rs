@@ -3,6 +3,7 @@ use wasm_bindgen::prelude::*;
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
+use phyz_diff::analytical_step_jacobians;
 
 // ================================================================
 // Articulated Body Simulation (pendulums, chains)
@@ -3329,4 +3330,1177 @@ impl WasmProbSim {
         }
         (var / self.n as f64).sqrt()
     }
+}
+
+// ================================================================
+// phyz-diff: Analytical Jacobians
+// ================================================================
+
+/// Gradient descent optimization: find initial angle to hit target x position.
+#[wasm_bindgen]
+pub struct WasmDiffGradientSim {
+    model: Model,
+    state: State,
+    target_x: f64,
+    theta0: f64,
+    lr: f64,
+    loss_history: Vec<f64>,
+    iteration: usize,
+    length: f64,
+    // Current simulation state for rendering
+    render_state: State,
+}
+
+#[wasm_bindgen]
+impl WasmDiffGradientSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmDiffGradientSim {
+        let length = 1.5;
+        let mass = 1.0;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
+            .dt(0.001)
+            .add_revolute_body(
+                "pendulum", -1, SpatialTransform::identity(),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::new(0.0, -length / 2.0, 0.0),
+                    Mat3::from_diagonal(&Vec3::new(
+                        mass * length * length / 12.0, 0.0, mass * length * length / 12.0,
+                    )),
+                ),
+            )
+            .build();
+
+        let theta0 = 0.2; // initial guess
+        let mut state = model.default_state();
+        state.q[0] = theta0;
+
+        let render_state = state.clone();
+        WasmDiffGradientSim {
+            model, state, target_x: 1.2, theta0, lr: 0.005,
+            loss_history: vec![], iteration: 0, length, render_state,
+        }
+    }
+
+    /// Run one gradient descent step: simulate forward, compute loss gradient, update theta0.
+    pub fn step_n(&mut self, n: usize) {
+        for _ in 0..n {
+            // Reset state with current theta0
+            self.state = self.model.default_state();
+            self.state.q[0] = self.theta0;
+
+            // Simulate 500 steps forward
+            let dt = self.model.dt;
+            for _ in 0..500 {
+                let q0 = self.state.q.clone();
+                let v0 = self.state.v.clone();
+                let k1v = aba(&self.model, &self.state);
+                let k1q = self.state.v.clone();
+                self.state.q = &q0 + &k1q * (dt / 2.0);
+                self.state.v = &v0 + &k1v * (dt / 2.0);
+                let k2v = aba(&self.model, &self.state);
+                let k2q = self.state.v.clone();
+                self.state.q = &q0 + &k2q * (dt / 2.0);
+                self.state.v = &v0 + &k2v * (dt / 2.0);
+                let k3v = aba(&self.model, &self.state);
+                let k3q = self.state.v.clone();
+                self.state.q = &q0 + &k3q * dt;
+                self.state.v = &v0 + &k3v * dt;
+                let k4v = aba(&self.model, &self.state);
+                let k4q = self.state.v.clone();
+                self.state.q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
+                self.state.v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+                self.state.time += dt;
+            }
+
+            // Compute loss: (x_final - target_x)^2
+            let x_final = self.length * self.state.q[0].sin();
+            let loss = (x_final - self.target_x).powi(2);
+            self.loss_history.push(loss);
+
+            // Gradient via finite diff on loss w.r.t. theta0
+            let eps = 1e-5;
+            let mut sp = self.model.default_state();
+            sp.q[0] = self.theta0 + eps;
+            for _ in 0..500 {
+                let acc = aba(&self.model, &sp);
+                sp.v = &sp.v + &acc * dt;
+                sp.q = &sp.q + &sp.v * dt;
+            }
+            let xp = self.length * sp.q[0].sin();
+            let loss_p = (xp - self.target_x).powi(2);
+
+            let mut sm = self.model.default_state();
+            sm.q[0] = self.theta0 - eps;
+            for _ in 0..500 {
+                let acc = aba(&self.model, &sm);
+                sm.v = &sm.v + &acc * dt;
+                sm.q = &sm.q + &sm.v * dt;
+            }
+            let xm = self.length * sm.q[0].sin();
+            let loss_m = (xm - self.target_x).powi(2);
+
+            let grad = (loss_p - loss_m) / (2.0 * eps);
+            self.theta0 -= self.lr * grad;
+            self.theta0 = self.theta0.clamp(-std::f64::consts::PI, std::f64::consts::PI);
+            self.iteration += 1;
+        }
+
+        // Update render state: simulate current theta0 with animation
+        self.render_state = self.model.default_state();
+        self.render_state.q[0] = self.theta0;
+        let dt = self.model.dt;
+        for _ in 0..200 {
+            let acc = aba(&self.model, &self.render_state);
+            self.render_state.v = &self.render_state.v + &acc * dt;
+            self.render_state.q = &self.render_state.q + &self.render_state.v * dt;
+            self.render_state.time += dt;
+        }
+    }
+
+    pub fn theta0(&self) -> f64 { self.theta0 }
+    pub fn target_x(&self) -> f64 { self.target_x }
+    pub fn loss_history(&self) -> Vec<f64> { self.loss_history.clone() }
+    pub fn iteration(&self) -> usize { self.iteration }
+    pub fn current_x(&self) -> f64 { self.length * self.render_state.q[0].sin() }
+    pub fn current_y(&self) -> f64 { -self.length * self.render_state.q[0].cos() }
+    pub fn time(&self) -> f64 { self.render_state.time }
+    pub fn current_loss(&self) -> f64 {
+        self.loss_history.last().copied().unwrap_or(f64::MAX)
+    }
+}
+
+/// Jacobian heatmap: pendulum simulation with live Jacobian matrix display.
+#[wasm_bindgen]
+pub struct WasmDiffJacobianSim {
+    model: Model,
+    state: State,
+    length: f64,
+    // Jacobian matrix entries (2x2 for single DOF: dq'/dq, dq'/dv, dv'/dq, dv'/dv)
+    jac: [f64; 4],
+}
+
+#[wasm_bindgen]
+impl WasmDiffJacobianSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmDiffJacobianSim {
+        let length = 1.5;
+        let mass = 1.0;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
+            .dt(0.001)
+            .add_revolute_body(
+                "pendulum", -1, SpatialTransform::identity(),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::new(0.0, -length / 2.0, 0.0),
+                    Mat3::from_diagonal(&Vec3::new(
+                        mass * length * length / 12.0, 0.0, mass * length * length / 12.0,
+                    )),
+                ),
+            )
+            .build();
+
+        let mut state = model.default_state();
+        state.q[0] = 0.8;
+        WasmDiffJacobianSim { model, state, length, jac: [1.0, 0.0, 0.0, 1.0] }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let dt = self.model.dt;
+        for _ in 0..n {
+            // Compute Jacobians
+            let j = analytical_step_jacobians(&self.model, &self.state);
+            self.jac = [j.dqnext_dq[(0, 0)], j.dqnext_dv[(0, 0)], j.dvnext_dq[(0, 0)], j.dvnext_dv[(0, 0)]];
+
+            // Semi-implicit Euler step
+            let acc = aba(&self.model, &self.state);
+            self.state.v = &self.state.v + &acc * dt;
+            self.state.q = &self.state.q + &self.state.v * dt;
+            self.state.time += dt;
+        }
+    }
+
+    pub fn angle(&self) -> f64 { self.state.q[0] }
+    pub fn bob_x(&self) -> f64 { self.length * self.state.q[0].sin() }
+    pub fn bob_y(&self) -> f64 { -self.length * self.state.q[0].cos() }
+    pub fn jacobian(&self) -> Vec<f64> { self.jac.to_vec() }
+    pub fn time(&self) -> f64 { self.state.time }
+}
+
+/// Sensitivity: two pendulums with perturbed ICs, analytical gradient prediction vs actual divergence.
+#[wasm_bindgen]
+pub struct WasmDiffSensitivitySim {
+    model: Model,
+    state_a: State,
+    state_b: State,
+    length: f64,
+    predicted_divergence: Vec<f64>, // accumulated from Jacobians
+    actual_divergence: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmDiffSensitivitySim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmDiffSensitivitySim {
+        let length = 1.5;
+        let mass = 1.0;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
+            .dt(0.001)
+            .add_revolute_body(
+                "pendulum", -1, SpatialTransform::identity(),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::new(0.0, -length / 2.0, 0.0),
+                    Mat3::from_diagonal(&Vec3::new(
+                        mass * length * length / 12.0, 0.0, mass * length * length / 12.0,
+                    )),
+                ),
+            )
+            .build();
+
+        let mut state_a = model.default_state();
+        state_a.q[0] = 0.8;
+        let mut state_b = model.default_state();
+        state_b.q[0] = 0.8 + 0.01; // small perturbation
+
+        WasmDiffSensitivitySim {
+            model, state_a, state_b, length,
+            predicted_divergence: vec![0.01], actual_divergence: vec![0.01],
+        }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let dt = self.model.dt;
+        for _ in 0..n {
+            // Compute Jacobian at state_a
+            let j = analytical_step_jacobians(&self.model, &self.state_a);
+
+            // Update predicted divergence using Jacobian
+            let prev_pred = self.predicted_divergence.last().copied().unwrap_or(0.01);
+            let growth_factor = j.dqnext_dq[(0, 0)].abs();
+            let new_pred = prev_pred * growth_factor;
+            self.predicted_divergence.push(new_pred);
+
+            // Step both sims
+            let acc_a = aba(&self.model, &self.state_a);
+            self.state_a.v = &self.state_a.v + &acc_a * dt;
+            self.state_a.q = &self.state_a.q + &self.state_a.v * dt;
+            self.state_a.time += dt;
+
+            let acc_b = aba(&self.model, &self.state_b);
+            self.state_b.v = &self.state_b.v + &acc_b * dt;
+            self.state_b.q = &self.state_b.q + &self.state_b.v * dt;
+            self.state_b.time += dt;
+
+            // Actual divergence
+            let actual = (self.state_a.q[0] - self.state_b.q[0]).abs();
+            self.actual_divergence.push(actual);
+        }
+
+        // Keep history bounded
+        if self.predicted_divergence.len() > 600 {
+            self.predicted_divergence.drain(0..self.predicted_divergence.len() - 600);
+        }
+        if self.actual_divergence.len() > 600 {
+            self.actual_divergence.drain(0..self.actual_divergence.len() - 600);
+        }
+    }
+
+    pub fn pos_a(&self) -> Vec<f64> {
+        vec![self.length * self.state_a.q[0].sin(), -self.length * self.state_a.q[0].cos()]
+    }
+    pub fn pos_b(&self) -> Vec<f64> {
+        vec![self.length * self.state_b.q[0].sin(), -self.length * self.state_b.q[0].cos()]
+    }
+    pub fn predicted_divergence(&self) -> Vec<f64> { self.predicted_divergence.clone() }
+    pub fn actual_divergence(&self) -> Vec<f64> { self.actual_divergence.clone() }
+    pub fn time(&self) -> f64 { self.state_a.time }
+}
+
+// ================================================================
+// phyz-mjcf: MuJoCo XML Loading (inline, demonstrates concept)
+// ================================================================
+
+/// Ant model: multi-body spider with 8 legs.
+#[wasm_bindgen]
+pub struct WasmMjcfAntSim {
+    model: Model,
+    state: State,
+}
+
+#[wasm_bindgen]
+impl WasmMjcfAntSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmMjcfAntSim {
+        // Build ant-like kinematic tree: torso + 4 legs with 2 joints each
+        let _torso_mass = 2.0;
+        let leg_mass = 0.3;
+        let hip_len = 0.4;
+        let shin_len = 0.6;
+
+        let mut builder = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
+            .dt(0.001);
+
+        // 4 legs at 45°/135°/225°/315° around torso, each has hip + shin
+        let offsets = [
+            Vec3::new(0.4, 0.0, 0.4),
+            Vec3::new(-0.4, 0.0, 0.4),
+            Vec3::new(-0.4, 0.0, -0.4),
+            Vec3::new(0.4, 0.0, -0.4),
+        ];
+        // Rotate each hip frame around Y so leg swings outward from torso
+        let azimuths = [
+            std::f64::consts::FRAC_PI_4,       // +x, +z → 45°
+            -std::f64::consts::FRAC_PI_4,      // -x, +z → -45°  (actually 135° but swing plane rotated)
+            std::f64::consts::FRAC_PI_4,       // -x, -z → mirror of leg 0
+            -std::f64::consts::FRAC_PI_4,      // +x, -z → mirror of leg 1
+        ];
+
+        for (i, (offset, &azimuth)) in offsets.iter().zip(azimuths.iter()).enumerate() {
+            // Compose Y-rotation with translation so each leg's revolute Z-axis faces outward
+            let mut hip_xf = SpatialTransform::rot_y(azimuth);
+            hip_xf.pos = *offset;
+
+            let hip_parent = -1i32; // all hips attached to world (torso)
+            builder = builder.add_revolute_body(
+                &format!("hip_{i}"), hip_parent,
+                hip_xf,
+                SpatialInertia::new(
+                    leg_mass,
+                    Vec3::new(0.0, -hip_len / 2.0, 0.0),
+                    Mat3::from_diagonal(&Vec3::new(
+                        leg_mass * hip_len * hip_len / 12.0, 0.0, leg_mass * hip_len * hip_len / 12.0,
+                    )),
+                ),
+            );
+            builder = builder.add_revolute_body(
+                &format!("shin_{i}"), (i * 2) as i32,
+                SpatialTransform::translation(Vec3::new(0.0, -hip_len, 0.0)),
+                SpatialInertia::new(
+                    leg_mass,
+                    Vec3::new(0.0, -shin_len / 2.0, 0.0),
+                    Mat3::from_diagonal(&Vec3::new(
+                        leg_mass * shin_len * shin_len / 12.0, 0.0, leg_mass * shin_len * shin_len / 12.0,
+                    )),
+                ),
+            );
+        }
+
+        let mut model = builder.build();
+        for j in &mut model.joints {
+            j.damping = 0.1;
+        }
+
+        let mut state = model.default_state();
+        // Spread legs out a bit
+        for i in 0..4 {
+            state.q[i * 2] = 0.3 + (i as f64) * 0.15;
+            state.q[i * 2 + 1] = -0.4;
+        }
+
+        WasmMjcfAntSim { model, state }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let dt = self.model.dt;
+        for _ in 0..n {
+            let acc = aba(&self.model, &self.state);
+            self.state.v = &self.state.v + &acc * dt;
+            self.state.q = &self.state.q + &self.state.v * dt;
+            self.state.time += dt;
+        }
+    }
+
+    pub fn nbodies(&self) -> usize { self.model.nbodies() }
+    pub fn joint_positions(&self) -> Vec<f64> {
+        let (xforms, _) = forward_kinematics(&self.model, &self.state);
+        let nb = self.model.nbodies();
+        let mut positions = Vec::with_capacity(nb * 3);
+        for xf in xforms.iter().take(nb) {
+            positions.push(xf.pos.x);
+            positions.push(xf.pos.y);
+            positions.push(xf.pos.z);
+        }
+        positions
+    }
+    pub fn body_endpoint_positions(&self) -> Vec<f64> {
+        let (xforms, _) = forward_kinematics(&self.model, &self.state);
+        let nb = self.model.nbodies();
+        let mut positions = Vec::with_capacity(nb * 3);
+        for (i, xf) in xforms.iter().enumerate().take(nb) {
+            let body = &self.model.bodies[i];
+            let ep = body.inertia.com * 2.0;
+            let rotated = xf.rot.transpose() * ep;
+            let p = rotated + xf.pos;
+            positions.push(p.x);
+            positions.push(p.y);
+            positions.push(p.z);
+        }
+        positions
+    }
+    pub fn time(&self) -> f64 { self.state.time }
+}
+
+/// Cartpole: cart + inverted pendulum (classic control benchmark).
+#[wasm_bindgen]
+pub struct WasmMjcfCartpoleSim {
+    // Simple inline cartpole (cart position x, pole angle theta)
+    x: f64,
+    x_dot: f64,
+    theta: f64,
+    theta_dot: f64,
+    time: f64,
+    dt: f64,
+    cart_mass: f64,
+    pole_mass: f64,
+    pole_length: f64,
+}
+
+#[wasm_bindgen]
+impl WasmMjcfCartpoleSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmMjcfCartpoleSim {
+        WasmMjcfCartpoleSim {
+            x: 0.0, x_dot: 0.0,
+            theta: 0.15, theta_dot: 0.0,
+            time: 0.0, dt: 0.002,
+            cart_mass: 1.0, pole_mass: 0.1, pole_length: 1.0,
+        }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let g = GRAVITY;
+        let mc = self.cart_mass;
+        let mp = self.pole_mass;
+        let l = self.pole_length;
+
+        for _ in 0..n {
+            let s = self.theta.sin();
+            let c = self.theta.cos();
+            let total = mc + mp;
+
+            // Simple PD controller to keep pole upright
+            let force = -5.0 * self.theta - 2.0 * self.theta_dot - 0.5 * self.x - 0.3 * self.x_dot;
+
+            let theta_acc = (g * s - c * (force + mp * l * self.theta_dot.powi(2) * s) / total)
+                / (l * (4.0 / 3.0 - mp * c * c / total));
+            let x_acc = (force + mp * l * (self.theta_dot.powi(2) * s - theta_acc * c)) / total;
+
+            self.theta_dot += theta_acc * self.dt;
+            self.theta += self.theta_dot * self.dt;
+            self.x_dot += x_acc * self.dt;
+            self.x += self.x_dot * self.dt;
+            self.time += self.dt;
+        }
+    }
+
+    pub fn cart_x(&self) -> f64 { self.x }
+    pub fn pole_angle(&self) -> f64 { self.theta }
+    pub fn pole_tip_x(&self) -> f64 { self.x + self.pole_length * self.theta.sin() }
+    pub fn pole_tip_y(&self) -> f64 { self.pole_length * self.theta.cos() }
+    pub fn time(&self) -> f64 { self.time }
+}
+
+/// MJCF editor: parse a simple body description and return skeleton.
+#[wasm_bindgen]
+pub struct WasmMjcfEditorSim {
+    // Parsed body chain: stores positions of each body
+    body_x: Vec<f64>,
+    body_y: Vec<f64>,
+    n_bodies: usize,
+}
+
+#[wasm_bindgen]
+impl WasmMjcfEditorSim {
+    /// Parse a simple MJCF-like string. Format: one body per line, "name length mass".
+    pub fn parse(xml: &str) -> WasmMjcfEditorSim {
+        let mut lengths = Vec::new();
+        let mut body_x = vec![0.0];
+        let mut body_y = vec![0.0];
+
+        // Simple parser: each line "name length" creates a body
+        for line in xml.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('<') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(l) = parts[1].parse::<f64>() {
+                    lengths.push(l.clamp(0.1, 3.0));
+                }
+            }
+        }
+
+        if lengths.is_empty() {
+            lengths.push(1.0); // default single body
+        }
+
+        // Build skeleton as a chain hanging down
+        let mut y = 0.0;
+        for l in &lengths {
+            y -= l;
+            body_x.push(0.0);
+            body_y.push(y);
+        }
+
+        let n_bodies = lengths.len();
+        WasmMjcfEditorSim { body_x, body_y, n_bodies }
+    }
+
+    pub fn n_bodies(&self) -> usize { self.n_bodies }
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::new();
+        for i in 0..self.body_x.len() {
+            out.push(self.body_x[i]);
+            out.push(self.body_y[i]);
+        }
+        out
+    }
+}
+
+// ================================================================
+// phyz-real2sim: Inverse Problems (inline optimization demos)
+// ================================================================
+
+/// Parameter fitting: gradient descent to match a reference trajectory.
+#[wasm_bindgen]
+pub struct WasmReal2SimFitSim {
+    // Reference trajectory (generated from true params)
+    ref_traj: Vec<f64>, // angles at each timestep
+    // Current estimated params
+    est_mass: f64,
+    est_length: f64,
+    // True params
+    true_mass: f64,
+    true_length: f64,
+    // Optimization state
+    loss_history: Vec<f64>,
+    iteration: usize,
+    lr: f64,
+    dt: f64,
+    n_steps: usize,
+}
+
+#[wasm_bindgen]
+impl WasmReal2SimFitSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReal2SimFitSim {
+        let true_mass = 1.0;
+        let true_length = 1.5;
+        let dt = 0.002;
+        let n_steps = 300;
+
+        // Generate reference trajectory
+        let ref_traj = Self::simulate_pendulum(true_mass, true_length, 0.8, dt, n_steps);
+
+        WasmReal2SimFitSim {
+            ref_traj, est_mass: 2.0, est_length: 1.0,
+            true_mass, true_length,
+            loss_history: vec![], iteration: 0, lr: 0.02,
+            dt, n_steps,
+        }
+    }
+
+    fn simulate_pendulum(_mass: f64, length: f64, q0: f64, dt: f64, n: usize) -> Vec<f64> {
+        let g = GRAVITY;
+        let mut q = q0;
+        let mut v = 0.0;
+        let mut traj = Vec::with_capacity(n);
+        for _ in 0..n {
+            let acc = -g / length * q.sin();
+            v += acc * dt;
+            q += v * dt;
+            traj.push(q);
+        }
+        traj
+    }
+
+    fn compute_loss(&self, mass: f64, length: f64) -> f64 {
+        let traj = Self::simulate_pendulum(mass, length, 0.8, self.dt, self.n_steps);
+        let mut loss = 0.0;
+        for (a, b) in traj.iter().zip(self.ref_traj.iter()) {
+            loss += (a - b).powi(2);
+        }
+        loss / self.n_steps as f64
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let eps = 1e-5;
+        for _ in 0..n {
+            let loss = self.compute_loss(self.est_mass, self.est_length);
+            self.loss_history.push(loss);
+
+            // Gradient w.r.t. mass
+            let lp_m = self.compute_loss(self.est_mass + eps, self.est_length);
+            let lm_m = self.compute_loss(self.est_mass - eps, self.est_length);
+            let grad_m = (lp_m - lm_m) / (2.0 * eps);
+
+            // Gradient w.r.t. length
+            let lp_l = self.compute_loss(self.est_mass, self.est_length + eps);
+            let lm_l = self.compute_loss(self.est_mass, self.est_length - eps);
+            let grad_l = (lp_l - lm_l) / (2.0 * eps);
+
+            self.est_mass -= self.lr * grad_m;
+            self.est_length -= self.lr * grad_l;
+            self.est_mass = self.est_mass.clamp(0.1, 5.0);
+            self.est_length = self.est_length.clamp(0.3, 3.0);
+            self.iteration += 1;
+        }
+    }
+
+    pub fn est_mass(&self) -> f64 { self.est_mass }
+    pub fn est_length(&self) -> f64 { self.est_length }
+    pub fn true_mass(&self) -> f64 { self.true_mass }
+    pub fn true_length(&self) -> f64 { self.true_length }
+    pub fn loss_history(&self) -> Vec<f64> { self.loss_history.clone() }
+    pub fn iteration(&self) -> usize { self.iteration }
+    pub fn current_loss(&self) -> f64 { self.loss_history.last().copied().unwrap_or(f64::MAX) }
+    pub fn time(&self) -> f64 { self.iteration as f64 }
+    /// Current estimated trajectory (for overlay rendering)
+    pub fn est_trajectory(&self) -> Vec<f64> {
+        Self::simulate_pendulum(self.est_mass, self.est_length, 0.8, self.dt, self.n_steps)
+    }
+    pub fn ref_trajectory(&self) -> Vec<f64> { self.ref_traj.clone() }
+}
+
+/// Loss landscape: 2D contour of loss over (mass, length) parameter grid.
+#[wasm_bindgen]
+pub struct WasmReal2SimLandscapeSim {
+    grid: Vec<f64>, // flattened grid_size x grid_size loss values
+    grid_size: usize,
+    // Gradient descent path
+    path_m: Vec<f64>,
+    path_l: Vec<f64>,
+    est_mass: f64,
+    est_length: f64,
+    ref_traj: Vec<f64>,
+    dt: f64,
+    n_steps: usize,
+    lr: f64,
+    iteration: usize,
+}
+
+#[wasm_bindgen]
+impl WasmReal2SimLandscapeSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReal2SimLandscapeSim {
+        let dt = 0.002;
+        let n_steps = 300;
+        let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
+
+        let grid_size = 32;
+        let mut grid = vec![0.0; grid_size * grid_size];
+
+        // Compute loss over (mass, length) grid
+        let m_min = 0.3;
+        let m_max = 3.0;
+        let l_min = 0.5;
+        let l_max = 2.5;
+
+        for i in 0..grid_size {
+            for j in 0..grid_size {
+                let m = m_min + (m_max - m_min) * (j as f64 / (grid_size - 1) as f64);
+                let l = l_min + (l_max - l_min) * (i as f64 / (grid_size - 1) as f64);
+                let traj = WasmReal2SimFitSim::simulate_pendulum(m, l, 0.8, dt, n_steps);
+                let mut loss = 0.0;
+                for (a, b) in traj.iter().zip(ref_traj.iter()) {
+                    loss += (a - b).powi(2);
+                }
+                grid[i * grid_size + j] = (loss / n_steps as f64).ln().max(-10.0);
+            }
+        }
+
+        WasmReal2SimLandscapeSim {
+            grid, grid_size,
+            path_m: vec![2.5], path_l: vec![0.8],
+            est_mass: 2.5, est_length: 0.8,
+            ref_traj, dt, n_steps, lr: 0.02, iteration: 0,
+        }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let eps = 1e-5;
+        for _ in 0..n {
+            let compute_loss = |m: f64, l: f64| -> f64 {
+                let traj = WasmReal2SimFitSim::simulate_pendulum(m, l, 0.8, self.dt, self.n_steps);
+                let mut loss = 0.0;
+                for (a, b) in traj.iter().zip(self.ref_traj.iter()) {
+                    loss += (a - b).powi(2);
+                }
+                loss / self.n_steps as f64
+            };
+
+            let lp_m = compute_loss(self.est_mass + eps, self.est_length);
+            let lm_m = compute_loss(self.est_mass - eps, self.est_length);
+            let grad_m = (lp_m - lm_m) / (2.0 * eps);
+
+            let lp_l = compute_loss(self.est_mass, self.est_length + eps);
+            let lm_l = compute_loss(self.est_mass, self.est_length - eps);
+            let grad_l = (lp_l - lm_l) / (2.0 * eps);
+
+            self.est_mass -= self.lr * grad_m;
+            self.est_length -= self.lr * grad_l;
+            self.est_mass = self.est_mass.clamp(0.3, 3.0);
+            self.est_length = self.est_length.clamp(0.5, 2.5);
+
+            self.path_m.push(self.est_mass);
+            self.path_l.push(self.est_length);
+            self.iteration += 1;
+        }
+    }
+
+    pub fn grid(&self) -> Vec<f64> { self.grid.clone() }
+    pub fn grid_size(&self) -> usize { self.grid_size }
+    pub fn path_m(&self) -> Vec<f64> { self.path_m.clone() }
+    pub fn path_l(&self) -> Vec<f64> { self.path_l.clone() }
+    pub fn time(&self) -> f64 { self.iteration as f64 }
+    pub fn est_mass(&self) -> f64 { self.est_mass }
+    pub fn est_length(&self) -> f64 { self.est_length }
+}
+
+/// Adam vs GD: compare two optimizers on the same problem.
+#[wasm_bindgen]
+pub struct WasmReal2SimAdamVsGdSim {
+    ref_traj: Vec<f64>,
+    dt: f64,
+    n_steps: usize,
+    // GD state
+    gd_mass: f64,
+    gd_length: f64,
+    gd_loss: Vec<f64>,
+    // Adam state
+    adam_mass: f64,
+    adam_length: f64,
+    adam_loss: Vec<f64>,
+    adam_m: [f64; 2], // first moment
+    adam_v: [f64; 2], // second moment
+    adam_t: usize,
+    iteration: usize,
+}
+
+#[wasm_bindgen]
+impl WasmReal2SimAdamVsGdSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReal2SimAdamVsGdSim {
+        let dt = 0.002;
+        let n_steps = 300;
+        let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
+
+        WasmReal2SimAdamVsGdSim {
+            ref_traj, dt, n_steps,
+            gd_mass: 2.5, gd_length: 0.8, gd_loss: vec![],
+            adam_mass: 2.5, adam_length: 0.8, adam_loss: vec![],
+            adam_m: [0.0; 2], adam_v: [0.0; 2], adam_t: 0, iteration: 0,
+        }
+    }
+
+    fn compute_loss_and_grad(&self, mass: f64, length: f64) -> (f64, f64, f64) {
+        let eps = 1e-5;
+        let compute = |m: f64, l: f64| -> f64 {
+            let traj = WasmReal2SimFitSim::simulate_pendulum(m, l, 0.8, self.dt, self.n_steps);
+            let mut loss = 0.0;
+            for (a, b) in traj.iter().zip(self.ref_traj.iter()) {
+                loss += (a - b).powi(2);
+            }
+            loss / self.n_steps as f64
+        };
+        let loss = compute(mass, length);
+        let grad_m = (compute(mass + eps, length) - compute(mass - eps, length)) / (2.0 * eps);
+        let grad_l = (compute(mass, length + eps) - compute(mass, length - eps)) / (2.0 * eps);
+        (loss, grad_m, grad_l)
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let lr = 0.02;
+        let beta1 = 0.9;
+        let beta2 = 0.999;
+        let adam_eps = 1e-8;
+
+        for _ in 0..n {
+            // GD step
+            let (gd_l, gd_gm, gd_gl) = self.compute_loss_and_grad(self.gd_mass, self.gd_length);
+            self.gd_loss.push(gd_l);
+            self.gd_mass -= lr * gd_gm;
+            self.gd_length -= lr * gd_gl;
+            self.gd_mass = self.gd_mass.clamp(0.1, 5.0);
+            self.gd_length = self.gd_length.clamp(0.3, 3.0);
+
+            // Adam step
+            let (adam_l, adam_gm, adam_gl) = self.compute_loss_and_grad(self.adam_mass, self.adam_length);
+            self.adam_loss.push(adam_l);
+            self.adam_t += 1;
+
+            self.adam_m[0] = beta1 * self.adam_m[0] + (1.0 - beta1) * adam_gm;
+            self.adam_m[1] = beta1 * self.adam_m[1] + (1.0 - beta1) * adam_gl;
+            self.adam_v[0] = beta2 * self.adam_v[0] + (1.0 - beta2) * adam_gm * adam_gm;
+            self.adam_v[1] = beta2 * self.adam_v[1] + (1.0 - beta2) * adam_gl * adam_gl;
+
+            let bc1 = 1.0 - beta1.powi(self.adam_t as i32);
+            let bc2 = 1.0 - beta2.powi(self.adam_t as i32);
+
+            self.adam_mass -= lr * (self.adam_m[0] / bc1) / ((self.adam_v[0] / bc2).sqrt() + adam_eps);
+            self.adam_length -= lr * (self.adam_m[1] / bc1) / ((self.adam_v[1] / bc2).sqrt() + adam_eps);
+            self.adam_mass = self.adam_mass.clamp(0.1, 5.0);
+            self.adam_length = self.adam_length.clamp(0.3, 3.0);
+
+            self.iteration += 1;
+        }
+    }
+
+    pub fn gd_loss(&self) -> Vec<f64> { self.gd_loss.clone() }
+    pub fn adam_loss(&self) -> Vec<f64> { self.adam_loss.clone() }
+    pub fn iteration(&self) -> usize { self.iteration }
+    pub fn time(&self) -> f64 { self.iteration as f64 }
+    pub fn gd_mass(&self) -> f64 { self.gd_mass }
+    pub fn gd_length(&self) -> f64 { self.gd_length }
+    pub fn adam_mass(&self) -> f64 { self.adam_mass }
+    pub fn adam_length(&self) -> f64 { self.adam_length }
+}
+
+// ================================================================
+// phyz-regge: Regge Calculus (GR + EM)
+// ================================================================
+
+use phyz_regge::{
+    ActionParams, Fields, SimplicialComplex,
+    action::einstein_maxwell_action,
+    action::noether_current,
+    mesh,
+    symmetry,
+};
+
+/// Curvature slice: Reissner-Nordström edge lengths as color heatmap.
+#[wasm_bindgen]
+pub struct WasmReggeCurvatureSim {
+    n: usize,
+    spacing: f64,
+}
+
+#[wasm_bindgen]
+impl WasmReggeCurvatureSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReggeCurvatureSim {
+        WasmReggeCurvatureSim { n: 4, spacing: 1.0 }
+    }
+
+    /// Compute edge lengths for Reissner-Nordström mesh.
+    /// Returns flat array of edge length values (one per edge).
+    pub fn compute(&self, mass: f64, charge: f64) -> Vec<f64> {
+        let r_min = (mass + (mass * mass - charge * charge).abs().sqrt()).max(0.5) * 1.1;
+        let (_complex, lengths) = mesh::reissner_nordstrom(self.n, self.spacing, mass, charge, r_min);
+        lengths
+    }
+
+    /// Returns number of edges for the current mesh size.
+    pub fn n_edges(&self) -> usize {
+        let (complex, _) = mesh::flat_hypercubic(self.n, self.spacing);
+        complex.n_edges()
+    }
+
+    /// Grid size for heatmap rendering.
+    pub fn grid_size(&self) -> usize {
+        // Approximate: arrange edges in a square grid
+        let ne = self.n_edges();
+        ((ne as f64).sqrt().ceil() as usize).max(4)
+    }
+
+    pub fn time(&self) -> f64 { 0.0 }
+}
+
+/// Symmetry bars: Noether current norms for different spacetimes.
+#[wasm_bindgen]
+pub struct WasmReggeSymmetrySim {
+    n: usize,
+    spacing: f64,
+}
+
+#[wasm_bindgen]
+impl WasmReggeSymmetrySim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReggeSymmetrySim {
+        WasmReggeSymmetrySim { n: 3, spacing: 1.0 }
+    }
+
+    /// Compute Noether current norms for flat, RN, and Kerr spacetimes.
+    /// Returns [flat_gauge, flat_translation, rn_gauge, rn_translation, kerr_gauge, kerr_translation].
+    pub fn compute(&self) -> Vec<f64> {
+        let params = ActionParams::default();
+        let mut results = Vec::new();
+
+        // Flat spacetime
+        let (flat_complex, flat_lengths) = mesh::flat_hypercubic(self.n, self.spacing);
+        let ne = flat_complex.n_edges();
+        let flat_fields = Fields::new(flat_lengths, vec![0.0; ne]);
+        let flat_gauge = symmetry::gauge_generator(&flat_complex, 0);
+        let flat_j = noether_current(&flat_complex, &flat_fields, &flat_gauge.delta_lengths, &flat_gauge.delta_phases, &params);
+        results.push(flat_j.abs());
+        let flat_trans = symmetry::translation_generator(&flat_complex, &flat_fields, 0, self.n);
+        let flat_tj = noether_current(&flat_complex, &flat_fields, &flat_trans.delta_lengths, &flat_trans.delta_phases, &params);
+        results.push(flat_tj.abs());
+
+        // Reissner-Nordström
+        let (rn_complex, rn_lengths) = mesh::reissner_nordstrom(self.n, self.spacing, 1.0, 0.3, 2.5);
+        let rn_ne = rn_complex.n_edges();
+        let rn_fields = Fields::new(rn_lengths, vec![0.0; rn_ne]);
+        let rn_gauge = symmetry::gauge_generator(&rn_complex, 0);
+        let rn_j = noether_current(&rn_complex, &rn_fields, &rn_gauge.delta_lengths, &rn_gauge.delta_phases, &params);
+        results.push(rn_j.abs());
+        let rn_trans = symmetry::translation_generator(&rn_complex, &rn_fields, 0, self.n);
+        let rn_tj = noether_current(&rn_complex, &rn_fields, &rn_trans.delta_lengths, &rn_trans.delta_phases, &params);
+        results.push(rn_tj.abs());
+
+        // Kerr
+        let (kerr_complex, kerr_lengths) = mesh::kerr(self.n, self.spacing, 1.0, 0.5, 2.5);
+        let kerr_ne = kerr_complex.n_edges();
+        let kerr_fields = Fields::new(kerr_lengths, vec![0.0; kerr_ne]);
+        let kerr_gauge = symmetry::gauge_generator(&kerr_complex, 0);
+        let kerr_j = noether_current(&kerr_complex, &kerr_fields, &kerr_gauge.delta_lengths, &kerr_gauge.delta_phases, &params);
+        results.push(kerr_j.abs());
+        let kerr_trans = symmetry::translation_generator(&kerr_complex, &kerr_fields, 0, self.n);
+        let kerr_tj = noether_current(&kerr_complex, &kerr_fields, &kerr_trans.delta_lengths, &kerr_trans.delta_phases, &params);
+        results.push(kerr_tj.abs());
+
+        results
+    }
+
+    pub fn time(&self) -> f64 { 0.0 }
+}
+
+/// Action landscape: Einstein-Maxwell action vs uniform scale factor, with gradient descent.
+#[wasm_bindgen]
+pub struct WasmReggeActionSim {
+    complex: SimplicialComplex,
+    base_lengths: Vec<f64>,
+    n_edges: usize,
+    // Landscape data
+    scales: Vec<f64>,
+    actions: Vec<f64>,
+    // GD state
+    current_scale: f64,
+    gd_path: Vec<f64>,
+    iteration: usize,
+}
+
+#[wasm_bindgen]
+impl WasmReggeActionSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmReggeActionSim {
+        let (complex, base_lengths) = mesh::flat_hypercubic(3, 1.0);
+        let n_edges = complex.n_edges();
+        let params = ActionParams::default();
+
+        // Compute action landscape over scale factors
+        let n_pts = 64;
+        let mut scales = Vec::with_capacity(n_pts);
+        let mut actions = Vec::with_capacity(n_pts);
+
+        for i in 0..n_pts {
+            let s = 0.3 + 2.7 * (i as f64 / (n_pts - 1) as f64);
+            scales.push(s);
+            let scaled: Vec<f64> = base_lengths.iter().map(|l| l * s).collect();
+            let fields = Fields::new(scaled, vec![0.0; n_edges]);
+            let a = einstein_maxwell_action(&complex, &fields, &params);
+            actions.push(a);
+        }
+
+        WasmReggeActionSim {
+            complex, base_lengths, n_edges,
+            scales, actions,
+            current_scale: 2.5, gd_path: vec![2.5], iteration: 0,
+        }
+    }
+
+    pub fn step_n(&mut self, n: usize) {
+        let lr = 0.001;
+        let params = ActionParams::default();
+        let eps = 1e-5;
+
+        for _ in 0..n {
+            let compute_action = |s: f64| -> f64 {
+                let scaled: Vec<f64> = self.base_lengths.iter().map(|l| l * s).collect();
+                let fields = Fields::new(scaled, vec![0.0; self.n_edges]);
+                einstein_maxwell_action(&self.complex, &fields, &params)
+            };
+
+            let grad = (compute_action(self.current_scale + eps) - compute_action(self.current_scale - eps)) / (2.0 * eps);
+            self.current_scale -= lr * grad;
+            self.current_scale = self.current_scale.clamp(0.3, 3.0);
+            self.gd_path.push(self.current_scale);
+            self.iteration += 1;
+        }
+    }
+
+    pub fn scales(&self) -> Vec<f64> { self.scales.clone() }
+    pub fn actions(&self) -> Vec<f64> { self.actions.clone() }
+    pub fn gd_path(&self) -> Vec<f64> { self.gd_path.clone() }
+    pub fn current_scale(&self) -> f64 { self.current_scale }
+    pub fn current_action(&self) -> f64 {
+        let scaled: Vec<f64> = self.base_lengths.iter().map(|l| l * self.current_scale).collect();
+        let fields = Fields::new(scaled, vec![0.0; self.n_edges]);
+        einstein_maxwell_action(&self.complex, &fields, &ActionParams::default())
+    }
+    pub fn time(&self) -> f64 { self.iteration as f64 }
+}
+
+// ================================================================
+// phyz-compile: Physics Kernel Compiler (inline, demonstrates concept)
+// ================================================================
+
+/// Kernel IR: build a simple physics kernel and return its DAG structure.
+#[wasm_bindgen]
+pub struct WasmCompileIrSim {
+    // IR node descriptions: [type, name, depth, parent_idx]
+    node_types: Vec<String>,
+    node_names: Vec<String>,
+    node_depths: Vec<usize>,
+    node_parents: Vec<i32>,
+}
+
+#[wasm_bindgen]
+impl WasmCompileIrSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmCompileIrSim {
+        // Build a sample physics kernel IR: Laplacian + time stepping
+        let node_types = vec![
+            "program".into(), "field".into(), "field".into(), "stencil".into(),
+            "binop".into(), "binop".into(), "store".into(),
+        ];
+        let node_names = vec![
+            "heat_step".into(), "u (input)".into(), "u_next (output)".into(),
+            "laplacian(u)".into(), "dt * lap".into(), "u + dt*lap".into(),
+            "store u_next".into(),
+        ];
+        let node_depths = vec![0, 1, 1, 1, 2, 2, 1];
+        let node_parents = vec![-1, 0, 0, 0, 3, 4, 0];
+
+        WasmCompileIrSim { node_types, node_names, node_depths, node_parents }
+    }
+
+    pub fn num_nodes(&self) -> usize { self.node_types.len() }
+    pub fn node_types(&self) -> Vec<String> { self.node_types.clone() }
+    pub fn node_names(&self) -> Vec<String> { self.node_names.clone() }
+    pub fn node_depths(&self) -> Vec<usize> { self.node_depths.clone() }
+    pub fn node_parents(&self) -> Vec<i32> { self.node_parents.clone() }
+    pub fn time(&self) -> f64 { 0.0 }
+}
+
+/// WGSL output: display generated WGSL source for different physics ops.
+#[wasm_bindgen]
+pub struct WasmCompileWgslSim {
+    sources: Vec<String>,
+    labels: Vec<String>,
+    current: usize,
+}
+
+#[wasm_bindgen]
+impl WasmCompileWgslSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmCompileWgslSim {
+        let labels = vec!["heat_diffusion".into(), "wave_equation".into(), "advection".into()];
+        let sources = vec![
+            // Heat diffusion kernel
+            "@group(0) @binding(0) var<storage,read> u: array<f32>;\n\
+             @group(0) @binding(1) var<storage,read_write> u_next: array<f32>;\n\
+             @compute @workgroup_size(8,8,1)\n\
+             fn heat_step(@builtin(global_invocation_id) gid: vec3u) {\n\
+             \x20 let i = gid.x + gid.y * N;\n\
+             \x20 let lap = u[i-1] + u[i+1] + u[i-N] + u[i+N] - 4.0*u[i];\n\
+             \x20 u_next[i] = u[i] + dt * alpha * lap;\n\
+             }".into(),
+            // Wave equation kernel
+            "@group(0) @binding(0) var<storage,read> u: array<f32>;\n\
+             @group(0) @binding(1) var<storage,read> u_prev: array<f32>;\n\
+             @group(0) @binding(2) var<storage,read_write> u_next: array<f32>;\n\
+             @compute @workgroup_size(8,8,1)\n\
+             fn wave_step(@builtin(global_invocation_id) gid: vec3u) {\n\
+             \x20 let i = gid.x + gid.y * N;\n\
+             \x20 let lap = u[i-1] + u[i+1] + u[i-N] + u[i+N] - 4.0*u[i];\n\
+             \x20 u_next[i] = 2.0*u[i] - u_prev[i] + c2*dt2*lap;\n\
+             }".into(),
+            // Advection kernel
+            "@group(0) @binding(0) var<storage,read> u: array<f32>;\n\
+             @group(0) @binding(1) var<storage,read> vx: array<f32>;\n\
+             @group(0) @binding(2) var<storage,read_write> u_next: array<f32>;\n\
+             @compute @workgroup_size(8,8,1)\n\
+             fn advect(@builtin(global_invocation_id) gid: vec3u) {\n\
+             \x20 let i = gid.x + gid.y * N;\n\
+             \x20 let upwind = select(u[i]-u[i-1], u[i+1]-u[i], vx[i]<0.0);\n\
+             \x20 u_next[i] = u[i] - dt * vx[i] * upwind / dx;\n\
+             }".into(),
+        ];
+        WasmCompileWgslSim { sources, labels, current: 0 }
+    }
+
+    pub fn num_kernels(&self) -> usize { self.sources.len() }
+    pub fn current_label(&self) -> String { self.labels[self.current].clone() }
+    pub fn current_source(&self) -> String { self.sources[self.current].clone() }
+    pub fn all_labels(&self) -> Vec<String> { self.labels.clone() }
+    /// Cycle to next kernel
+    pub fn next(&mut self) { self.current = (self.current + 1) % self.sources.len(); }
+    pub fn source_lines(&self) -> usize { self.sources[self.current].lines().count() }
+    pub fn time(&self) -> f64 { self.current as f64 }
+}
+
+/// Fusion viz: two kernels side-by-side, fuse them, animate the merge.
+#[wasm_bindgen]
+pub struct WasmCompileFusionSim {
+    // Kernel A nodes
+    a_names: Vec<String>,
+    a_count: usize,
+    // Kernel B nodes
+    b_names: Vec<String>,
+    b_count: usize,
+    // Fused kernel nodes
+    fused_names: Vec<String>,
+    fused_count: usize,
+    // Animation progress (0.0 = separate, 1.0 = fully fused)
+    progress: f64,
+    time: f64,
+}
+
+#[wasm_bindgen]
+impl WasmCompileFusionSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmCompileFusionSim {
+        let a_names = vec!["load u".into(), "laplacian".into(), "mul dt".into(), "store tmp".into()];
+        let b_names = vec!["load tmp".into(), "load v".into(), "add".into(), "store v_next".into()];
+        let fused_names = vec![
+            "load u".into(), "laplacian".into(), "mul dt".into(),
+            "load v".into(), "add".into(), "store v_next".into(),
+        ];
+
+        WasmCompileFusionSim {
+            a_count: a_names.len(), b_count: b_names.len(), fused_count: fused_names.len(),
+            a_names, b_names, fused_names,
+            progress: 0.0, time: 0.0,
+        }
+    }
+
+    pub fn step_n(&mut self, _n: usize) {
+        self.progress = (self.progress + 0.008).min(1.0);
+        self.time += 0.016;
+        // Auto-reset after fully fused
+        if self.progress >= 1.0 {
+            self.progress = 1.0;
+            // Hold for a bit then reset
+            if self.time > 10.0 {
+                self.progress = 0.0;
+                self.time = 0.0;
+            }
+        }
+    }
+
+    pub fn a_names(&self) -> Vec<String> { self.a_names.clone() }
+    pub fn b_names(&self) -> Vec<String> { self.b_names.clone() }
+    pub fn fused_names(&self) -> Vec<String> { self.fused_names.clone() }
+    pub fn a_count(&self) -> usize { self.a_count }
+    pub fn b_count(&self) -> usize { self.b_count }
+    pub fn fused_count(&self) -> usize { self.fused_count }
+    pub fn progress(&self) -> f64 { self.progress }
+    pub fn time(&self) -> f64 { self.time }
 }

@@ -10,7 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wasm-bindgen = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-rigid.workspace = true
 phyz-diff.workspace = true
+phyz-regge.workspace = true
