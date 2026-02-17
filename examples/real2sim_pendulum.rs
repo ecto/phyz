@@ -4,16 +4,16 @@
 //! 1. Generating reference trajectory from a known pendulum model
 //! 2. Creating observations from the trajectory
 //! 3. Estimating parameters (mass, length) from observations
-//! 4. Exporting the identified model to .tau format
+//! 4. Exporting the identified model to .phyz format
 
-use tau_format::{export_tau, schema::TauSpec};
-use tau_math::{Mat3, SpatialInertia, SpatialTransform, Vec3, GRAVITY};
-use tau_model::ModelBuilder;
-use tau_real2sim::{
+use phyz_format::{export_phyz, schema::PhyzSpec};
+use phyz_math::{Mat3, SpatialInertia, SpatialTransform, Vec3, GRAVITY};
+use phyz_model::ModelBuilder;
+use phyz_real2sim::{
     GradientDescentOptimizer, LossWeights, Optimizer, OptimizerConfig, PhysicsParams, Trajectory,
     TrajectoryMatcher, TrajectoryObservation,
 };
-use tau_rigid::{aba, forward_kinematics};
+use phyz_rigid::{aba, forward_kinematics};
 
 fn main() {
     println!("=== Real2Sim Pendulum Parameter Estimation ===\n");
@@ -176,30 +176,30 @@ fn main() {
         )
         .build();
 
-    // Step 7: Export to .tau format
-    let tau_spec = model_to_tau_spec(&identified_model, &params);
+    // Step 7: Export to .phyz format
+    let phyz_spec = model_to_phyz_spec(&identified_model, &params);
 
-    match export_tau(&tau_spec) {
+    match export_phyz(&phyz_spec) {
         Ok(json) => {
-            println!("\n.tau format export:");
+            println!("\n.phyz format export:");
             println!("{}", json);
 
             // Save to file
-            if let Err(e) = std::fs::write("pendulum_identified.tau", &json) {
-                eprintln!("Failed to save .tau file: {}", e);
+            if let Err(e) = std::fs::write("pendulum_identified.phyz", &json) {
+                eprintln!("Failed to save .phyz file: {}", e);
             } else {
-                println!("\nSaved to: pendulum_identified.tau");
+                println!("\nSaved to: pendulum_identified.phyz");
             }
         }
         Err(e) => eprintln!("Export failed: {}", e),
     }
 }
 
-/// Convert model and parameters to TauSpec.
-fn model_to_tau_spec(model: &tau_model::Model, params: &PhysicsParams) -> TauSpec {
+/// Convert model and parameters to PhyzSpec.
+fn model_to_phyz_spec(model: &phyz_model::Model, params: &PhysicsParams) -> PhyzSpec {
     use std::collections::HashMap;
-    use tau_format::domain::{BodySpec, Domain, DomainType, JointSpec, JointTypeSpec};
-    use tau_format::schema::{ParameterSpec, ParameterType, WorldConfig};
+    use phyz_format::domain::{BodySpec, Domain, DomainType, JointSpec, JointTypeSpec};
+    use phyz_format::schema::{ParameterSpec, ParameterType, WorldConfig};
 
     // Build domain config
     let mut bodies = vec![BodySpec {
@@ -257,7 +257,7 @@ fn model_to_tau_spec(model: &tau_model::Model, params: &PhysicsParams) -> TauSpe
         );
     }
 
-    TauSpec {
+    PhyzSpec {
         version: "1.0".to_string(),
         name: "pendulum-identified".to_string(),
         description: "Pendulum model identified from trajectory data".to_string(),

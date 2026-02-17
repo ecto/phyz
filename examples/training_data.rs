@@ -2,10 +2,10 @@
 //!
 //! Demonstrates recording trajectories for machine learning training.
 
-use tau::{SemiImplicitEulerSolver, Solver};
-use tau_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use tau_model::ModelBuilder;
-use tau_world::{Sensor, TrajectoryRecorder, World};
+use phyz::{SemiImplicitEulerSolver, Solver};
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::ModelBuilder;
+use phyz_world::{Sensor, TrajectoryRecorder, World};
 
 fn main() {
     println!("=== Training Data Collection Example ===\n");
@@ -107,10 +107,10 @@ fn main() {
     println!("\n--- Exporting Data ---");
 
     // Export trajectory
-    if let Err(e) = recorder.to_json_file("/tmp/tau_trajectory.json") {
+    if let Err(e) = recorder.to_json_file("/tmp/phyz_trajectory.json") {
         println!("  ✗ Failed to export trajectory: {}", e);
     } else {
-        println!("  ✓ Exported trajectory to /tmp/tau_trajectory.json");
+        println!("  ✓ Exported trajectory to /tmp/phyz_trajectory.json");
     }
 
     // Get flat dictionary for ML frameworks

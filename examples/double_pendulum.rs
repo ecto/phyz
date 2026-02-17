@@ -1,9 +1,9 @@
 //! Double pendulum — energy conservation and gradient validation.
 
-use tau::{
-    ModelBuilder, Simulator, tau_diff,
-    tau_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
-    tau_rigid::total_energy,
+use phyz::{
+    ModelBuilder, Simulator, phyz_diff,
+    phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
+    phyz_rigid::total_energy,
 };
 
 fn main() {
@@ -100,8 +100,8 @@ fn main() {
     state_grad.v[0] = 0.1;
     state_grad.v[1] = -0.1;
 
-    let fd = tau_diff::finite_diff_jacobians(&model, &state_grad, 1e-6);
-    let an = tau_diff::analytical_step_jacobians(&model, &state_grad);
+    let fd = phyz_diff::finite_diff_jacobians(&model, &state_grad, 1e-6);
+    let an = phyz_diff::analytical_step_jacobians(&model, &state_grad);
 
     let checks = [
         ("dq'/dq", &fd.dqnext_dq, &an.dqnext_dq),

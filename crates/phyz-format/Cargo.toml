@@ -1,0 +1,17 @@
+[package]
+name = "phyz-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-mjcf.workspace = true
+thiserror = "2.0"
+
+[dev-dependencies]
+phyz-rigid.workspace = true

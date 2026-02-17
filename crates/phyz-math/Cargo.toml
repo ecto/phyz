@@ -1,0 +1,13 @@
+[package]
+name = "phyz-math"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Spatial algebra and math primitives for phyz physics engine"
+
+[dependencies]
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx = "0.5"
+proptest = "1"

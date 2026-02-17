@@ -1,9 +1,9 @@
 //! Single pendulum example — validates period and demonstrates gradients.
 
-use tau::{
+use phyz::{
     ModelBuilder, Simulator,
-    tau_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
-    tau_rigid::{kinetic_energy, potential_energy, total_energy},
+    phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
+    phyz_rigid::{kinetic_energy, potential_energy, total_energy},
 };
 
 fn main() {

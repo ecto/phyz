@@ -3,7 +3,7 @@
 //! Shows how to extract coarse-scale dynamics from fine-scale simulation
 //! without deriving explicit macroscopic equations.
 
-use tau_lbm::equation_free::{
+use phyz_lbm::equation_free::{
     CoarseProjector, EquationFreeWrapper, FineSolver, SpatialAverageProjector,
     effective_information,
 };

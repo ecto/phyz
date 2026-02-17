@@ -5,8 +5,8 @@
 //! Reports joint positions, torso height, total sim time, and per-step timing.
 
 use std::time::Instant;
-use tau::{ContactMaterial, Simulator};
-use tau_mjcf::MjcfLoader;
+use phyz::{ContactMaterial, Simulator};
+use phyz_mjcf::MjcfLoader;
 
 fn main() {
     println!("MuJoCo Ant Benchmark");
@@ -96,7 +96,7 @@ fn main() {
     println!("\nAnt benchmark completed.");
 }
 
-fn print_joint_positions(q: &tau::tau_math::DVec, nq: usize) {
+fn print_joint_positions(q: &phyz::phyz_math::DVec, nq: usize) {
     print!("  Joint positions q[0..{}]: [", nq);
     for i in 0..nq {
         if i > 0 {

@@ -1,9 +1,9 @@
 //! Ball drop example — demonstrates contact physics with ground plane.
 //! Simplified particle simulation (no full rigid body dynamics).
 
-use tau::{
+use phyz::{
     ContactMaterial,
-    tau_math::{GRAVITY, Vec3},
+    phyz_math::{GRAVITY, Vec3},
 };
 
 fn main() {

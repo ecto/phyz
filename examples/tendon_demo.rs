@@ -2,10 +2,10 @@
 //!
 //! Demonstrates cable-like actuators that span multiple bodies.
 
-use tau::{SemiImplicitEulerSolver, Solver};
-use tau_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use tau_model::ModelBuilder;
-use tau_world::{Tendon, World};
+use phyz::{SemiImplicitEulerSolver, Solver};
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::ModelBuilder;
+use phyz_world::{Tendon, World};
 
 fn main() {
     println!("=== Tendon Actuator Example ===\n");

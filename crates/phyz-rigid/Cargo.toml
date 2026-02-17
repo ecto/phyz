@@ -1,0 +1,11 @@
+[package]
+name = "phyz-rigid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Featherstone articulated rigid body dynamics for phyz"
+
+[dependencies]
+nalgebra.workspace = true
+phyz-math.workspace = true
+phyz-model.workspace = true

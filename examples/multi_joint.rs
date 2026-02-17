@@ -4,10 +4,10 @@
 //! - Link 1: revolute joint (rotation about Z axis)
 //! - Link 2: prismatic joint (translation along X axis)
 
-use tau::Simulator;
-use tau_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
-use tau_model::ModelBuilder;
-use tau_rigid::total_energy;
+use phyz::Simulator;
+use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::ModelBuilder;
+use phyz_rigid::total_energy;
 
 fn main() {
     println!("Multi-joint example: revolute + prismatic");
@@ -25,7 +25,7 @@ fn main() {
             SpatialInertia::new(
                 1.0,                      // 1 kg
                 Vec3::new(0.5, 0.0, 0.0), // CoM at 0.5m along X
-                tau_math::Mat3::from_diagonal(&Vec3::new(0.01, 0.01, 0.01)),
+                phyz_math::Mat3::from_diagonal(&Vec3::new(0.01, 0.01, 0.01)),
             ),
         )
         // Link 2: prismatic joint along X axis
@@ -37,7 +37,7 @@ fn main() {
             SpatialInertia::new(
                 0.5,                       // 0.5 kg
                 Vec3::new(0.25, 0.0, 0.0), // CoM at 0.25m along X
-                tau_math::Mat3::from_diagonal(&Vec3::new(0.005, 0.005, 0.005)),
+                phyz_math::Mat3::from_diagonal(&Vec3::new(0.005, 0.005, 0.005)),
             ),
         )
         .build();

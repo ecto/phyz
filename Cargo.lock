@@ -709,6 +709,271 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "phyz"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-collision",
+ "phyz-compile",
+ "phyz-contact",
+ "phyz-coupling",
+ "phyz-diff",
+ "phyz-em",
+ "phyz-format",
+ "phyz-gpu",
+ "phyz-gravity",
+ "phyz-guardian",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-md",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-particle",
+ "phyz-prob",
+ "phyz-qft",
+ "phyz-real2sim",
+ "phyz-rigid",
+ "phyz-world",
+ "rand 0.8.5",
+ "rand_distr",
+]
+
+[[package]]
+name = "phyz-collision"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+]
+
+[[package]]
+name = "phyz-compile"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "naga",
+ "nalgebra",
+ "phyz-math",
+ "wgpu",
+]
+
+[[package]]
+name = "phyz-contact"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-collision",
+ "phyz-math",
+ "phyz-model",
+]
+
+[[package]]
+name = "phyz-coupling"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-diff"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+]
+
+[[package]]
+name = "phyz-em"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-format"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-rigid",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "phyz-gpu"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "bytemuck",
+ "futures-intrusive",
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "phyz-gravity"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-guardian"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+]
+
+[[package]]
+name = "phyz-lbm"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-math"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "proptest",
+]
+
+[[package]]
+name = "phyz-md"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-mjcf"
+version = "0.1.0"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "quick-xml",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "phyz-model"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+]
+
+[[package]]
+name = "phyz-particle"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+]
+
+[[package]]
+name = "phyz-prob"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+ "rand 0.8.5",
+ "rand_distr",
+]
+
+[[package]]
+name = "phyz-qft"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-math",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "phyz-real2sim"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-diff",
+ "phyz-format",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "phyz-regge"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "nalgebra",
+ "phyz-math",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "phyz-rigid"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "phyz-math",
+ "phyz-model",
+]
+
+[[package]]
+name = "phyz-wasm"
+version = "0.1.0"
+dependencies = [
+ "phyz-diff",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "phyz-world"
+version = "0.1.0"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,271 +1356,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tau"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "rand 0.8.5",
- "rand_distr",
- "tau-collision",
- "tau-compile",
- "tau-contact",
- "tau-coupling",
- "tau-diff",
- "tau-em",
- "tau-format",
- "tau-gpu",
- "tau-gravity",
- "tau-guardian",
- "tau-lbm",
- "tau-math",
- "tau-md",
- "tau-mjcf",
- "tau-model",
- "tau-particle",
- "tau-prob",
- "tau-qft",
- "tau-real2sim",
- "tau-rigid",
- "tau-world",
-]
-
-[[package]]
-name = "tau-collision"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
- "tau-model",
-]
-
-[[package]]
-name = "tau-compile"
-version = "0.1.0"
-dependencies = [
- "approx",
- "naga",
- "nalgebra",
- "tau-math",
- "wgpu",
-]
-
-[[package]]
-name = "tau-contact"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-collision",
- "tau-math",
- "tau-model",
-]
-
-[[package]]
-name = "tau-coupling"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-diff"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
- "tau-model",
- "tau-rigid",
-]
-
-[[package]]
-name = "tau-em"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-format"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "serde",
- "serde_json",
- "tau-math",
- "tau-mjcf",
- "tau-model",
- "tau-rigid",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tau-gpu"
-version = "0.1.0"
-dependencies = [
- "approx",
- "bytemuck",
- "futures-intrusive",
- "nalgebra",
- "pollster",
- "tau-math",
- "tau-model",
- "tau-rigid",
- "wgpu",
-]
-
-[[package]]
-name = "tau-gravity"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-guardian"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
- "tau-model",
- "tau-rigid",
-]
-
-[[package]]
-name = "tau-lbm"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-math"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "proptest",
-]
-
-[[package]]
-name = "tau-md"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-mjcf"
-version = "0.1.0"
-dependencies = [
- "quick-xml",
- "tau-math",
- "tau-model",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tau-model"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
-]
-
-[[package]]
-name = "tau-particle"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
- "tau-model",
-]
-
-[[package]]
-name = "tau-prob"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "rand 0.8.5",
- "rand_distr",
- "tau-math",
- "tau-model",
-]
-
-[[package]]
-name = "tau-qft"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "rand 0.8.5",
- "tau-math",
-]
-
-[[package]]
-name = "tau-real2sim"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "serde",
- "serde_json",
- "tau-diff",
- "tau-format",
- "tau-math",
- "tau-model",
- "tau-rigid",
-]
-
-[[package]]
-name = "tau-regge"
-version = "0.1.0"
-dependencies = [
- "approx",
- "nalgebra",
- "rand 0.8.5",
- "tau-math",
-]
-
-[[package]]
-name = "tau-rigid"
-version = "0.1.0"
-dependencies = [
- "nalgebra",
- "tau-math",
- "tau-model",
-]
-
-[[package]]
-name = "tau-wasm"
-version = "0.1.0"
-dependencies = [
- "tau-diff",
- "tau-math",
- "tau-model",
- "tau-rigid",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "tau-world"
-version = "0.1.0"
-dependencies = [
- "rand 0.8.5",
- "serde",
- "serde_json",
- "tau-math",
- "tau-model",
 ]
 
 [[package]]

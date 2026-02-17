@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tau - Multi-physics differentiable simulation</title>
+<title>phyz - Multi-physics differentiable simulation</title>
 <meta name="description" content="A differentiable simulation engine for rigid bodies, particles, electromagnetic fields, molecular dynamics, and beyond. Pure Rust. GPU-accelerated.">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap');
@@ -340,10 +340,10 @@ footer .license {
 <div class="hero">
   <canvas id="sim"></canvas>
   <div class="container hero-content">
-    <div class="wordmark">tau</div>
+    <div class="wordmark">phyz</div>
     <div class="tagline">Multi-physics differentiable simulation.</div>
     <div class="tagline-sub">Pure Rust. GPU-accelerated. Hackable.</div>
-    <button class="install" onclick="copyInstall(this)" title="Copy to clipboard">cargo add tau</button>
+    <button class="install" onclick="copyInstall(this)" title="Copy to clipboard">cargo add phyz</button>
   </div>
 </div>
 
@@ -351,18 +351,18 @@ footer .license {
 <section class="pitch">
   <div class="container">
     <p>
-      tau is a differentiable simulation engine for articulated rigid bodies,
+      phyz is a differentiable simulation engine for articulated rigid bodies,
       particles, electromagnetic fields, molecular dynamics, and beyond.
       Every algorithm computes gradients for optimization,
       control, and learning.
     </p>
     <p>
-      Built on Featherstone's spatial algebra, tau runs O(n) forward dynamics
+      Built on Featherstone's spatial algebra, phyz runs O(n) forward dynamics
       with analytical Jacobians. Plug in semi-implicit Euler, RK4, or your own
       solver. Load MuJoCo MJCF models. Batch thousands of environments on GPU.
     </p>
     <p>
-      tau is early, ambitious, and open source.
+      phyz is early, ambitious, and open source.
     </p>
   </div>
 </section>
@@ -371,10 +371,10 @@ footer .license {
 <section class="examples">
   <div class="container-wide">
 
-    <!-- tau-rigid -->
+    <!-- phyz-rigid -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-rigid</span>
+        <span class="crate-name">phyz-rigid</span>
         <span class="crate-desc">Featherstone O(n) articulated body dynamics. ABA, RNEA, CRBA with viscous damping.</span>
       </div>
       <div class="examples-grid">
@@ -405,10 +405,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-contact -->
+    <!-- phyz-contact -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-collision + tau-contact</span>
+        <span class="crate-name">phyz-collision + phyz-contact</span>
         <span class="crate-desc">GJK/EPA collision detection. Penalty contacts with Coulomb friction and restitution.</span>
       </div>
       <div class="examples-grid">
@@ -439,10 +439,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-gpu -->
+    <!-- phyz-gpu -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-gpu</span>
+        <span class="crate-name">phyz-gpu</span>
         <span class="crate-desc">wgpu compute shaders. Batch 1000+ parallel environments for RL training.</span>
       </div>
       <div class="examples-grid">
@@ -473,10 +473,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-particle -->
+    <!-- phyz-particle -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-particle</span>
+        <span class="crate-name">phyz-particle</span>
         <span class="crate-desc">Material Point Method. P2G/G2P transfers with Neo-Hookean, Drucker-Prager, and fluid constitutive models.</span>
       </div>
       <div class="examples-grid">
@@ -507,10 +507,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-world -->
+    <!-- phyz-world -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-world</span>
+        <span class="crate-name">phyz-world</span>
         <span class="crate-desc">Procedural world generation. Sensors, tendons, trajectory recording for ML training data.</span>
       </div>
       <div class="examples-grid">
@@ -541,10 +541,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-em -->
+    <!-- phyz-em -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-em</span>
+        <span class="crate-name">phyz-em</span>
         <span class="crate-desc">Yee grid FDTD solving Maxwell's equations. PML absorbing boundaries, differentiable via adjoint method.</span>
       </div>
       <div class="examples-grid">
@@ -575,10 +575,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-md -->
+    <!-- phyz-md -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-md</span>
+        <span class="crate-name">phyz-md</span>
         <span class="crate-desc">Velocity Verlet molecular dynamics. Lennard-Jones, Coulomb, harmonic bonds with neighbor lists.</span>
       </div>
       <div class="examples-grid">
@@ -609,10 +609,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-qft -->
+    <!-- phyz-qft -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-qft</span>
+        <span class="crate-name">phyz-qft</span>
         <span class="crate-desc">Lattice gauge theory with HMC sampling. U(1), SU(2), SU(3) gauge groups with Wilson action.</span>
       </div>
       <div class="examples-grid">
@@ -643,10 +643,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-coupling -->
+    <!-- phyz-coupling -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-coupling</span>
+        <span class="crate-name">phyz-coupling</span>
         <span class="crate-desc">Multi-scale coupling. Lorentz force, Boris integrator for charged particles in EM fields.</span>
       </div>
       <div class="examples-grid">
@@ -677,10 +677,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-gravity -->
+    <!-- phyz-gravity -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-gravity</span>
+        <span class="crate-name">phyz-gravity</span>
         <span class="crate-desc">N-body gravitational dynamics. Barnes-Hut tree, post-Newtonian GR corrections.</span>
       </div>
       <div class="examples-grid">
@@ -711,10 +711,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-guardian -->
+    <!-- phyz-guardian -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-guardian</span>
+        <span class="crate-name">phyz-guardian</span>
         <span class="crate-desc">Conservation monitoring, adaptive timestep control, energy-correcting integrators.</span>
       </div>
       <div class="examples-grid">
@@ -745,10 +745,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-lbm -->
+    <!-- phyz-lbm -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-lbm</span>
+        <span class="crate-name">phyz-lbm</span>
         <span class="crate-desc">Lattice Boltzmann Method. D2Q9 BGK collision, Zou-He boundaries, obstacle bounce-back.</span>
       </div>
       <div class="examples-grid">
@@ -779,10 +779,10 @@ footer .license {
       </div>
     </div>
 
-    <!-- tau-prob -->
+    <!-- phyz-prob -->
     <div class="crate-row">
       <div class="crate-header">
-        <span class="crate-name">tau-prob</span>
+        <span class="crate-name">phyz-prob</span>
         <span class="crate-desc">Probabilistic simulation. SVGD sampling, ensemble propagation, Monte Carlo uncertainty.</span>
       </div>
       <div class="examples-grid">
@@ -820,7 +820,7 @@ footer .license {
 <section class="code-section">
   <div class="container">
     <h2 class="section-label">Code</h2>
-<pre><span class="kw">use</span> tau::{<span class="ty">ModelBuilder</span>, <span class="ty">Simulator</span>, <span class="ty">Vec3</span>};
+<pre><span class="kw">use</span> phyz::{<span class="ty">ModelBuilder</span>, <span class="ty">Simulator</span>, <span class="ty">Vec3</span>};
 
 <span class="kw">let</span> model = <span class="ty">ModelBuilder</span>::new()
     .add_revolute_body(
@@ -877,19 +877,19 @@ state.q[<span class="num">0</span>] = <span class="num">0.5</span>; <span class=
 <!-- Footer -->
 <footer>
   <div class="container footer-inner">
-    <a href="https://github.com/camhenderson/tau">GitHub</a>
-    <a href="https://docs.rs/tau">docs.rs</a>
+    <a href="https://github.com/camhenderson/phyz">GitHub</a>
+    <a href="https://docs.rs/phyz">docs.rs</a>
     <span class="license">MIT / Apache-2.0</span>
   </div>
 </footer>
 
 <script>
 function copyInstall(el) {
-  navigator.clipboard.writeText('cargo add tau');
+  navigator.clipboard.writeText('cargo add phyz');
   el.textContent = 'copied';
   el.classList.add('install-copied');
   setTimeout(() => {
-    el.textContent = 'cargo add tau';
+    el.textContent = 'cargo add phyz';
     el.classList.remove('install-copied');
   }, 1500);
 }
@@ -953,7 +953,7 @@ function copyInstall(el) {
 })();
 </script>
 
-<!-- Three.js examples powered by tau WASM -->
+<!-- Three.js examples powered by phyz WASM -->
 <script type="importmap">
 {
   "imports": {
@@ -966,7 +966,7 @@ function copyInstall(el) {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim } from './pkg/tau_wasm.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim } from './pkg/phyz_wasm.js';
 
 // ---- Shared ----
 const BG = 0xfaf9f7;
@@ -1121,7 +1121,7 @@ const E0 = {};
 
 
 // =========================================
-// tau-rigid: Single Pendulum
+// phyz-rigid: Single Pendulum
 // =========================================
 registerViz('ex-pendulum', () => {
   const sim = WasmSim.pendulum();
@@ -1158,7 +1158,7 @@ registerViz('ex-pendulum', () => {
 
 
 // =========================================
-// tau-rigid: Double Pendulum
+// phyz-rigid: Double Pendulum
 // =========================================
 registerViz('ex-double', () => {
   const sim = WasmSim.double_pendulum();
@@ -1204,7 +1204,7 @@ registerViz('ex-double', () => {
 
 
 // =========================================
-// tau-rigid: 8-link Chain
+// phyz-rigid: 8-link Chain
 // =========================================
 registerViz('ex-chain', () => {
   const N = 8, L = 0.6;
@@ -1250,7 +1250,7 @@ registerViz('ex-chain', () => {
 
 
 // =========================================
-// tau-contact: Bouncing Spheres
+// phyz-contact: Bouncing Spheres
 // =========================================
 registerViz('ex-bouncing', () => {
   const sim = WasmParticleSim.bouncing_spheres();
@@ -1286,7 +1286,7 @@ registerViz('ex-bouncing', () => {
 
 
 // =========================================
-// tau-contact: Sphere Cascade
+// phyz-contact: Sphere Cascade
 // =========================================
 registerViz('ex-cascade', () => {
   const sim = WasmParticleSim.sphere_cascade();
@@ -1319,7 +1319,7 @@ registerViz('ex-cascade', () => {
 
 
 // =========================================
-// tau-contact: Newton's Cradle
+// phyz-contact: Newton's Cradle
 // =========================================
 registerViz('ex-cradle', () => {
   const sim = WasmCradleSim.new();
@@ -1363,7 +1363,7 @@ registerViz('ex-cradle', () => {
 
 
 // =========================================
-// tau-gpu: Wave Field (1024 batched pendulums)
+// phyz-gpu: Wave Field (1024 batched pendulums)
 // =========================================
 registerViz('ex-wavefield', () => {
   const sim = WasmWaveFieldSim.new();
@@ -1404,7 +1404,7 @@ registerViz('ex-wavefield', () => {
 
 
 // =========================================
-// tau-gpu: Ensemble Divergence (100 double pendulums)
+// phyz-gpu: Ensemble Divergence (100 double pendulums)
 // =========================================
 registerViz('ex-ensemble', () => {
   const sim = WasmEnsembleSim.new();
@@ -1442,7 +1442,7 @@ registerViz('ex-ensemble', () => {
 
 
 // =========================================
-// tau-gpu: Policy Search Grid (100 PD controllers)
+// phyz-gpu: Policy Search Grid (100 PD controllers)
 // =========================================
 registerViz('ex-policy', () => {
   const sim = WasmPolicyGridSim.new();
@@ -1489,7 +1489,7 @@ registerViz('ex-policy', () => {
 
 
 // =========================================
-// tau-particle: Granular Column
+// phyz-particle: Granular Column
 // =========================================
 registerViz('ex-granular', () => {
   const sim = WasmMpmSim.granular_column();
@@ -1529,7 +1529,7 @@ registerViz('ex-granular', () => {
 
 
 // =========================================
-// tau-particle: Fluid Dam Break
+// phyz-particle: Fluid Dam Break
 // =========================================
 registerViz('ex-fluid', () => {
   const sim = WasmMpmSim.fluid_dam();
@@ -1569,7 +1569,7 @@ registerViz('ex-fluid', () => {
 
 
 // =========================================
-// tau-particle: Elastic Blob
+// phyz-particle: Elastic Blob
 // =========================================
 registerViz('ex-elastic', () => {
   const sim = WasmMpmSim.elastic_blob();
@@ -1615,7 +1615,7 @@ registerViz('ex-elastic', () => {
 
 
 // =========================================
-// tau-world: Random Chain
+// phyz-world: Random Chain
 // =========================================
 registerViz('ex-randchain', () => {
   const sim = WasmWorldSim.random_chain();
@@ -1661,7 +1661,7 @@ registerViz('ex-randchain', () => {
 
 
 // =========================================
-// tau-world: Phase Portrait
+// phyz-world: Phase Portrait
 // =========================================
 registerViz('ex-phase', () => {
   const sim = WasmWorldSim.phase_portrait();
@@ -1692,7 +1692,7 @@ registerViz('ex-phase', () => {
 
 
 // =========================================
-// tau-world: Tendon Actuated
+// phyz-world: Tendon Actuated
 // =========================================
 registerViz('ex-tendon', () => {
   const sim = WasmWorldSim.tendon_actuated();
@@ -1738,7 +1738,7 @@ registerViz('ex-tendon', () => {
 
 
 // =========================================
-// tau-em: Helper
+// phyz-em: Helper
 // =========================================
 function makeEmViz(canvasId, sim, statId, label) {
   const N = sim.grid_size();
@@ -1794,7 +1794,7 @@ registerViz('ex-slit', () => makeEmViz('ex-slit', WasmEmSim.double_slit(), 'stat
 
 
 // =========================================
-// tau-md: Helper for 2D particle viz
+// phyz-md: Helper for 2D particle viz
 // =========================================
 function makeMdViz(canvasId, sim, statId, label, baseColor) {
   const N = sim.num_particles();
@@ -1858,7 +1858,7 @@ registerViz('ex-polymer', () => makeMdViz('ex-polymer', WasmMdSim.polymer(), 'st
 
 
 // =========================================
-// tau-qft: Helper for lattice heatmap viz
+// phyz-qft: Helper for lattice heatmap viz
 // =========================================
 function makeQftViz(canvasId, sim, statId, labelFn) {
   const N = sim.lattice_size();
@@ -1939,7 +1939,7 @@ registerViz('ex-phasescan', () => makeQftViz('ex-phasescan', WasmQftSim.phase_sc
 ));
 
 // =========================================
-// tau-coupling: Lorentz Spiral
+// phyz-coupling: Lorentz Spiral
 // =========================================
 registerViz('ex-spiral', () => {
   const sim = WasmLorentzSim.spiral();
@@ -1975,7 +1975,7 @@ registerViz('ex-spiral', () => {
 
 
 // =========================================
-// tau-coupling: Crossed Fields (E x B drift)
+// phyz-coupling: Crossed Fields (E x B drift)
 // =========================================
 registerViz('ex-crossed', () => {
   const sim = WasmLorentzSim.crossed_fields();
@@ -2015,7 +2015,7 @@ registerViz('ex-crossed', () => {
 
 
 // =========================================
-// tau-coupling: Magnetic Mirror
+// phyz-coupling: Magnetic Mirror
 // =========================================
 registerViz('ex-mirror', () => {
   const sim = WasmLorentzSim.magnetic_mirror();
@@ -2050,7 +2050,7 @@ registerViz('ex-mirror', () => {
 
 
 // =========================================
-// tau-gravity: Binary Orbit
+// phyz-gravity: Binary Orbit
 // =========================================
 registerViz('ex-binary', () => {
   const sim = WasmGravitySim.binary_orbit();
@@ -2079,7 +2079,7 @@ registerViz('ex-binary', () => {
 
 
 // =========================================
-// tau-gravity: Solar System
+// phyz-gravity: Solar System
 // =========================================
 registerViz('ex-solar', () => {
   const sim = WasmGravitySim.solar_system();
@@ -2111,7 +2111,7 @@ registerViz('ex-solar', () => {
 
 
 // =========================================
-// tau-gravity: Precession
+// phyz-gravity: Precession
 // =========================================
 registerViz('ex-precess', () => {
   const sim = WasmGravitySim.precession();
@@ -2137,7 +2137,7 @@ registerViz('ex-precess', () => {
 
 
 // =========================================
-// tau-guardian: Energy Monitor
+// phyz-guardian: Energy Monitor
 // =========================================
 registerViz('ex-emonitor', () => {
   const sim = WasmGuardianSim.energy_monitor();
@@ -2183,7 +2183,7 @@ registerViz('ex-emonitor', () => {
 
 
 // =========================================
-// tau-guardian: Adaptive dt
+// phyz-guardian: Adaptive dt
 // =========================================
 registerViz('ex-adaptdt', () => {
   const sim = WasmGuardianSim.adaptive_dt();
@@ -2231,7 +2231,7 @@ registerViz('ex-adaptdt', () => {
 
 
 // =========================================
-// tau-guardian: Correction Demo
+// phyz-guardian: Correction Demo
 // =========================================
 registerViz('ex-correction', () => {
   const sim = WasmGuardianSim.correction_demo();
@@ -2285,7 +2285,7 @@ registerViz('ex-correction', () => {
 
 
 // =========================================
-// tau-lbm: Helper for LBM heatmap viz
+// phyz-lbm: Helper for LBM heatmap viz
 // =========================================
 function makeLbmViz(canvasId, sim, statId, label, useVorticity) {
   const nx = sim.grid_nx(), ny = sim.grid_ny();
@@ -2347,7 +2347,7 @@ registerViz('ex-vortex', () => makeLbmViz('ex-vortex', WasmLbmSim.vortex_street(
 
 
 // =========================================
-// tau-prob: Uncertainty Cone
+// phyz-prob: Uncertainty Cone
 // =========================================
 registerViz('ex-ucone', () => {
   const sim = WasmProbSim.uncertainty_cone();
@@ -2383,7 +2383,7 @@ registerViz('ex-ucone', () => {
 
 
 // =========================================
-// tau-prob: SVGD Particles
+// phyz-prob: SVGD Particles
 // =========================================
 registerViz('ex-svgd', () => {
   const sim = WasmProbSim.svgd_particles();
@@ -2421,7 +2421,7 @@ registerViz('ex-svgd', () => {
 
 
 // =========================================
-// tau-prob: Monte Carlo Bouncing Balls
+// phyz-prob: Monte Carlo Bouncing Balls
 // =========================================
 registerViz('ex-mcballs', () => {
   const sim = WasmProbSim.monte_carlo();

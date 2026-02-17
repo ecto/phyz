@@ -3,7 +3,7 @@
 //! Creates a tall column of granular particles that collapses under gravity.
 //! Measures runout distance and demonstrates Drucker-Prager yield behavior.
 
-use tau::{Material, MpmSolver, Particle, Vec3};
+use phyz::{Material, MpmSolver, Particle, Vec3};
 
 fn main() {
     println!("Granular column collapse simulation");

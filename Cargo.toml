@@ -1,30 +1,30 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tau-math",
-    "crates/tau-model",
-    "crates/tau-rigid",
-    "crates/tau-diff",
-    "crates/tau-mjcf",
-    "crates/tau-collision",
-    "crates/tau-contact",
-    "crates/tau-gpu",
-    "crates/tau-particle",
-    "crates/tau-em",
-    "crates/tau-md",
-    "crates/tau-qft",
-    "crates/tau-gravity",
-    "crates/tau-coupling",
-    "crates/tau-guardian",
-    "crates/tau-lbm",
-    "crates/tau-compile",
-    "crates/tau-prob",
-    "crates/tau-world",
-    "crates/tau-real2sim",
-    "crates/tau-format",
-    "crates/tau",
-    "crates/tau-wasm",
-    "crates/tau-regge",
+    "crates/phyz-math",
+    "crates/phyz-model",
+    "crates/phyz-rigid",
+    "crates/phyz-diff",
+    "crates/phyz-mjcf",
+    "crates/phyz-collision",
+    "crates/phyz-contact",
+    "crates/phyz-gpu",
+    "crates/phyz-particle",
+    "crates/phyz-em",
+    "crates/phyz-md",
+    "crates/phyz-qft",
+    "crates/phyz-gravity",
+    "crates/phyz-coupling",
+    "crates/phyz-guardian",
+    "crates/phyz-lbm",
+    "crates/phyz-compile",
+    "crates/phyz-prob",
+    "crates/phyz-world",
+    "crates/phyz-real2sim",
+    "crates/phyz-format",
+    "crates/phyz",
+    "crates/phyz-wasm",
+    "crates/phyz-regge",
 ]
 
 [workspace.package]
@@ -36,26 +36,26 @@ license = "MIT OR Apache-2.0"
 nalgebra = "0.33"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tau-math = { path = "crates/tau-math" }
-tau-model = { path = "crates/tau-model" }
-tau-rigid = { path = "crates/tau-rigid" }
-tau-diff = { path = "crates/tau-diff" }
-tau-mjcf = { path = "crates/tau-mjcf" }
-tau-collision = { path = "crates/tau-collision" }
-tau-contact = { path = "crates/tau-contact" }
-tau-gpu = { path = "crates/tau-gpu" }
-tau-particle = { path = "crates/tau-particle" }
-tau-em = { path = "crates/tau-em" }
-tau-md = { path = "crates/tau-md" }
-tau-qft = { path = "crates/tau-qft" }
-tau-gravity = { path = "crates/tau-gravity" }
-tau-coupling = { path = "crates/tau-coupling" }
-tau-guardian = { path = "crates/tau-guardian" }
-tau-lbm = { path = "crates/tau-lbm" }
-tau-compile = { path = "crates/tau-compile" }
-tau-prob = { path = "crates/tau-prob" }
-tau-world = { path = "crates/tau-world" }
-tau-real2sim = { path = "crates/tau-real2sim" }
-tau-format = { path = "crates/tau-format" }
-tau-regge = { path = "crates/tau-regge" }
-tau = { path = "crates/tau" }
+phyz-math = { path = "crates/phyz-math" }
+phyz-model = { path = "crates/phyz-model" }
+phyz-rigid = { path = "crates/phyz-rigid" }
+phyz-diff = { path = "crates/phyz-diff" }
+phyz-mjcf = { path = "crates/phyz-mjcf" }
+phyz-collision = { path = "crates/phyz-collision" }
+phyz-contact = { path = "crates/phyz-contact" }
+phyz-gpu = { path = "crates/phyz-gpu" }
+phyz-particle = { path = "crates/phyz-particle" }
+phyz-em = { path = "crates/phyz-em" }
+phyz-md = { path = "crates/phyz-md" }
+phyz-qft = { path = "crates/phyz-qft" }
+phyz-gravity = { path = "crates/phyz-gravity" }
+phyz-coupling = { path = "crates/phyz-coupling" }
+phyz-guardian = { path = "crates/phyz-guardian" }
+phyz-lbm = { path = "crates/phyz-lbm" }
+phyz-compile = { path = "crates/phyz-compile" }
+phyz-prob = { path = "crates/phyz-prob" }
+phyz-world = { path = "crates/phyz-world" }
+phyz-real2sim = { path = "crates/phyz-real2sim" }
+phyz-format = { path = "crates/phyz-format" }
+phyz-regge = { path = "crates/phyz-regge" }
+phyz = { path = "crates/phyz" }

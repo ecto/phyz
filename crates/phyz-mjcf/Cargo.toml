@@ -1,0 +1,12 @@
+[package]
+name = "phyz-mjcf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MuJoCo MJCF XML parser for phyz physics engine"
+
+[dependencies]
+phyz-math.workspace = true
+phyz-model.workspace = true
+quick-xml = "0.37"
+thiserror = "2.0"

@@ -1,0 +1,16 @@
+[package]
+name = "phyz-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM bindings for phyz physics engine"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+phyz-diff.workspace = true

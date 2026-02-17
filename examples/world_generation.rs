@@ -2,7 +2,7 @@
 //!
 //! Demonstrates using WorldGenerator to create random articulated systems.
 
-use tau_world::WorldGenerator;
+use phyz_world::WorldGenerator;
 
 fn main() {
     println!("=== Tau World Generation Example ===\n");

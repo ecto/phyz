@@ -1,0 +1,19 @@
+[package]
+name = "phyz-real2sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+phyz-diff.workspace = true
+phyz-format.workspace = true
+
+[[example]]
+name = "real2sim_pendulum"
+path = "../../examples/real2sim_pendulum.rs"

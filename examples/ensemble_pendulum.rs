@@ -7,18 +7,18 @@
 //! - Tracking mean ± std trajectories
 
 use rand_distr::{Distribution as RandDist, Normal, Uniform};
-use tau::{
+use phyz::{
     Model, ModelBuilder, State,
-    tau_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
+    phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
 };
-use tau_prob::{ProbabilisticState, ensemble_step_with_params};
+use phyz_prob::{ProbabilisticState, ensemble_step_with_params};
 
 /// Simple solver adapter for ensemble simulation.
 struct SimpleSolver;
 
-impl tau_prob::ensemble::EnsembleSolver for SimpleSolver {
+impl phyz_prob::ensemble::EnsembleSolver for SimpleSolver {
     fn step(&self, model: &Model, state: &mut State) {
-        use tau::aba;
+        use phyz::aba;
         let dt = model.dt;
         let qdd = aba(model, state);
         state.v += &qdd * dt;

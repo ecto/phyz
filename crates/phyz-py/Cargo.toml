@@ -1,0 +1,27 @@
+[package]
+name = "phyz-py"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for phyz physics engine"
+
+# Opt out of workspace
+[workspace]
+
+[lib]
+name = "phyz"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.28", features = ["extension-module"] }
+numpy = "0.28"
+nalgebra = "0.33"
+phyz = { path = "../phyz" }
+phyz-math = { path = "../phyz-math" }
+phyz-model = { path = "../phyz-model" }
+phyz-rigid = { path = "../phyz-rigid" }
+phyz-diff = { path = "../phyz-diff" }
+phyz-mjcf = { path = "../phyz-mjcf" }
+
+[build-dependencies]
+pyo3-build-config = "0.28"

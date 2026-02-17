@@ -1,0 +1,12 @@
+[package]
+name = "phyz-md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+phyz-math.workspace = true
+
+[dev-dependencies]
+approx = "0.5"
