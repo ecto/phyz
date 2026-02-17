@@ -1,0 +1,22 @@
+{
+  "name": "phyz-wasm",
+  "type": "module",
+  "description": "WASM bindings for phyz physics engine",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ecto/phyz"
+  },
+  "files": [
+    "phyz_wasm_bg.wasm",
+    "phyz_wasm.js",
+    "phyz_wasm.d.ts"
+  ],
+  "main": "phyz_wasm.js",
+  "homepage": "https://phyz.dev",
+  "types": "phyz_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
