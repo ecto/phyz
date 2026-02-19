@@ -103,7 +103,7 @@ pub fn cayley_menger_matrix(lengths: &[f64; 10]) -> [[f64; 6]; 6] {
 /// Compute the (i,j) cofactor of a 6×6 matrix.
 ///
 /// Cofactor C_{ij} = (-1)^{i+j} det(minor_{ij}).
-pub(crate) fn cofactor_6x6(m: &[[f64; 6]; 6], row: usize, col: usize) -> f64 {
+pub fn cofactor_6x6(m: &[[f64; 6]; 6], row: usize, col: usize) -> f64 {
     // Build 5×5 minor by deleting row and col.
     let mut minor = [[0.0; 5]; 5];
     let mut mi = 0;
@@ -122,7 +122,7 @@ pub(crate) fn cofactor_6x6(m: &[[f64; 6]; 6], row: usize, col: usize) -> f64 {
         mi += 1;
     }
 
-    let sign = if (row + col) % 2 == 0 { 1.0 } else { -1.0 };
+    let sign = if (row + col).is_multiple_of(2) { 1.0 } else { -1.0 };
     sign * det_5x5(&minor)
 }
 

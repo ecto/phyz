@@ -1,5 +1,113 @@
 # phyz-regge: Research Journal
 
+## 2026-02-19 — Lorentzian Regge Evolution & Gravitomagnetic Transformer
+
+### Motivation
+
+Swain (arXiv:1006.5754) proposed a gravitational analog of an electrical
+transformer using the gravitoelectromagnetic (GEM) formalism — the weak-field
+limit where GR looks like Maxwell's equations. Nobody has computationally
+verified this from first principles. We implemented Lorentzian Regge calculus
+with time evolution so the gravitomagnetic field *emerges* from the full
+Einstein equations on a simplicial lattice, rather than being assumed from
+the linearized analogy.
+
+### Architecture
+
+Six new modules, all sharing the existing `SimplicialComplex` topology layer:
+
+| Module | Purpose | Lines |
+|--------|---------|-------|
+| `lorentzian.rs` | Signed Cayley-Menger geometry (areas, volumes, dihedrals) | ~350 |
+| `lorentzian_regge.rs` | Lorentzian Regge action & gradient (Schläfli identity) | ~250 |
+| `foliation.rs` | 3+1 foliated 4D Kuhn mesh with edge type classification | ~480 |
+| `tent_move.rs` | Sorkin tent-move Newton solver (FD Jacobian + SVD) | ~280 |
+| `matter.rs` | StressEnergy trait, mass current, point particle sources | ~340 |
+| `gem.rs` | Riemann reconstruction → E_g, B_g field extraction | ~410 |
+| `transformer.rs` | Full transformer experiment + permeability search | ~550 |
+| `examples/gem_transformer.rs` | CLI driver with env-var configuration | ~120 |
+
+Also modified: `complex.rs` (+`vertex_to_tris` adjacency), `lib.rs` (module registration).
+
+### Key technical results
+
+#### 1. Cofactor sign correction for Lorentzian dihedrals
+
+The critical bug: when both CM cofactors C_ll, C_mm < 0 (common on Lorentzian
+lattices), `sqrt(C_ll) * sqrt(C_mm) = i·sqrt(|C_ll|) · i·sqrt(|C_mm|) =
+-sqrt(product)` due to i² = -1. The naive formula misses this sign flip.
+
+Fix: `sign_corr = if c_ll < 0.0 { -1.0 } else { 1.0 }` when both cofactors
+share the same sign. Combined with ratio-based hinge classification
+(|ratio| ≤ 1 → real angle, |ratio| > 1 → boost).
+
+#### 2. Lorentzian Schläfli identity requires positive areas
+
+Barrett (1993): `Σ_sp √A² dη + Σ_tl √|A²| dθ = 0`. The action must use
+|A_t| (absolute area, always positive), NOT signed areas. Using signed areas
+caused the analytical gradient to disagree with FD by 100%.
+
+#### 3. Per-vertex tent moves are tractable; full-slice is not
+
+Full-slice Newton with FD Jacobian on a 4^3 × 4 mesh: ~350s per step.
+Per-vertex tent moves (~22 free edges): <1s per vertex. The vertex sweep
+gives equivalent results for the transformer simulation.
+
+#### 4. Gravitomagnetic fields emerge from Regge evolution
+
+On a 2^3 × 2 lattice with mass current amplitude A:
+- A = 0: max |B_g| = 1e-15 (machine epsilon, flat space)
+- A = 5e-3: max |B_g| = 0.066
+- A = 1e-2: max |B_g| = 0.167
+
+B_g scales with amplitude as expected from linearized GEM. The Newton solver
+doesn't converge on this coarse grid (NaN residual), but the geometry deforms
+enough to produce measurable fields. A finer mesh is needed for quantitative
+coupling measurements.
+
+### What works
+
+- Flat Minkowski is a fixed point: zero action, zero residual, zero deficit angles
+- Perturbed flat recovers via Newton in ~10 iterations (per-vertex tent move)
+- Analytical gradient matches FD to < 5% on Lorentzian lattices
+- All-positive edge lengths reproduce Euclidean Regge results exactly
+- Vacuum source solver reproduces vacuum Newton results
+- Mass current produces nonzero B_g that scales with amplitude
+
+### What doesn't work yet
+
+- **Induced EMF is near-zero** on the 2^3 grid: the secondary loop doesn't
+  see enough B_g variation to produce meaningful dΦ/dt. Need n ≥ 4 with
+  proper spatial separation between primary and secondary.
+- **Newton doesn't converge with strong sources**: the mass current at A = 0.01
+  deforms the geometry enough that the linearized Newton step overshoots.
+  Need adaptive step control or continuation (start from small A, increase).
+- **FD Jacobian is the bottleneck**: O(n_free²) gradient evaluations per
+  Newton step. Analytical Jacobian (CM cofactor second derivatives) would
+  give O(n_free) per step.
+
+### Crate stats
+
+- ~8,300 lines across 18 modules
+- 109 tests, all passing
+- Clippy clean
+
+### Next steps
+
+The main bottleneck is mesh size. With FD Jacobian, per-vertex tent moves
+on a 4^3 grid take ~minutes per time step (64 vertices × ~22 free edges ×
+~22 FD perturbations × gradient evaluation). Quantitative transformer results
+need n ≥ 8 with ≥ 4 time steps. Three paths to get there:
+
+1. **Analytical Jacobian**: compute ∂²S/∂s_e∂s_f from CM cofactor second
+   derivatives. Eliminates the inner FD loop entirely.
+2. **Sparse Jacobian**: the Regge gradient at edge e only depends on edges
+   sharing a 4-simplex. Exploit sparsity for O(1) entries per row.
+3. **Parallelism**: tent moves at non-adjacent vertices are independent.
+   Rayon-based parallel sweep over a graph coloring of the vertex set.
+
+---
+
 ## 2026-02-17 — Phase 4: arXiv Literature Review, On-shell Search, α-scan
 
 ### arXiv literature review

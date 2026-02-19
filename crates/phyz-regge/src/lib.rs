@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)]
 //! 4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory.
 //!
 //! Discretizes general relativity on a simplicial complex (Regge calculus)
@@ -38,8 +39,13 @@
 
 pub mod action;
 pub mod complex;
+pub mod foliation;
 pub mod gauge;
+pub mod gem;
 pub mod geometry;
+pub mod lorentzian;
+pub mod lorentzian_regge;
+pub mod matter;
 pub mod mesh;
 pub mod regge;
 pub mod richardson;
@@ -47,6 +53,8 @@ pub mod search;
 pub mod solver;
 pub mod su2;
 pub mod symmetry;
+pub mod tent_move;
+pub mod transformer;
 pub mod yang_mills;
 
 pub use action::{ActionParams, Fields};

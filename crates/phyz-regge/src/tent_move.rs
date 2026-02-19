@@ -1,0 +1,387 @@
+//! Tent-move time evolution for Lorentzian Regge calculus.
+//!
+//! Implements Sorkin's tent-move scheme: advance one vertex at a time by
+//! solving a local Regge equation via Newton's method.
+//!
+//! The core function `solve_regge_at_edges` solves the system of Regge
+//! equations (∂S/∂s_e = 0) at a specified set of "free" edges using
+//! Newton's method with a finite-difference Jacobian and SVD solve
+//! (to handle gauge degeneracies).
+//!
+//! Two evolution modes:
+//! - `evolve_slice`: solve for all edges touching a target time slice at once
+//! - `tent_move_vertex`: solve for edges in the tent around a single vertex
+
+use crate::complex::SimplicialComplex;
+use crate::foliation::FoliatedComplex;
+use crate::lorentzian_regge::lorentzian_regge_action_grad;
+use nalgebra::{DMatrix, DVector};
+
+/// Configuration for tent-move time evolution.
+#[derive(Debug, Clone)]
+pub struct TentConfig {
+    /// Newton convergence tolerance on residual norm.
+    pub newton_tol: f64,
+    /// Maximum Newton iterations.
+    pub max_newton_iter: usize,
+    /// Step size for finite-difference Jacobian.
+    pub fd_eps: f64,
+    /// SVD tolerance for singular values (gauge modes).
+    pub svd_tol: f64,
+}
+
+impl Default for TentConfig {
+    fn default() -> Self {
+        Self {
+            newton_tol: 1e-10,
+            max_newton_iter: 50,
+            fd_eps: 1e-7,
+            svd_tol: 1e-10,
+        }
+    }
+}
+
+/// Errors during tent-move evolution.
+#[derive(Debug)]
+pub enum TentMoveError {
+    DidNotConverge { residual: f64, iterations: usize },
+    SingularJacobian,
+}
+
+impl std::fmt::Display for TentMoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DidNotConverge {
+                residual,
+                iterations,
+            } => write!(
+                f,
+                "did not converge after {iterations} iterations (residual = {residual:.2e})"
+            ),
+            Self::SingularJacobian => write!(f, "singular Jacobian"),
+        }
+    }
+}
+
+impl std::error::Error for TentMoveError {}
+
+/// Result of evolving one time step.
+#[derive(Debug, Clone)]
+pub struct EvolutionResult {
+    pub residual: f64,
+    pub newton_iters: usize,
+}
+
+/// Find edges touching a specific time slice in a foliated complex.
+pub fn edges_touching_slice(fc: &FoliatedComplex, slice: usize) -> Vec<usize> {
+    fc.complex
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| fc.vertex_slice(e[0]) == slice || fc.vertex_slice(e[1]) == slice)
+        .map(|(ei, _)| ei)
+        .collect()
+}
+
+/// Solve the Regge equations at specified free edges via Newton's method.
+///
+/// Modifies `sq_lengths` in place to satisfy ∂S/∂s_e = 0 at each free edge.
+/// Uses SVD for the Newton step to handle gauge degeneracies gracefully.
+pub fn solve_regge_at_edges(
+    complex: &SimplicialComplex,
+    sq_lengths: &mut [f64],
+    free_edges: &[usize],
+    config: &TentConfig,
+) -> Result<EvolutionResult, TentMoveError> {
+    let n_free = free_edges.len();
+    if n_free == 0 {
+        return Ok(EvolutionResult {
+            residual: 0.0,
+            newton_iters: 0,
+        });
+    }
+
+    for iter in 0..config.max_newton_iter {
+        // Residual: Regge gradient restricted to free edges
+        let full_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+        let residual: Vec<f64> = free_edges.iter().map(|&ei| full_grad[ei]).collect();
+        let res_norm = residual.iter().map(|r| r * r).sum::<f64>().sqrt();
+
+        if res_norm < config.newton_tol {
+            return Ok(EvolutionResult {
+                residual: res_norm,
+                newton_iters: iter,
+            });
+        }
+
+        // Jacobian via central finite differences
+        let mut jac = DMatrix::zeros(n_free, n_free);
+        for j in 0..n_free {
+            let ej = free_edges[j];
+            let old = sq_lengths[ej];
+
+            sq_lengths[ej] = old + config.fd_eps;
+            let grad_plus = lorentzian_regge_action_grad(complex, sq_lengths);
+
+            sq_lengths[ej] = old - config.fd_eps;
+            let grad_minus = lorentzian_regge_action_grad(complex, sq_lengths);
+
+            sq_lengths[ej] = old;
+
+            for (i, &ei) in free_edges.iter().enumerate() {
+                jac[(i, j)] = (grad_plus[ei] - grad_minus[ei]) / (2.0 * config.fd_eps);
+            }
+        }
+
+        // SVD solve: J * delta = -residual (handles gauge null directions)
+        let rhs = DVector::from_iterator(n_free, residual.iter().map(|r| -r));
+        let svd = jac.svd(true, true);
+        let delta = svd
+            .solve(&rhs, config.svd_tol)
+            .map_err(|_| TentMoveError::SingularJacobian)?;
+
+        // Backtracking line search on ||residual||²
+        let old_res_sq = res_norm * res_norm;
+        let mut step = 1.0;
+        let mut accepted = false;
+
+        for _ in 0..20 {
+            // Trial update
+            for (j, &ej) in free_edges.iter().enumerate() {
+                sq_lengths[ej] += step * delta[j];
+            }
+
+            let trial_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+            let trial_res_sq: f64 = free_edges
+                .iter()
+                .map(|&ei| trial_grad[ei].powi(2))
+                .sum();
+
+            if trial_res_sq < old_res_sq {
+                accepted = true;
+                break;
+            }
+
+            // Revert and shrink step
+            for (j, &ej) in free_edges.iter().enumerate() {
+                sq_lengths[ej] -= step * delta[j];
+            }
+            step *= 0.5;
+        }
+
+        if !accepted {
+            // Accept the full step even if it didn't improve (Newton near convergence)
+            for (j, &ej) in free_edges.iter().enumerate() {
+                sq_lengths[ej] += step * delta[j];
+            }
+        }
+    }
+
+    // Final residual check
+    let full_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+    let res_norm: f64 = free_edges
+        .iter()
+        .map(|&ei| full_grad[ei].powi(2))
+        .sum::<f64>()
+        .sqrt();
+    Err(TentMoveError::DidNotConverge {
+        residual: res_norm,
+        iterations: config.max_newton_iter,
+    })
+}
+
+/// Evolve one time step by solving for all edges touching the target slice.
+pub fn evolve_slice(
+    fc: &FoliatedComplex,
+    sq_lengths: &mut [f64],
+    target_slice: usize,
+    config: &TentConfig,
+) -> Result<EvolutionResult, TentMoveError> {
+    let free = edges_touching_slice(fc, target_slice);
+    solve_regge_at_edges(&fc.complex, sq_lengths, &free, config)
+}
+
+/// Evolve multiple time steps sequentially.
+pub fn evolve_n_steps(
+    fc: &FoliatedComplex,
+    sq_lengths: &mut [f64],
+    target_slices: &[usize],
+    config: &TentConfig,
+) -> Result<Vec<EvolutionResult>, TentMoveError> {
+    let mut results = Vec::new();
+    for &slice in target_slices {
+        let result = evolve_slice(fc, sq_lengths, slice, config)?;
+        results.push(result);
+    }
+    Ok(results)
+}
+
+/// Find edges in the "tent" around a vertex: the tent pole and tent walls.
+///
+/// For a vertex v at slice `source_slice`, returns the edges connecting v
+/// to the target slice and the edges connecting v's spatial neighbors to
+/// the target slice.
+pub fn tent_edges_for_vertex(
+    fc: &FoliatedComplex,
+    vertex: usize,
+    target_slice: usize,
+) -> Vec<usize> {
+    let source_slice = fc.vertex_slice(vertex);
+    let target_v = fc.global_vertex(target_slice, fc.vertex_local(vertex));
+
+    let mut tent_edges = Vec::new();
+
+    // Find all edges that connect source-slice vertices (v or its neighbors)
+    // to target-slice vertices
+    for (ei, e) in fc.complex.edges.iter().enumerate() {
+        let s0 = fc.vertex_slice(e[0]);
+        let s1 = fc.vertex_slice(e[1]);
+
+        // Edge connects source to target slice
+        let connects = (s0 == source_slice && s1 == target_slice)
+            || (s1 == source_slice && s0 == target_slice);
+        if !connects {
+            continue;
+        }
+
+        // Check if one endpoint is v or its spatial neighbor,
+        // and the other endpoint is target_v or a neighbor's counterpart
+        let src_v = if s0 == source_slice { e[0] } else { e[1] };
+        let tgt_v = if s0 == target_slice { e[0] } else { e[1] };
+
+        // Include the tent pole (v → target_v) and tent walls
+        if src_v == vertex || tgt_v == target_v {
+            tent_edges.push(ei);
+        }
+    }
+
+    // Also include spatial edges at the target slice touching target_v
+    for (ei, e) in fc.complex.edges.iter().enumerate() {
+        let s0 = fc.vertex_slice(e[0]);
+        let s1 = fc.vertex_slice(e[1]);
+        if s0 == target_slice && s1 == target_slice
+            && (e[0] == target_v || e[1] == target_v)
+        {
+            tent_edges.push(ei);
+        }
+    }
+
+    tent_edges.sort_unstable();
+    tent_edges.dedup();
+    tent_edges
+}
+
+/// Advance a single vertex via tent-move: solve the local Regge equations.
+pub fn tent_move_vertex(
+    fc: &FoliatedComplex,
+    sq_lengths: &mut [f64],
+    vertex: usize,
+    target_slice: usize,
+    config: &TentConfig,
+) -> Result<EvolutionResult, TentMoveError> {
+    let free = tent_edges_for_vertex(fc, vertex, target_slice);
+    solve_regge_at_edges(&fc.complex, sq_lengths, &free, config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic};
+
+
+    /// Flat Minkowski is a fixed point: zero residual at all edges.
+    #[test]
+    fn test_flat_minkowski_zero_residual() {
+        let fc = foliated_hypercubic(4, 2);
+        let sq_lengths = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+
+        let grad = lorentzian_regge_action_grad(&fc.complex, &sq_lengths);
+        let max_grad = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
+        assert!(max_grad < 1e-10, "max |grad| = {max_grad:.2e}");
+    }
+
+    /// Perturb a small set of edges and recover flat via Newton.
+    ///
+    /// Uses tent_move_vertex for a single vertex (small local system)
+    /// rather than the full slice (too expensive for FD Jacobian).
+    #[test]
+    fn test_recover_flat_tent_move() {
+        let fc = foliated_hypercubic(4, 2);
+        let flat_sq = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+        let mut sq_lengths = flat_sq.clone();
+
+        // Pick a vertex in slice 1 and find its tent edges to slice 2
+        let v = fc.global_vertex(1, 0);
+        let free = tent_edges_for_vertex(&fc, v, 2);
+        eprintln!("tent_move for vertex {v}: {} free edges", free.len());
+
+        // Perturb these edges
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(123);
+        for &ei in &free {
+            sq_lengths[ei] *= 1.0 + 0.005 * (rng.r#gen::<f64>() - 0.5);
+        }
+
+        let config = TentConfig {
+            max_newton_iter: 30,
+            newton_tol: 1e-8,
+            ..TentConfig::default()
+        };
+        let result = solve_regge_at_edges(&fc.complex, &mut sq_lengths, &free, &config)
+            .expect("Newton should converge");
+
+        eprintln!(
+            "converged in {} iters, residual = {:.2e}",
+            result.newton_iters, result.residual
+        );
+        assert!(
+            result.residual < 1e-8,
+            "residual = {:.2e}",
+            result.residual
+        );
+    }
+
+    /// Gradient vs FD on a perturbed Lorentzian lattice.
+    #[test]
+    fn test_lorentzian_grad_vs_fd() {
+        use crate::lorentzian_regge::lorentzian_regge_action_grad_fd;
+        let fc = foliated_hypercubic(2, 2);
+        let mut sq_lengths = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(42);
+        for s in &mut sq_lengths {
+            *s *= 1.0 + 0.001 * (rng.r#gen::<f64>() - 0.5);
+        }
+
+        let grad_a = lorentzian_regge_action_grad(&fc.complex, &sq_lengths);
+        let grad_fd = lorentzian_regge_action_grad_fd(&fc.complex, &sq_lengths, 1e-7);
+
+        let max_grad = grad_fd
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0f64, f64::max)
+            .max(1e-10);
+        let max_err = grad_a
+            .iter()
+            .zip(grad_fd.iter())
+            .map(|(a, b)| (a - b).abs() / max_grad)
+            .fold(0.0f64, f64::max);
+
+        assert!(max_err < 0.05, "max gradient error = {max_err:.2e}");
+    }
+
+    /// Evolve_slice wrapper works.
+    #[test]
+    fn test_evolve_slice_flat() {
+        let fc = foliated_hypercubic(4, 2);
+        let mut sq_lengths = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+
+        // Already flat → should converge in 0 iterations
+        let config = TentConfig::default();
+        let result = evolve_slice(&fc, &mut sq_lengths, 2, &config).expect("should converge");
+        assert_eq!(result.newton_iters, 0);
+    }
+}

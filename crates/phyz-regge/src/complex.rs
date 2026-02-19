@@ -57,6 +57,10 @@ pub struct SimplicialComplex {
     /// Given triangle [a,b,c] in pent [a,b,c,d,e], the opposite edge is [d,e].
     /// tri_pent_opposite[tri_idx] stores (pent_idx, [d, e]) pairs.
     pub tri_pent_opposite: Vec<Vec<(usize, [usize; 2])>>,
+
+    /// For each vertex, the list of triangles containing it.
+    /// vertex_to_tris[vertex] = vec of triangle indices.
+    pub vertex_to_tris: Vec<Vec<usize>>,
 }
 
 impl SimplicialComplex {
@@ -169,6 +173,14 @@ impl SimplicialComplex {
             }
         }
 
+        // Build vertex → triangle adjacency.
+        let mut vertex_to_tris = vec![Vec::new(); n_vertices];
+        for (ti, t) in triangles.iter().enumerate() {
+            for &v in t {
+                vertex_to_tris[v].push(ti);
+            }
+        }
+
         Self {
             n_vertices,
             edges,
@@ -181,6 +193,7 @@ impl SimplicialComplex {
             tri_to_pents,
             edge_to_tris,
             tri_pent_opposite,
+            vertex_to_tris,
         }
     }
 
