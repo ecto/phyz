@@ -1,5 +1,91 @@
 # phyz-regge: Research Journal
 
+## 2026-02-20 — Locality Optimization & Rayon Parallelism
+
+### Motivation
+
+The `gem_transformer` at N=6 was killed after 20+ minutes without completing
+a single amplitude. The bottleneck: each per-vertex tent move computed the
+**full** n_edges × n_edges Hessian (~4000×4000 = 128MB), then extracted a tiny
+~25×25 submatrix. ~99% of computation was wasted.
+
+GPU offloading was ruled out — Apple M-series doesn't support f64 in Metal
+compute shaders, and the Lorentzian dihedral math (5×5 cofactors, acos/acosh
+on delicate ratios) requires f64 for numerical stability.
+
+### Approach: locality + CPU parallelism
+
+Three optimization levels, all preserving exact numerical equivalence with the
+original code (verified by tests):
+
+**Level 1: Local Hessian.** For a per-vertex tent with ~25 free edges, only
+~80 pentachorons (out of ~6000) touch those edges. New `local_lorentzian_regge_hessian()`
+computes only the free_edges × free_edges submatrix directly — no full allocation.
+Required adding `edge_to_pents` adjacency to `SimplicialComplex`.
+
+**Level 2: Local gradient.** Same locality trick for the gradient: only process
+triangles touching free edges. `local_lorentzian_regge_action_grad()` returns
+a `Vec<f64>` of length n_free instead of n_edges. This accelerates the residual
+computation and backtracking line search (called ~7000 times per amplitude).
+
+**Level 3: Rayon parallelism.** Three parallelization points:
+- Amplitude sweep in `run_transformer`: 5 independent amplitudes → `par_iter`
+- Term 2 (dihedral Jacobian) in local Hessian: `fold`/`reduce` with thread-local `DMatrix`
+- Deficit angle computation: per-triangle is independent → `par_iter().collect()`
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `Cargo.toml` | Added `rayon = "1.10"` |
+| `src/complex.rs` | Added `edge_to_pents: Vec<Vec<usize>>` field + construction |
+| `src/lorentzian_regge.rs` | Added `local_deficit_angles`, `local_lorentzian_regge_hessian`, `local_lorentzian_regge_action_grad`; Rayon for Term 2 + deficits |
+| `src/tent_move.rs` | Switched `solve_regge_at_edges` to local Hessian/gradient in analytical branch |
+| `src/matter.rs` | Switched `solve_regge_with_source` to local Hessian/gradient in analytical branch |
+| `src/transformer.rs` | Parallelized amplitude sweep with `rayon::par_iter` |
+
+### Results
+
+N=6 gem_transformer (`GEM_N_SPATIAL=6`, 5 amplitudes, release):
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Runtime | >20 min (killed) | **30.9 seconds** |
+| CPU utilization | ~100% (single-threaded) | **1289%** (all cores) |
+| Hessian size | 4000×4000 (128MB) | 25×25 (5KB) |
+| Pents processed/Hessian | ~6000 | ~80 |
+
+Physics results at N=6:
+- A=0: max |B_g| = 1.8e-16 (machine zero, flat space)
+- A=2.5e-5: max |B_g| = 4.6e-6, residual 2.9e-14 (converged)
+- A=1e-4: max |B_g| = 2.0e-5 (B_g scales linearly with amplitude)
+- Newton convergence: NaN residual at amplitudes ≥ 5e-5 (same pre-existing
+  convergence issue as before — strong source deforms geometry beyond Newton basin)
+
+### Verification
+
+- `test_local_hessian_matches_full`: submatrix of full Hessian == local Hessian (rel err < 1e-10)
+- `test_local_gradient_matches_full`: full grad at free edges == local grad (rel err < 1e-10)
+- All 115 existing tests pass unchanged
+- Clippy clean (zero warnings)
+
+### Crate stats
+
+- ~9,100 lines across 18 modules
+- 115 tests, all passing
+- N=6 transformer: 31s (release, M3 Max)
+
+### Open questions
+
+- Newton convergence at higher amplitudes: need adaptive step control or
+  amplitude continuation (start small, increment) to handle strong sources
+- N=8 should now be feasible (~4 min estimated) — would give quantitative
+  coupling measurements with proper spatial separation
+- The induced EMF is still near-zero at N=6 (secondary loop doesn't see enough
+  B_g spatial variation). Need larger separation or finer mesh.
+
+---
+
 ## 2026-02-19 — Lorentzian Regge Evolution & Gravitomagnetic Transformer
 
 ### Motivation

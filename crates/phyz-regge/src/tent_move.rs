@@ -14,7 +14,10 @@
 
 use crate::complex::SimplicialComplex;
 use crate::foliation::FoliatedComplex;
-use crate::lorentzian_regge::lorentzian_regge_action_grad;
+use crate::lorentzian_regge::{
+    local_lorentzian_regge_action_grad, local_lorentzian_regge_hessian,
+    lorentzian_regge_action_grad,
+};
 use nalgebra::{DMatrix, DVector};
 
 /// Configuration for tent-move time evolution.
@@ -28,6 +31,8 @@ pub struct TentConfig {
     pub fd_eps: f64,
     /// SVD tolerance for singular values (gauge modes).
     pub svd_tol: f64,
+    /// Use analytical Hessian for the Newton Jacobian (faster for large meshes).
+    pub use_analytical_jacobian: bool,
 }
 
 impl Default for TentConfig {
@@ -37,6 +42,7 @@ impl Default for TentConfig {
             max_newton_iter: 50,
             fd_eps: 1e-7,
             svd_tol: 1e-10,
+            use_analytical_jacobian: true,
         }
     }
 }
@@ -102,9 +108,8 @@ pub fn solve_regge_at_edges(
     }
 
     for iter in 0..config.max_newton_iter {
-        // Residual: Regge gradient restricted to free edges
-        let full_grad = lorentzian_regge_action_grad(complex, sq_lengths);
-        let residual: Vec<f64> = free_edges.iter().map(|&ei| full_grad[ei]).collect();
+        // Residual: Regge gradient restricted to free edges (local)
+        let residual = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
         let res_norm = residual.iter().map(|r| r * r).sum::<f64>().sqrt();
 
         if res_norm < config.newton_tol {
@@ -114,24 +119,29 @@ pub fn solve_regge_at_edges(
             });
         }
 
-        // Jacobian via central finite differences
-        let mut jac = DMatrix::zeros(n_free, n_free);
-        for j in 0..n_free {
-            let ej = free_edges[j];
-            let old = sq_lengths[ej];
+        // Jacobian: local analytical Hessian or central finite differences
+        let jac = if config.use_analytical_jacobian {
+            local_lorentzian_regge_hessian(complex, sq_lengths, free_edges, config.fd_eps)
+        } else {
+            let mut j = DMatrix::zeros(n_free, n_free);
+            for k in 0..n_free {
+                let ek = free_edges[k];
+                let old = sq_lengths[ek];
 
-            sq_lengths[ej] = old + config.fd_eps;
-            let grad_plus = lorentzian_regge_action_grad(complex, sq_lengths);
+                sq_lengths[ek] = old + config.fd_eps;
+                let grad_plus = lorentzian_regge_action_grad(complex, sq_lengths);
 
-            sq_lengths[ej] = old - config.fd_eps;
-            let grad_minus = lorentzian_regge_action_grad(complex, sq_lengths);
+                sq_lengths[ek] = old - config.fd_eps;
+                let grad_minus = lorentzian_regge_action_grad(complex, sq_lengths);
 
-            sq_lengths[ej] = old;
+                sq_lengths[ek] = old;
 
-            for (i, &ei) in free_edges.iter().enumerate() {
-                jac[(i, j)] = (grad_plus[ei] - grad_minus[ei]) / (2.0 * config.fd_eps);
+                for (i, &ei) in free_edges.iter().enumerate() {
+                    j[(i, k)] = (grad_plus[ei] - grad_minus[ei]) / (2.0 * config.fd_eps);
+                }
             }
-        }
+            j
+        };
 
         // SVD solve: J * delta = -residual (handles gauge null directions)
         let rhs = DVector::from_iterator(n_free, residual.iter().map(|r| -r));
@@ -151,11 +161,8 @@ pub fn solve_regge_at_edges(
                 sq_lengths[ej] += step * delta[j];
             }
 
-            let trial_grad = lorentzian_regge_action_grad(complex, sq_lengths);
-            let trial_res_sq: f64 = free_edges
-                .iter()
-                .map(|&ei| trial_grad[ei].powi(2))
-                .sum();
+            let trial_grad = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
+            let trial_res_sq: f64 = trial_grad.iter().map(|r| r.powi(2)).sum();
 
             if trial_res_sq < old_res_sq {
                 accepted = true;
@@ -178,12 +185,8 @@ pub fn solve_regge_at_edges(
     }
 
     // Final residual check
-    let full_grad = lorentzian_regge_action_grad(complex, sq_lengths);
-    let res_norm: f64 = free_edges
-        .iter()
-        .map(|&ei| full_grad[ei].powi(2))
-        .sum::<f64>()
-        .sqrt();
+    let residual = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
+    let res_norm: f64 = residual.iter().map(|r| r.powi(2)).sum::<f64>().sqrt();
     Err(TentMoveError::DidNotConverge {
         residual: res_norm,
         iterations: config.max_newton_iter,
@@ -383,5 +386,71 @@ mod tests {
         let config = TentConfig::default();
         let result = evolve_slice(&fc, &mut sq_lengths, 2, &config).expect("should converge");
         assert_eq!(result.newton_iters, 0);
+    }
+
+    /// Both analytical and FD Jacobian paths converge on the same problem.
+    #[test]
+    fn test_analytical_vs_fd_convergence() {
+        let fc = foliated_hypercubic(4, 2);
+        let flat_sq = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+
+        let v = fc.global_vertex(1, 0);
+        let free = tent_edges_for_vertex(&fc, v, 2);
+
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        // Analytical path
+        let mut sq_analytical = flat_sq.clone();
+        let mut rng = StdRng::seed_from_u64(200);
+        for &ei in &free {
+            sq_analytical[ei] *= 1.0 + 0.005 * (rng.r#gen::<f64>() - 0.5);
+        }
+
+        let config_a = TentConfig {
+            max_newton_iter: 30,
+            newton_tol: 1e-8,
+            use_analytical_jacobian: true,
+            ..TentConfig::default()
+        };
+        let result_a = solve_regge_at_edges(&fc.complex, &mut sq_analytical, &free, &config_a)
+            .expect("analytical should converge");
+
+        // FD path (same initial perturbation)
+        let mut sq_fd = flat_sq.clone();
+        let mut rng2 = StdRng::seed_from_u64(200);
+        for &ei in &free {
+            sq_fd[ei] *= 1.0 + 0.005 * (rng2.r#gen::<f64>() - 0.5);
+        }
+
+        let config_fd = TentConfig {
+            max_newton_iter: 30,
+            newton_tol: 1e-8,
+            use_analytical_jacobian: false,
+            ..TentConfig::default()
+        };
+        let result_fd = solve_regge_at_edges(&fc.complex, &mut sq_fd, &free, &config_fd)
+            .expect("FD should converge");
+
+        eprintln!(
+            "analytical: {} iters, res={:.2e}; FD: {} iters, res={:.2e}",
+            result_a.newton_iters, result_a.residual,
+            result_fd.newton_iters, result_fd.residual
+        );
+
+        // Both should converge; iteration counts may differ by ±1-2
+        assert!(result_a.residual < 1e-8);
+        assert!(result_fd.residual < 1e-8);
+
+        // Solutions should match
+        let max_diff: f64 = sq_analytical
+            .iter()
+            .zip(sq_fd.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            max_diff < 1e-4,
+            "solutions differ: max_diff={max_diff:.2e}"
+        );
     }
 }

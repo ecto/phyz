@@ -11,6 +11,7 @@ description = "4D Regge calculus with U(1) gauge field for Einstein-Maxwell theo
 phyz-math.workspace = true
 nalgebra.workspace = true
 rand = "0.8"
+rayon = "1.10"
 
 [dev-dependencies]
 approx = "0.5"

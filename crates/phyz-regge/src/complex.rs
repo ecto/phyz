@@ -61,6 +61,10 @@ pub struct SimplicialComplex {
     /// For each vertex, the list of triangles containing it.
     /// vertex_to_tris[vertex] = vec of triangle indices.
     pub vertex_to_tris: Vec<Vec<usize>>,
+
+    /// For each edge, the list of 4-simplices containing it.
+    /// edge_to_pents[edge_idx] = vec of pent indices.
+    pub edge_to_pents: Vec<Vec<usize>>,
 }
 
 impl SimplicialComplex {
@@ -173,6 +177,19 @@ impl SimplicialComplex {
             }
         }
 
+        // Build edge → pentachoron adjacency.
+        let mut edge_to_pents = vec![Vec::new(); n_edges];
+        for (pi, sp) in sorted_pents.iter().enumerate() {
+            for i in 0..5 {
+                for j in (i + 1)..5 {
+                    let e = sorted([sp[i], sp[j]]);
+                    if let Some(&ei) = edge_index.get(&e) {
+                        edge_to_pents[ei].push(pi);
+                    }
+                }
+            }
+        }
+
         // Build vertex → triangle adjacency.
         let mut vertex_to_tris = vec![Vec::new(); n_vertices];
         for (ti, t) in triangles.iter().enumerate() {
@@ -194,6 +211,7 @@ impl SimplicialComplex {
             edge_to_tris,
             tri_pent_opposite,
             vertex_to_tris,
+            edge_to_pents,
         }
     }
 

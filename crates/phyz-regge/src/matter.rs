@@ -7,7 +7,10 @@
 //! obtained by contracting the continuous T^{μν} with the edge's dual volume.
 
 use crate::complex::SimplicialComplex;
-use crate::lorentzian_regge::lorentzian_regge_action_grad;
+use crate::lorentzian_regge::{
+    local_lorentzian_regge_action_grad, local_lorentzian_regge_hessian,
+    lorentzian_regge_action_grad,
+};
 use crate::tent_move::{TentConfig, TentMoveError, EvolutionResult};
 
 /// Trait for stress-energy sources on a simplicial lattice.
@@ -166,12 +169,13 @@ pub fn solve_regge_with_source(
     let eight_pi = 8.0 * std::f64::consts::PI;
 
     for iter in 0..config.max_newton_iter {
-        // Residual: ∂S/∂s_e + 8π T_e
-        let regge_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+        // Residual: ∂S/∂s_e + 8π T_e (local Regge grad + full matter sources)
+        let regge_grad = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
         let matter_sources = source.edge_sources(complex, sq_lengths);
-        let residual: Vec<f64> = free_edges
+        let residual: Vec<f64> = regge_grad
             .iter()
-            .map(|&ei| regge_grad[ei] + eight_pi * matter_sources[ei])
+            .zip(free_edges.iter())
+            .map(|(&rg, &ei)| rg + eight_pi * matter_sources[ei])
             .collect();
         let res_norm = residual.iter().map(|r| r * r).sum::<f64>().sqrt();
 
@@ -182,29 +186,53 @@ pub fn solve_regge_with_source(
             });
         }
 
-        // Jacobian via central FD (includes matter coupling)
-        let mut jac = nalgebra::DMatrix::zeros(n_free, n_free);
-        for j in 0..n_free {
-            let ej = free_edges[j];
-            let old = sq_lengths[ej];
+        // Jacobian: local analytical Hessian for geometry + FD for matter coupling
+        let jac = if config.use_analytical_jacobian {
+            let mut j = local_lorentzian_regge_hessian(complex, sq_lengths, free_edges, config.fd_eps);
+            // Add matter Jacobian via FD (typically cheap)
+            for k in 0..n_free {
+                let ek = free_edges[k];
+                let old = sq_lengths[ek];
 
-            sq_lengths[ej] = old + config.fd_eps;
-            let grad_plus = lorentzian_regge_action_grad(complex, sq_lengths);
-            let src_plus = source.edge_sources(complex, sq_lengths);
+                sq_lengths[ek] = old + config.fd_eps;
+                let src_plus = source.edge_sources(complex, sq_lengths);
 
-            sq_lengths[ej] = old - config.fd_eps;
-            let grad_minus = lorentzian_regge_action_grad(complex, sq_lengths);
-            let src_minus = source.edge_sources(complex, sq_lengths);
+                sq_lengths[ek] = old - config.fd_eps;
+                let src_minus = source.edge_sources(complex, sq_lengths);
 
-            sq_lengths[ej] = old;
+                sq_lengths[ek] = old;
 
-            for (i, &ei) in free_edges.iter().enumerate() {
-                let d_regge = (grad_plus[ei] - grad_minus[ei]) / (2.0 * config.fd_eps);
-                let d_matter =
-                    eight_pi * (src_plus[ei] - src_minus[ei]) / (2.0 * config.fd_eps);
-                jac[(i, j)] = d_regge + d_matter;
+                for (i, &ei) in free_edges.iter().enumerate() {
+                    j[(i, k)] +=
+                        eight_pi * (src_plus[ei] - src_minus[ei]) / (2.0 * config.fd_eps);
+                }
             }
-        }
+            j
+        } else {
+            let mut j = nalgebra::DMatrix::zeros(n_free, n_free);
+            for k in 0..n_free {
+                let ek = free_edges[k];
+                let old = sq_lengths[ek];
+
+                sq_lengths[ek] = old + config.fd_eps;
+                let grad_plus = lorentzian_regge_action_grad(complex, sq_lengths);
+                let src_plus = source.edge_sources(complex, sq_lengths);
+
+                sq_lengths[ek] = old - config.fd_eps;
+                let grad_minus = lorentzian_regge_action_grad(complex, sq_lengths);
+                let src_minus = source.edge_sources(complex, sq_lengths);
+
+                sq_lengths[ek] = old;
+
+                for (i, &ei) in free_edges.iter().enumerate() {
+                    let d_regge = (grad_plus[ei] - grad_minus[ei]) / (2.0 * config.fd_eps);
+                    let d_matter =
+                        eight_pi * (src_plus[ei] - src_minus[ei]) / (2.0 * config.fd_eps);
+                    j[(i, k)] = d_regge + d_matter;
+                }
+            }
+            j
+        };
 
         // SVD solve
         let rhs =
@@ -224,11 +252,12 @@ pub fn solve_regge_with_source(
                 sq_lengths[ej] += step * delta[j];
             }
 
-            let trial_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+            let trial_regge = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
             let trial_src = source.edge_sources(complex, sq_lengths);
-            let trial_res_sq: f64 = free_edges
+            let trial_res_sq: f64 = trial_regge
                 .iter()
-                .map(|&ei| (trial_grad[ei] + eight_pi * trial_src[ei]).powi(2))
+                .zip(free_edges.iter())
+                .map(|(&rg, &ei)| (rg + eight_pi * trial_src[ei]).powi(2))
                 .sum();
 
             if trial_res_sq < old_res_sq {
@@ -249,11 +278,12 @@ pub fn solve_regge_with_source(
         }
     }
 
-    let regge_grad = lorentzian_regge_action_grad(complex, sq_lengths);
+    let regge_grad = local_lorentzian_regge_action_grad(complex, sq_lengths, free_edges);
     let matter_sources = source.edge_sources(complex, sq_lengths);
-    let res_norm: f64 = free_edges
+    let res_norm: f64 = regge_grad
         .iter()
-        .map(|&ei| (regge_grad[ei] + eight_pi * matter_sources[ei]).powi(2))
+        .zip(free_edges.iter())
+        .map(|(&rg, &ei)| (rg + eight_pi * matter_sources[ei]).powi(2))
         .sum::<f64>()
         .sqrt();
     Err(TentMoveError::DidNotConverge {

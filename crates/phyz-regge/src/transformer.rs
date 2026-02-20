@@ -18,6 +18,7 @@ use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic, FoliatedC
 use crate::gem::{extract_gem_fields, induced_gem_emf, GemFields};
 use crate::matter::{solve_regge_with_source, MassCurrentLoop, StressEnergy};
 use crate::tent_move::{tent_edges_for_vertex, TentConfig};
+use rayon::prelude::*;
 
 /// Configuration for a gravitomagnetic transformer experiment.
 #[derive(Debug, Clone)]
@@ -163,20 +164,20 @@ pub fn run_transformer(
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
     let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq);
 
-    let mut measurements = Vec::new();
-
-    for &amplitude in amplitudes {
-        let measurement = run_single_amplitude(
-            &fc,
-            &flat_sq,
-            &primary,
-            &secondary,
-            &gem_flat,
-            amplitude,
-            config,
-        );
-        measurements.push(measurement);
-    }
+    let measurements: Vec<TransformerMeasurement> = amplitudes
+        .par_iter()
+        .map(|&amplitude| {
+            run_single_amplitude(
+                &fc,
+                &flat_sq,
+                &primary,
+                &secondary,
+                &gem_flat,
+                amplitude,
+                config,
+            )
+        })
+        .collect();
 
     // Linear fit: coupling = Δ(EMF) / Δ(amplitude)
     let coupling = if measurements.len() >= 2 {
