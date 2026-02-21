@@ -312,3 +312,119 @@ maximum separation from the square-plaquette spectrum.
   this converges.
 
 ---
+
+## 2026-02-21 — Literature Review
+
+### Positioning
+
+All existing non-hypercubic lattice gauge theory work uses lattices with
+**3-link vertices** (honeycomb, triamond, hyperhoneycomb) which have **large
+plaquettes** (6-edge or 10-edge). Their motivation is reducing quantum
+simulation gate counts. Nobody has gone in the other direction — using lattices
+with small (triangular, 3-edge) plaquettes — and nobody has compared spectral
+gaps between geometries.
+
+### Closest prior work
+
+**Illa, Savage, Yao** — "Improved Honeycomb and Hyperhoneycomb Lattice
+Hamiltonians for Quantum Simulations of Non-Abelian Gauge Theories"
+([arXiv:2503.09688](https://arxiv.org/abs/2503.09688), March 2025, PRD 111)
+KS Hamiltonians for SU(N_c) on honeycomb (2+1D) and hyperhoneycomb (3+1D).
+Hexagonal plaquettes (6-link), 3-link vertices. Symanzik improvement program.
+No spectral gap calculations, no geometry comparison.
+
+**Kavaki, Lewis** — "From square plaquettes to triamond lattices for SU(2)
+gauge theory"
+([arXiv:2401.14570](https://arxiv.org/abs/2401.14570), January 2024, Comm. Phys.)
+SU(2) Hamiltonian on triamond lattice (3D, 3-link vertices). Plaquettes are
+10-link loops. Single unit cell eigenvalues only. No spectral gap comparison
+between geometries.
+
+**Kavaki, Lewis** — "False vacuum decay in triamond lattice gauge theory"
+([arXiv:2503.01119](https://arxiv.org/abs/2503.01119), March 2025)
+Follow-up: torelon spectrum and false vacuum decay on triamond. Spectrum only
+for triamond, no cross-geometry comparison.
+
+**Muller, Yao** — "Simple Hamiltonian for Quantum Simulation of Strongly
+Coupled 2+1D SU(2) Lattice Gauge Theory on a Honeycomb Lattice"
+([arXiv:2307.00045](https://arxiv.org/abs/2307.00045), June 2023)
+SU(2) on honeycomb with j_max=1/2. Integrates out Gauss's law for local Pauli
+Hamiltonian. No spectral gap comparison to square lattice.
+
+**Illa, Savage, Yao** — "Dynamical Local Tadpole-Improvement in Quantum
+Simulations of Gauge Theories"
+([arXiv:2504.21575](https://arxiv.org/abs/2504.21575), April 2025)
+Tadpole improvement on plaquette chains and honeycomb lattices. Operational
+improvement, not spectral comparison.
+
+### General graph formulations
+
+**Burbano, Bauer** — "Gauge Loop-String-Hadron Formulation on General Graphs"
+([arXiv:2409.13812](https://arxiv.org/abs/2409.13812), September 2024, JHEP 2025)
+Mathematical framework for KS theory on general graphs with arbitrary vertex
+valency. SU(2) formalism paper — no numerical results, no spectral calculations,
+no study of triangular plaquettes. Our work can be seen as an instantiation of
+this general framework on simplicial complexes, with the first numerical results.
+
+**Ciavarella, Bauer, Halimeh** — "Generic Hilbert Space Fragmentation in
+Kogut-Susskind Lattice Gauge Theories"
+([arXiv:2502.03533](https://arxiv.org/abs/2502.03533), February 2025)
+Fragmentation in KS theories on general lattices. Focuses on ergodicity
+breaking, not spectral gaps or geometry dependence.
+
+### Classical simplicial gauge theory
+
+**Christiansen, Halvorsen** — "A simplicial gauge theory"
+([arXiv:1006.2059](https://arxiv.org/abs/1006.2059), 2010, J. Math. Phys. 2012)
+Gauge-invariant action on simplicial meshes, discrete Noether's theorem. This
+is **Lagrangian/Euclidean**, not Hamiltonian. No spectral gaps, no quantum
+simulation. Our work is the Hamiltonian counterpart.
+
+### Z₂ on triangular geometries
+
+**Brenig** — "Spinless fermions in a Z₂ gauge theory on the triangular ladder"
+([arXiv:2202.04668](https://arxiv.org/abs/2202.04668), February 2022)
+Z₂ gauge theory on a triangular ladder. Notes that "the triangular unit cell
+and the ladder geometry strongly modify the physics." Uses DMRG for phase
+transitions. Does not compute spectral gaps or make systematic geometry
+comparisons.
+
+### Stabilizer codes and simplicial complexes
+
+**Breuckmann** — "Homological Quantum Codes Beyond the Toric Code"
+([arXiv:1802.01520](https://arxiv.org/abs/1802.01520), February 2018, PhD thesis)
+Codes from curved surfaces and 4D geometries. Shows overhead reduction vs
+surface codes. Focuses on hyperbolic surfaces, not simplicial triangulations
+of flat space.
+
+**Yao** — "Quantum Error Correction Codes for Truncated SU(2) Lattice Gauge
+Theories"
+([arXiv:2511.13721](https://arxiv.org/abs/2511.13721), November 2025)
+Converts Gauss's law into stabilizers for SU(2) QEC codes. Bridge between LGT
+and QEC, but SU(2)-specific, not Z₂ on simplicial complexes.
+
+**Survey on Codes from Simplicial Complexes**
+([arXiv:2409.16310](https://arxiv.org/abs/2409.16310), September 2024)
+General framework for classical and quantum codes from simplicial complexes.
+Does not make the specific claim about Z₂ stabilizer codes from gauge theory
+encoding more logical qubits than toric codes.
+
+### Novelty assessment
+
+1. **KS Hamiltonian with triangular plaquettes** — **Novel.** Burbano/Bauer's
+   general-graph formalism could accommodate it, but nobody has instantiated or
+   studied it. All existing non-hypercubic work uses large plaquettes (6+ edges).
+
+2. **Spectral gap comparison across geometries** — **Novel.** Zero papers
+   compare gaps between lattice types for the same gauge theory.
+
+3. **Gap-per-plaquette universality** — **Novel.** The concept does not appear
+   anywhere in the literature.
+
+4. **Simplicial stabilizer codes vs toric codes** — **Likely novel.** Color
+   code literature (Breuckmann) knows different topologies yield different rates,
+   but the specific connection from Z₂ gauge theory on simplicial lattices to
+   higher logical qubit counts appears new. Should be carefully compared with
+   color code constructions.
+
+---
