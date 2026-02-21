@@ -144,12 +144,22 @@ pub fn extract_riemann_at_vertex(
             .collect();
         let bv = triangle_bivector_from_coords(coords[0], coords[1], coords[2]);
 
+        // Normalize bivector to unit Lorentzian bivector: n = bv / (2A).
+        // The raw bivector Σ^{ab} satisfies Σ^{ab}Σ_{ab} = ±2A², so
+        // n = Σ/(2A) gives n^{ab}n_{ab} = ±2 (unit bivector convention).
+        // This makes the equation δ/A = R_{pq} n^p n^q scale correctly.
+        let inv_2a = 0.5 / abs_a;
+        let nv = [
+            bv[0] * inv_2a, bv[1] * inv_2a, bv[2] * inv_2a,
+            bv[3] * inv_2a, bv[4] * inv_2a, bv[5] * inv_2a,
+        ];
+
         // Fill the row of A: for each pair (p,q) with p <= q
         for p in 0..6 {
             for q in p..6 {
                 let idx = symmetric_index(p, q);
                 let weight = if p == q { 1.0 } else { 2.0 };
-                a_mat[row * n_comps + idx] = weight * bv[p] * bv[q];
+                a_mat[row * n_comps + idx] = weight * nv[p] * nv[q];
             }
         }
     }

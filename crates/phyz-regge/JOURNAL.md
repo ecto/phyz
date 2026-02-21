@@ -1,5 +1,79 @@
 # phyz-regge: Research Journal
 
+## 2026-02-21 — Bivector Normalization Bug & h-Convergence Validation
+
+### Motivation
+
+The previous session's N=4/6/8 comparison changed the physical geometry along
+with mesh size, so it didn't isolate discretization error. A proper h-convergence
+test (fixed physical domain, varying only lattice resolution) was needed to
+validate the Regge extraction against linearized GEM.
+
+### Bug found: unnormalized bivectors in Riemann extraction
+
+Running the convergence test at N=4 and N=8 (same 4×4×4 domain, same 2×2 loops,
+same separation=2.0) revealed that B_regge blew up by 16× at N=8 while B_linear
+barely changed. Diagnosis:
+
+```
+B_regge × h⁴:  N=4 → 1.49e-4,  N=8 → 1.56e-4  (match!)
+```
+
+The h⁻⁴ scaling was caused by `extract_riemann_at_vertex` (gem.rs) using **raw
+coordinate bivectors** in the least-squares system. The bivector Σ^{ab} scales as
+h² (product of two edge vectors), so the quadratic form `bv[p]·bv[q] ~ h⁴` in
+the A matrix made the extracted Riemann scale as h⁻⁴. At h=1.0 (N=4) this was
+invisible; at h=0.5 (N=8) it caused a 16× blowup.
+
+### Fix
+
+Normalize bivectors to unit Lorentzian bivectors before building the SVD system:
+
+```
+n^{ab} = Σ^{ab} / (2A)
+```
+
+where A is the triangle area (Lorentzian). The factor of 2 comes from the
+antisymmetric contraction: `Σ^{ab}Σ_{ab} = ±2A²`, so `n^{ab}n_{ab} = ±2`
+(standard unit bivector convention). This makes the equation
+`δ/A = R_{pq} n^p n^q` dimensionally correct and h-independent.
+
+### Results
+
+| N | h | B_regge | B_linear | Ratio | Residual |
+|---|---|---------|----------|-------|----------|
+| 4 | 1.0 | 1.74e-4 | 1.86e-4 | **0.933** | 3.1e-2 |
+| 8 | 0.5 | 1.77e-4 | 1.83e-4 | **0.972** | 2.8e-2 |
+
+Ratio converges toward 1.0 as h → 0. The ~7% N=4 error and ~3% N=8 error are
+consistent with O(h²) discretization error from the Regge extraction averaging
+over a finite number of simplices per vertex.
+
+Note: the previous session's ratio of 0.80 at N=4 was coincidentally reasonable
+because the Euclidean bivector norm happened to partially cancel the missing
+normalization at h=1.
+
+### Changes
+
+| File | What |
+|------|------|
+| `src/gem.rs` | Fixed `extract_riemann_at_vertex`: normalize bivectors by `1/(2A)` (unit Lorentzian bivector) before building the least-squares matrix. |
+| `examples/gem_convergence.rs` | **New.** h-convergence test: fixes physical geometry, varies lattice resolution, fits `ratio(h) = a + b·h^p`. Env vars: `CONV_DOMAIN`, `CONV_AMP`, `CONV_NS`, `CONV_DT_RATIO`. |
+
+### Verification
+
+- 117 tests + 1 doctest pass (no test changes needed)
+- `cargo run --example gem_convergence -p phyz-regge --release` — ratio 0.93→0.97
+
+### Open questions
+
+- Run with N=12,16 to get a 3+ point convergence fit and confirm O(h²) order
+- The residuals (~3e-2) suggest the Newton solver could be improved — better
+  convergence might tighten the ratio further
+- Induced EMF comparison at multiple resolutions (still near-zero)
+
+---
+
 ## 2026-02-21 — Tidal Tensor Comparison Fix
 
 ### Motivation
