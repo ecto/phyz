@@ -222,6 +222,36 @@ pub fn all_lorentzian_dihedrals(sq_lengths: &[f64; 10]) -> [(f64, HingeType); 10
     result
 }
 
+/// Jacobian of all 10 dihedral angles w.r.t. the 10 squared edge lengths.
+///
+/// Returns `[dihedral_idx][edge_idx] = ∂θ_k/∂s_e`, computed via central finite differences
+/// on `all_lorentzian_dihedrals`. Cost: 21 calls (10 edges × 2 perturbations + 1 baseline).
+pub fn all_lorentzian_dihedrals_jacobian(
+    sq_lengths: &[f64; 10],
+    eps: f64,
+) -> [[f64; 10]; 10] {
+    let mut jac = [[0.0; 10]; 10];
+    let mut work = *sq_lengths;
+
+    for e in 0..10 {
+        let old = work[e];
+
+        work[e] = old + eps;
+        let plus = all_lorentzian_dihedrals(&work);
+
+        work[e] = old - eps;
+        let minus = all_lorentzian_dihedrals(&work);
+
+        work[e] = old;
+
+        for k in 0..10 {
+            jac[k][e] = (plus[k].0 - minus[k].0) / (2.0 * eps);
+        }
+    }
+
+    jac
+}
+
 /// Gradient of triangle area squared w.r.t. 10 signed squared edge lengths of a 4-simplex.
 ///
 /// For triangle with local vertices (a, b, c) in the pent, the area squared
@@ -526,6 +556,51 @@ mod tests {
             angle0,
             angle1
         );
+    }
+
+    /// Dihedral Jacobian vs per-component finite difference.
+    #[test]
+    fn test_dihedral_jacobian_vs_fd() {
+        // Lorentzian simplex
+        let dt = 0.3;
+        let dx = 1.0;
+        let sq = [
+            -(dt * dt),
+            -(dt * dt) + dx * dx,
+            -(dt * dt) + 2.0 * dx * dx,
+            -(dt * dt) + 3.0 * dx * dx,
+            dx * dx,
+            2.0 * dx * dx,
+            3.0 * dx * dx,
+            dx * dx,
+            2.0 * dx * dx,
+            dx * dx,
+        ];
+
+        let eps = 1e-7;
+        let jac = all_lorentzian_dihedrals_jacobian(&sq, eps);
+
+        // Verify against independent per-component FD
+        let fd_eps = 1e-6;
+        let mut work = sq;
+        for e in 0..10 {
+            let old = work[e];
+            work[e] = old + fd_eps;
+            let plus = all_lorentzian_dihedrals(&work);
+            work[e] = old - fd_eps;
+            let minus = all_lorentzian_dihedrals(&work);
+            work[e] = old;
+
+            for k in 0..10 {
+                let fd = (plus[k].0 - minus[k].0) / (2.0 * fd_eps);
+                let err = (jac[k][e] - fd).abs();
+                assert!(
+                    err < 1e-4,
+                    "dihedral_jac[{k}][{e}]: analytical={:.8e}, fd={:.8e}, err={:.2e}",
+                    jac[k][e], fd, err
+                );
+            }
+        }
     }
 
     /// CM matrix with all-positive entries should match Euclidean cayley_menger_matrix

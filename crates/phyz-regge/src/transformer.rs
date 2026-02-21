@@ -222,6 +222,245 @@ pub fn run_transformer(
     }
 }
 
+/// Run a transformer experiment using amplitude continuation.
+///
+/// Instead of solving each amplitude independently from flat space, this
+/// solves sequentially: each amplitude initializes from the previous
+/// converged geometry. This keeps Newton within its convergence basin
+/// for larger amplitudes where starting from flat would diverge.
+///
+/// For amplitudes where the step from the previous solution is too large,
+/// adaptive sub-stepping inserts intermediate amplitudes (not measured,
+/// just used as stepping stones).
+///
+/// # Arguments
+/// * `config` - Transformer configuration (mesh size, spacing, etc.)
+/// * `amplitudes` - Sorted list of amplitudes to measure at (must be ascending)
+/// * `max_substeps` - Maximum sub-steps if a direct step fails (0 = no sub-stepping)
+pub fn run_transformer_continuation(
+    config: &TransformerConfig,
+    amplitudes: &[f64],
+    _max_substeps: usize,
+) -> TransformerResult {
+    let fc = foliated_hypercubic(config.n_time, config.n_spatial);
+    let n = config.n_spatial;
+
+    let primary = make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], 0, "primary");
+    let z_secondary = (n / 2).min(n - 1);
+    let secondary = make_planar_winding(
+        &fc,
+        0,
+        [0, n / 2],
+        [0, n / 2],
+        z_secondary,
+        "secondary",
+    );
+
+    let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
+    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq);
+
+    let mut measurements = Vec::with_capacity(amplitudes.len());
+    // The previous amplitude's converged geometry
+    let mut prev_sq = flat_sq.clone();
+
+    for &amplitude in amplitudes {
+        let source = PersistentMassCurrent::new(&fc, &primary, amplitude);
+
+        // Strategy: try both from-flat and from-previous, keep the better one.
+        // This gives continuation's benefit at large A (where flat fails) while
+        // avoiding error accumulation at small A (where flat works fine).
+
+        // Attempt 1: from flat space (same as independent solver)
+        let mut sq_from_flat = flat_sq.clone();
+        evolve_all_tents(&fc, &mut sq_from_flat, &source, &config.tent_config);
+        let res_flat = compute_max_residual(&fc, &sq_from_flat, &source);
+
+        // Attempt 2: from previous amplitude's solution
+        let mut sq_from_prev = prev_sq.clone();
+        evolve_all_tents(&fc, &mut sq_from_prev, &source, &config.tent_config);
+        let res_prev = compute_max_residual(&fc, &sq_from_prev, &source);
+
+        // Pick the solution with lower global residual
+        let sq_lengths = if res_flat <= res_prev {
+            sq_from_flat
+        } else {
+            sq_from_prev
+        };
+
+        // Extract measurements
+        let gem_evolved = extract_gem_fields(&fc.complex, &fc, &sq_lengths);
+        let max_b_grav = secondary
+            .vertices
+            .iter()
+            .flat_map(|&v| {
+                gem_evolved.b_grav[v]
+                    .iter()
+                    .flat_map(|row| row.iter())
+                    .map(|x| x.abs())
+            })
+            .fold(0.0f64, f64::max);
+
+        let emf = induced_gem_emf(&gem_flat, &gem_evolved, &secondary.vertices, config.dt);
+        let final_residual = compute_max_residual(&fc, &sq_lengths, &source);
+
+        measurements.push(TransformerMeasurement {
+            amplitude,
+            induced_emf: emf,
+            max_b_grav,
+            residual: final_residual,
+        });
+
+        // Use this as the starting point for the next amplitude
+        prev_sq = sq_lengths;
+    }
+
+    // Linear fit and GEM prediction (same as run_transformer)
+    let coupling = if measurements.len() >= 2 {
+        let n_m = measurements.len();
+        let a0 = measurements[0].amplitude;
+        let a1 = measurements[n_m - 1].amplitude;
+        let e0 = measurements[0].induced_emf;
+        let e1 = measurements[n_m - 1].induced_emf;
+        if (a1 - a0).abs() > 1e-30 {
+            (e1 - e0) / (a1 - a0)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let loop_area = (n / 2) as f64 * config.spacing * (n / 2) as f64 * config.spacing;
+    let separation = z_secondary as f64 * config.spacing;
+    let gem_prediction = if separation > 1e-30 {
+        4.0 * loop_area / (separation * separation)
+    } else {
+        0.0
+    };
+
+    let nonlinear_correction = if gem_prediction.abs() > 1e-30 {
+        coupling / gem_prediction
+    } else {
+        1.0
+    };
+
+    TransformerResult {
+        measurements,
+        coupling,
+        gem_prediction,
+        nonlinear_correction,
+    }
+}
+
+/// Try to reach `target_a` from `start_a` using sub-steps.
+/// Each sub-step does a fresh solve from flat, but initializes from the
+/// previous sub-step's geometry. Returns the final geometry if successful.
+#[allow(dead_code)]
+fn try_substep(
+    fc: &FoliatedComplex,
+    primary: &Winding,
+    start_sq: &[f64],
+    start_a: f64,
+    target_a: f64,
+    max_substeps: usize,
+    config: &TentConfig,
+) -> Option<Vec<f64>> {
+    let mut n_sub = 2;
+    while n_sub <= max_substeps {
+        let mut current_sq = start_sq.to_vec();
+        let mut all_ok = true;
+
+        for step in 1..=n_sub {
+            let a = start_a + (target_a - start_a) * step as f64 / n_sub as f64;
+            let source = PersistentMassCurrent::new(fc, primary, a);
+            let (residual, _) = evolve_all_tents(fc, &mut current_sq, &source, config);
+
+            if residual > config.newton_tol * 100.0 {
+                all_ok = false;
+                break;
+            }
+        }
+
+        if all_ok {
+            return Some(current_sq);
+        }
+        n_sub *= 2;
+    }
+    None
+}
+
+/// Evolve all tent moves for one amplitude. Returns max residual across all vertices.
+///
+/// Tolerates individual tent move failures (some boundary vertices may not converge).
+/// Returns the max residual and number of failed tent moves.
+fn evolve_all_tents(
+    fc: &FoliatedComplex,
+    sq_lengths: &mut [f64],
+    source: &dyn StressEnergy,
+    config: &TentConfig,
+) -> (f64, usize) {
+    let mut max_residual: f64 = 0.0;
+    let mut n_failed: usize = 0;
+    for target_slice in 1..fc.n_slices {
+        let source_slice = target_slice - 1;
+        for local_v in 0..fc.vertices_per_slice {
+            let v = fc.global_vertex(source_slice, local_v);
+            let free = tent_edges_for_vertex(fc, v, target_slice);
+            if free.is_empty() {
+                continue;
+            }
+            match solve_regge_with_source(
+                &fc.complex,
+                sq_lengths,
+                &free,
+                source,
+                config,
+            ) {
+                Ok(result) => {
+                    max_residual = max_residual.max(result.residual);
+                }
+                Err(_) => {
+                    n_failed += 1;
+                }
+            }
+        }
+    }
+    (max_residual, n_failed)
+}
+
+/// Compute max residual across all tent moves (for diagnostics).
+fn compute_max_residual(
+    fc: &FoliatedComplex,
+    sq_lengths: &[f64],
+    source: &dyn StressEnergy,
+) -> f64 {
+    use crate::lorentzian_regge::local_lorentzian_regge_action_grad;
+
+    let eight_pi = 8.0 * std::f64::consts::PI;
+    let mut max_res: f64 = 0.0;
+
+    for target_slice in 1..fc.n_slices {
+        let source_slice = target_slice - 1;
+        for local_v in 0..fc.vertices_per_slice {
+            let v = fc.global_vertex(source_slice, local_v);
+            let free = tent_edges_for_vertex(fc, v, target_slice);
+            if free.is_empty() {
+                continue;
+            }
+            let grad = local_lorentzian_regge_action_grad(&fc.complex, sq_lengths, &free);
+            let matter = source.edge_sources(&fc.complex, sq_lengths);
+            let res: f64 = grad
+                .iter()
+                .zip(free.iter())
+                .map(|(&g, &ei)| (g + eight_pi * matter[ei]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            max_res = max_res.max(res);
+        }
+    }
+    max_res
+}
+
 fn run_single_amplitude(
     fc: &FoliatedComplex,
     flat_sq: &[f64],

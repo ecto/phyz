@@ -321,6 +321,165 @@ pub fn induced_gem_emf(
     -d_trace / dt
 }
 
+/// Linearized gravitomagnetic field from a mass current loop.
+///
+/// In the weak-field (linearized GEM) regime, the gravitomagnetic field is
+/// given by the Biot-Savart-like law:
+///
+///   B_g(r) = -4G/c² ∫ (J × r̂) / r² dl
+///
+/// In geometric units (G = c = 1):
+///
+///   B_g(r) = -4 ∫ (J_dl × r̂) / |r|² dl
+///
+/// where J_dl = mass_rate * dl_hat is the mass current element.
+///
+/// # Arguments
+/// * `loop_coords` - 3D spatial coordinates of the current loop vertices
+/// * `mass_rate` - Mass flow rate (dm/dt in geometric units)
+/// * `field_point` - 3D spatial coordinates where B_g is evaluated
+///
+/// # Returns
+/// The gravitomagnetic field vector [B_x, B_y, B_z] at `field_point`.
+pub fn linearized_b_grav(
+    loop_coords: &[[f64; 3]],
+    mass_rate: f64,
+    field_point: [f64; 3],
+) -> [f64; 3] {
+    let mut b = [0.0; 3];
+    let n = loop_coords.len();
+    if n < 2 {
+        return b;
+    }
+
+    for i in 0..n {
+        let p0 = loop_coords[i];
+        let p1 = loop_coords[(i + 1) % n];
+
+        // Current element: dl = p1 - p0, with mass_rate along it
+        let dl = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+
+        // Midpoint of the element
+        let mid = [
+            0.5 * (p0[0] + p1[0]),
+            0.5 * (p0[1] + p1[1]),
+            0.5 * (p0[2] + p1[2]),
+        ];
+
+        // r = field_point - midpoint
+        let r = [
+            field_point[0] - mid[0],
+            field_point[1] - mid[1],
+            field_point[2] - mid[2],
+        ];
+        let r_mag = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+        if r_mag < 1e-30 {
+            continue;
+        }
+
+        // J_dl × r̂ / r² = mass_rate * (dl × r) / r³
+        let cross = [
+            dl[1] * r[2] - dl[2] * r[1],
+            dl[2] * r[0] - dl[0] * r[2],
+            dl[0] * r[1] - dl[1] * r[0],
+        ];
+
+        let factor = -4.0 * mass_rate / (r_mag * r_mag * r_mag);
+        b[0] += factor * cross[0];
+        b[1] += factor * cross[1];
+        b[2] += factor * cross[2];
+    }
+
+    b
+}
+
+/// Compute the linearized GEM prediction for B_g at a set of field points,
+/// given a primary current loop on a foliated lattice.
+///
+/// Returns B_g vectors at each field point.
+pub fn linearized_gem_prediction(
+    loop_coords: &[[f64; 3]],
+    mass_rate: f64,
+    field_points: &[[f64; 3]],
+) -> Vec<[f64; 3]> {
+    field_points
+        .iter()
+        .map(|&fp| linearized_b_grav(loop_coords, mass_rate, fp))
+        .collect()
+}
+
+/// Compare Regge-extracted B_g to the linearized GEM prediction.
+///
+/// Returns (ratio, regge_magnitude, linearized_magnitude) for each field point.
+/// Ratio = |B_g_regge| / |B_g_linearized|.
+/// At weak fields this should be ~1.0; deviations indicate nonlinear GR corrections.
+pub fn gem_comparison(
+    regge_b_grav: &[[[f64; 3]; 3]],
+    field_vertices: &[usize],
+    loop_coords: &[[f64; 3]],
+    mass_rate: f64,
+    field_coords: &[[f64; 3]],
+) -> Vec<GemComparisonPoint> {
+    field_vertices
+        .iter()
+        .zip(field_coords.iter())
+        .map(|(&vi, &fp)| {
+            // Regge B_g magnitude: Frobenius norm of the 3×3 tensor
+            let bg = &regge_b_grav[vi];
+            let regge_mag: f64 = bg
+                .iter()
+                .flat_map(|row| row.iter())
+                .map(|x| x * x)
+                .sum::<f64>()
+                .sqrt();
+
+            // Linearized prediction magnitude
+            let b_lin = linearized_b_grav(loop_coords, mass_rate, fp);
+            let lin_mag = (b_lin[0] * b_lin[0] + b_lin[1] * b_lin[1] + b_lin[2] * b_lin[2]).sqrt();
+
+            let ratio = if lin_mag > 1e-30 {
+                regge_mag / lin_mag
+            } else {
+                f64::NAN
+            };
+
+            GemComparisonPoint {
+                ratio,
+                regge_magnitude: regge_mag,
+                linearized_magnitude: lin_mag,
+            }
+        })
+        .collect()
+}
+
+/// One point in the Regge vs linearized GEM comparison.
+#[derive(Debug, Clone)]
+pub struct GemComparisonPoint {
+    /// Ratio: |B_g_regge| / |B_g_linearized|. ~1.0 in weak field.
+    pub ratio: f64,
+    /// Regge-extracted B_g magnitude (Frobenius norm of tensor).
+    pub regge_magnitude: f64,
+    /// Linearized (Biot-Savart) B_g magnitude.
+    pub linearized_magnitude: f64,
+}
+
+/// Get 3D spatial coordinates for a vertex on the lattice.
+///
+/// The coordinate convention follows `vertex_coords` but returns only
+/// the spatial part (x, y, z) scaled by the spacing.
+pub fn vertex_spatial_coords(
+    v: usize,
+    fc: &FoliatedComplex,
+    spacing: f64,
+) -> [f64; 3] {
+    let local = fc.vertex_local(v);
+    let n = fc.n_spatial;
+    let x = (local % n) as f64 * spacing;
+    let y = ((local / n) % n) as f64 * spacing;
+    let z = (local / (n * n)) as f64 * spacing;
+    [x, y, z]
+}
+
 // --- Helper functions ---
 
 fn tri_area_sq(complex: &SimplicialComplex, ti: usize, sq_lengths: &[f64]) -> f64 {

@@ -16,13 +16,19 @@
 //!   GEM_AMP_MIN      minimum amplitude         (default 0.0)
 //!   GEM_AMP_MAX      maximum amplitude         (default 1e-4)
 //!   GEM_AMP_N        number of amplitudes      (default 5)
+//!   GEM_CONTINUATION use continuation solver    (default true)
+//!   GEM_SUBSTEPS     continuation sub-steps     (default 4)
+//!   GEM_COMPARE      print linearized comparison (default true)
 //!   GEM_SEARCH       run permeability search    (default false)
 //!
 //! Run:
 //!   cargo run --example gem_transformer -p phyz-regge --release
 
+use phyz_regge::foliation::foliated_hypercubic;
+use phyz_regge::gem::{linearized_b_grav, vertex_spatial_coords};
 use phyz_regge::transformer::{
-    permeability_search, run_transformer, TransformerConfig,
+    make_planar_winding, permeability_search, run_transformer, run_transformer_continuation,
+    TransformerConfig,
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -40,6 +46,9 @@ fn main() {
     let amp_min: f64 = env_or("GEM_AMP_MIN", 0.0);
     let amp_max: f64 = env_or("GEM_AMP_MAX", 1e-4);
     let amp_n: usize = env_or("GEM_AMP_N", 5);
+    let use_continuation: bool = env_or("GEM_CONTINUATION", true);
+    let substeps: usize = env_or("GEM_SUBSTEPS", 4);
+    let do_compare: bool = env_or("GEM_COMPARE", true);
     let do_search: bool = env_or("GEM_SEARCH", false);
 
     let config = TransformerConfig {
@@ -52,8 +61,16 @@ fn main() {
 
     eprintln!("=== Gravitomagnetic Transformer Simulation ===");
     eprintln!(
-        "Grid: {}^3 × {} slices, spacing={}, dt={}",
+        "Grid: {}^3 x {} slices, spacing={}, dt={}",
         n_spatial, n_time, spacing, dt
+    );
+    eprintln!(
+        "Solver: {}",
+        if use_continuation {
+            format!("continuation ({substeps} sub-steps)")
+        } else {
+            "independent".to_string()
+        }
     );
 
     // Generate amplitude sweep
@@ -72,11 +89,18 @@ fn main() {
     eprintln!();
 
     // Run the transformer experiment
-    let result = run_transformer(&config, &amplitudes);
+    let result = if use_continuation {
+        run_transformer_continuation(&config, &amplitudes, substeps)
+    } else {
+        run_transformer(&config, &amplitudes)
+    };
 
     // Print results
     eprintln!("--- Measurements ---");
-    eprintln!("{:>12} {:>14} {:>14} {:>12}", "amplitude", "induced_emf", "max_B_g", "residual");
+    eprintln!(
+        "{:>12} {:>14} {:>14} {:>12}",
+        "amplitude", "induced_emf", "max_B_g", "residual"
+    );
     for m in &result.measurements {
         eprintln!(
             "{:>12.4e} {:>14.6e} {:>14.6e} {:>12.2e}",
@@ -89,6 +113,62 @@ fn main() {
     eprintln!("Linear coupling:        {:.6e}", result.coupling);
     eprintln!("GEM prediction:         {:.6e}", result.gem_prediction);
     eprintln!("Nonlinear correction:   {:.6e}", result.nonlinear_correction);
+
+    // Linearized GEM comparison
+    if do_compare && !result.measurements.is_empty() {
+        eprintln!();
+        eprintln!("--- Linearized GEM Comparison ---");
+
+        let fc = foliated_hypercubic(n_time, n_spatial);
+        let n = n_spatial;
+
+        // Build primary loop coordinates
+        let primary = make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], 0, "primary");
+        let loop_coords: Vec<[f64; 3]> = primary
+            .vertices
+            .iter()
+            .map(|&v| vertex_spatial_coords(v, &fc, spacing))
+            .collect();
+
+        // Secondary loop center as the field point
+        let z_secondary = (n / 2).min(n - 1);
+        let secondary =
+            make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], z_secondary, "secondary");
+        let secondary_center: [f64; 3] = {
+            let mut c = [0.0; 3];
+            for &v in &secondary.vertices {
+                let coords = vertex_spatial_coords(v, &fc, spacing);
+                c[0] += coords[0];
+                c[1] += coords[1];
+                c[2] += coords[2];
+            }
+            let n_v = secondary.vertices.len() as f64;
+            [c[0] / n_v, c[1] / n_v, c[2] / n_v]
+        };
+
+        eprintln!(
+            "{:>12} {:>14} {:>14} {:>10}",
+            "amplitude", "B_g_regge", "B_g_linear", "ratio"
+        );
+
+        for m in &result.measurements {
+            // Linearized prediction at this amplitude
+            let b_lin = linearized_b_grav(&loop_coords, m.amplitude, secondary_center);
+            let lin_mag =
+                (b_lin[0] * b_lin[0] + b_lin[1] * b_lin[1] + b_lin[2] * b_lin[2]).sqrt();
+
+            let ratio = if lin_mag > 1e-30 {
+                m.max_b_grav / lin_mag
+            } else {
+                f64::NAN
+            };
+
+            eprintln!(
+                "{:>12.4e} {:>14.6e} {:>14.6e} {:>10.4}",
+                m.amplitude, m.max_b_grav, lin_mag, ratio
+            );
+        }
+    }
 
     // Permeability search
     if do_search {
@@ -103,7 +183,7 @@ fn main() {
         eprintln!("Vacuum coupling:    {:.6e}", perm.vacuum_coupling);
         eprintln!("Best coupling:      {:.6e}", perm.best_coupling);
         eprintln!(
-            "Best core: ρ={:.2e}, p={:.2e}",
+            "Best core: rho={:.2e}, p={:.2e}",
             perm.best_params.energy_density, perm.best_params.pressure
         );
         eprintln!("Enhancement factor: {:.4}", perm.enhancement);

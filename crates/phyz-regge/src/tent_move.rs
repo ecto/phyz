@@ -286,6 +286,144 @@ pub fn tent_move_vertex(
     solve_regge_at_edges(&fc.complex, sq_lengths, &free, config)
 }
 
+/// Result of amplitude continuation: the full trajectory of converged solutions.
+#[derive(Debug, Clone)]
+pub struct ContinuationResult {
+    /// (amplitude, squared_edge_lengths, residual) at each converged step.
+    pub trajectory: Vec<(f64, Vec<f64>, f64)>,
+}
+
+/// Errors during continuation.
+#[derive(Debug)]
+pub enum ContinuationError {
+    /// Failed to converge even at the starting amplitude.
+    StartFailed(TentMoveError),
+    /// Step size became smaller than the minimum without converging.
+    StepTooSmall {
+        last_converged_amplitude: f64,
+        target_amplitude: f64,
+    },
+}
+
+impl std::fmt::Display for ContinuationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StartFailed(e) => write!(f, "failed at starting amplitude: {e}"),
+            Self::StepTooSmall {
+                last_converged_amplitude,
+                target_amplitude,
+            } => write!(
+                f,
+                "step too small: stuck at A={last_converged_amplitude:.2e}, target={target_amplitude:.2e}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ContinuationError {}
+
+/// Solve with amplitude continuation: ramp the source amplitude from
+/// `a_start` to `a_target` in increments, using each converged solution
+/// as initialization for the next step.
+///
+/// This overcomes Newton divergence at large amplitudes by staying within
+/// the linearization basin at each step.
+///
+/// # Arguments
+/// * `fc` - Foliated complex
+/// * `flat_sq` - Flat Minkowski squared edge lengths (baseline)
+/// * `a_start` - Starting amplitude (should be small enough for easy convergence)
+/// * `a_target` - Target amplitude
+/// * `n_steps` - Number of continuation steps
+/// * `config` - Tent move configuration
+/// * `make_source` - Closure that builds a StressEnergy source for a given amplitude
+/// * `evolve_fn` - Closure that evolves all tent moves for one amplitude, given
+///                  `(sq_lengths, source, config)` → max residual
+///
+/// # Adaptive stepping
+/// If a step fails to converge, the increment is halved and retried.
+/// This continues until convergence or the step size drops below
+/// `(a_target - a_start) / (n_steps * 1024)`.
+pub fn solve_with_continuation<S, F, E>(
+    flat_sq: &[f64],
+    a_start: f64,
+    a_target: f64,
+    n_steps: usize,
+    make_source: F,
+    evolve_fn: E,
+) -> Result<ContinuationResult, ContinuationError>
+where
+    S: crate::matter::StressEnergy,
+    F: Fn(f64) -> S,
+    E: Fn(&mut [f64], &S, f64) -> Result<f64, TentMoveError>,
+{
+    let n_steps = n_steps.max(1);
+    let base_da = (a_target - a_start) / n_steps as f64;
+    let min_da = base_da.abs() / 1024.0;
+
+    let mut trajectory = Vec::with_capacity(n_steps + 1);
+    let mut current_sq = flat_sq.to_vec();
+    let mut current_a = a_start;
+
+    // Solve at starting amplitude
+    let source = make_source(current_a);
+    let mut trial_sq = current_sq.clone();
+    match evolve_fn(&mut trial_sq, &source, current_a) {
+        Ok(residual) => {
+            current_sq = trial_sq;
+            trajectory.push((current_a, current_sq.clone(), residual));
+        }
+        Err(e) => return Err(ContinuationError::StartFailed(e)),
+    }
+
+    // Ramp to target
+    while (current_a - a_target).abs() > min_da * 0.5 {
+        let remaining = a_target - current_a;
+        let mut da = base_da.copysign(remaining);
+
+        // Don't overshoot
+        if da.abs() > remaining.abs() {
+            da = remaining;
+        }
+
+        let mut converged = false;
+        let mut attempts = 0;
+
+        while !converged && da.abs() > min_da * 0.5 {
+            attempts += 1;
+            let trial_a = current_a + da;
+            let source = make_source(trial_a);
+            let mut trial_sq = current_sq.clone();
+
+            match evolve_fn(&mut trial_sq, &source, trial_a) {
+                Ok(residual) => {
+                    current_a = trial_a;
+                    current_sq = trial_sq;
+                    trajectory.push((current_a, current_sq.clone(), residual));
+                    converged = true;
+                }
+                Err(_) => {
+                    // Halve the step and retry
+                    da *= 0.5;
+                }
+            }
+
+            if attempts > 20 {
+                break;
+            }
+        }
+
+        if !converged {
+            return Err(ContinuationError::StepTooSmall {
+                last_converged_amplitude: current_a,
+                target_amplitude: a_target,
+            });
+        }
+    }
+
+    Ok(ContinuationResult { trajectory })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
