@@ -106,6 +106,8 @@ pub fn extract_riemann_at_vertex(
     sq_lengths: &[f64],
     deficits: &[(f64, crate::lorentzian::HingeType)],
     vertex: usize,
+    dt: f64,
+    spacing: f64,
 ) -> Riemann20 {
     let tris = &complex.vertex_to_tris[vertex];
     let n_tris = tris.len();
@@ -138,7 +140,7 @@ pub fn extract_riemann_at_vertex(
         // Get vertex coordinates
         let coords: Vec<[f64; 4]> = t
             .iter()
-            .map(|&v| vertex_coords(v, n_t, n_s, fc))
+            .map(|&v| vertex_coords(v, n_t, n_s, fc, dt, spacing))
             .collect();
         let bv = triangle_bivector_from_coords(coords[0], coords[1], coords[2]);
 
@@ -240,10 +242,16 @@ pub fn riemann_to_gem(riemann: &Riemann20) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
 }
 
 /// Extract GEM fields at all vertices of a foliated complex.
+///
+/// `dt` and `spacing` are the physical time step and spatial grid spacing,
+/// needed to convert lattice coordinates to physical coordinates for the
+/// Riemann tensor extraction.
 pub fn extract_gem_fields(
     complex: &SimplicialComplex,
     fc: &FoliatedComplex,
     sq_lengths: &[f64],
+    dt: f64,
+    spacing: f64,
 ) -> GemFields {
     let deficits = lorentzian_deficit_angles(complex, sq_lengths);
     let n_v = complex.n_vertices;
@@ -252,7 +260,8 @@ pub fn extract_gem_fields(
     let mut b_grav = vec![[[0.0; 3]; 3]; n_v];
 
     for v in 0..n_v {
-        let riemann = extract_riemann_at_vertex(complex, fc, sq_lengths, &deficits, v);
+        let riemann =
+            extract_riemann_at_vertex(complex, fc, sq_lengths, &deficits, v, dt, spacing);
         let (eg, bg) = riemann_to_gem(&riemann);
         e_grav[v] = eg;
         b_grav[v] = bg;
@@ -393,6 +402,49 @@ pub fn linearized_b_grav(
     b
 }
 
+/// Compute the linearized gravitomagnetic **tidal tensor** via finite differences.
+///
+/// The Regge extraction produces the tidal tensor B_{ij} = (1/2) ε_{ikl} R_{0jkl}.
+/// In linearized GR with h_{0i} = 4 ∫ T_{0i}/r dV, this equals:
+///
+///   B_{ij} = (1/2) ∂_j (∇ × h_0)_i = (1/2) ∂_j B^i
+///
+/// where B^i = (∇ × h_0)_i is the Biot-Savart field from `linearized_b_grav`.
+///
+/// Uses central finite differences: ∂_j B^i ≈ (B^i(x + ε ê_j) − B^i(x − ε ê_j)) / (2ε)
+pub fn linearized_b_grav_tidal(
+    loop_coords: &[[f64; 3]],
+    mass_rate: f64,
+    field_point: [f64; 3],
+    fd_eps: f64,
+) -> [[f64; 3]; 3] {
+    let mut tidal = [[0.0; 3]; 3];
+    for j in 0..3 {
+        let mut fp_plus = field_point;
+        let mut fp_minus = field_point;
+        fp_plus[j] += fd_eps;
+        fp_minus[j] -= fd_eps;
+
+        let b_plus = linearized_b_grav(loop_coords, mass_rate, fp_plus);
+        let b_minus = linearized_b_grav(loop_coords, mass_rate, fp_minus);
+
+        for i in 0..3 {
+            // B_{ij} = (1/2) ∂_j B^i
+            tidal[i][j] = 0.5 * (b_plus[i] - b_minus[i]) / (2.0 * fd_eps);
+        }
+    }
+    tidal
+}
+
+/// Frobenius norm of a 3×3 tensor: sqrt(Σ_{ij} T_{ij}²).
+pub fn b_grav_tensor_frobenius(bg: &[[f64; 3]; 3]) -> f64 {
+    bg.iter()
+        .flat_map(|row| row.iter())
+        .map(|x| x * x)
+        .sum::<f64>()
+        .sqrt()
+}
+
 /// Compute the linearized GEM prediction for B_g at a set of field points,
 /// given a primary current loop on a foliated lattice.
 ///
@@ -408,10 +460,13 @@ pub fn linearized_gem_prediction(
         .collect()
 }
 
-/// Compare Regge-extracted B_g to the linearized GEM prediction.
+/// Compare Regge-extracted B_g tidal tensor to the linearized GEM tidal tensor.
+///
+/// Both sides are 3×3 tidal tensors B_{ij} = (1/2) ε_{ikl} R_{0jkl}.
+/// The linearized tensor is computed via finite differences of the Biot-Savart field.
 ///
 /// Returns (ratio, regge_magnitude, linearized_magnitude) for each field point.
-/// Ratio = |B_g_regge| / |B_g_linearized|.
+/// Ratio = ||B_regge||_F / ||B_linearized||_F.
 /// At weak fields this should be ~1.0; deviations indicate nonlinear GR corrections.
 pub fn gem_comparison(
     regge_b_grav: &[[[f64; 3]; 3]],
@@ -420,22 +475,19 @@ pub fn gem_comparison(
     mass_rate: f64,
     field_coords: &[[f64; 3]],
 ) -> Vec<GemComparisonPoint> {
+    // FD epsilon: small fraction of characteristic loop size
+    let fd_eps = 1e-4;
+
     field_vertices
         .iter()
         .zip(field_coords.iter())
         .map(|(&vi, &fp)| {
-            // Regge B_g magnitude: Frobenius norm of the 3×3 tensor
-            let bg = &regge_b_grav[vi];
-            let regge_mag: f64 = bg
-                .iter()
-                .flat_map(|row| row.iter())
-                .map(|x| x * x)
-                .sum::<f64>()
-                .sqrt();
+            // Regge B_g: Frobenius norm of the 3×3 tidal tensor
+            let regge_mag = b_grav_tensor_frobenius(&regge_b_grav[vi]);
 
-            // Linearized prediction magnitude
-            let b_lin = linearized_b_grav(loop_coords, mass_rate, fp);
-            let lin_mag = (b_lin[0] * b_lin[0] + b_lin[1] * b_lin[1] + b_lin[2] * b_lin[2]).sqrt();
+            // Linearized tidal tensor via FD of Biot-Savart
+            let lin_tidal = linearized_b_grav_tidal(loop_coords, mass_rate, fp, fd_eps);
+            let lin_mag = b_grav_tensor_frobenius(&lin_tidal);
 
             let ratio = if lin_mag > 1e-30 {
                 regge_mag / lin_mag
@@ -493,12 +545,19 @@ fn tri_area_sq(complex: &SimplicialComplex, ti: usize, sq_lengths: &[f64]) -> f6
     crate::lorentzian::triangle_area_sq_lorentzian(sq_lengths[e01], sq_lengths[e02], sq_lengths[e12])
 }
 
-fn vertex_coords(v: usize, n_t: usize, n_s: usize, _fc: &FoliatedComplex) -> [f64; 4] {
-    let t = (v % n_t) as f64;
+fn vertex_coords(
+    v: usize,
+    n_t: usize,
+    n_s: usize,
+    _fc: &FoliatedComplex,
+    dt: f64,
+    spacing: f64,
+) -> [f64; 4] {
+    let t = (v % n_t) as f64 * dt;
     let rest = v / n_t;
-    let x = (rest % n_s) as f64;
-    let y = ((rest / n_s) % n_s) as f64;
-    let z = (rest / (n_s * n_s)) as f64;
+    let x = (rest % n_s) as f64 * spacing;
+    let y = ((rest / n_s) % n_s) as f64 * spacing;
+    let z = (rest / (n_s * n_s)) as f64 * spacing;
     [t, x, y, z]
 }
 
@@ -511,9 +570,11 @@ mod tests {
     #[test]
     fn test_flat_space_zero_gem() {
         let fc = foliated_hypercubic(2, 2);
-        let sq_lengths = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
+        let dt = 0.3;
+        let spacing = 1.0;
+        let sq_lengths = flat_minkowski_sq_lengths(&fc, spacing, dt);
 
-        let gem = extract_gem_fields(&fc.complex, &fc, &sq_lengths);
+        let gem = extract_gem_fields(&fc.complex, &fc, &sq_lengths, dt, spacing);
 
         let max_e: f64 = gem
             .e_grav
@@ -568,5 +629,71 @@ mod tests {
         assert!(bv[2].abs() < 1e-12);
         assert!(bv[4].abs() < 1e-12);
         assert!(bv[5].abs() < 1e-12);
+    }
+
+    /// FD tidal tensor: coarse and fine eps agree (convergence test).
+    #[test]
+    fn test_tidal_tensor_fd_convergence() {
+        // Square loop in the xy-plane at z=0
+        let loop_coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mass_rate = 1.0;
+        let field_point = [0.5, 0.5, 2.0]; // above center
+
+        let t_coarse = linearized_b_grav_tidal(&loop_coords, mass_rate, field_point, 1e-3);
+        let t_fine = linearized_b_grav_tidal(&loop_coords, mass_rate, field_point, 1e-5);
+
+        let norm_coarse = b_grav_tensor_frobenius(&t_coarse);
+        let norm_fine = b_grav_tensor_frobenius(&t_fine);
+
+        assert!(
+            norm_fine > 1e-10,
+            "tidal tensor should be nonzero, got {norm_fine:.2e}"
+        );
+        let rel_diff = (norm_coarse - norm_fine).abs() / norm_fine;
+        assert!(
+            rel_diff < 1e-3,
+            "FD convergence: coarse vs fine differ by {rel_diff:.2e}"
+        );
+    }
+
+    /// Tidal tensor falls off as 1/r^4 for a magnetic dipole (extra derivative of 1/r^3 field).
+    #[test]
+    fn test_tidal_tensor_scaling() {
+        let loop_coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mass_rate = 1.0;
+        let fd_eps = 1e-4;
+
+        // Measure at two distances along z-axis (far enough for dipole regime)
+        let r1 = 5.0;
+        let r2 = 10.0;
+        let center = [0.5, 0.5, 0.0];
+        let fp1 = [center[0], center[1], r1];
+        let fp2 = [center[0], center[1], r2];
+
+        let norm1 = b_grav_tensor_frobenius(&linearized_b_grav_tidal(
+            &loop_coords, mass_rate, fp1, fd_eps,
+        ));
+        let norm2 = b_grav_tensor_frobenius(&linearized_b_grav_tidal(
+            &loop_coords, mass_rate, fp2, fd_eps,
+        ));
+
+        // Tidal tensor ~ 1/r^4, so norm1/norm2 ≈ (r2/r1)^4 = 2^4 = 16
+        let ratio = norm1 / norm2;
+        let expected = (r2 / r1).powi(4);
+        let rel_err = (ratio - expected).abs() / expected;
+        assert!(
+            rel_err < 0.15,
+            "tidal scaling: ratio={ratio:.2}, expected={expected:.2}, rel_err={rel_err:.2}"
+        );
     }
 }

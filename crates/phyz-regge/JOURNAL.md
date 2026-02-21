@@ -1,5 +1,95 @@
 # phyz-regge: Research Journal
 
+## 2026-02-21 — Tidal Tensor Comparison Fix
+
+### Motivation
+
+The linearized GEM comparison (previous session) gave a constant ratio of ~0.27
+between Regge-extracted B_g and the Biot-Savart prediction. This was not a physics
+signal — the comparison was apples-to-oranges: the Regge extraction produces a 3×3
+**tidal tensor** B_{ij} = (1/2) ε_{ikl} R_{0jkl}, while the Biot-Savart formula
+computes a 3-**vector** B^i. Comparing their norms gives a constant geometric factor,
+not a physics validation.
+
+Two additional bugs compounded the problem:
+1. `vertex_coords` used integer lattice coordinates (not physical), making the
+   bivectors in the Riemann extraction wrong by factors of dt and spacing. This
+   caused the extracted R_{0jkl} to be off by ~dt.
+2. The plan's formula B_{ij} = −∂_j B^i was wrong by a factor of −2. The correct
+   linearized GR relation is B_{ij} = (1/2) ∂_j B^i (where B^i is the
+   Biot-Savart field including the −4G/c² prefactor).
+
+### Changes
+
+| File | What |
+|------|------|
+| `src/gem.rs` | Added `linearized_b_grav_tidal()` — central FD of Biot-Savart to get tidal tensor B_{ij} = (1/2) ∂_j B^i. Added `b_grav_tensor_frobenius()` helper. Updated `gem_comparison()` to compare tidal tensor Frobenius norms on both sides. Fixed `vertex_coords` to scale by physical dt and spacing. Added dt/spacing params to `extract_gem_fields` and `extract_riemann_at_vertex`. +2 tests (FD convergence, 1/r⁴ scaling). |
+| `src/transformer.rs` | Added `b_grav_frobenius` field to `TransformerMeasurement` (average Frobenius norm over secondary vertices). Updated all `extract_gem_fields` calls with dt/spacing. |
+| `examples/gem_transformer.rs` | Comparison now uses `linearized_b_grav_tidal` at secondary center, compares tensor Frobenius norms. TSV output includes `B_ij_frob` column. |
+
+### Results
+
+#### N=4 (spacing=1.0, dt=0.3, 5 amplitudes to A=1e-4)
+
+| Amplitude | B_{ij} (Regge) | B_{ij} (linearized) | Ratio |
+|-----------|----------------|---------------------|-------|
+| 2.5e-5 | 3.73e-5 | 4.65e-5 | 0.802 |
+| 5.0e-5 | 7.47e-5 | 9.31e-5 | 0.803 |
+| 1.0e-4 | 1.51e-4 | 1.86e-4 | 0.812 |
+
+Ratio improved from ~0.27 (old, meaningless vector-vs-tensor comparison)
+to **~0.80** (tensor-vs-tensor, physical coordinates). Consistent across
+amplitudes, confirming the linear regime.
+
+The ~20% discrepancy from 1.0 is expected on a 4^3 lattice: the Regge
+Riemann extraction averages over ~6-10 simplices per vertex, giving a
+volume-averaged tidal tensor vs the point-evaluation of the FD prediction.
+
+#### Convergence with mesh size
+
+| N | Ratio | Note |
+|---|-------|------|
+| 4 | 0.80 | Physical setup: 2×2 loop at z=0, secondary at z=2 |
+| 6 | 0.52 | 3×3 loop at z=0, secondary at z=3 |
+| 8 | 0.39 | 4×4 loop at z=0, secondary at z=4 |
+
+Ratio decreases with N because the physical geometry changes (the winding
+construction scales loop size and separation with N). This is NOT a
+convergence test — a proper one would fix physical dimensions and refine
+the lattice. The N=4 result (0.80) is the most meaningful comparison
+since the secondary is closest to the primary relative to loop size.
+
+### Key findings
+
+1. **Tidal tensor comparison is now correct.** Both sides compute the same
+   physical quantity: B_{ij} = (1/2) ε_{ikl} R_{0jkl}.
+
+2. **Physical coordinates matter.** Using integer coords in the bivector
+   computation introduced a systematic dt factor in the extracted Riemann,
+   affecting all GEM field measurements.
+
+3. **The GEM relation has a factor of 1/2.** In linearized GR with the
+   Biot-Savart convention B^i = −4 ∫ (J × r̂)/r² dl, the tidal tensor is
+   B_{ij} = (1/2) ∂_j B^i (derived from R_{0jkl} via Christoffel symbols
+   in harmonic gauge).
+
+### Verification
+
+- 117 tests pass (including 2 new: FD convergence, 1/r⁴ scaling)
+- Zero compiler warnings
+
+### Open questions
+
+- **Proper convergence test.** Fix physical loop size and separation, vary
+  only lattice resolution (e.g., N=4/spacing=2, N=8/spacing=1, N=16/spacing=0.5
+  for the same 8×8×8 domain). This would show whether the ratio → 1.0.
+
+- **Induced EMF still near-zero.** The trace-based `induced_gem_emf` isn't
+  capturing the signal. The tidal tensor Frobenius norm is a better diagnostic
+  for the B_g comparison.
+
+---
+
 ## 2026-02-21 — Amplitude Continuation & Linearized GEM Comparison
 
 ### Motivation

@@ -15,7 +15,7 @@
 
 use crate::complex::SimplicialComplex;
 use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic, FoliatedComplex};
-use crate::gem::{extract_gem_fields, induced_gem_emf, GemFields};
+use crate::gem::{b_grav_tensor_frobenius, extract_gem_fields, induced_gem_emf, GemFields};
 use crate::matter::{solve_regge_with_source, MassCurrentLoop, StressEnergy};
 use crate::tent_move::{tent_edges_for_vertex, TentConfig};
 use rayon::prelude::*;
@@ -68,6 +68,8 @@ pub struct TransformerMeasurement {
     pub induced_emf: f64,
     /// Maximum |B_g| measured at the secondary.
     pub max_b_grav: f64,
+    /// Average Frobenius norm of B_{ij} tidal tensor over secondary vertices.
+    pub b_grav_frobenius: f64,
     /// Newton solver residual.
     pub residual: f64,
 }
@@ -162,7 +164,7 @@ pub fn run_transformer(
 
     // Baseline: flat Minkowski GEM fields (should be zero)
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
-    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq);
+    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq, config.dt, config.spacing);
 
     let measurements: Vec<TransformerMeasurement> = amplitudes
         .par_iter()
@@ -257,7 +259,7 @@ pub fn run_transformer_continuation(
     );
 
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
-    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq);
+    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq, config.dt, config.spacing);
 
     let mut measurements = Vec::with_capacity(amplitudes.len());
     // The previous amplitude's converged geometry
@@ -288,7 +290,8 @@ pub fn run_transformer_continuation(
         };
 
         // Extract measurements
-        let gem_evolved = extract_gem_fields(&fc.complex, &fc, &sq_lengths);
+        let gem_evolved =
+            extract_gem_fields(&fc.complex, &fc, &sq_lengths, config.dt, config.spacing);
         let max_b_grav = secondary
             .vertices
             .iter()
@@ -300,6 +303,15 @@ pub fn run_transformer_continuation(
             })
             .fold(0.0f64, f64::max);
 
+        let b_grav_frobenius = {
+            let sum: f64 = secondary
+                .vertices
+                .iter()
+                .map(|&v| b_grav_tensor_frobenius(&gem_evolved.b_grav[v]))
+                .sum();
+            sum / secondary.vertices.len() as f64
+        };
+
         let emf = induced_gem_emf(&gem_flat, &gem_evolved, &secondary.vertices, config.dt);
         let final_residual = compute_max_residual(&fc, &sq_lengths, &source);
 
@@ -307,6 +319,7 @@ pub fn run_transformer_continuation(
             amplitude,
             induced_emf: emf,
             max_b_grav,
+            b_grav_frobenius,
             residual: final_residual,
         });
 
@@ -506,7 +519,7 @@ fn run_single_amplitude(
     }
 
     // Extract GEM fields from the evolved geometry
-    let gem_evolved = extract_gem_fields(&fc.complex, fc, &sq_lengths);
+    let gem_evolved = extract_gem_fields(&fc.complex, fc, &sq_lengths, config.dt, config.spacing);
 
     // Measure B_g at secondary loop vertices
     let max_b_grav = secondary
@@ -520,6 +533,15 @@ fn run_single_amplitude(
         })
         .fold(0.0f64, f64::max);
 
+    let b_grav_frobenius = {
+        let sum: f64 = secondary
+            .vertices
+            .iter()
+            .map(|&v| b_grav_tensor_frobenius(&gem_evolved.b_grav[v]))
+            .sum();
+        sum / secondary.vertices.len() as f64
+    };
+
     // Compute induced EMF: -d(B_g)/dt at the secondary
     let emf = induced_gem_emf(gem_flat, &gem_evolved, &secondary.vertices, config.dt);
 
@@ -527,6 +549,7 @@ fn run_single_amplitude(
         amplitude,
         induced_emf: emf,
         max_b_grav,
+        b_grav_frobenius,
         residual,
     }
 }
@@ -577,7 +600,7 @@ pub fn permeability_search(
         "secondary",
     );
 
-    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq);
+    let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq, config.dt, config.spacing);
 
     // Vacuum baseline
     let vacuum_meas = run_single_amplitude(
@@ -631,7 +654,7 @@ pub fn permeability_search(
                 }
             }
 
-            let gem = extract_gem_fields(&fc.complex, &fc, &sq_lengths);
+            let gem = extract_gem_fields(&fc.complex, &fc, &sq_lengths, config.dt, config.spacing);
             let emf = induced_gem_emf(&gem_flat, &gem, &secondary.vertices, config.dt);
 
             if emf.abs() > best_coupling.abs() {

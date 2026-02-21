@@ -25,7 +25,7 @@
 //!   cargo run --example gem_transformer -p phyz-regge --release
 
 use phyz_regge::foliation::foliated_hypercubic;
-use phyz_regge::gem::{linearized_b_grav, vertex_spatial_coords};
+use phyz_regge::gem::{b_grav_tensor_frobenius, linearized_b_grav_tidal, vertex_spatial_coords};
 use phyz_regge::transformer::{
     make_planar_winding, permeability_search, run_transformer, run_transformer_continuation,
     TransformerConfig,
@@ -146,26 +146,27 @@ fn main() {
             [c[0] / n_v, c[1] / n_v, c[2] / n_v]
         };
 
+        let fd_eps = spacing * 1e-4;
         eprintln!(
             "{:>12} {:>14} {:>14} {:>10}",
-            "amplitude", "B_g_regge", "B_g_linear", "ratio"
+            "amplitude", "B_ij_regge", "B_ij_linear", "ratio"
         );
 
         for m in &result.measurements {
-            // Linearized prediction at this amplitude
-            let b_lin = linearized_b_grav(&loop_coords, m.amplitude, secondary_center);
-            let lin_mag =
-                (b_lin[0] * b_lin[0] + b_lin[1] * b_lin[1] + b_lin[2] * b_lin[2]).sqrt();
+            // Linearized tidal tensor B_{ij} = -∂_j B^i at secondary center
+            let lin_tidal =
+                linearized_b_grav_tidal(&loop_coords, m.amplitude, secondary_center, fd_eps);
+            let lin_frob = b_grav_tensor_frobenius(&lin_tidal);
 
-            let ratio = if lin_mag > 1e-30 {
-                m.max_b_grav / lin_mag
+            let ratio = if lin_frob > 1e-30 {
+                m.b_grav_frobenius / lin_frob
             } else {
                 f64::NAN
             };
 
             eprintln!(
                 "{:>12.4e} {:>14.6e} {:>14.6e} {:>10.4}",
-                m.amplitude, m.max_b_grav, lin_mag, ratio
+                m.amplitude, m.b_grav_frobenius, lin_frob, ratio
             );
         }
     }
@@ -190,11 +191,11 @@ fn main() {
     }
 
     // Output TSV for plotting
-    println!("amplitude\tinduced_emf\tmax_B_g\tresidual");
+    println!("amplitude\tinduced_emf\tmax_B_g\tB_ij_frob\tresidual");
     for m in &result.measurements {
         println!(
-            "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-            m.amplitude, m.induced_emf, m.max_b_grav, m.residual
+            "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
+            m.amplitude, m.induced_emf, m.max_b_grav, m.b_grav_frobenius, m.residual
         );
     }
 }
