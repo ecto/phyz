@@ -24,6 +24,10 @@ pub struct GpuState {
     // Scratch buffers for computation
     pub qdd_buffer: wgpu::Buffer,
 
+    // External forces buffer (nbodies × 6 per env, spatial force per body)
+    pub ext_forces_buffer: wgpu::Buffer,
+    pub nbodies: usize,
+
     // Staging buffers for CPU ↔ GPU transfer
     pub q_staging: wgpu::Buffer,
     pub v_staging: wgpu::Buffer,
@@ -48,6 +52,7 @@ impl GpuState {
     ) -> Self {
         let nq = model.nq;
         let nv = model.nv;
+        let nbodies = model.nbodies();
 
         // Create buffers with STORAGE usage for compute shaders
         let q_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -82,6 +87,15 @@ impl GpuState {
             mapped_at_creation: false,
         });
 
+        // External forces: 6 floats per body per environment
+        let ext_forces_size = (nworld * nbodies * 6 * std::mem::size_of::<f32>()).max(4) as u64;
+        let ext_forces_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ext_forces_buffer"),
+            size: ext_forces_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Staging buffers for readback
         let q_staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("q_staging"),
@@ -107,6 +121,8 @@ impl GpuState {
             v_buffer,
             ctrl_buffer,
             qdd_buffer,
+            ext_forces_buffer,
+            nbodies,
             q_staging,
             v_staging,
         }
