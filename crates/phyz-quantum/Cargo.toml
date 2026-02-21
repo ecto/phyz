@@ -1,0 +1,18 @@
+[package]
+name = "phyz-quantum"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Hamiltonian lattice gauge theory on simplicial complexes"
+
+[dependencies]
+phyz-regge.workspace = true
+nalgebra.workspace = true
+nalgebra-sparse = "0.10"
+num-complex = "0.4"
+rayon = "1.10"
+
+[dev-dependencies]
+rand = "0.8"

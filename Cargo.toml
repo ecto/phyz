@@ -25,6 +25,7 @@ members = [
     "crates/phyz",
     "crates/phyz-wasm",
     "crates/phyz-regge",
+    "crates/phyz-quantum",
 ]
 
 [workspace.package]
@@ -60,4 +61,5 @@ phyz-world = { version = "0.1.0", path = "crates/phyz-world" }
 phyz-real2sim = { version = "0.1.0", path = "crates/phyz-real2sim" }
 phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
 phyz-regge = { version = "0.1.0", path = "crates/phyz-regge" }
+phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum" }
 phyz = { version = "0.1.0", path = "crates/phyz" }
