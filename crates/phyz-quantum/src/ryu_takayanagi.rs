@@ -273,6 +273,137 @@ pub fn partition_label(partition: &[usize]) -> String {
     format!("{{{}}}", inner.join(","))
 }
 
+/// De Sitter-like edge lengths: cosmological expansion from vertex 0.
+///
+/// BFS distance from vertex 0, length = cosh(H * d_avg / diameter).
+/// At H=0 all edges are 1.0 (flat).
+pub fn de_sitter_edge_lengths(complex: &SimplicialComplex, hubble: f64) -> Vec<f64> {
+    let (dist, diameter) = bfs_distances(complex);
+    complex
+        .edges
+        .iter()
+        .map(|edge| {
+            let d_avg = (dist[edge[0]] + dist[edge[1]]) as f64 / 2.0;
+            (hubble * d_avg / diameter).cosh()
+        })
+        .collect()
+}
+
+/// Perturbed edge lengths: flat + deterministic pseudo-random perturbations.
+///
+/// length = 1.0 + epsilon * hash(seed, edge_idx), where hash ∈ [-1, 1].
+/// No `rand` dependency — uses a simple deterministic hash.
+pub fn perturbed_edge_lengths(complex: &SimplicialComplex, epsilon: f64, seed: u64) -> Vec<f64> {
+    complex
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(ei, _)| {
+            let h = deterministic_hash(seed, ei as u64);
+            1.0 + epsilon * h
+        })
+        .collect()
+}
+
+/// Anisotropic edge lengths: different scales for shared-face vs radial edges.
+///
+/// Edges with both endpoints in the first `n_shared_verts` vertices get length
+/// `l_shared`; all other edges get `l_radial`.
+pub fn anisotropic_edge_lengths(
+    complex: &SimplicialComplex,
+    l_shared: f64,
+    l_radial: f64,
+    n_shared_verts: usize,
+) -> Vec<f64> {
+    complex
+        .edges
+        .iter()
+        .map(|edge| {
+            if edge[0] < n_shared_verts && edge[1] < n_shared_verts {
+                l_shared
+            } else {
+                l_radial
+            }
+        })
+        .collect()
+}
+
+/// Conformal edge lengths: conformal rescaling from vertex 0.
+///
+/// length = (1 + alpha * d_avg / diameter)^2.
+/// At alpha=0 all edges are 1.0 (flat).
+pub fn conformal_edge_lengths(complex: &SimplicialComplex, alpha: f64) -> Vec<f64> {
+    let (dist, diameter) = bfs_distances(complex);
+    complex
+        .edges
+        .iter()
+        .map(|edge| {
+            let d_avg = (dist[edge[0]] + dist[edge[1]]) as f64 / 2.0;
+            let factor = 1.0 + alpha * d_avg / diameter;
+            factor * factor
+        })
+        .collect()
+}
+
+/// Check if a geometry is valid: all triangles have positive area and all
+/// 4-simplices have positive volume.
+pub fn geometry_valid(complex: &SimplicialComplex, lengths: &[f64]) -> bool {
+    use phyz_regge::geometry::{pent_volume, triangle_area};
+
+    for ti in 0..complex.n_triangles() {
+        let [a, b, c] = complex.tri_edge_lengths(ti, lengths);
+        if triangle_area(a, b, c) <= 0.0 {
+            return false;
+        }
+    }
+    for pi in 0..complex.n_pents() {
+        let pl = complex.pent_edge_lengths(pi, lengths);
+        if pent_volume(&pl) <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// BFS distances from vertex 0. Returns (dist, diameter).
+fn bfs_distances(complex: &SimplicialComplex) -> (Vec<usize>, f64) {
+    let n = complex.n_vertices;
+    let mut dist = vec![usize::MAX; n];
+    dist[0] = 0;
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(0);
+
+    let mut adj = vec![Vec::new(); n];
+    for edge in &complex.edges {
+        adj[edge[0]].push(edge[1]);
+        adj[edge[1]].push(edge[0]);
+    }
+
+    while let Some(v) = queue.pop_front() {
+        for &w in &adj[v] {
+            if dist[w] == usize::MAX {
+                dist[w] = dist[v] + 1;
+                queue.push_back(w);
+            }
+        }
+    }
+
+    let diameter = *dist.iter().max().unwrap_or(&1) as f64;
+    let diameter = if diameter < 1e-10 { 1.0 } else { diameter };
+    (dist, diameter)
+}
+
+/// Deterministic hash mapping (seed, index) → [-1, 1].
+fn deterministic_hash(seed: u64, index: u64) -> f64 {
+    // Simple bit-mixing hash (splitmix64-style).
+    let mut x = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(index);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x ^= x >> 31;
+    // Map to [-1, 1].
+    (x as f64) / (u64::MAX as f64) * 2.0 - 1.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -516,5 +647,126 @@ mod tests {
         assert!((slope - 2.0).abs() < 1e-10);
         assert!((intercept - 1.0).abs() < 1e-10);
         assert!((r2 - 1.0).abs() < 1e-10);
+    }
+
+    // ── Geometry generator tests ──
+
+    fn two_pentachorons() -> SimplicialComplex {
+        SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]])
+    }
+
+    #[test]
+    fn test_de_sitter_flat_at_zero() {
+        let complex = two_pentachorons();
+        let lengths = de_sitter_edge_lengths(&complex, 0.0);
+        for &l in &lengths {
+            assert!(
+                (l - 1.0).abs() < 1e-12,
+                "expected flat at H=0, got {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_de_sitter_valid_geometry() {
+        let complex = two_pentachorons();
+        let lengths = de_sitter_edge_lengths(&complex, 0.5);
+        assert!(geometry_valid(&complex, &lengths), "de Sitter H=0.5 invalid");
+    }
+
+    #[test]
+    fn test_perturbed_flat_at_zero() {
+        let complex = two_pentachorons();
+        let lengths = perturbed_edge_lengths(&complex, 0.0, 42);
+        for &l in &lengths {
+            assert!(
+                (l - 1.0).abs() < 1e-12,
+                "expected flat at eps=0, got {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_perturbed_deterministic() {
+        let complex = two_pentachorons();
+        let l1 = perturbed_edge_lengths(&complex, 0.1, 42);
+        let l2 = perturbed_edge_lengths(&complex, 0.1, 42);
+        assert_eq!(l1, l2, "perturbed should be deterministic");
+    }
+
+    #[test]
+    fn test_perturbed_valid_geometry() {
+        let complex = two_pentachorons();
+        let lengths = perturbed_edge_lengths(&complex, 0.1, 42);
+        assert!(geometry_valid(&complex, &lengths), "perturbed eps=0.1 invalid");
+    }
+
+    #[test]
+    fn test_anisotropic_uniform() {
+        let complex = two_pentachorons();
+        let lengths = anisotropic_edge_lengths(&complex, 1.0, 1.0, 4);
+        for &l in &lengths {
+            assert!(
+                (l - 1.0).abs() < 1e-12,
+                "expected flat at uniform aniso, got {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_anisotropic_two_scales() {
+        let complex = two_pentachorons();
+        let lengths = anisotropic_edge_lengths(&complex, 0.8, 1.2, 4);
+        // Shared-face edges (both verts < 4) should be 0.8.
+        for (ei, edge) in complex.edges.iter().enumerate() {
+            if edge[0] < 4 && edge[1] < 4 {
+                assert!(
+                    (lengths[ei] - 0.8).abs() < 1e-12,
+                    "shared edge {ei}: expected 0.8, got {}",
+                    lengths[ei]
+                );
+            } else {
+                assert!(
+                    (lengths[ei] - 1.2).abs() < 1e-12,
+                    "radial edge {ei}: expected 1.2, got {}",
+                    lengths[ei]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_conformal_flat_at_zero() {
+        let complex = two_pentachorons();
+        let lengths = conformal_edge_lengths(&complex, 0.0);
+        for &l in &lengths {
+            assert!(
+                (l - 1.0).abs() < 1e-12,
+                "expected flat at alpha=0, got {l}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_conformal_valid_geometry() {
+        let complex = two_pentachorons();
+        let lengths = conformal_edge_lengths(&complex, 0.3);
+        assert!(geometry_valid(&complex, &lengths), "conformal alpha=0.3 invalid");
+    }
+
+    #[test]
+    fn test_geometry_valid_flat() {
+        let complex = two_pentachorons();
+        let flat = vec![1.0; complex.n_edges()];
+        assert!(geometry_valid(&complex, &flat), "flat geometry should be valid");
+    }
+
+    #[test]
+    fn test_geometry_valid_degenerate() {
+        let complex = single_pentachoron();
+        // Make one edge very long → degenerate triangle
+        let mut lengths = vec![1.0; complex.n_edges()];
+        lengths[0] = 100.0;
+        assert!(!geometry_valid(&complex, &lengths), "degenerate geometry should be invalid");
     }
 }

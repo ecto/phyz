@@ -159,7 +159,7 @@ fn run_scaling_study() {
 
             let spec = if use_gpu {
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    gpu_lanczos_diagonalize_su2(hs, complex, g_sq, n_eigenvalues, iter_override)
+                    gpu_lanczos_diagonalize_su2(hs, complex, g_sq, None, n_eigenvalues, iter_override)
                 }));
                 match result {
                     Ok(Ok(s)) => s,
@@ -173,7 +173,7 @@ fn run_scaling_study() {
                     }
                 }
             } else {
-                let h = build_su2_hamiltonian(hs, complex, g_sq);
+                let h = build_su2_hamiltonian(hs, complex, g_sq, None);
                 diag::diagonalize(&h, Some(n_eigenvalues))
             };
 

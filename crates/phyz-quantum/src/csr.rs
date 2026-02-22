@@ -146,6 +146,7 @@ pub fn build_csr_su2(
     hilbert: &Su2HilbertSpace,
     complex: &SimplicialComplex,
     g_squared: f64,
+    metric_weights: Option<&[f64]>,
 ) -> CsrMatrix {
     let dim = hilbert.dim();
     let e_coeff = 3.0 * g_squared / 8.0;
@@ -163,13 +164,15 @@ pub fn build_csr_su2(
 
     // Magnetic term: plaquette flips
     for ti in 0..complex.n_triangles() {
+        let weight = metric_weights.map_or(1.0, |w| w[ti]);
+        let c = b_coeff * weight;
         let [e0, e1, e2] = complex.tri_edge_indices(ti);
         let flip_mask: u64 = (1 << e0) | (1 << e1) | (1 << e2);
 
         for (i, &state) in hilbert.basis.iter().enumerate() {
             let flipped = state ^ flip_mask;
             if let Some(j) = hilbert.config_to_index(flipped) {
-                rows[i].push((j as u32, b_coeff));
+                rows[i].push((j as u32, c));
             }
         }
     }
@@ -317,8 +320,8 @@ mod tests {
 
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let csr = build_csr_su2(&hs, &complex, 1.0);
-        let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let csr = build_csr_su2(&hs, &complex, 1.0, None);
+        let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0, None);
 
         for seed in 0..5u64 {
             let mut v = DVector::zeros(hs.dim());
@@ -337,6 +340,37 @@ mod tests {
             assert!(
                 diff < 1e-10,
                 "SU(2) CSR matvec mismatch at seed {seed}: max_diff={diff}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_csr_su2_with_metric_weights() {
+        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let weights = vec![2.0; complex.n_triangles()];
+        let csr = build_csr_su2(&hs, &complex, 1.0, Some(&weights));
+        let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0, Some(&weights));
+
+        for seed in 0..5u64 {
+            let mut v = DVector::zeros(hs.dim());
+            for i in 0..hs.dim() {
+                v[i] = ((i as u64 + seed * 137) as f64 * 0.618).fract() - 0.5;
+            }
+
+            let hv_dense: Vec<f64> = (&h_dense * &v).iter().copied().collect();
+            let hv_csr = csr.matvec(v.as_slice());
+
+            let diff: f64 = hv_dense
+                .iter()
+                .zip(hv_csr.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f64, f64::max);
+            assert!(
+                diff < 1e-10,
+                "SU(2) CSR matvec with weights mismatch at seed {seed}: max_diff={diff}"
             );
         }
     }

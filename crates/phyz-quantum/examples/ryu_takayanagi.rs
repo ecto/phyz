@@ -440,7 +440,7 @@ fn main() {
         ("3-pent", &pent3),
     ] {
         let su2_hs = Su2HilbertSpace::new(complex);
-        let su2_h = su2_quantum::build_su2_hamiltonian(&su2_hs, complex, g_squared);
+        let su2_h = su2_quantum::build_su2_hamiltonian(&su2_hs, complex, g_squared, None);
         let su2_spec = diag::diagonalize(&su2_h, Some(1));
         let su2_gs = su2_spec.ground_state();
 
@@ -516,7 +516,7 @@ fn main() {
     println!("g_squared\tS_SU2\tS_U1");
     let su2_hs1 = Su2HilbertSpace::new(&pent1);
     for &g_sq in &g_sq_sweep {
-        let su2_h = su2_quantum::build_su2_hamiltonian(&su2_hs1, &pent1, g_sq);
+        let su2_h = su2_quantum::build_su2_hamiltonian(&su2_hs1, &pent1, g_sq, None);
         let su2_spec = diag::diagonalize(&su2_h, Some(1));
         let su2_gs = su2_spec.ground_state();
         let s_su2 =

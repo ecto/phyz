@@ -1,5 +1,184 @@
 # phyz-quantum: Research Journal
 
+## 2026-02-22 — SU(2) Ryu-Takayanagi with Variable Geometry
+
+### Summary
+
+Added `metric_weights` parameter to SU(2) Hamiltonian builders, implemented 5
+new geometry generators, and created a multi-geometry RT analysis example. Tests
+whether G_N = 1/(4·slope) from the discrete RT formula S_EE = Area/4G_N is
+universal across ~16 different background geometries on each complex size.
+
+### Implementation
+
+| File | What |
+|------|------|
+| `su2_quantum.rs` | `metric_weights: Option<&[f64]>` param on `build_su2_hamiltonian()` |
+| `csr.rs` | Same param on `build_csr_su2()` |
+| `gpu_lanczos.rs` | Same param on `gpu_lanczos_diagonalize_su2()` (passes through to CSR) |
+| `ryu_takayanagi.rs` | 5 new geometry generators + `geometry_valid()` + helpers |
+| `su2_rt_geometry.rs` | New example: multi-geometry RT analysis |
+
+#### Geometry generators
+
+All produce `Vec<f64>` edge-length arrays for a given `SimplicialComplex`:
+
+- `de_sitter_edge_lengths(complex, H)` — cosmological expansion from vertex 0,
+  `length = cosh(H * d_avg / diameter)`. At H=0 → flat.
+- `perturbed_edge_lengths(complex, eps, seed)` — flat + deterministic hash
+  perturbations, `length = 1 + eps * hash(seed, edge)`. No `rand` dependency.
+- `anisotropic_edge_lengths(complex, l_shared, l_radial, n_shared)` — two-scale:
+  shared-face edges at `l_shared`, radial edges at `l_radial`.
+- `conformal_edge_lengths(complex, alpha)` — conformal rescaling,
+  `length = (1 + alpha * d_avg / diameter)^2`. At alpha=0 → flat.
+- `geometry_valid(complex, lengths)` — checks all triangle areas > 0 and all
+  4-simplex volumes > 0 via Heron's formula and Cayley-Menger determinant.
+
+Existing `schwarzschild_edge_lengths()` already provided 4 mass values.
+
+#### Metric weights coupling
+
+The per-triangle weight multiplies the magnetic (plaquette flip) term in the
+Hamiltonian, following the same pattern as U(1) in `hamiltonian.rs`. The weight
+comes from `phyz_regge::gauge::metric_weights()` which computes V_share/area
+per triangle from the edge lengths.
+
+### Results
+
+Ran `su2_rt_geometry` on 2-5 pentachoron complexes × ~16 geometries each.
+
+#### Per-geometry G_N (2-pentachoron, g²=1)
+
+| Geometry | Points | Slope | R² | G_N |
+|----------|--------|-------|-----|-----|
+| flat | 22 | 3.49e-1 | 0.487 | 7.16e-1 |
+| schwarz_M0.2 | 22 | 3.27e-1 | 0.542 | 7.65e-1 |
+| schwarz_M0.5 | 22 | 2.36e-1 | 0.605 | 1.06e0 |
+| schwarz_M1 | 22 | 1.41e-1 | 0.695 | 1.77e0 |
+| schwarz_M2 | 15 | 4.68e-2 | 0.783 | 5.34e0 |
+| deSitter_H0.3 | 22 | 3.59e-1 | 0.491 | 6.96e-1 |
+| deSitter_H0.7 | 22 | 3.90e-1 | 0.500 | 6.41e-1 |
+| deSitter_H1.5 | 22 | 4.91e-1 | 0.474 | 5.09e-1 |
+| perturbed_s1-3 | 22 | ~3.5e-1 | ~0.49 | ~7.1e-1 |
+| conformal | 22 | ~3.6e-1 | ~0.49 | ~6.9e-1 |
+
+#### G_N universality
+
+| n_pent | n_geom | mean G_N | std G_N | CV | Universal? |
+|--------|--------|----------|---------|-----|------------|
+| 2 | 13 | 1.35e0 | 1.28e0 | 0.95 | no |
+| 3 | 16 | 8.5e-1 | 4.2e-1 | 0.49 | no |
+| 4 | 16 | 5.6e-1 | 2.1e-1 | 0.37 | no |
+| 5 | 16 | 4.3e-1 | 1.2e-1 | 0.28 | no |
+
+CV decreases with system size (0.95 → 0.28) but remains above the 0.10
+threshold. Strong curvature geometries (Schwarzschild M≥1) are the outliers —
+mild geometries (de Sitter, perturbed, conformal) give much more consistent G_N.
+
+#### Coupling dependence (2-pent, flat)
+
+| g² | Slope | R² | G_N |
+|-----|-------|-----|-----|
+| 0.2 | 3.57e-1 | 0.495 | 7.00e-1 |
+| 0.5 | 3.55e-1 | 0.494 | 7.04e-1 |
+| 1.0 | 3.49e-1 | 0.487 | 7.16e-1 |
+| 2.0 | 2.21e-1 | 0.572 | 1.13e0 |
+| 5.0 | 1.02e-2 | 0.251 | 2.45e1 |
+| 10.0 | 1.67e-4 | 0.010 | 1.50e3 |
+
+G_N is approximately constant for g² ≤ 1 (weak coupling) and diverges in
+strong coupling (product state, no entanglement).
+
+### Interpretation
+
+1. **Mild geometries give consistent G_N.** Excluding Schwarzschild M≥1, the
+   CV drops to ~0.10-0.15 at 5-pent — approaching universality for mild
+   backgrounds.
+
+2. **Strong curvature breaks RT.** The Schwarzschild weights at large M push
+   the system into a strong-coupling-like regime where entanglement is
+   suppressed. This is a lattice artifact — the metric weights dominate the
+   Hamiltonian.
+
+3. **CV improves with system size.** The trend 0.95 → 0.28 across 2-5 pent
+   suggests G_N may become universal at larger lattice sizes.
+
+4. **The pentachoron chain is quasi-1D.** All pentachorons share face [0,1,2,3],
+   creating a topology with limited geometric variety. Literature (below)
+   suggests a periodic or hyperbolic topology would give much cleaner RT.
+
+### Literature review: discrete RT and lattice gauge entanglement
+
+Surveyed 8 papers connecting to this work:
+
+#### Entropy prescriptions
+
+**Ma (1511.02671) — "Entanglement with Centers"**: Different center choices
+(electric, magnetic, trivial) yield different entropy prescriptions. The RT area
+term corresponds to the **non-trivial center** (algebraic/electric center), NOT
+the extended Hilbert space. Our `entanglement_for_partition()` already implements
+the correct algebraic prescription. Key insight: S_EE decomposes into
+S_Shannon (classical flux correlations) + S_distillable (quantum). The Shannon
+part should equal Area/4G_N.
+
+**Lin (1704.07763) — "RT Area as Entanglement Edge Term"**: Shows the RT area
+term IS the edge mode contribution H({p_q}) from summing over boundary flux
+sectors. Validates our algebraic prescription.
+
+**Akers & Rath (1811.05171) — "Holographic Rényi Entropy from QEC"**: Rényi
+entropy S_n contains more information than von Neumann and can distinguish
+holographic from non-holographic states.
+
+#### Discrete geometry and holography
+
+**Chen et al. (2305.04862) — "AdS/CFT on Hyperbolic Lattices"**: First
+experimental verification of discrete RT on hyperbolic tilings. RT works best on
+negatively curved lattices. Our flat pentachoron chain lacks genuine holographic
+bulk-boundary structure.
+
+**Han & Huang (1705.01964) — "Discrete Gravity on Random Tensor Networks"**:
+RT emerges from random tensor networks at large bond dimension D, with
+G_N ~ 1/log(D). Our D=2 (j=1/2) is very small.
+
+**Wen et al. (2512.19452) — "Holographic Tensor Networks as Tessellations"**:
+Regge geometry of the tessellation directly determines effective G_N. Closest
+match to our Regge calculus + gauge theory framework.
+
+#### Spin networks and multipartite
+
+**Chirco et al. (2110.15166) — "Bulk Area Law for Spin Networks"**: Area law
+S ~ sum log(d_j) over cut edges. For j=1/2, each cut edge contributes log(2).
+Suggests comparing multiple area measures.
+
+**Akers et al. (2404.03651) — "Multipartite Edge Modes"**: Tripartite
+information I_3 < 0 in holographic theories (monogamy). Computing I_3 would test
+holographic entanglement structure.
+
+### Prioritized next steps (from literature)
+
+| # | Action | Source | Impact |
+|---|--------|--------|--------|
+| 1 | **Superselection decomposition**: split S_EE = S_Shannon + S_distill | Ma, Lin | Isolates RT-relevant piece |
+| 2 | **Better topology**: triangulated torus (dim 2^19, 255 bipartitions) | Chen | Eliminates quasi-1D artifact |
+| 3 | **Rényi entropy S_n** | Akers & Rath | Sharper diagnostic |
+| 4 | **Min-cut area** as RT surface | Chen | Topology-independent area |
+| 5 | **Tripartite information I_3** | Akers | Tests holographic monogamy |
+| 6 | **Multiple area measures** | Chirco | Find best RT fit |
+
+### Verification
+
+- 94 tests pass (cargo test -p phyz-quantum --features gpu), 2 ignored
+- 12 new tests for geometry generators and metric weights
+- su2_rt_geometry example runs in ~2 min on M3 Max (GPU)
+- All existing call sites updated with `, None` — no behavior changes
+
+### Crate stats
+
+- phyz-quantum: ~4,100 lines, 94 tests (+15 from previous)
+- +337 lines across 6 files, 1 new example
+
+---
+
 ## 2026-02-22 — SU(2) GPU Spectral Scaling Study (1-7 Pentachorons)
 
 ### Summary

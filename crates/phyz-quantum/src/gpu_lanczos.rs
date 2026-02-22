@@ -262,6 +262,7 @@ pub fn gpu_lanczos_diagonalize_su2(
     hilbert: &Su2HilbertSpace,
     complex: &SimplicialComplex,
     g_squared: f64,
+    metric_weights: Option<&[f64]>,
     n_eigenvalues: usize,
     max_iter: Option<usize>,
 ) -> Result<Spectrum, String> {
@@ -273,7 +274,7 @@ pub fn gpu_lanczos_diagonalize_su2(
     let k = n_eigenvalues.min(m);
 
     eprintln!("  GPU Lanczos SU(2): building CSR (dim={dim})...");
-    let csr = build_csr_su2(hilbert, complex, g_squared);
+    let csr = build_csr_su2(hilbert, complex, g_squared, metric_weights);
     eprintln!(
         "  GPU Lanczos SU(2): CSR built (nnz={}, density={:.4}%)",
         csr.nnz(),
@@ -696,11 +697,11 @@ mod tests {
         let hs = Su2HilbertSpace::new(&complex);
 
         // Dense reference
-        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
         let dense = diag::diagonalize(&h, Some(5));
 
         // GPU Lanczos
-        let gpu = gpu_lanczos_diagonalize_su2(&hs, &complex, 1.0, 5, None).unwrap();
+        let gpu = gpu_lanczos_diagonalize_su2(&hs, &complex, 1.0, None, 5, None).unwrap();
 
         let (_, _, precision) = request_device().unwrap();
         let tol = match precision {

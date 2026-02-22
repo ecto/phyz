@@ -197,6 +197,7 @@ pub fn build_su2_hamiltonian(
     hilbert: &Su2HilbertSpace,
     complex: &SimplicialComplex,
     g_squared: f64,
+    metric_weights: Option<&[f64]>,
 ) -> DMatrix<f64> {
     let dim = hilbert.dim();
     let mut h = DMatrix::zeros(dim, dim);
@@ -211,13 +212,15 @@ pub fn build_su2_hamiltonian(
     // Magnetic term: −(1/2g²) × B_tri (plaquette flip)
     let b_coeff = -0.5 / g_squared;
     for ti in 0..complex.n_triangles() {
+        let weight = metric_weights.map_or(1.0, |w| w[ti]);
+        let c = b_coeff * weight;
         let [e0, e1, e2] = complex.tri_edge_indices(ti);
         let flip_mask: u64 = (1 << e0) | (1 << e1) | (1 << e2);
 
         for (i, &state) in hilbert.basis.iter().enumerate() {
             let flipped = state ^ flip_mask;
             if let Some(j) = hilbert.config_to_index(flipped) {
-                h[(i, j)] += b_coeff;
+                h[(i, j)] += c;
             }
         }
     }
@@ -311,7 +314,7 @@ mod tests {
     fn test_su2_hamiltonian_symmetric() {
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
         let diff = (&h - h.transpose()).norm();
         assert!(diff < 1e-12, "H not symmetric: diff={diff}");
     }
@@ -321,7 +324,7 @@ mod tests {
         // Strong coupling: ground state ≈ |0,...,0⟩ with E₀ ≈ 0.
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let h = build_su2_hamiltonian(&hs, &complex, 1e6);
+        let h = build_su2_hamiltonian(&hs, &complex, 1e6, None);
         let spec = diag::diagonalize(&h, Some(1));
         assert!(
             spec.ground_energy().abs() < 1e-2,
@@ -334,7 +337,7 @@ mod tests {
     fn test_su2_entanglement_nonnegative() {
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
 
@@ -349,7 +352,7 @@ mod tests {
         // Strong coupling ground state ≈ product → S ≈ 0.
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let h = build_su2_hamiltonian(&hs, &complex, 1e6);
+        let h = build_su2_hamiltonian(&hs, &complex, 1e6, None);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
 
@@ -402,7 +405,7 @@ mod tests {
     fn test_su2_wilson_loop_bounded() {
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
-        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
 
@@ -414,5 +417,36 @@ mod tests {
                 "loop {li}: W = {w}, expected ∈ [-1, 1]"
             );
         }
+    }
+
+    #[test]
+    fn test_su2_metric_weights_scaling() {
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+
+        // weights=[1.0] should match None
+        let h_none = build_su2_hamiltonian(&hs, &complex, 1.0, None);
+        let weights_one = vec![1.0; complex.n_triangles()];
+        let h_one = build_su2_hamiltonian(&hs, &complex, 1.0, Some(&weights_one));
+        let diff = (&h_none - &h_one).norm();
+        assert!(diff < 1e-12, "weights=[1.0] differs from None: diff={diff}");
+
+        // weights=[2.0] should double the magnetic term
+        let weights_two = vec![2.0; complex.n_triangles()];
+        let h_two = build_su2_hamiltonian(&hs, &complex, 1.0, Some(&weights_two));
+
+        // Magnetic part = H - E_diag. Extract diagonal (electric) part.
+        let dim = hs.dim();
+        let mut h_elec = DMatrix::zeros(dim, dim);
+        for i in 0..dim {
+            h_elec[(i, i)] = h_none[(i, i)];
+        }
+        let mag_none = &h_none - &h_elec;
+        let mag_two = &h_two - &h_elec;
+        let ratio_diff = (&mag_two - &mag_none * 2.0).norm();
+        assert!(
+            ratio_diff < 1e-12,
+            "weights=[2.0] doesn't double magnetic term: diff={ratio_diff}"
+        );
     }
 }
