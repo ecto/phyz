@@ -2,8 +2,11 @@
 //!
 //! Each operation has f64 and f32 variants. The f64 variants use
 //! `enable f64;` WGSL extension (supported on Metal/Apple Silicon, most Vulkan).
+//!
+//! All per-element shaders use grid-stride loops to support dim > 65535 * 256.
+//! Phase2 reduction shaders use serial accumulation to handle > 256 partials.
 
-/// SpMV: y = A * x, one thread per row.
+/// SpMV: y = A * x, grid-stride over rows.
 pub const SPMV_F64: &str = r#"
 enable f64;
 
@@ -15,22 +18,25 @@ enable f64;
 @group(0) @binding(5) var<uniform> dim: u32;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let row = gid.x;
-    if (row >= dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var row = gid.x; row < dim; row += n_threads) {
+        let start = row_ptr[row];
+        let end = row_ptr[row + 1u];
 
-    let start = row_ptr[row];
-    let end = row_ptr[row + 1u];
+        var sum: f64 = 0.0;
+        for (var k = start; k < end; k++) {
+            let col = col_idx[k];
+            let a = bitcast<f64>(vals[k]);
+            let b = bitcast<f64>(x[col]);
+            sum += a * b;
+        }
 
-    var sum: f64 = 0.0;
-    for (var k = start; k < end; k++) {
-        let col = col_idx[k];
-        let a = bitcast<f64>(vals[k]);
-        let b = bitcast<f64>(x[col]);
-        sum += a * b;
+        y[row] = bitcast<vec2<u32>>(sum);
     }
-
-    y[row] = bitcast<vec2<u32>>(sum);
 }
 "#;
 
@@ -43,20 +49,23 @@ pub const SPMV_F32: &str = r#"
 @group(0) @binding(5) var<uniform> dim: u32;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let row = gid.x;
-    if (row >= dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var row = gid.x; row < dim; row += n_threads) {
+        let start = row_ptr[row];
+        let end = row_ptr[row + 1u];
 
-    let start = row_ptr[row];
-    let end = row_ptr[row + 1u];
+        var sum: f32 = 0.0;
+        for (var k = start; k < end; k++) {
+            let col = col_idx[k];
+            sum += vals[k] * x[col];
+        }
 
-    var sum: f32 = 0.0;
-    for (var k = start; k < end; k++) {
-        let col = col_idx[k];
-        sum += vals[k] * x[col];
+        y[row] = sum;
     }
-
-    y[row] = sum;
 }
 "#;
 
@@ -70,13 +79,17 @@ struct Params { dim: u32, _pad: u32, alpha: vec2<u32> }
 @group(0) @binding(2) var<storage, read_write> y: array<vec2<u32>>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
     let alpha = bitcast<f64>(params.alpha);
-    let xi = bitcast<f64>(x[i]);
-    let yi = bitcast<f64>(y[i]);
-    y[i] = bitcast<vec2<u32>>(yi + alpha * xi);
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        let xi = bitcast<f64>(x[i]);
+        let yi = bitcast<f64>(y[i]);
+        y[i] = bitcast<vec2<u32>>(yi + alpha * xi);
+    }
 }
 "#;
 
@@ -87,10 +100,14 @@ struct Params { dim: u32, alpha: f32 }
 @group(0) @binding(2) var<storage, read_write> y: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
-    y[i] += params.alpha * x[i];
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        y[i] += params.alpha * x[i];
+    }
 }
 "#;
 
@@ -103,12 +120,16 @@ struct Params { dim: u32, _pad: u32, alpha: vec2<u32> }
 @group(0) @binding(1) var<storage, read_write> x: array<vec2<u32>>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
     let alpha = bitcast<f64>(params.alpha);
-    let xi = bitcast<f64>(x[i]);
-    x[i] = bitcast<vec2<u32>>(alpha * xi);
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        let xi = bitcast<f64>(x[i]);
+        x[i] = bitcast<vec2<u32>>(alpha * xi);
+    }
 }
 "#;
 
@@ -118,15 +139,19 @@ struct Params { dim: u32, alpha: f32 }
 @group(0) @binding(1) var<storage, read_write> x: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
-    x[i] *= params.alpha;
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        x[i] *= params.alpha;
+    }
 }
 "#;
 
 /// DOT phase 1: partial sums via shared memory tree reduction.
-/// Each workgroup reduces 256 elements and writes one partial sum.
+/// Each workgroup accumulates via grid-stride, then reduces 256 elements.
 pub const DOT_PHASE1_F64: &str = r#"
 enable f64;
 
@@ -142,11 +167,12 @@ fn main(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let i = gid.x;
+    let n_threads = nwg.x * 256u;
     var val: f64 = 0.0;
-    if (i < dim) {
-        val = bitcast<f64>(a[i]) * bitcast<f64>(b[i]);
+    for (var i = gid.x; i < dim; i += n_threads) {
+        val += bitcast<f64>(a[i]) * bitcast<f64>(b[i]);
     }
     wg_shmem[lid.x] = bitcast<vec2<u32>>(val);
     workgroupBarrier();
@@ -180,11 +206,12 @@ fn main(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let i = gid.x;
+    let n_threads = nwg.x * 256u;
     var val: f32 = 0.0;
-    if (i < dim) {
-        val = a[i] * b[i];
+    for (var i = gid.x; i < dim; i += n_threads) {
+        val += a[i] * b[i];
     }
     wg_shmem[lid.x] = val;
     workgroupBarrier();
@@ -203,7 +230,7 @@ fn main(
 "#;
 
 /// DOT phase 2: reduce partial sums to a single scalar.
-/// Single workgroup launch.
+/// Single workgroup launch. Serial accumulation handles > 256 partials.
 pub const DOT_PHASE2_F64: &str = r#"
 enable f64;
 
@@ -218,8 +245,8 @@ fn main(
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
     var val: f64 = 0.0;
-    if (lid.x < n_partials) {
-        val = bitcast<f64>(partials[lid.x]);
+    for (var k = lid.x; k < n_partials; k += 256u) {
+        val += bitcast<f64>(partials[k]);
     }
     wg_shmem[lid.x] = bitcast<vec2<u32>>(val);
     workgroupBarrier();
@@ -251,8 +278,8 @@ fn main(
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
     var val: f32 = 0.0;
-    if (lid.x < n_partials) {
-        val = partials[lid.x];
+    for (var k = lid.x; k < n_partials; k += 256u) {
+        val += partials[k];
     }
     wg_shmem[lid.x] = val;
     workgroupBarrier();
@@ -272,7 +299,7 @@ fn main(
 
 /// Multi-dot: compute dot(q_bank[k], w) for k=0..n_vecs in one dispatch.
 /// 2D dispatch: X = element workgroups, Y = vector index.
-/// Writes partial sums to partials[wid.x + wid.y * n_workgroups_x].
+/// Grid-stride over elements within each workgroup.
 pub const MULTI_DOT_PHASE1_F64: &str = r#"
 enable f64;
 
@@ -291,13 +318,15 @@ fn main(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let elem = gid.x;
     let vec_idx = wid.y;
+    let n_threads_x = nwg.x * 256u;
 
     var val: f64 = 0.0;
-    if (elem < params.dim && vec_idx < params.n_vecs) {
-        let q_offset = vec_idx * params.stride + elem;
-        val = bitcast<f64>(q_bank[q_offset]) * bitcast<f64>(w[elem]);
+    if (vec_idx < params.n_vecs) {
+        for (var elem = gid.x; elem < params.dim; elem += n_threads_x) {
+            let q_offset = vec_idx * params.stride + elem;
+            val += bitcast<f64>(q_bank[q_offset]) * bitcast<f64>(w[elem]);
+        }
     }
     wg_shmem[lid.x] = bitcast<vec2<u32>>(val);
     workgroupBarrier();
@@ -333,13 +362,15 @@ fn main(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let elem = gid.x;
     let vec_idx = wid.y;
+    let n_threads_x = nwg.x * 256u;
 
     var val: f32 = 0.0;
-    if (elem < params.dim && vec_idx < params.n_vecs) {
-        let q_offset = vec_idx * params.stride + elem;
-        val = q_bank[q_offset] * w[elem];
+    if (vec_idx < params.n_vecs) {
+        for (var elem = gid.x; elem < params.dim; elem += n_threads_x) {
+            let q_offset = vec_idx * params.stride + elem;
+            val += q_bank[q_offset] * w[elem];
+        }
     }
     wg_shmem[lid.x] = val;
     workgroupBarrier();
@@ -358,7 +389,7 @@ fn main(
 "#;
 
 /// Multi-dot phase 2: reduce partials per vector.
-/// One workgroup per vector.
+/// One workgroup per vector. Serial accumulation handles > 256 partials.
 pub const MULTI_DOT_PHASE2_F64: &str = r#"
 enable f64;
 
@@ -378,8 +409,9 @@ fn main(
     if (vec_idx >= params.n_vecs) { return; }
 
     var val: f64 = 0.0;
-    if (lid.x < params.n_partials_per_vec) {
-        val = bitcast<f64>(partials[lid.x + vec_idx * params.n_partials_per_vec]);
+    let base = vec_idx * params.n_partials_per_vec;
+    for (var k = lid.x; k < params.n_partials_per_vec; k += 256u) {
+        val += bitcast<f64>(partials[base + k]);
     }
     wg_shmem[lid.x] = bitcast<vec2<u32>>(val);
     workgroupBarrier();
@@ -416,8 +448,9 @@ fn main(
     if (vec_idx >= params.n_vecs) { return; }
 
     var val: f32 = 0.0;
-    if (lid.x < params.n_partials_per_vec) {
-        val = partials[lid.x + vec_idx * params.n_partials_per_vec];
+    let base = vec_idx * params.n_partials_per_vec;
+    for (var k = lid.x; k < params.n_partials_per_vec; k += 256u) {
+        val += partials[base + k];
     }
     wg_shmem[lid.x] = val;
     workgroupBarrier();
@@ -446,19 +479,22 @@ struct Params { dim: u32, n_vecs: u32, stride: u32, _pad: u32 }
 @group(0) @binding(3) var<storage, read_write> w: array<vec2<u32>>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        var acc: f64 = 0.0;
+        for (var k = 0u; k < params.n_vecs; k++) {
+            let overlap = bitcast<f64>(overlaps[k]);
+            let q_val = bitcast<f64>(q_bank[k * params.stride + i]);
+            acc += overlap * q_val;
+        }
 
-    var acc: f64 = 0.0;
-    for (var k = 0u; k < params.n_vecs; k++) {
-        let overlap = bitcast<f64>(overlaps[k]);
-        let q_val = bitcast<f64>(q_bank[k * params.stride + i]);
-        acc += overlap * q_val;
+        let wi = bitcast<f64>(w[i]);
+        w[i] = bitcast<vec2<u32>>(wi - acc);
     }
-
-    let wi = bitcast<f64>(w[i]);
-    w[i] = bitcast<vec2<u32>>(wi - acc);
 }
 "#;
 
@@ -470,15 +506,18 @@ struct Params { dim: u32, n_vecs: u32, stride: u32, _pad: u32 }
 @group(0) @binding(3) var<storage, read_write> w: array<f32>;
 
 @compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= params.dim) { return; }
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let n_threads = nwg.x * 256u;
+    for (var i = gid.x; i < params.dim; i += n_threads) {
+        var acc: f32 = 0.0;
+        for (var k = 0u; k < params.n_vecs; k++) {
+            acc += overlaps[k] * q_bank[k * params.stride + i];
+        }
 
-    var acc: f32 = 0.0;
-    for (var k = 0u; k < params.n_vecs; k++) {
-        acc += overlaps[k] * q_bank[k * params.stride + i];
+        w[i] -= acc;
     }
-
-    w[i] -= acc;
 }
 "#;

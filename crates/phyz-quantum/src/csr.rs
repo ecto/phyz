@@ -4,6 +4,7 @@
 //! that can be uploaded to GPU once and reused for all Lanczos iterations.
 
 use crate::hilbert::U1HilbertSpace;
+use crate::su2_quantum::Su2HilbertSpace;
 use phyz_regge::SimplicialComplex;
 
 /// Sparse matrix in Compressed Sparse Row format.
@@ -135,6 +136,80 @@ pub fn build_csr(
     }
 }
 
+/// Build the SU(2) j=1/2 Hamiltonian as a CSR sparse matrix.
+///
+/// H = (3g²/8) Σ_e n_e − (1/2g²) Σ_tri B_tri
+///
+/// Electric term is diagonal (popcount-based), magnetic term flips all 3
+/// edges of each triangle via XOR. Gauss law is preserved by construction.
+pub fn build_csr_su2(
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    g_squared: f64,
+) -> CsrMatrix {
+    let dim = hilbert.dim();
+    let e_coeff = 3.0 * g_squared / 8.0;
+    let b_coeff = -0.5 / g_squared;
+
+    let mut rows: Vec<Vec<(u32, f64)>> = vec![Vec::new(); dim];
+
+    // Electric term: diagonal, (3g²/8) × popcount(state)
+    for (i, &state) in hilbert.basis.iter().enumerate() {
+        let val = e_coeff * state.count_ones() as f64;
+        if val.abs() > 0.0 {
+            rows[i].push((i as u32, val));
+        }
+    }
+
+    // Magnetic term: plaquette flips
+    for ti in 0..complex.n_triangles() {
+        let [e0, e1, e2] = complex.tri_edge_indices(ti);
+        let flip_mask: u64 = (1 << e0) | (1 << e1) | (1 << e2);
+
+        for (i, &state) in hilbert.basis.iter().enumerate() {
+            let flipped = state ^ flip_mask;
+            if let Some(j) = hilbert.config_to_index(flipped) {
+                rows[i].push((j as u32, b_coeff));
+            }
+        }
+    }
+
+    // Sort each row by column index, merge duplicates, build CSR
+    let mut row_ptr = Vec::with_capacity(dim + 1);
+    let mut col_indices = Vec::new();
+    let mut values = Vec::new();
+
+    row_ptr.push(0u32);
+
+    for row in &mut rows {
+        row.sort_by_key(|&(col, _)| col);
+
+        let mut merged: Vec<(u32, f64)> = Vec::new();
+        for &(col, val) in row.iter() {
+            if let Some(last) = merged.last_mut() {
+                if last.0 == col {
+                    last.1 += val;
+                    continue;
+                }
+            }
+            merged.push((col, val));
+        }
+
+        for (col, val) in merged {
+            col_indices.push(col);
+            values.push(val);
+        }
+        row_ptr.push(col_indices.len() as u32);
+    }
+
+    CsrMatrix {
+        nrows: dim,
+        row_ptr,
+        col_indices,
+        values,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +309,35 @@ mod tests {
         assert_eq!(csr.row_ptr.len(), hs.dim() + 1);
         assert!(csr.nnz() > 0);
         assert_eq!(csr.col_indices.len(), csr.values.len());
+    }
+
+    #[test]
+    fn test_csr_su2_matvec_matches_dense() {
+        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let csr = build_csr_su2(&hs, &complex, 1.0);
+        let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0);
+
+        for seed in 0..5u64 {
+            let mut v = DVector::zeros(hs.dim());
+            for i in 0..hs.dim() {
+                v[i] = ((i as u64 + seed * 137) as f64 * 0.618).fract() - 0.5;
+            }
+
+            let hv_dense: Vec<f64> = (&h_dense * &v).iter().copied().collect();
+            let hv_csr = csr.matvec(v.as_slice());
+
+            let diff: f64 = hv_dense
+                .iter()
+                .zip(hv_csr.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f64, f64::max);
+            assert!(
+                diff < 1e-10,
+                "SU(2) CSR matvec mismatch at seed {seed}: max_diff={diff}"
+            );
+        }
     }
 }

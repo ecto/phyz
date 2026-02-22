@@ -252,7 +252,7 @@ impl GpuVecOps {
         precision: GpuPrecision,
         dim: u32,
     ) -> Self {
-        let n_workgroups = dim.div_ceil(256);
+        let n_workgroups = dim.div_ceil(256).min(65535);
         let elem_size = precision.elem_size();
 
         // --- SpMV pipeline: 6 bindings ---

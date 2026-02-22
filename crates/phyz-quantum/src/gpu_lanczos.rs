@@ -4,9 +4,10 @@
 //! SpMV, dot products, and reorthogonalization. The Hamiltonian is
 //! pre-built as a CSR sparse matrix and uploaded to GPU once.
 
-use crate::csr::build_csr;
+use crate::csr::{build_csr, build_csr_su2};
 use crate::diag::Spectrum;
 use crate::hilbert::U1HilbertSpace;
+use crate::su2_quantum::Su2HilbertSpace;
 use nalgebra::{DMatrix, DVector};
 use phyz_gpu::sparse::{request_device, GpuPrecision, GpuSparseMatrix, GpuVecOps};
 use phyz_regge::SimplicialComplex;
@@ -17,6 +18,8 @@ use std::sync::Arc;
 struct QBank {
     chunks: Vec<wgpu::Buffer>,
     vecs_per_chunk: u32,
+    /// Stride for scalar_result_buf offsets (rounded up to alignment).
+    result_stride: u32,
     vec_bytes: u64,
 }
 
@@ -28,17 +31,17 @@ impl QBank {
         let limits = ops.device.limits();
         let limit = (limits.max_buffer_size).min(limits.max_storage_buffer_binding_size as u64);
 
-        let raw_vpc = (limit / vec_bytes) as u32;
-
-        // Round down so that vpc * elem_size is a multiple of
-        // min_storage_buffer_offset_alignment (needed for scalar_result_buf offsets).
-        let align = limits.min_storage_buffer_offset_alignment;
-        let elems_per_align = (align as u64 / elem_size).max(1) as u32;
-        let vpc = (raw_vpc / elems_per_align) * elems_per_align;
+        let vpc = (limit / vec_bytes) as u32;
         assert!(
             vpc > 0,
             "single vector ({vec_bytes} bytes) exceeds GPU buffer limit ({limit} bytes)"
         );
+
+        // scalar_result_buf offsets must be multiples of min_storage_buffer_offset_alignment.
+        // Round result_stride UP so that result_stride * elem_size is aligned.
+        let align = limits.min_storage_buffer_offset_alignment;
+        let elems_per_align = (align as u64 / elem_size).max(1) as u32;
+        let result_stride = vpc.next_multiple_of(elems_per_align);
 
         // If everything fits in one chunk, just use max_vecs directly.
         if vpc >= max_vecs {
@@ -54,6 +57,7 @@ impl QBank {
             return Self {
                 chunks: vec![buf],
                 vecs_per_chunk: max_vecs,
+                result_stride: max_vecs,
                 vec_bytes,
             };
         }
@@ -81,6 +85,7 @@ impl QBank {
         Self {
             chunks,
             vecs_per_chunk: vpc,
+            result_stride,
             vec_bytes,
         }
     }
@@ -164,7 +169,6 @@ impl QBank {
         if n_vecs == 0 {
             return;
         }
-        let mut offset = 0u32;
         for (i, chunk) in self.chunks.iter().enumerate() {
             let start = i as u32 * self.vecs_per_chunk;
             if start >= n_vecs {
@@ -172,8 +176,9 @@ impl QBank {
             }
             let end = ((i as u32 + 1) * self.vecs_per_chunk).min(n_vecs);
             let count = end - start;
-            ops.run_multi_dot_range(chunk, w_buf, count, offset);
-            offset += count;
+            // Use result_stride for scalar_result_buf offset alignment.
+            let result_offset = i as u32 * self.result_stride;
+            ops.run_multi_dot_range(chunk, w_buf, count, result_offset);
         }
     }
 
@@ -181,7 +186,6 @@ impl QBank {
         if n_vecs == 0 {
             return;
         }
-        let mut offset = 0u32;
         for (i, chunk) in self.chunks.iter().enumerate() {
             let start = i as u32 * self.vecs_per_chunk;
             if start >= n_vecs {
@@ -189,8 +193,8 @@ impl QBank {
             }
             let end = ((i as u32 + 1) * self.vecs_per_chunk).min(n_vecs);
             let count = end - start;
-            ops.run_batch_subtract_range(chunk, w_buf, count, offset);
-            offset += count;
+            let result_offset = i as u32 * self.result_stride;
+            ops.run_batch_subtract_range(chunk, w_buf, count, result_offset);
         }
     }
 }
@@ -249,6 +253,46 @@ pub fn gpu_lanczos_diagonalize(
         tol,
         double_reorth,
     )
+}
+
+/// Run GPU-accelerated Lanczos diagonalization for SU(2) j=1/2.
+///
+/// Same as [`gpu_lanczos_diagonalize`] but builds the SU(2) CSR matrix.
+pub fn gpu_lanczos_diagonalize_su2(
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    g_squared: f64,
+    n_eigenvalues: usize,
+    max_iter: Option<usize>,
+) -> Result<Spectrum, String> {
+    let dim = hilbert.dim();
+    let max_iter = max_iter
+        .unwrap_or_else(|| (20 * n_eigenvalues).max(100))
+        .min(dim);
+    let m = max_iter.min(dim);
+    let k = n_eigenvalues.min(m);
+
+    eprintln!("  GPU Lanczos SU(2): building CSR (dim={dim})...");
+    let csr = build_csr_su2(hilbert, complex, g_squared);
+    eprintln!(
+        "  GPU Lanczos SU(2): CSR built (nnz={}, density={:.4}%)",
+        csr.nnz(),
+        100.0 * csr.nnz() as f64 / (dim as f64 * dim as f64)
+    );
+
+    let (device, queue, precision) = request_device()?;
+    let tol = match precision {
+        GpuPrecision::F64 => 1e-10,
+        GpuPrecision::F32 => 1e-5,
+    };
+    let double_reorth = precision == GpuPrecision::F32;
+
+    eprintln!(
+        "  GPU Lanczos SU(2): precision={:?}, tol={tol:.0e}, max_iter={m}",
+        precision
+    );
+
+    gpu_lanczos_inner(device, queue, precision, &csr, dim, k, m, tol, double_reorth)
 }
 
 /// Inner GPU Lanczos loop. Separated for testability.
@@ -636,6 +680,48 @@ mod tests {
             "2-pent E0 mismatch: cpu={}, gpu={}, diff={e0_diff}",
             cpu.ground_energy(),
             gpu.ground_energy()
+        );
+    }
+
+    #[test]
+    fn test_gpu_lanczos_su2_vs_dense() {
+        if !has_gpu() {
+            eprintln!("Skipping GPU test (no adapter)");
+            return;
+        }
+
+        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+
+        // Dense reference
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let dense = diag::diagonalize(&h, Some(5));
+
+        // GPU Lanczos
+        let gpu = gpu_lanczos_diagonalize_su2(&hs, &complex, 1.0, 5, None).unwrap();
+
+        let (_, _, precision) = request_device().unwrap();
+        let tol = match precision {
+            GpuPrecision::F64 => 1e-8,
+            GpuPrecision::F32 => 1e-3,
+        };
+
+        let e0_diff = (dense.ground_energy() - gpu.ground_energy()).abs();
+        assert!(
+            e0_diff < tol,
+            "SU(2) E0 mismatch: dense={}, gpu={}, diff={e0_diff}",
+            dense.ground_energy(),
+            gpu.ground_energy()
+        );
+
+        let gap_diff = (dense.gap() - gpu.gap()).abs();
+        assert!(
+            gap_diff < tol,
+            "SU(2) gap mismatch: dense={}, gpu={}, diff={gap_diff}",
+            dense.gap(),
+            gpu.gap()
         );
     }
 }

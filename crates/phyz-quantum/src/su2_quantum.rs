@@ -40,24 +40,15 @@ pub struct Su2HilbertSpace {
 
 impl Su2HilbertSpace {
     /// Build the gauge-invariant SU(2) Hilbert space at j_max = 1/2.
+    ///
+    /// Uses cycle basis generation: gauge-invariant states are exactly the cycle
+    /// space of the graph over Z₂, so we enumerate all 2^b₁ XOR combinations of
+    /// fundamental cycles. This is O(2^b₁) instead of O(2^E).
     pub fn new(complex: &SimplicialComplex) -> Self {
         let n_edges = complex.n_edges();
         assert!(n_edges <= 63, "Su2HilbertSpace supports up to 63 edges");
 
-        // Build vertex-edge adjacency.
-        let mut vertex_edges: Vec<Vec<usize>> = vec![Vec::new(); complex.n_vertices];
-        for (ei, edge) in complex.edges.iter().enumerate() {
-            vertex_edges[edge[0]].push(ei);
-            vertex_edges[edge[1]].push(ei);
-        }
-
-        // Enumerate gauge-invariant states.
-        let mut basis = Vec::new();
-        for mask in 0u64..(1u64 << n_edges) {
-            if satisfies_gauss_law(mask, &vertex_edges, complex.n_vertices) {
-                basis.push(mask);
-            }
-        }
+        let basis = cycle_basis_enumerate(complex);
 
         let index_map: HashMap<u64, usize> = basis
             .iter()
@@ -94,25 +85,109 @@ impl Su2HilbertSpace {
     }
 }
 
-/// Check Gauss law: even parity at each vertex.
-fn satisfies_gauss_law(state: u64, vertex_edges: &[Vec<usize>], n_vertices: usize) -> bool {
-    for v in 0..n_vertices {
-        let parity: u32 = vertex_edges[v]
-            .iter()
-            .map(|&ei| ((state >> ei) & 1) as u32)
-            .sum();
-        if !parity.is_multiple_of(2) {
-            return false;
-        }
-    }
-    true
-}
-
 /// Convert bitmask to Vec<i32>.
 fn bitmask_to_vec(state: u64, n_edges: usize) -> Vec<i32> {
     (0..n_edges)
         .map(|e| ((state >> e) & 1) as i32)
         .collect()
+}
+
+/// Enumerate gauge-invariant states via cycle basis.
+///
+/// The gauge-invariant Hilbert space (even parity at each vertex) is exactly
+/// the cycle space of the graph over Z₂. We find fundamental cycles from a
+/// spanning tree, then enumerate all 2^b₁ XOR combinations.
+fn cycle_basis_enumerate(complex: &SimplicialComplex) -> Vec<u64> {
+    let n_v = complex.n_vertices;
+    let n_e = complex.n_edges();
+
+    // Build adjacency: for each vertex, list of (neighbor, edge_index).
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n_v];
+    for (ei, edge) in complex.edges.iter().enumerate() {
+        adj[edge[0]].push((edge[1], ei));
+        adj[edge[1]].push((edge[0], ei));
+    }
+
+    // BFS spanning tree from vertex 0.
+    let mut parent: Vec<Option<(usize, usize)>> = vec![None; n_v]; // (parent_vertex, edge_index)
+    let mut visited = vec![false; n_v];
+    let mut queue = std::collections::VecDeque::new();
+    visited[0] = true;
+    queue.push_back(0);
+    let mut in_tree = vec![false; n_e];
+
+    while let Some(v) = queue.pop_front() {
+        for &(u, ei) in &adj[v] {
+            if !visited[u] {
+                visited[u] = true;
+                parent[u] = Some((v, ei));
+                in_tree[ei] = true;
+                queue.push_back(u);
+            }
+        }
+    }
+
+    // Cotree edges generate fundamental cycles.
+    let mut cycle_masks: Vec<u64> = Vec::new();
+    for ei in 0..n_e {
+        if in_tree[ei] {
+            continue;
+        }
+        // Cotree edge ei connects endpoints of complex.edges[ei].
+        let (a, b) = (complex.edges[ei][0], complex.edges[ei][1]);
+
+        // Find path from a to root.
+        let path_a = path_to_root(a, &parent);
+        let path_b = path_to_root(b, &parent);
+
+        // Cycle = cotree edge + symmetric difference of paths to LCA.
+        let mut mask: u64 = 1 << ei; // the cotree edge itself
+        // Find LCA: walk both paths, mark edges in symmetric difference.
+        let set_a: std::collections::HashSet<usize> = path_a.iter().copied().collect();
+        let set_b: std::collections::HashSet<usize> = path_b.iter().copied().collect();
+        for &v in &path_a {
+            if !set_b.contains(&v) {
+                // edge from v to parent(v) is in the cycle
+                if let Some((_, pe)) = parent[v] {
+                    mask |= 1 << pe;
+                }
+            }
+        }
+        for &v in &path_b {
+            if !set_a.contains(&v) {
+                if let Some((_, pe)) = parent[v] {
+                    mask |= 1 << pe;
+                }
+            }
+        }
+        cycle_masks.push(mask);
+    }
+
+    let b1 = cycle_masks.len();
+    // Enumerate all 2^b₁ XOR combinations.
+    let mut basis = Vec::with_capacity(1 << b1);
+    for bits in 0u64..(1u64 << b1) {
+        let mut state = 0u64;
+        for (j, cm) in cycle_masks.iter().enumerate() {
+            if (bits >> j) & 1 == 1 {
+                state ^= cm;
+            }
+        }
+        basis.push(state);
+    }
+
+    basis.sort_unstable();
+    basis
+}
+
+/// Walk from vertex v to root via parent pointers, returning vertices visited.
+fn path_to_root(mut v: usize, parent: &[Option<(usize, usize)>]) -> Vec<usize> {
+    let mut path = vec![v];
+    while let Some((p, _)) = parent[v] {
+        path.push(p);
+        v = p;
+    }
+    path
 }
 
 /// Build the SU(2) j_max = 1/2 Hamiltonian.
@@ -161,6 +236,42 @@ pub fn su2_entanglement_for_partition(
 ) -> f64 {
     let (edges_a, _, _) = ryu_takayanagi::classify_edges(complex, partition_a);
     observables::entanglement_entropy_raw(hilbert.basis_vecs(), hilbert.n_edges, state, &edges_a)
+}
+
+/// SU(2) j=1/2 Wilson loop expectation value.
+///
+/// For the Z₂ reduction, the Wilson loop is diagonal:
+/// W|s⟩ = (-1)^(popcount(s & mask)) |s⟩
+/// where mask = Σ (1 << e) for edges in the loop.
+///
+/// Returns ⟨ψ|W|ψ⟩ = Σ_i |ψ_i|² × (-1)^(popcount(basis[i] & mask)).
+pub fn su2_wilson_loop(
+    hilbert: &Su2HilbertSpace,
+    state: &DVector<f64>,
+    loop_edges: &[usize],
+) -> f64 {
+    let mask: u64 = loop_edges.iter().fold(0u64, |m, &e| m | (1 << e));
+    let mut expectation = 0.0;
+    for (i, &basis_state) in hilbert.basis.iter().enumerate() {
+        let sign = if (basis_state & mask).count_ones() % 2 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
+        expectation += state[i] * state[i] * sign;
+    }
+    expectation
+}
+
+/// Fundamental loops for SU(2) j=1/2 (edge indices only).
+///
+/// Same topology as [`crate::observables::fundamental_loops`] but returns
+/// just edge indices without direction signs (not needed for Z₂).
+pub fn su2_fundamental_loops(complex: &SimplicialComplex) -> Vec<Vec<usize>> {
+    crate::observables::fundamental_loops(complex)
+        .into_iter()
+        .map(|lp| lp.into_iter().map(|(ei, _dir)| ei).collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -264,6 +375,44 @@ mod tests {
                     "triangle {ti}: flipped state not in basis"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_su2_wilson_loop_zero_state() {
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+
+        // Pure |0...0⟩ state: popcount(0 & anything) = 0, so W = 1.
+        let zero_idx = hs.config_to_index(0).unwrap();
+        let mut state = DVector::zeros(hs.dim());
+        state[zero_idx] = 1.0;
+
+        let loops = su2_fundamental_loops(&complex);
+        for (li, lp) in loops.iter().enumerate() {
+            let w = su2_wilson_loop(&hs, &state, lp);
+            assert!(
+                (w - 1.0).abs() < 1e-12,
+                "loop {li}: W = {w}, expected 1.0 for zero state"
+            );
+        }
+    }
+
+    #[test]
+    fn test_su2_wilson_loop_bounded() {
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        let loops = su2_fundamental_loops(&complex);
+        for (li, lp) in loops.iter().enumerate() {
+            let w = su2_wilson_loop(&hs, gs, lp);
+            assert!(
+                w >= -1.0 - 1e-12 && w <= 1.0 + 1e-12,
+                "loop {li}: W = {w}, expected ∈ [-1, 1]"
+            );
         }
     }
 }

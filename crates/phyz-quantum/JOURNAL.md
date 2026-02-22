@@ -1,5 +1,147 @@
 # phyz-quantum: Research Journal
 
+## 2026-02-22 — SU(2) GPU Spectral Scaling Study (1-7 Pentachorons)
+
+### Summary
+
+Complete SU(2) j=1/2 spectral scaling study on 1-7 face-sharing pentachoron
+complexes with 7 couplings each (49 data points). SU(2) j=1/2 reduces to Z₂
+gauge theory with dim=2^b₁ — much smaller than U(1) — enabling 7-pent
+(dim=16.7M) where U(1) was limited to 5-pent (dim=11.6M).
+
+### Implementation
+
+| File | What |
+|------|------|
+| `csr.rs` | `build_csr_su2()` — CSR matrix builder for SU(2) Hamiltonian |
+| `gpu_lanczos.rs` | `gpu_lanczos_diagonalize_su2()` — GPU Lanczos wrapper |
+| `su2_quantum.rs` | `su2_wilson_loop()`, `su2_fundamental_loops()` — Wilson loop observable |
+| `su2_spectral_scaling.rs` | New example: 1-7 pent × 7 couplings |
+
+#### Cycle basis optimization
+
+The original `Su2HilbertSpace::new()` enumerated all 2^E states checking Gauss
+law (even parity at each vertex). For 7-pent with E=34, this is 2^34 ≈ 17
+billion iterations — hung indefinitely.
+
+Replaced with cycle basis generation: gauge-invariant states are exactly the
+cycle space of the graph over Z₂. BFS spanning tree → cotree edges →
+fundamental cycle bitmasks → enumerate all 2^b₁ XOR combinations.
+
+| n_pent | E | b₁ | Old O(2^E) | New O(2^b₁) | Speedup |
+|--------|---|-----|-----------|-------------|---------|
+| 5 | 26 | 18 | 67M | 262K | 256× |
+| 6 | 30 | 21 | 1.07B | 2.1M | 512× |
+| 7 | 34 | 24 | 17.2B | 16.8M | 1024× |
+
+#### GPU shader fixes
+
+Grid-stride loops in all per-element WGSL shaders to handle dim > 65535 × 256
+(the wgpu workgroup dispatch limit). Phase2 dot product reduction uses serial
+accumulation for > 256 partial sums. Dispatch capped at `.min(65535)`.
+
+### System sizes
+
+| n_pent | V | E | T | b₁ | dim | nnz | time/g² |
+|--------|---|---|---|-----|------|-----|---------|
+| 1 | 5 | 10 | 10 | 6 | 64 | — | <0.01s (CPU) |
+| 2 | 6 | 14 | 16 | 9 | 512 | — | 0.05s (CPU) |
+| 3 | 7 | 18 | 22 | 12 | 4,096 | 94K | 1.0s (GPU) |
+| 4 | 8 | 22 | 28 | 15 | 32,768 | 950K | 1.5s (GPU) |
+| 5 | 9 | 26 | 34 | 18 | 262,144 | 9.2M | 2.2s (GPU) |
+| 6 | 10 | 30 | 40 | 21 | 2,097,152 | 86M | 10s (GPU) |
+| 7 | 11 | 34 | 46 | 24 | 16,777,216 | 789M | 112s (GPU) |
+
+### Results
+
+#### Spectral gap scaling
+
+| g² | β (gap~b₁^-β) | R² | Interpretation |
+|----|--------|------|----------------|
+| 0.5 | -0.004 | 0.61 | Gapped (β≈0) |
+| 1.0 | -0.066 | 0.65 | Gapped |
+| 1.5 | -0.259 | 0.92 | Gap opening (β<0) |
+| **2.0** | **0.314** | **0.74** | **Critical (gap closing)** |
+| 2.5 | 0.307 | 0.97 | Critical |
+| 3.0 | 0.126 | 0.98 | Weakly closing |
+| 5.0 | 0.014 | 0.98 | Gapped |
+
+The gap closes at g²≈2.0-2.5 (β>0) and reopens at strong coupling (β→0).
+This identifies g²≈2 as the confinement-deconfinement crossover for SU(2) on
+these simplicial complexes. Compare U(1) crossover at g²≈1.5.
+
+#### Wilson loop confinement
+
+| g² | ⟨W⟩ trend (1→7 pent) | α (W~b₁^-α) | Status |
+|----|----------------------|-------------|--------|
+| 0.5 | 0.0002 → 0.0000 | 1.27 | Deep confinement |
+| 1.0 | 0.012 → 0.002 | 1.39 | Confinement |
+| 2.0 | 0.77 → 0.18 | 1.05 | Crossover |
+| 3.0 | 0.96 → 0.92 | 0.03 | Near-deconfined |
+| 5.0 | 0.996 → 0.991 | 0.004 | Deconfined |
+
+Clean monotonic decrease of ⟨W⟩ with system size at all couplings. The α
+exponent peaks at g²≈1.5 and vanishes at strong coupling (deconfined regime).
+
+#### Entanglement entropy
+
+S_EE at weak coupling (g²=0.5) saturates immediately at ~2.08 across all
+system sizes — the shared tetrahedron boundary has fixed area, giving
+area-law entanglement.
+
+At the crossover (g²=2.0): S_EE = 0.57, 1.04, 1.47, 1.81, 2.03, 2.12,
+2.14 for 1-7 pent. Still growing at 7-pent, indicating the critical point
+has volume-law-like entanglement.
+
+At strong coupling (g²=5.0): S_EE ≈ 0.02-0.10, consistent with product state.
+
+#### Ground energy extensivity
+
+At g²=1: E₀ = -3.25, -5.52, -7.81, -10.10, -12.39, -14.69, -16.98 for
+1-7 pent. Energy per added pentachoron ≈ -2.3, confirming extensivity.
+
+### Comparison: SU(2) vs U(1) on same complexes
+
+| Property | U(1) Λ=1 | SU(2) j=1/2 |
+|----------|----------|-------------|
+| Dim (5-pent) | 11,667,105 | 262,144 |
+| States/edge | 3 | 2 |
+| Crossover g² | ~1.5 | ~2.0 |
+| Critical β | ~0.31 | ~0.31 |
+| Max n_pent | 5 | 7 |
+| f32 reliability | Breaks at n≥4, g²≥3 | Reliable all 7 × 7 |
+
+SU(2) at j=1/2 has nearly identical critical exponents but shifted crossover.
+The smaller Hilbert space eliminates the f32 accuracy issues that plagued U(1)
+at large n (no ghost eigenvalues observed in any SU(2) run).
+
+### Verification
+
+- 79 tests pass (cargo test -p phyz-quantum --features gpu)
+- GPU Lanczos vs dense diag verified for 1-2 pent
+- All 49 data points converge (Lanczos change < 1e-5)
+- Cycle basis gives identical dimensions to brute-force enumeration
+
+### Crate stats
+
+- phyz-quantum: ~3,800 lines, 79 tests
+- phyz-gpu: sparse.rs +2 lines, sparse_shaders.rs +90 lines (grid-stride)
+
+### Open questions
+
+- **Phase transition order.** Is the SU(2) g²≈2 crossover a true phase
+  transition or a smooth crossover? The β≈0.31 exponent at g²=2.0 with
+  R²=0.74 leaves room for a sharper transition at larger system sizes.
+
+- **Full SU(2) at j_max=1.** The j=1/2 truncation gives Z₂. The full
+  j_max=1 would have 5 states per edge and 6j symbols for plaquettes —
+  qualitatively different physics.
+
+- **8+ pentachorons.** At 8-pent, b₁=27, dim=134M. Would require f16 or
+  sparse-on-disk to fit in GPU memory.
+
+---
+
 ## 2026-02-22 — GPU Q-Bank Chunking + 5-Pentachoron Spectral Scaling
 
 ### Problem
