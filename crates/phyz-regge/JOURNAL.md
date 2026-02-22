@@ -1,5 +1,145 @@
 # phyz-regge: Research Journal
 
+## 2026-02-21 — Per-Vertex Residual Diagnostics: N=12 Dip Diagnosed
+
+### Motivation
+
+The h-convergence test showed a non-monotonic ratio at N=12 (0.907 vs 0.972
+at N=8). Three hypotheses: (a) widespread solver degradation, (b) extraction
+bias at certain N, (c) a few bad boundary vertices spiking the max while the
+bulk is fine. The existing `compute_max_residual` reported only the max —
+couldn't distinguish these.
+
+### Changes
+
+| File | What |
+|------|------|
+| `src/transformer.rs` | Added `ResidualStats` struct (max, mean, median, p90, n_above_tol, n_total). Added `compute_residual_stats()` — same loop as `compute_max_residual` but collects all per-vertex residuals, sorts, computes statistics. Changed `TransformerMeasurement.residual: f64` → `residual_stats: ResidualStats` with `residual()` convenience method for backward compat. Updated `run_transformer_continuation` and `run_single_amplitude`. |
+| `examples/gem_convergence.rs` | Prints diagnostic columns (mean, median, p90, n_bad) per N in both inline and summary table output. TSV includes all stats. |
+| `examples/gem_transformer.rs` | Updated `.residual` → `.residual()` (2 sites). |
+
+### Results (N=4,8,12,16)
+
+```
+   N    ratio    max_res   mean_res median_res    p90_res    B_regge  n_bad  time(s)
+   4 0.942065    3.10e-2    7.49e-3    2.32e-3    1.92e-2    1.75e-4    127     12.0
+   8 0.952994    2.76e-2    3.78e-3    6.46e-4    1.17e-2    1.74e-4   1023     93.8
+  12 0.909166    3.33e-2    2.60e-3    5.15e-4    8.34e-3    1.65e-4   3213    432.9
+  16 0.609898    3.79e-2    1.95e-3    2.42e-4    5.95e-3    1.11e-4   6795   1538.4
+```
+
+### Diagnosis: hypothesis (c) confirmed — bad boundary vertices
+
+The mean and median residuals **improve monotonically** with N (median:
+2.3e-3 → 6.5e-4 → 5.1e-4 → 2.4e-4). The bulk geometry is converging well.
+But the max residual **grows** (3.1e-2 → 3.8e-2), and the ratio **degrades**
+catastrophically at N=16 (0.61).
+
+The median-to-max gap widens from 13× at N=4 to 156× at N=16. A small number
+of high-residual vertices (likely at periodic boundary interfaces) corrupt the
+Riemann extraction. At finer resolution, each vertex covers a smaller physical
+region, so a single badly-solved vertex has outsized influence on the local
+curvature stencil.
+
+N=16 does NOT recover — rules out "N=12 is just a non-monotonic artifact."
+The problem is structural and worsens with refinement.
+
+### Verification
+
+- 117 tests + 1 doctest pass
+- N=4,8 ratios match previous runs (within stochastic variation from
+  continuation's best-of-two strategy)
+
+### Next steps
+
+Two paths forward:
+1. **Exclude high-residual vertices from extraction** — skip vertices with
+   residual > threshold when computing B_regge Frobenius norm. If the bulk
+   vertices give ratio → 1.0, the solver is fine and only the extraction
+   needs filtering.
+2. **Targeted Newton polish** — after the full sweep, re-solve only vertices
+   with residual > tolerance. Unlike multi-sweep Gauss-Seidel (which diverges),
+   this would only touch the worst offenders.
+
+---
+
+## 2026-02-21 — Multi-Sweep Gauss-Seidel: Failed Experiment
+
+### Motivation
+
+The h-convergence test showed non-monotonic behavior at N=12:
+
+| N | ratio | residual |
+|---|-------|----------|
+| 4 | 0.938 | 3.10e-2 |
+| 8 | **0.972** | **2.76e-2** |
+| 12 | 0.907 | **3.33e-2** ← worse than N=8 |
+
+Hypothesis: `evolve_all_tents` does a single pass over all vertices. Each
+per-vertex tent move modifies `sq_lengths` in place, affecting neighbors. A
+single sweep doesn't reach a self-consistent solution — like one Gauss-Seidel
+iteration on a coupled system. Multiple sweeps should help.
+
+### What we tried
+
+Added `n_sweeps` parameter to `evolve_all_tents` wrapping the full vertex
+sweep in an outer loop. Also increased `max_newton_iter` from 30 → 50 in
+`TransformerConfig::default()`.
+
+### Results: multi-sweep diverges
+
+With `n_sweeps=3`:
+
+| N | ratio (1 sweep) | ratio (3 sweeps) | B_regge (3 sweeps) |
+|---|-----------------|-------------------|---------------------|
+| 4 | 0.938 | **14.8** | 2.76e-3 (16× blowup) |
+| 8 | 0.972 | **30.7** | 5.61e-3 (32× blowup) |
+
+Re-solving already-converged tent moves **destabilizes** the system. Each
+re-solve changes shared edges, invalidating neighboring solutions. In this
+nonlinear system, the coupling amplifies rather than damps — classic divergent
+iteration.
+
+The Gauss-Seidel analogy was flawed: in linear Gauss-Seidel, convergence
+requires diagonal dominance. The Regge equations are nonlinear and the
+per-vertex solves are not contractive under re-iteration.
+
+### Separate finding: max_newton_iter=50 has no effect
+
+Increasing from 30 → 50 gave identical results — the solver was already
+converging within 30 iterations. The residual at N=12 isn't from insufficient
+Newton iterations per tent move; it's from the global coupling between
+per-vertex solves.
+
+### Convergence fit (1 sweep, N=4,8,12)
+
+```
+ratio(h) = 0.935 + 0.008 · h^2.00
+```
+
+- O(h²) convergence order confirmed
+- Extrapolated ratio (h→0): **0.935** — a 6.5% bias from 1.0
+- The bias is likely systematic: Riemann extraction averages over a finite
+  number of simplices per vertex (volume-averaged tidal tensor vs
+  point-evaluation of the linearized prediction)
+
+### Decision: reverted n_sweeps
+
+The multi-sweep machinery was removed since it provides no benefit and adds
+complexity. The `max_newton_iter` default was restored to 30.
+
+### Open questions
+
+- The 6.5% extrapolated bias: is it from the Riemann extraction's
+  finite-simplex averaging, or from the ~3e-2 solver residual contaminating
+  the geometry?
+- A global Newton solver (sparse Hessian, iterative solve) might reduce the
+  residual without the instability of re-iterating per-vertex solves
+- Alternative: under-relaxed iteration (ω < 1 blending of old/new edge
+  lengths) might stabilize the sweep, but adds a tuning parameter
+
+---
+
 ## 2026-02-21 — Bivector Normalization Bug & h-Convergence Validation
 
 ### Motivation

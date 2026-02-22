@@ -17,7 +17,7 @@
 use phyz_regge::foliation::foliated_hypercubic;
 use phyz_regge::gem::{b_grav_tensor_frobenius, linearized_b_grav_tidal, vertex_spatial_coords};
 use phyz_regge::transformer::{
-    make_planar_winding, run_transformer_continuation, TransformerConfig,
+    make_planar_winding, run_transformer_continuation, ResidualStats, TransformerConfig,
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -85,7 +85,7 @@ struct DataPoint {
     ratio: f64,
     regge_frob: f64,
     lin_frob: f64,
-    residual: f64,
+    residual_stats: ResidualStats,
     elapsed: f64,
 }
 
@@ -160,9 +160,14 @@ fn main() {
             f64::NAN
         };
 
+        let rs = &m.residual_stats;
         eprintln!(
-            "  B_regge={:.6e}  B_lin={:.6e}  ratio={:.6}  residual={:.2e}  ({:.1}s)",
-            m.b_grav_frobenius, lin_frob, ratio, m.residual, elapsed,
+            "  B_regge={:.6e}  B_lin={:.6e}  ratio={:.6}  res_max={:.2e}  ({:.1}s)",
+            m.b_grav_frobenius, lin_frob, ratio, rs.max, elapsed,
+        );
+        eprintln!(
+            "    residual: mean={:.2e}  median={:.2e}  p90={:.2e}  n_bad={}/{}",
+            rs.mean, rs.median, rs.p90, rs.n_above_tol, rs.n_total,
         );
 
         data.push(DataPoint {
@@ -171,7 +176,7 @@ fn main() {
             ratio,
             regge_frob: m.b_grav_frobenius,
             lin_frob,
-            residual: m.residual,
+            residual_stats: m.residual_stats.clone(),
             elapsed,
         });
     }
@@ -180,19 +185,21 @@ fn main() {
     eprintln!();
     eprintln!("--- Convergence Table ---");
     eprintln!(
-        "{:>4} {:>8} {:>8} {:>14} {:>14} {:>10} {:>10} {:>8}",
-        "N", "h", "dt", "B_regge", "B_linear", "ratio", "residual", "time(s)"
+        "{:>4} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>6} {:>8}",
+        "N", "ratio", "max_res", "mean_res", "median_res", "p90_res", "B_regge", "n_bad", "time(s)"
     );
     for d in &data {
+        let rs = &d.residual_stats;
         eprintln!(
-            "{:>4} {:>8.4} {:>8.4} {:>14.6e} {:>14.6e} {:>10.6} {:>10.2e} {:>8.1}",
+            "{:>4} {:>8.6} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>10.2e} {:>6} {:>8.1}",
             d.n,
-            d.h,
-            dt_ratio * d.h,
-            d.regge_frob,
-            d.lin_frob,
             d.ratio,
-            d.residual,
+            rs.max,
+            rs.mean,
+            rs.median,
+            rs.p90,
+            d.regge_frob,
+            rs.n_above_tol,
             d.elapsed,
         );
     }
@@ -219,17 +226,23 @@ fn main() {
     }
 
     // TSV to stdout
-    println!("N\th\tdt\tB_regge\tB_linear\tratio\tresidual\ttime_s");
+    println!("N\th\tdt\tB_regge\tB_linear\tratio\tmax_res\tmean_res\tmedian_res\tp90_res\tn_bad\tn_total\ttime_s");
     for d in &data {
+        let rs = &d.residual_stats;
         println!(
-            "{}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.2}",
+            "{}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{}\t{}\t{:.2}",
             d.n,
             d.h,
             dt_ratio * d.h,
             d.regge_frob,
             d.lin_frob,
             d.ratio,
-            d.residual,
+            rs.max,
+            rs.mean,
+            rs.median,
+            rs.p90,
+            rs.n_above_tol,
+            rs.n_total,
             d.elapsed,
         );
     }

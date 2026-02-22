@@ -59,6 +59,23 @@ pub struct Winding {
     pub name: String,
 }
 
+/// Per-vertex residual statistics for diagnosing solver quality.
+#[derive(Debug, Clone)]
+pub struct ResidualStats {
+    /// Maximum residual across all vertices.
+    pub max: f64,
+    /// Mean residual.
+    pub mean: f64,
+    /// Median residual.
+    pub median: f64,
+    /// 90th percentile residual.
+    pub p90: f64,
+    /// Number of vertices with residual above tolerance (1e-6).
+    pub n_above_tol: usize,
+    /// Total number of vertices measured.
+    pub n_total: usize,
+}
+
 /// Result of a single transformer measurement at one amplitude.
 #[derive(Debug, Clone)]
 pub struct TransformerMeasurement {
@@ -70,8 +87,15 @@ pub struct TransformerMeasurement {
     pub max_b_grav: f64,
     /// Average Frobenius norm of B_{ij} tidal tensor over secondary vertices.
     pub b_grav_frobenius: f64,
-    /// Newton solver residual.
-    pub residual: f64,
+    /// Per-vertex residual statistics.
+    pub residual_stats: ResidualStats,
+}
+
+impl TransformerMeasurement {
+    /// Max residual (backward-compatible convenience).
+    pub fn residual(&self) -> f64 {
+        self.residual_stats.max
+    }
 }
 
 /// Result of a full transformer experiment across multiple amplitudes.
@@ -313,14 +337,14 @@ pub fn run_transformer_continuation(
         };
 
         let emf = induced_gem_emf(&gem_flat, &gem_evolved, &secondary.vertices, config.dt);
-        let final_residual = compute_max_residual(&fc, &sq_lengths, &source);
+        let stats = compute_residual_stats(&fc, &sq_lengths, &source);
 
         measurements.push(TransformerMeasurement {
             amplitude,
             induced_emf: emf,
             max_b_grav,
             b_grav_frobenius,
-            residual: final_residual,
+            residual_stats: stats,
         });
 
         // Use this as the starting point for the next amplitude
@@ -474,6 +498,72 @@ fn compute_max_residual(
     max_res
 }
 
+/// Compute per-vertex residual statistics (for diagnostics).
+fn compute_residual_stats(
+    fc: &FoliatedComplex,
+    sq_lengths: &[f64],
+    source: &dyn StressEnergy,
+) -> ResidualStats {
+    use crate::lorentzian_regge::local_lorentzian_regge_action_grad;
+
+    let eight_pi = 8.0 * std::f64::consts::PI;
+    let mut residuals = Vec::new();
+
+    for target_slice in 1..fc.n_slices {
+        let source_slice = target_slice - 1;
+        for local_v in 0..fc.vertices_per_slice {
+            let v = fc.global_vertex(source_slice, local_v);
+            let free = tent_edges_for_vertex(fc, v, target_slice);
+            if free.is_empty() {
+                continue;
+            }
+            let grad = local_lorentzian_regge_action_grad(&fc.complex, sq_lengths, &free);
+            let matter = source.edge_sources(&fc.complex, sq_lengths);
+            let res: f64 = grad
+                .iter()
+                .zip(free.iter())
+                .map(|(&g, &ei)| (g + eight_pi * matter[ei]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            residuals.push(res);
+        }
+    }
+
+    if residuals.is_empty() {
+        return ResidualStats {
+            max: 0.0,
+            mean: 0.0,
+            median: 0.0,
+            p90: 0.0,
+            n_above_tol: 0,
+            n_total: 0,
+        };
+    }
+
+    residuals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = residuals.len();
+    let max = residuals[n - 1];
+    let mean = residuals.iter().sum::<f64>() / n as f64;
+    let median = if n % 2 == 0 {
+        (residuals[n / 2 - 1] + residuals[n / 2]) / 2.0
+    } else {
+        residuals[n / 2]
+    };
+    let p90_idx = ((n as f64 * 0.9) as usize).min(n - 1);
+    let p90 = residuals[p90_idx];
+    let tol = 1e-6;
+    let n_above_tol = residuals.iter().filter(|&&r| r > tol).count();
+
+    ResidualStats {
+        max,
+        mean,
+        median,
+        p90,
+        n_above_tol,
+        n_total: n,
+    }
+}
+
 fn run_single_amplitude(
     fc: &FoliatedComplex,
     flat_sq: &[f64],
@@ -490,33 +580,7 @@ fn run_single_amplitude(
     let source = PersistentMassCurrent::new(fc, primary, amplitude);
 
     // Evolve by sweeping tent moves over all vertices in each slice.
-    // For each target slice > 0, solve per-vertex tent moves.
-    let mut residual: f64 = 0.0;
-    for target_slice in 1..fc.n_slices {
-        // Sweep all vertices in the source slice
-        let source_slice = target_slice - 1;
-        for local_v in 0..fc.vertices_per_slice {
-            let v = fc.global_vertex(source_slice, local_v);
-            let free = tent_edges_for_vertex(fc, v, target_slice);
-            if free.is_empty() {
-                continue;
-            }
-            match solve_regge_with_source(
-                &fc.complex,
-                &mut sq_lengths,
-                &free,
-                &source,
-                &config.tent_config,
-            ) {
-                Ok(result) => {
-                    residual = residual.max(result.residual);
-                }
-                Err(_) => {
-                    residual = f64::NAN;
-                }
-            }
-        }
-    }
+    let (_residual, n_failed) = evolve_all_tents(fc, &mut sq_lengths, &source, &config.tent_config);
 
     // Extract GEM fields from the evolved geometry
     let gem_evolved = extract_gem_fields(&fc.complex, fc, &sq_lengths, config.dt, config.spacing);
@@ -545,12 +609,17 @@ fn run_single_amplitude(
     // Compute induced EMF: -d(B_g)/dt at the secondary
     let emf = induced_gem_emf(gem_flat, &gem_evolved, &secondary.vertices, config.dt);
 
+    let mut stats = compute_residual_stats(fc, &sq_lengths, &source);
+    if n_failed > 0 {
+        stats.max = f64::NAN;
+    }
+
     TransformerMeasurement {
         amplitude,
         induced_emf: emf,
         max_b_grav,
         b_grav_frobenius,
-        residual,
+        residual_stats: stats,
     }
 }
 

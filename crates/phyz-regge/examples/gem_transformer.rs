@@ -104,7 +104,7 @@ fn main() {
     for m in &result.measurements {
         eprintln!(
             "{:>12.4e} {:>14.6e} {:>14.6e} {:>12.2e}",
-            m.amplitude, m.induced_emf, m.max_b_grav, m.residual
+            m.amplitude, m.induced_emf, m.max_b_grav, m.residual()
         );
     }
 
@@ -195,7 +195,7 @@ fn main() {
     for m in &result.measurements {
         println!(
             "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-            m.amplitude, m.induced_emf, m.max_b_grav, m.b_grav_frobenius, m.residual
+            m.amplitude, m.induced_emf, m.max_b_grav, m.b_grav_frobenius, m.residual()
         );
     }
 }
