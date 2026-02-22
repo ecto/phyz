@@ -26,7 +26,7 @@ fn main() {
         println!("g_squared\tE0\tgap");
 
         for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
-            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5);
+            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5, None);
             println!("{:.6e}\t{:.6}\t{:.6}", g_sq, spec.ground_energy(), spec.gap());
         }
         println!();
@@ -46,7 +46,7 @@ fn main() {
         println!("g_squared\tE0\tgap");
 
         for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
-            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5);
+            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5, None);
             println!("{:.6e}\t{:.6}\t{:.6}", g_sq, spec.ground_energy(), spec.gap());
         }
         println!();
@@ -70,7 +70,7 @@ fn main() {
         println!("g_squared\tE0\tgap");
 
         for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
-            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5);
+            let spec = lanczos_diagonalize(&hs, &complex, g_sq, None, 5, None);
             println!("{:.6e}\t{:.6}\t{:.6}", g_sq, spec.ground_energy(), spec.gap());
         }
         println!();
@@ -98,7 +98,7 @@ fn main() {
         let n_t = complex.n_triangles();
         let b1 = n_e - complex.n_vertices + 1;
 
-        let spec = lanczos_diagonalize(&hs, &complex, 1.0, None, 5);
+        let spec = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);
         let gap = spec.gap();
 
         println!(

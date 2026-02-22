@@ -7,12 +7,20 @@ repository.workspace = true
 homepage.workspace = true
 description = "Hamiltonian lattice gauge theory on simplicial complexes"
 
+[features]
+default = []
+gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck", "dep:pollster"]
+
 [dependencies]
 phyz-regge.workspace = true
 nalgebra.workspace = true
 nalgebra-sparse = "0.10"
 num-complex = "0.4"
 rayon = "1.10"
+phyz-gpu = { workspace = true, optional = true }
+wgpu = { version = "23.0", optional = true }
+bytemuck = { version = "1.14", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
 
 [dev-dependencies]
 rand = "0.8"

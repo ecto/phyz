@@ -254,12 +254,14 @@ pub fn lanczos_diagonalize(
     g_squared: f64,
     metric_weights: Option<&[f64]>,
     n_eigenvalues: usize,
+    max_iter: Option<usize>,
 ) -> Spectrum {
     let dim = hilbert.dim();
 
-    // Choose max iterations: typically 10-20× the number of eigenvalues needed,
-    // but capped at dim.
-    let max_iter = (20 * n_eigenvalues).max(100).min(dim);
+    // Choose max iterations: caller override or default heuristic, capped at dim.
+    let max_iter = max_iter
+        .unwrap_or_else(|| (20 * n_eigenvalues).max(100))
+        .min(dim);
     let tol = 1e-10;
 
     eprintln!(
@@ -298,7 +300,7 @@ mod tests {
         let dense = diag::diagonalize(&h, Some(5));
 
         // Lanczos
-        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5);
+        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);
 
         // Ground state energy should match to high precision
         let e0_diff = (dense.ground_energy() - lanc.ground_energy()).abs();
@@ -334,7 +336,7 @@ mod tests {
         let h = build_hamiltonian(&hs, &complex, &params);
         let dense = diag::diagonalize(&h, Some(10));
 
-        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 10);
+        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 10, None);
 
         // Extract distinct energy levels from dense spectrum
         let mut dense_levels = vec![dense.energies[0]];
@@ -370,7 +372,7 @@ mod tests {
         let complex = single_pentachoron();
         let hs = U1HilbertSpace::new(&complex, 1);
 
-        let lanc = lanczos_diagonalize(&hs, &complex, 1e6, None, 3);
+        let lanc = lanczos_diagonalize(&hs, &complex, 1e6, None, 3, None);
         assert!(
             lanc.ground_energy().abs() < 1e-2,
             "Strong coupling E₀ = {}",
@@ -394,7 +396,7 @@ mod tests {
         let dense = diag::diagonalize(&h, Some(5));
 
         // Lanczos
-        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5);
+        let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);
 
         let e0_diff = (dense.ground_energy() - lanc.ground_energy()).abs();
         assert!(

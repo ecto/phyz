@@ -46,7 +46,7 @@ fn ground_state_simplicial(
         let spec = diag::diagonalize(&h, Some(1));
         spec.states[0].clone()
     } else {
-        let spec = lanczos_diagonalize(hs, complex, g_squared, mw, 1);
+        let spec = lanczos_diagonalize(hs, complex, g_squared, mw, 1, None);
         spec.states[0].clone()
     }
 }

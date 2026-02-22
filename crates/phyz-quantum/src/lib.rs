@@ -29,6 +29,11 @@ pub mod ryu_takayanagi;
 pub mod stabilizer;
 pub mod su2_quantum;
 
+#[cfg(feature = "gpu")]
+pub mod csr;
+#[cfg(feature = "gpu")]
+pub mod gpu_lanczos;
+
 pub use diag::Spectrum;
 pub use hamiltonian::KSParams;
 pub use hilbert::U1HilbertSpace;

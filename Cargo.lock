@@ -965,12 +965,16 @@ dependencies = [
 name = "phyz-quantum"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "nalgebra",
  "nalgebra-sparse",
  "num-complex",
+ "phyz-gpu",
  "phyz-regge",
+ "pollster",
  "rand 0.8.5",
  "rayon",
+ "wgpu",
 ]
 
 [[package]]

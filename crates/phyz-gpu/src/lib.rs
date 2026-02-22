@@ -8,6 +8,8 @@ pub mod gpu_batch_simulator;
 pub mod gpu_simulator;
 pub mod gpu_state;
 pub mod shaders;
+pub mod sparse;
+pub mod sparse_shaders;
 
 pub use contact_pipeline::ContactPipeline;
 pub use gpu_batch_simulator::GpuBatchSimulator;
