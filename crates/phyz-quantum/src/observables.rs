@@ -161,25 +161,31 @@ pub fn entanglement_entropy(
     state: &DVector<f64>,
     edges_a: &[usize],
 ) -> f64 {
-    let n_edges = hilbert.n_edges;
+    entanglement_entropy_raw(&hilbert.basis, hilbert.n_edges, state, edges_a)
+}
+
+/// Von Neumann entropy from a raw basis + state vector.
+///
+/// Same algorithm as `entanglement_entropy` but takes the basis directly,
+/// enabling use with any Hilbert space type (torus, SU(2), etc.).
+pub fn entanglement_entropy_raw(
+    basis: &[Vec<i32>],
+    n_edges: usize,
+    state: &DVector<f64>,
+    edges_a: &[usize],
+) -> f64 {
     let mut is_a = vec![false; n_edges];
     for &e in edges_a {
         is_a[e] = true;
     }
 
-    // Build reduced density matrix ρ_A.
-    // Group basis states by their restriction to edges_a.
-    // ρ_A[α,β] = Σ_{b} ψ(α,b) ψ(β,b) where α,β are configs on A and b on B.
     use std::collections::HashMap;
 
-    // Extract the A-part of each config.
-    let a_configs: Vec<Vec<i32>> = hilbert
-        .basis
+    let a_configs: Vec<Vec<i32>> = basis
         .iter()
         .map(|c| edges_a.iter().map(|&e| c[e]).collect())
         .collect();
 
-    // Assign indices to unique A-configs.
     let mut a_index: HashMap<Vec<i32>, usize> = HashMap::new();
     for ac in &a_configs {
         let len = a_index.len();
@@ -187,13 +193,9 @@ pub fn entanglement_entropy(
     }
     let dim_a = a_index.len();
 
-    // Build ρ_A.
     let mut rho: nalgebra::DMatrix<f64> = nalgebra::DMatrix::zeros(dim_a, dim_a);
 
-    // Group states by B-config. For each unique B-config, accumulate
-    // the outer product of the A-amplitudes.
-    let b_configs: Vec<Vec<i32>> = hilbert
-        .basis
+    let b_configs: Vec<Vec<i32>> = basis
         .iter()
         .map(|c| {
             (0..n_edges)
@@ -203,7 +205,6 @@ pub fn entanglement_entropy(
         })
         .collect();
 
-    // Group by B-config.
     let mut b_groups: HashMap<Vec<i32>, Vec<(usize, f64)>> = HashMap::new();
     for (i, bc) in b_configs.iter().enumerate() {
         b_groups
@@ -220,7 +221,6 @@ pub fn entanglement_entropy(
         }
     }
 
-    // Diagonalize ρ_A to get eigenvalues.
     let eig = rho.symmetric_eigen();
     let mut entropy = 0.0;
     for i in 0..eig.eigenvalues.len() {

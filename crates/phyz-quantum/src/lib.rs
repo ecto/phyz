@@ -25,7 +25,9 @@ pub mod lanczos;
 pub mod observables;
 pub mod triangulated_torus;
 pub mod qubit_map;
+pub mod ryu_takayanagi;
 pub mod stabilizer;
+pub mod su2_quantum;
 
 pub use diag::Spectrum;
 pub use hamiltonian::KSParams;
