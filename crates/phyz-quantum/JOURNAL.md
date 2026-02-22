@@ -1,5 +1,112 @@
 # phyz-quantum: Research Journal
 
+## 2026-02-22 — GPU Q-Bank Chunking + 5-Pentachoron Spectral Scaling
+
+### Problem
+
+The 5-pentachoron complex at Λ=1 has dim=11,667,105 and b₁=18. The Lanczos
+q_bank buffer (301 vectors × 11.6M × 4 bytes = 14 GB) exceeds wgpu's
+`max_storage_buffer_binding_size` (typically 4 GB on macOS Metal). wgpu panics
+at bind group creation.
+
+### Solution: chunked q_bank
+
+Split the q_bank into multiple GPU buffers that each fit within device limits.
+The `QBank` struct manages chunk allocation and routes all operations to the
+correct chunk transparently.
+
+| File | What |
+|------|------|
+| `phyz-gpu/src/sparse.rs` | Added `run_multi_dot_range()` and `run_batch_subtract_range()` to `GpuVecOps` — self-submitting variants that bind `scalar_result_buf` at a byte offset via `BufferBinding{offset, size}`. |
+| `phyz-quantum/src/gpu_lanczos.rs` | Added `QBank` struct with `new()`, `upload()`, `download()`, `copy_to_buf()`, `copy_from_buf()`, `run_multi_dot()`, `run_batch_subtract()`. Updated `gpu_lanczos_inner` and `recover_eigenvectors_gpu` to use `QBank` instead of raw `wgpu::Buffer`. |
+
+#### QBank::new sizing
+
+```
+limit = min(max_buffer_size, max_storage_buffer_binding_size)
+raw_vpc = limit / vec_bytes
+vpc = round_down(raw_vpc, min_storage_buffer_offset_alignment / elem_size)
+n_chunks = ceil(max_vecs / vpc)
+```
+
+5-pent F32: vpc=64 (aligned to 64, fits in ~2.8 GB per chunk), 5 chunks for
+301 vectors. Smaller systems (1-4 pent): single chunk, zero overhead.
+
+### Result: 5-pentachoron spectral scaling study
+
+First complete 5-pentachoron run. 7 coupling values, all converged:
+
+| n_pent | dim | b₁ | time per g² |
+|--------|-----|-----|-------------|
+| 1 | 219 | 6 | 0.01s (CPU) |
+| 2 | 3,135 | 9 | 0.2s (CPU) |
+| 3 | 47,475 | 12 | 1-2s (GPU) |
+| 4 | 735,129 | 15 | 5-7s (GPU) |
+| 5 | 11,667,105 | 18 | 95-107s (GPU) |
+
+#### Reliable physics (n ≤ 3 all g²; n ≤ 5 for g² ≤ 1)
+
+**Confinement crossover at g² ≈ 1.5-2.** Wilson loop ⟨W⟩ transitions from
+~0.45 (deconfined) to ~0.075 (confined). ⟨W⟩ becomes size-independent at
+g² ≥ 2, confirming deep confinement.
+
+**Area-law entanglement.** S_EE at g²=0.5 across sizes: 2.65 → 3.53 → 3.91
+→ 4.12 → 4.23. Increments shrink (+0.88, +0.38, +0.21, +0.11) — clear
+saturation consistent with the fixed shared-tetrahedron boundary area.
+
+**Spectral gap (reliable data, n ≤ 3):**
+- g²=0.5: 3.50 → 3.10 → 3.02 — closing (possibly gapless)
+- g²=1.0: 2.10 → 1.86 → 1.84 — approximately gapped
+- g²=5.0: 7.44 → 7.43 → 7.42 — firmly gapped (≈ 2g²)
+
+**Ground energy extensivity.** At g²=1: E₀ = -3.02, -4.83, -6.59, -8.66,
+-10.05 — roughly -2 per pentachoron added.
+
+#### f32 breakdown at large n, strong coupling
+
+The 4-pent and 5-pent data at g² ≥ 2 shows clear numerical artifacts:
+
+| g² | n=3 E₀ | n=4 E₀ | n=5 E₀ | Expected |
+|----|--------|--------|--------|----------|
+| 3.0 | -0.27 | -0.51 | **-7.40** | ≈ 0 |
+| 5.0 | -0.06 | **-3.66** | **-5.29** | ≈ 0 |
+
+At strong coupling E₀ → 0 (electric vacuum). The wildly negative values are
+ghost eigenvalues from accumulated f32 rounding errors in the Lanczos vectors
+at dim=11.6M. The algorithm "converges" (eigenvalue changes plateau) but to
+wrong values because orthogonality is lost even with double reorthogonalization.
+
+The gap and entanglement data are correspondingly unreliable for n≥4 at g²≥2.
+
+### Verification
+
+- 77 tests pass, 2 ignored (cargo test -p phyz-quantum --features gpu)
+- 10 phyz-gpu tests pass
+- gpu_spectral_scaling example completes all 35 data points without panic or OOM
+
+### Crate stats
+
+- phyz-gpu sparse.rs: +160 lines (two new methods)
+- phyz-quantum gpu_lanczos.rs: +160 lines (QBank struct + methods)
+- Total phyz-quantum: ~3,400 lines, 79 tests
+
+### Open questions
+
+- **f64 for strong coupling.** Need `SHADER_F64` GPU or mixed-precision
+  Lanczos (f32 SpMV + f64 reorthogonalization) to get reliable 5-pent data
+  at g² ≥ 2.
+
+- **Spectral gap scaling exponent.** Only 3 reliable data points per coupling
+  — can't determine β in gap ~ b₁^(-β) with confidence. Need 6+ pentachorons
+  or a different observable.
+
+- **Wilson loop α exponent.** The weak-coupling ⟨W⟩ scaling fits give
+  α ≈ 0.10-0.12 with R² > 0.97. This slow decay with system size is
+  consistent with deconfinement, but the exponent's physical meaning needs
+  further study.
+
+---
+
 ## 2026-02-21 — Phase 1: Foundation + First Results
 
 ### Motivation

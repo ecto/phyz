@@ -1058,6 +1058,197 @@ impl GpuVecOps {
         result
     }
 
+    /// Run multi-dot for a chunk of q_bank vectors, writing results at an offset
+    /// in `scalar_result_buf`.
+    ///
+    /// Computes `overlaps[k] = dot(q_chunk[k], w)` for `k = 0..n_vecs`, storing
+    /// results at `scalar_result_buf[result_offset .. result_offset + n_vecs]`.
+    pub fn run_multi_dot_range(
+        &self,
+        q_buf: &wgpu::Buffer,
+        w_buf: &wgpu::Buffer,
+        n_vecs: u32,
+        result_offset: u32,
+    ) {
+        if n_vecs == 0 {
+            return;
+        }
+
+        let elem_size = self.precision.elem_size() as u64;
+        let mut encoder = self.encoder();
+
+        // Phase 1: 2D dispatch (same as encode_multi_dot)
+        let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mdot_range_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params_data: [u32; 4] = [self.dim, n_vecs, self.dim, 0];
+        self.queue
+            .write_buffer(&params_buf, 0, bytemuck::cast_slice(&params_data));
+
+        let bg1 = self
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mdot_range_phase1_bg"),
+                layout: &self.multi_dot_phase1_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: q_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: w_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.partials_buf.as_entire_binding(),
+                    },
+                ],
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mdot_range_phase1"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.multi_dot_phase1_pipeline);
+            pass.set_bind_group(0, &bg1, &[]);
+            pass.dispatch_workgroups(self.n_workgroups, n_vecs, 1);
+        }
+
+        // Phase 2: reduce per vector, writing at offset in scalar_result_buf
+        let params2_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mdot_range_phase2_params"),
+            size: 8,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params2_data: [u32; 2] = [self.n_workgroups, n_vecs];
+        self.queue
+            .write_buffer(&params2_buf, 0, bytemuck::cast_slice(&params2_data));
+
+        let result_byte_offset = result_offset as u64 * elem_size;
+        let result_byte_size = n_vecs as u64 * elem_size;
+
+        let bg2 = self
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("mdot_range_phase2_bg"),
+                layout: &self.multi_dot_phase2_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params2_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.partials_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.scalar_result_buf,
+                            offset: result_byte_offset,
+                            size: std::num::NonZeroU64::new(result_byte_size),
+                        }),
+                    },
+                ],
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mdot_range_phase2"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.multi_dot_phase2_pipeline);
+            pass.set_bind_group(0, &bg2, &[]);
+            pass.dispatch_workgroups(n_vecs, 1, 1);
+        }
+
+        self.submit(encoder);
+    }
+
+    /// Run batch subtract for a chunk of q_bank vectors, reading overlaps from
+    /// an offset in `scalar_result_buf`.
+    ///
+    /// Computes `w -= sum_k overlaps[k] * q_chunk[k]` for `k = 0..n_vecs`,
+    /// reading overlaps from `scalar_result_buf[overlaps_offset..]`.
+    pub fn run_batch_subtract_range(
+        &self,
+        q_buf: &wgpu::Buffer,
+        w_buf: &wgpu::Buffer,
+        n_vecs: u32,
+        overlaps_offset: u32,
+    ) {
+        if n_vecs == 0 {
+            return;
+        }
+
+        let elem_size = self.precision.elem_size() as u64;
+        let mut encoder = self.encoder();
+
+        let params_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bsub_range_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params_data: [u32; 4] = [self.dim, n_vecs, self.dim, 0];
+        self.queue
+            .write_buffer(&params_buf, 0, bytemuck::cast_slice(&params_data));
+
+        let overlaps_byte_offset = overlaps_offset as u64 * elem_size;
+        let overlaps_byte_size = n_vecs as u64 * elem_size;
+
+        let bg = self
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bsub_range_bg"),
+                layout: &self.batch_subtract_pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: q_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: &self.scalar_result_buf,
+                            offset: overlaps_byte_offset,
+                            size: std::num::NonZeroU64::new(overlaps_byte_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: w_buf.as_entire_binding(),
+                    },
+                ],
+            });
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("bsub_range_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.batch_subtract_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(self.n_workgroups, 1, 1);
+        }
+
+        self.submit(encoder);
+    }
+
     /// Create a new command encoder.
     pub fn encoder(&self) -> wgpu::CommandEncoder {
         self.device

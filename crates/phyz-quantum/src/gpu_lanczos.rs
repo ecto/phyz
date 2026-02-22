@@ -12,6 +12,189 @@ use phyz_gpu::sparse::{request_device, GpuPrecision, GpuSparseMatrix, GpuVecOps}
 use phyz_regge::SimplicialComplex;
 use std::sync::Arc;
 
+/// Chunked q_bank that splits Lanczos vectors across multiple GPU buffers
+/// to stay within `max_storage_buffer_binding_size` / `max_buffer_size`.
+struct QBank {
+    chunks: Vec<wgpu::Buffer>,
+    vecs_per_chunk: u32,
+    vec_bytes: u64,
+}
+
+impl QBank {
+    fn new(ops: &GpuVecOps, max_vecs: u32) -> Self {
+        let elem_size = ops.precision.elem_size() as u64;
+        let vec_bytes = ops.dim as u64 * elem_size;
+
+        let limits = ops.device.limits();
+        let limit = (limits.max_buffer_size).min(limits.max_storage_buffer_binding_size as u64);
+
+        let raw_vpc = (limit / vec_bytes) as u32;
+
+        // Round down so that vpc * elem_size is a multiple of
+        // min_storage_buffer_offset_alignment (needed for scalar_result_buf offsets).
+        let align = limits.min_storage_buffer_offset_alignment;
+        let elems_per_align = (align as u64 / elem_size).max(1) as u32;
+        let vpc = (raw_vpc / elems_per_align) * elems_per_align;
+        assert!(
+            vpc > 0,
+            "single vector ({vec_bytes} bytes) exceeds GPU buffer limit ({limit} bytes)"
+        );
+
+        // If everything fits in one chunk, just use max_vecs directly.
+        if vpc >= max_vecs {
+            let size = max_vecs as u64 * vec_bytes;
+            let buf = ops.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("q_bank_chunk_0"),
+                size: size.max(elem_size),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            return Self {
+                chunks: vec![buf],
+                vecs_per_chunk: max_vecs,
+                vec_bytes,
+            };
+        }
+
+        let n_chunks = max_vecs.div_ceil(vpc);
+        let mut chunks = Vec::with_capacity(n_chunks as usize);
+        for i in 0..n_chunks {
+            let n = if i < n_chunks - 1 {
+                vpc
+            } else {
+                max_vecs - vpc * (n_chunks - 1)
+            };
+            let size = n as u64 * vec_bytes;
+            let buf = ops.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(&format!("q_bank_chunk_{i}")),
+                size: size.max(elem_size),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            chunks.push(buf);
+        }
+
+        Self {
+            chunks,
+            vecs_per_chunk: vpc,
+            vec_bytes,
+        }
+    }
+
+    fn chunk_and_local(&self, index: u32) -> (usize, u32) {
+        let chunk = (index / self.vecs_per_chunk) as usize;
+        let local = index % self.vecs_per_chunk;
+        (chunk, local)
+    }
+
+    fn upload(&self, ops: &GpuVecOps, index: u32, data: &[f64]) {
+        let (chunk, local) = self.chunk_and_local(index);
+        let offset = local as u64 * self.vec_bytes;
+        match ops.precision {
+            GpuPrecision::F64 => {
+                ops.queue
+                    .write_buffer(&self.chunks[chunk], offset, bytemuck::cast_slice(data));
+            }
+            GpuPrecision::F32 => {
+                let f32_data: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+                ops.queue.write_buffer(
+                    &self.chunks[chunk],
+                    offset,
+                    bytemuck::cast_slice(&f32_data),
+                );
+            }
+        }
+    }
+
+    fn download(&self, ops: &GpuVecOps, index: u32) -> Vec<f64> {
+        let (chunk, local) = self.chunk_and_local(index);
+        let offset = local as u64 * self.vec_bytes;
+
+        let staging = ops.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("qbank_download_staging"),
+            size: self.vec_bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = ops.encoder();
+        encoder.copy_buffer_to_buffer(&self.chunks[chunk], offset, &staging, 0, self.vec_bytes);
+        ops.queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        ops.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .expect("channel closed")
+            .expect("buffer map failed");
+
+        let data = slice.get_mapped_range();
+        let result = match ops.precision {
+            GpuPrecision::F64 => bytemuck::cast_slice::<u8, f64>(&data).to_vec(),
+            GpuPrecision::F32 => {
+                let f32s: &[f32] = bytemuck::cast_slice(&data);
+                f32s.iter().map(|&v| v as f64).collect()
+            }
+        };
+        drop(data);
+        staging.unmap();
+        result
+    }
+
+    fn copy_to_buf(&self, encoder: &mut wgpu::CommandEncoder, index: u32, buf: &wgpu::Buffer) {
+        let (chunk, local) = self.chunk_and_local(index);
+        let offset = local as u64 * self.vec_bytes;
+        encoder.copy_buffer_to_buffer(&self.chunks[chunk], offset, buf, 0, self.vec_bytes);
+    }
+
+    fn copy_from_buf(&self, encoder: &mut wgpu::CommandEncoder, buf: &wgpu::Buffer, index: u32) {
+        let (chunk, local) = self.chunk_and_local(index);
+        let offset = local as u64 * self.vec_bytes;
+        encoder.copy_buffer_to_buffer(buf, 0, &self.chunks[chunk], offset, self.vec_bytes);
+    }
+
+    fn run_multi_dot(&self, ops: &GpuVecOps, w_buf: &wgpu::Buffer, n_vecs: u32) {
+        if n_vecs == 0 {
+            return;
+        }
+        let mut offset = 0u32;
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            let start = i as u32 * self.vecs_per_chunk;
+            if start >= n_vecs {
+                break;
+            }
+            let end = ((i as u32 + 1) * self.vecs_per_chunk).min(n_vecs);
+            let count = end - start;
+            ops.run_multi_dot_range(chunk, w_buf, count, offset);
+            offset += count;
+        }
+    }
+
+    fn run_batch_subtract(&self, ops: &GpuVecOps, w_buf: &wgpu::Buffer, n_vecs: u32) {
+        if n_vecs == 0 {
+            return;
+        }
+        let mut offset = 0u32;
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            let start = i as u32 * self.vecs_per_chunk;
+            if start >= n_vecs {
+                break;
+            }
+            let end = ((i as u32 + 1) * self.vecs_per_chunk).min(n_vecs);
+            let count = end - start;
+            ops.run_batch_subtract_range(chunk, w_buf, count, offset);
+            offset += count;
+        }
+    }
+}
+
 /// Run GPU-accelerated Lanczos diagonalization.
 ///
 /// Same interface as [`crate::lanczos::lanczos_diagonalize`] but uses GPU
@@ -94,7 +277,7 @@ fn gpu_lanczos_inner(
     );
 
     // Allocate GPU buffers
-    let q_bank = ops.create_q_bank((m + 1) as u32);
+    let q_bank = QBank::new(&ops, (m + 1) as u32);
     let w_buf = ops.create_vec_buffer("w");
 
     // Tridiagonal elements (CPU)
@@ -112,7 +295,7 @@ fn gpu_lanczos_inner(
     }
 
     // Upload q0 to q_bank[0]
-    ops.upload_q_vec(&q_bank, 0, &q0);
+    q_bank.upload(&ops, 0, &q0);
 
     let mut prev_eigenvalues = vec![f64::MAX; k];
 
@@ -121,12 +304,9 @@ fn gpu_lanczos_inner(
 
         // Encode: w = H * q_j
         let mut encoder = ops.encoder();
-        // We need to read q_j from q_bank. SpMV reads from x_buf, so we
-        // need a buffer pointing to q_bank[j]. We'll use a copy.
+        // Copy q_j from (possibly chunked) q_bank into a flat buffer for SpMV.
         let qj_buf = ops.create_vec_buffer("qj");
-        let qj_offset = j as u64 * dim32 as u64 * precision.elem_size() as u64;
-        let vec_size = dim32 as u64 * precision.elem_size() as u64;
-        encoder.copy_buffer_to_buffer(&q_bank, qj_offset, &qj_buf, 0, vec_size);
+        q_bank.copy_to_buf(&mut encoder, j as u32, &qj_buf);
 
         // w = H * qj
         ops.encode_spmv(&mut encoder, &gpu_matrix, &qj_buf, &w_buf);
@@ -145,8 +325,7 @@ fn gpu_lanczos_inner(
         // w -= beta[j-1] * q_{j-1}
         if j > 0 {
             let qjm1_buf = ops.create_vec_buffer("qjm1");
-            let qjm1_offset = (j - 1) as u64 * dim32 as u64 * precision.elem_size() as u64;
-            encoder.copy_buffer_to_buffer(&q_bank, qjm1_offset, &qjm1_buf, 0, vec_size);
+            q_bank.copy_to_buf(&mut encoder, (j - 1) as u32, &qjm1_buf);
             // Need to submit the copy before reading qjm1_buf
             ops.submit(encoder);
 
@@ -159,35 +338,13 @@ fn gpu_lanczos_inner(
 
         // Full reorthogonalization via multi_dot + batch_subtract
         let n_vecs = (j + 1) as u32;
-        let mut encoder = ops.encoder();
-        ops.encode_multi_dot(&mut encoder, &q_bank, &w_buf, n_vecs);
-        ops.submit(encoder);
-
-        let mut encoder = ops.encoder();
-        ops.encode_batch_subtract(
-            &mut encoder,
-            &q_bank,
-            &ops.scalar_result_buf,
-            &w_buf,
-            n_vecs,
-        );
-        ops.submit(encoder);
+        q_bank.run_multi_dot(&ops, &w_buf, n_vecs);
+        q_bank.run_batch_subtract(&ops, &w_buf, n_vecs);
 
         // Double reorthogonalization for f32
         if double_reorth {
-            let mut encoder = ops.encoder();
-            ops.encode_multi_dot(&mut encoder, &q_bank, &w_buf, n_vecs);
-            ops.submit(encoder);
-
-            let mut encoder = ops.encoder();
-            ops.encode_batch_subtract(
-                &mut encoder,
-                &q_bank,
-                &ops.scalar_result_buf,
-                &w_buf,
-                n_vecs,
-            );
-            ops.submit(encoder);
+            q_bank.run_multi_dot(&ops, &w_buf, n_vecs);
+            q_bank.run_batch_subtract(&ops, &w_buf, n_vecs);
         }
 
         // --- Round trip 2: norm -> beta ---
@@ -233,7 +390,7 @@ fn gpu_lanczos_inner(
         // q_{j+1} = w / beta
         let mut encoder = ops.encoder();
         ops.encode_scale(&mut encoder, 1.0 / b, &w_buf);
-        ops.encode_copy_to_q_bank(&mut encoder, &w_buf, &q_bank, (j + 1) as u32);
+        q_bank.copy_from_buf(&mut encoder, &w_buf, (j + 1) as u32);
         ops.submit(encoder);
     }
 
@@ -266,7 +423,7 @@ fn recover_eigenvectors_gpu(
     alpha: &[f64],
     beta: &[f64],
     ops: &GpuVecOps,
-    q_bank: &wgpu::Buffer,
+    q_bank: &QBank,
     dim: usize,
     k: usize,
 ) -> Spectrum {
@@ -295,7 +452,7 @@ fn recover_eigenvectors_gpu(
     // Download all Lanczos vectors from GPU
     let mut q_vecs: Vec<Vec<f64>> = Vec::with_capacity(n_q);
     for j in 0..n_q {
-        q_vecs.push(ops.download_q_vec(q_bank, j as u32));
+        q_vecs.push(q_bank.download(ops, j as u32));
     }
 
     let mut energies = Vec::with_capacity(n);
