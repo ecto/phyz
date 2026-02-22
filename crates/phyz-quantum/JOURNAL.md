@@ -547,3 +547,81 @@ single pentachoron's 6/10 = 0.60, and much higher than the toric code's
 10/18 = 0.56 at comparable size.
 
 ---
+
+## 2026-02-21 — Lanczos Eigensolver + Finite-Size Scaling
+
+### Implementation
+
+Matrix-free Lanczos with full reorthogonalization. Computes H|v⟩ on-the-fly
+without storing the full Hamiltonian — O(dim × n_plaquettes) per iteration
+instead of O(dim²) storage.
+
+Verified against dense diag on 1-pent (dim=219, E₀ and gap match to 1e-8)
+and 2-pent (dim=3135, E₀ match to 1e-6).
+
+### New capability: 3-pentachoron at Λ=1
+
+| Property | Value |
+|----------|-------|
+| Vertices | 7 |
+| Edges | 18 |
+| Triangles | 22 |
+| b₁ | 12 |
+| Hilbert dim | 46,593 |
+
+This is 213× the 1-pentachoron Hilbert space — completely out of reach for
+dense diag but handled by Lanczos in ~100 iterations.
+
+### Result 1: Finite-size scaling at g²=1
+
+| n_pent | V | E | T | b₁ | dim | E₀ | Gap | Gap/plaq | Gap/b₁ |
+|--------|---|---|---|----|------|------|------|----------|--------|
+| 1 | 5 | 10 | 10 | 6 | 219 | -3.024 | 2.100 | 0.210 | 0.350 |
+| 2 | 6 | 14 | 16 | 9 | 3,135 | -4.827 | 1.864 | 0.117 | 0.207 |
+| 3 | 7 | 18 | 22 | 12 | 46,593 | -6.609 | 1.760 | 0.080 | 0.147 |
+
+**The gap decreases with system size** — consistent with a confining theory
+approaching the thermodynamic limit. The finite-size gap ratio between
+successive systems:
+- 2-pent/1-pent: 0.888
+- 3-pent/2-pent: 0.944
+
+The convergence is slowing (ratio approaching 1), suggesting the gap is
+stabilizing. A rough extrapolation: Δ(∞) ≈ 1.6-1.7 at g²=1.
+
+**The gap/plaquette is NOT universal at finite size.** It decreases as 1/n_pent:
+0.210, 0.117, 0.080. This invalidates the earlier claim from the 1-pent vs
+hyp3D comparison. The agreement at n=1 was a numerical coincidence.
+
+However, the gap/b₁ ratio may stabilize: 0.350, 0.207, 0.147 — the sequence
+is converging more slowly. Need 4-pentachoron data to determine the asymptotic
+behavior.
+
+### Result 2: Coupling dependence at 3-pentachoron
+
+| g² | 1-pent E₀ | 3-pent E₀ | 1-pent gap | 3-pent gap | Ratio |
+|----|-----------|-----------|------------|------------|-------|
+| 0.5 | -8.885 | -18.540 | 3.501 | 2.928 | 0.836 |
+| 1.0 | -3.024 | -6.609 | 2.100 | 1.760 | 0.838 |
+| 2.0 | -0.428 | -0.948 | 2.495 | 2.252 | 0.903 |
+| 5.0 | -0.027 | -0.059 | 7.443 | 7.422 | 0.997 |
+
+The gap ratio 3-pent/1-pent is ~0.84 in the crossover region, rising to 1.0
+in strong coupling. The ground state energy scales nearly linearly with
+n_pent (E₀ ∝ volume), confirming extensivity.
+
+### Updated interpretation
+
+The earlier "gap-per-plaquette universality" between simplicial and hypercubic
+was premature — it was comparing systems of very different sizes (and the
+agreement was coincidental). The correct picture:
+
+1. **The gap decreases with volume** on simplicial lattices, consistent with
+   confining behavior in the thermodynamic limit.
+2. **The simplicial gap is intrinsically smaller** than the hypercubic gap at
+   matched coupling, even after accounting for volume effects. The mechanism
+   (denser Hilbert space connectivity from triangular plaquettes) is correct.
+3. **The gap ratio simplicial/hypercubic ≈ 0.52** at g²=1 is still valid for
+   comparing lattice types at the same system size (Λ=1,2 on single complexes).
+
+---
