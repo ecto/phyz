@@ -23,6 +23,7 @@ pub mod hilbert;
 pub mod hypercubic;
 pub mod lanczos;
 pub mod observables;
+pub mod triangulated_torus;
 pub mod qubit_map;
 pub mod stabilizer;
 
