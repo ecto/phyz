@@ -428,3 +428,122 @@ encoding more logical qubits than toric codes.
    color code constructions.
 
 ---
+
+## 2026-02-21 — 2-Pentachoron Analysis (Λ=1, dim=3135)
+
+### Complex
+
+Two pentachorons sharing face [0,1,2,3]: pent1 = [0,1,2,3,4], pent2 = [0,1,2,3,5].
+
+| Property | 1-pent | 2-pent |
+|----------|--------|--------|
+| Vertices | 5 | 6 |
+| Edges | 10 | 14 |
+| Triangles | 10 | 16 |
+| b₁ | 6 | 9 |
+| Hilbert dim (Λ=1) | 219 | 3,135 |
+
+### Result 1: Finite-size gap scaling
+
+The gap shrinks as system size increases — expected for a confining theory
+approaching the thermodynamic limit:
+
+| g² | 1-pent gap | 2-pent gap | Ratio (2p/1p) |
+|----|------------|------------|---------------|
+| 0.1 | 16.55 | 14.65 | 0.885 |
+| 0.5 | 3.50 | 3.10 | 0.886 |
+| 1.0 | 2.10 | 1.86 | 0.888 |
+| 1.5 | 1.84 | 1.71 | 0.930 |
+| 2.0 | 2.50 | 2.35 | 0.941 |
+| 5.0 | 7.44 | 7.43 | 0.998 |
+| 10.0 | 14.99 | 14.99 | 1.000 |
+
+The gap ratio is **0.885–0.888** in weak-to-moderate coupling (g² ≤ 1),
+rising toward 1.0 in strong coupling where the gap is dominated by the
+electric term (extensive in system size). The ~11% gap reduction from
+doubling the complex is mild — consistent with a gapped phase (confining).
+
+### Result 2: Wilson loops — all 9 loops are length 3
+
+All 9 fundamental loops on the 2-pentachoron complex have **equal length (3
+edges)**. This means all fundamental cycles are single-triangle loops — the
+topology doesn't yet give us loops of different areas.
+
+| g² | ⟨W⟩ (avg over 9 loops) | -log⟨W⟩ |
+|----|------------------------|---------|
+| 0.1 | 0.475 | 0.744 |
+| 1.0 | 0.453 | 0.793 |
+| 2.0 | 0.178 | 1.725 |
+| 10 | 6.67e-3 | 5.01 |
+| 50 | 2.67e-4 | 8.23 |
+
+The Wilson loop values match the 1-pentachoron results closely (⟨W⟩ = 0.467
+at g²=1 for 1-pent vs 0.453 for 2-pent). The slight decrease at moderate
+coupling is consistent with the smaller gap — the ground state has slightly
+more electric fluctuations on the larger lattice.
+
+**For a proper area law test, need loops enclosing different numbers of
+triangles.** This requires either (a) a 3+ pentachoron complex where some
+fundamental loops wrap around multiple triangles, or (b) composite Wilson
+loops built from products of fundamental loops.
+
+### Result 3: Entanglement entropy across the shared face
+
+Natural bipartition: 10 edges of pent1 (set A) vs 4 edges unique to pent2
+(set B).
+
+| g² | S_A | S_max |
+|----|-----|-------|
+| 0.1 | **2.70** | 2.48 |
+| 0.5 | 2.63 | 2.48 |
+| 1.0 | **2.31** | 2.48 |
+| 2.0 | 0.53 | 2.48 |
+| 5.0 | 0.02 | 2.48 |
+| 100 | 0.00 | 2.48 |
+
+At weak coupling, the entanglement entropy **exceeds** S_max = ln(dim_B) ≈
+2.48! This is because the partition A has 10 edges while B has only 4 — the
+reduced density matrix ρ_A can have rank up to dim(B), so S_A ≤ ln(dim_B)
+should hold. The value S_A = 2.70 > 2.48 is surprising and warrants
+investigation — it may indicate the partition sizes (10 vs 4 edges) create a
+highly entangled ground state.
+
+At strong coupling (g² ≥ 5), entropy drops to ~0 as expected (ground state ≈
+product state |0,...,0⟩).
+
+Symmetric half-half cut (7/7 edges): S = 4.11 at g²=0.1, S = 3.58 at g²=1.0.
+
+### Result 4: Broken symmetry — multiplet structure
+
+The 2-pentachoron breaks the S₅ symmetry of the single pentachoron. The
+symmetry group is now S₄ × Z₂ (permutations of the 4 shared vertices times
+the exchange of vertices 4↔5).
+
+Low-lying multiplets at g²=1:
+
+| Level | Energy | Degeneracy |
+|-------|--------|------------|
+| 0 | -4.827 | 1 (ground state) |
+| 1 | -2.963 | **3** |
+| 2 | -2.521 | 3 |
+| 3 | -2.436 | 3 |
+| 4 | -2.257 | 1 |
+| 5 | -2.121 | 1 |
+| 6 | -1.810 | 3 |
+| 7 | -1.701 | 3 |
+
+The dominant degeneracy is **3-fold**, corresponding to the 3D irrep of the
+tetrahedral (S₄) subgroup acting on the shared face [0,1,2,3]. Compare with
+the 6-fold degeneracy of the single pentachoron (from S₅).
+
+### Result 5: Stabilizer code
+
+| Complex | [[n, k, d]] | Star weights | Plaquette weight |
+|---------|-------------|--------------|------------------|
+| 2-pent | [[14, 9, 3]] | 4-5 | 3 |
+
+Matches the Phase 1 result. The rate k/n = 9/14 = 0.64 is higher than the
+single pentachoron's 6/10 = 0.60, and much higher than the toric code's
+10/18 = 0.56 at comparable size.
+
+---
