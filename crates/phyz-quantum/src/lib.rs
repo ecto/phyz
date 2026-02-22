@@ -21,6 +21,7 @@ pub mod gauss_law;
 pub mod hamiltonian;
 pub mod hilbert;
 pub mod hypercubic;
+pub mod lanczos;
 pub mod observables;
 pub mod qubit_map;
 pub mod stabilizer;
