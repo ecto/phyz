@@ -1235,6 +1235,211 @@ impl WasmMpmSim {
 }
 
 // ================================================================
+// Sand Hourglass (DEM with funnel boundaries)
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmHourglassSim {
+    n: usize,
+    px: Vec<f64>,
+    py: Vec<f64>,
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    radius: f64,
+    stiffness: f64,
+    contact_damp: f64,
+    friction: f64,
+    wall_bounce: f64,
+    /// Y coordinate of the neck center
+    neck_y: f64,
+    /// Half-width of the neck opening
+    neck_half: f64,
+    /// Slope of the funnel walls (dx/dy from neck outward)
+    funnel_slope: f64,
+    /// Total height of the hourglass
+    height: f64,
+    time: f64,
+    dt: f64,
+}
+
+#[wasm_bindgen]
+impl WasmHourglassSim {
+    pub fn new() -> WasmHourglassSim {
+        let r = 0.012;
+        let spacing = r * 2.2;
+        let neck_y = 0.5;
+        let neck_half = r * 2.5; // narrow opening ~5 particle diameters
+        let funnel_slope = 0.8; // how wide the funnel opens
+        let height = 1.1;
+
+        // Fill upper chamber with particles
+        let mut px = vec![];
+        let mut py = vec![];
+        let y_start = neck_y + 0.06; // just above neck
+        let y_end = height - r;
+        let mut y = y_start;
+        while y < y_end {
+            let half_w = neck_half + (y - neck_y) * funnel_slope;
+            let mut x = -half_w + r;
+            while x < half_w - r {
+                px.push(x);
+                py.push(y);
+                x += spacing;
+            }
+            y += spacing * 0.866; // hex packing
+        }
+        let n = px.len();
+
+        WasmHourglassSim {
+            n,
+            px,
+            py,
+            vx: vec![0.0; n],
+            vy: vec![0.0; n],
+            radius: r,
+            stiffness: 80000.0,
+            contact_damp: 200.0,
+            friction: 0.6,
+            wall_bounce: 0.05,
+            neck_y,
+            neck_half,
+            funnel_slope,
+            height,
+            time: 0.0,
+            dt: 0.00012,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let g = -GRAVITY;
+        let r = self.radius;
+        for _ in 0..steps {
+            // Gravity
+            for i in 0..self.n {
+                self.vy[i] += g * self.dt;
+            }
+            // Particle-particle contacts
+            for i in 0..self.n {
+                for j in (i + 1)..self.n {
+                    let dx = self.px[j] - self.px[i];
+                    let dy = self.py[j] - self.py[i];
+                    let d2 = dx * dx + dy * dy;
+                    let mind = r * 2.0;
+                    if d2 < mind * mind && d2 > 1e-20 {
+                        let d = d2.sqrt();
+                        let nx = dx / d;
+                        let ny = dy / d;
+                        let overlap = mind - d;
+                        let dvn = (self.vx[j] - self.vx[i]) * nx + (self.vy[j] - self.vy[i]) * ny;
+                        let fn_mag = (self.stiffness * overlap - self.contact_damp * dvn).max(0.0);
+                        let dvt =
+                            (self.vx[j] - self.vx[i]) * (-ny) + (self.vy[j] - self.vy[i]) * nx;
+                        let ft_mag = if dvt.abs() > 0.001 {
+                            (-self.friction * fn_mag).max(-dvt.abs() * 500.0) * dvt.signum()
+                        } else {
+                            0.0
+                        };
+                        let fx = fn_mag * nx + ft_mag * (-ny);
+                        let fy = fn_mag * ny + ft_mag * nx;
+                        self.vx[i] -= fx * self.dt;
+                        self.vy[i] -= fy * self.dt;
+                        self.vx[j] += fx * self.dt;
+                        self.vy[j] += fy * self.dt;
+                        let sep = overlap * 0.25;
+                        self.px[i] -= sep * nx;
+                        self.py[i] -= sep * ny;
+                        self.px[j] += sep * nx;
+                        self.py[j] += sep * ny;
+                    }
+                }
+            }
+            // Hourglass boundary enforcement
+            for i in 0..self.n {
+                // Floor
+                if self.py[i] < r {
+                    self.py[i] = r;
+                    if self.vy[i] < 0.0 {
+                        self.vy[i] *= -self.wall_bounce;
+                    }
+                    self.vx[i] *= 1.0 - self.friction * self.dt * 10.0;
+                }
+                // Ceiling
+                if self.py[i] > self.height - r {
+                    self.py[i] = self.height - r;
+                    if self.vy[i] > 0.0 {
+                        self.vy[i] *= -self.wall_bounce;
+                    }
+                }
+                // Funnel walls: allowed half-width at current y
+                let dy_from_neck = (self.py[i] - self.neck_y).abs();
+                let half_w = self.neck_half + dy_from_neck * self.funnel_slope;
+                if self.px[i] > half_w - r {
+                    self.px[i] = half_w - r;
+                    // Reflect velocity along funnel normal
+                    if self.px[i] > 0.0 && self.vx[i] > 0.0 {
+                        self.vx[i] *= -self.wall_bounce;
+                    }
+                    self.vy[i] *= 1.0 - self.friction * self.dt * 5.0;
+                }
+                if self.px[i] < -(half_w - r) {
+                    self.px[i] = -(half_w - r);
+                    if self.px[i] < 0.0 && self.vx[i] < 0.0 {
+                        self.vx[i] *= -self.wall_bounce;
+                    }
+                    self.vy[i] *= 1.0 - self.friction * self.dt * 5.0;
+                }
+            }
+            // Integrate positions
+            for i in 0..self.n {
+                self.px[i] += self.vx[i] * self.dt;
+                self.py[i] += self.vy[i] * self.dt;
+            }
+            self.time += self.dt;
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * 2);
+        for i in 0..self.n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    pub fn num_particles(&self) -> usize {
+        self.n
+    }
+
+    pub fn particle_radius(&self) -> f64 {
+        self.radius
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Hourglass outline as [x0,y0, x1,y1, ...] for rendering the glass shape.
+    pub fn outline(&self) -> Vec<f64> {
+        let ny = self.neck_y;
+        let nh = self.neck_half;
+        let s = self.funnel_slope;
+        let h = self.height;
+        let top_half = nh + (h - ny) * s;
+        let bot_half = nh + ny * s;
+        // Right side from bottom-right up to neck, then to top-right, and back down left side
+        vec![
+            bot_half, 0.0,
+            nh, ny,
+            top_half, h,
+            -top_half, h,
+            -nh, ny,
+            -bot_half, 0.0,
+        ]
+    }
+}
+
+// ================================================================
 // World Generation + Training (Phase 7: phyz-world)
 // ================================================================
 
@@ -1641,6 +1846,8 @@ pub struct WasmMdSim {
     bond_b: Vec<usize>,
     bond_k: f64,
     bond_r0: f64,
+    /// Velocity damping per step (1.0 = no damping). Used for cooling simulations.
+    damping: f64,
     time: f64,
     dt: f64,
 }
@@ -1680,6 +1887,7 @@ impl WasmMdSim {
             bond_b: vec![],
             bond_k: 0.0,
             bond_r0: 0.0,
+            damping: 1.0,
             time: 0.0,
             dt: 0.0001,
         };
@@ -1720,6 +1928,7 @@ impl WasmMdSim {
             bond_b: vec![],
             bond_k: 0.0,
             bond_r0: 0.0,
+            damping: 1.0,
             time: 0.0,
             dt: 0.0001,
         };
@@ -1767,8 +1976,54 @@ impl WasmMdSim {
             bond_b,
             bond_k: 5000.0,
             bond_r0,
+            damping: 1.0,
             time: 0.0,
             dt: 0.0001,
+        };
+        sim.compute_forces();
+        sim
+    }
+
+    /// Hot gas that gradually cools to form a crystal via LJ attraction.
+    pub fn cooling_gas() -> WasmMdSim {
+        let n = 120;
+        let sigma = 0.035;
+        let box_size = 0.8;
+        let cols = 10;
+        let sp = box_size / (cols as f64 + 1.0);
+        let mut px = Vec::with_capacity(n);
+        let mut py = Vec::with_capacity(n);
+        let mut vx = Vec::with_capacity(n);
+        let mut vy = Vec::with_capacity(n);
+        for i in 0..n {
+            let col = i % cols;
+            let row = i / cols;
+            px.push(sp * (col as f64 + 0.5 + 0.2 * ((i as f64 * 1.618).sin())));
+            py.push(sp * (row as f64 + 0.5 + 0.2 * ((i as f64 * 2.718).cos())));
+            // High initial velocities (hot gas)
+            let s = (i as f64 + 0.5) * 2.3998;
+            vx.push((s * 7.31).sin() * 6.0);
+            vy.push((s * 11.17).cos() * 6.0);
+        }
+        let mut sim = WasmMdSim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            ax: vec![0.0; n],
+            ay: vec![0.0; n],
+            epsilon: 1.5, // stronger LJ for visible attraction
+            sigma,
+            r_cut: 2.5 * sigma,
+            box_size,
+            bond_a: vec![],
+            bond_b: vec![],
+            bond_k: 0.0,
+            bond_r0: 0.0,
+            damping: 0.9998, // gradual cooling
+            time: 0.0,
+            dt: 0.00008,
         };
         sim.compute_forces();
         sim
@@ -1788,6 +2043,13 @@ impl WasmMdSim {
             for i in 0..self.n {
                 self.vx[i] += 0.5 * (ax_old[i] + self.ax[i]) * self.dt;
                 self.vy[i] += 0.5 * (ay_old[i] + self.ay[i]) * self.dt;
+            }
+            // Apply velocity damping (thermostat for cooling simulations)
+            if self.damping < 1.0 {
+                for i in 0..self.n {
+                    self.vx[i] *= self.damping;
+                    self.vy[i] *= self.damping;
+                }
             }
             self.time += self.dt;
         }
@@ -2495,8 +2757,268 @@ impl WasmGravitySim {
         self.trail_x[idx].len()
     }
 
+    /// Two disk galaxies colliding — tidal tails form as they merge.
+    pub fn galaxy_collision() -> WasmGravitySim {
+        let g: f64 = 1.0;
+        let n_per_galaxy = 200;
+        let n = 2 + n_per_galaxy * 2; // 2 central masses + disk particles
+
+        let mut px = Vec::with_capacity(n);
+        let mut py = Vec::with_capacity(n);
+        let mut vx = Vec::with_capacity(n);
+        let mut vy = Vec::with_capacity(n);
+        let mut mass = Vec::with_capacity(n);
+
+        let core_mass = 50.0;
+        let particle_mass = 0.01;
+
+        // Galaxy A: center at (-3, -0.5), moving right
+        let (cx_a, cy_a) = (-3.0_f64, -0.5_f64);
+        let (cvx_a, cvy_a) = (0.6_f64, 0.15_f64);
+        px.push(cx_a);
+        py.push(cy_a);
+        vx.push(cvx_a);
+        vy.push(cvy_a);
+        mass.push(core_mass);
+
+        // Galaxy B: center at (3, 0.5), moving left
+        let (cx_b, cy_b) = (3.0_f64, 0.5_f64);
+        let (cvx_b, cvy_b) = (-0.6_f64, -0.15_f64);
+        px.push(cx_b);
+        py.push(cy_b);
+        vx.push(cvx_b);
+        vy.push(cvy_b);
+        mass.push(core_mass);
+
+        // Simple LCG for deterministic pseudo-random in no_std-friendly way
+        let mut seed: u64 = 42;
+        let mut rng = || -> f64 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as f64) / (u32::MAX as f64)
+        };
+
+        // Populate disk particles for each galaxy
+        for (cx, cy, cvx, cvy) in
+            [(cx_a, cy_a, cvx_a, cvy_a), (cx_b, cy_b, cvx_b, cvy_b)]
+        {
+            for _ in 0..n_per_galaxy {
+                // Disk distribution: r from 0.3..2.5, uniform angle
+                let r = 0.3 + 2.2 * rng().sqrt(); // sqrt for uniform area
+                let angle = rng() * std::f64::consts::TAU;
+                let x = cx + r * angle.cos();
+                let y = cy + r * angle.sin();
+                // Circular orbit velocity around core
+                let orbital_v = (g * core_mass / r).sqrt();
+                let vxi = cvx - orbital_v * angle.sin();
+                let vyi = cvy + orbital_v * angle.cos();
+                px.push(x);
+                py.push(y);
+                vx.push(vxi);
+                vy.push(vyi);
+                mass.push(particle_mass);
+            }
+        }
+
+        WasmGravitySim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            mass,
+            softening: 0.15,
+            time: 0.0,
+            dt: 0.002,
+            trail_x: vec![Vec::new(); n],
+            trail_y: vec![Vec::new(); n],
+            max_trail: 0, // no per-body trails for galaxy
+            variant: 3,
+            g_const: g,
+            gr_strength: 0.0,
+        }
+    }
+
+    /// Return interleaved velocity magnitudes for coloring by speed.
+    pub fn speeds(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n);
+        for i in 0..self.n {
+            out.push((self.vx[i] * self.vx[i] + self.vy[i] * self.vy[i]).sqrt());
+        }
+        out
+    }
+
     pub fn num_bodies(&self) -> usize {
         self.n
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+}
+
+// ================================================================
+// Interactive Gravity Sandbox
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmGravitySandboxSim {
+    px: Vec<f64>,
+    py: Vec<f64>,
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    mass: Vec<f64>,
+    trail_x: Vec<Vec<f64>>,
+    trail_y: Vec<Vec<f64>>,
+    max_trail: usize,
+    softening: f64,
+    g_const: f64,
+    merge_dist: f64,
+    time: f64,
+    dt: f64,
+}
+
+#[wasm_bindgen]
+impl WasmGravitySandboxSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmGravitySandboxSim {
+        // Start with a central massive body
+        WasmGravitySandboxSim {
+            px: vec![0.0],
+            py: vec![0.0],
+            vx: vec![0.0],
+            vy: vec![0.0],
+            mass: vec![10.0],
+            trail_x: vec![Vec::new()],
+            trail_y: vec![Vec::new()],
+            max_trail: 400,
+            softening: 0.05,
+            g_const: 10.0,
+            merge_dist: 0.08,
+            time: 0.0,
+            dt: 0.001,
+        }
+    }
+
+    /// Add a new body at (x, y) with velocity (vx, vy) and given mass.
+    pub fn add_body(&mut self, x: f64, y: f64, vx: f64, vy: f64, m: f64) {
+        self.px.push(x);
+        self.py.push(y);
+        self.vx.push(vx);
+        self.vy.push(vy);
+        self.mass.push(m);
+        self.trail_x.push(Vec::new());
+        self.trail_y.push(Vec::new());
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let eps2 = self.softening * self.softening;
+        let md2 = self.merge_dist * self.merge_dist;
+        for _ in 0..steps {
+            let n = self.px.len();
+            if n == 0 {
+                break;
+            }
+            let mut ax = vec![0.0; n];
+            let mut ay = vec![0.0; n];
+            // Track merges
+            let mut merged: Vec<bool> = vec![false; n];
+            for i in 0..n {
+                if merged[i] {
+                    continue;
+                }
+                for j in (i + 1)..n {
+                    if merged[j] {
+                        continue;
+                    }
+                    let dx = self.px[j] - self.px[i];
+                    let dy = self.py[j] - self.py[i];
+                    let r2 = dx * dx + dy * dy + eps2;
+                    let r = r2.sqrt();
+                    let r3 = r * r2;
+                    let f = self.g_const / r3;
+                    ax[i] += f * self.mass[j] * dx;
+                    ay[i] += f * self.mass[j] * dy;
+                    ax[j] -= f * self.mass[i] * dx;
+                    ay[j] -= f * self.mass[i] * dy;
+                    // Merge check
+                    if dx * dx + dy * dy < md2 && self.mass[i] > 0.01 && self.mass[j] > 0.01 {
+                        let mi = self.mass[i];
+                        let mj = self.mass[j];
+                        let total = mi + mj;
+                        self.px[i] = (self.px[i] * mi + self.px[j] * mj) / total;
+                        self.py[i] = (self.py[i] * mi + self.py[j] * mj) / total;
+                        self.vx[i] = (self.vx[i] * mi + self.vx[j] * mj) / total;
+                        self.vy[i] = (self.vy[i] * mi + self.vy[j] * mj) / total;
+                        self.mass[i] = total;
+                        merged[j] = true;
+                    }
+                }
+            }
+            // Remove merged bodies (reverse order to preserve indices)
+            for j in (0..n).rev() {
+                if merged[j] {
+                    self.px.remove(j);
+                    self.py.remove(j);
+                    self.vx.remove(j);
+                    self.vy.remove(j);
+                    self.mass.remove(j);
+                    self.trail_x.remove(j);
+                    self.trail_y.remove(j);
+                    ax.remove(j);
+                    ay.remove(j);
+                }
+            }
+            // Leapfrog
+            let n = self.px.len();
+            for i in 0..n {
+                self.vx[i] += ax[i] * self.dt;
+                self.vy[i] += ay[i] * self.dt;
+                self.px[i] += self.vx[i] * self.dt;
+                self.py[i] += self.vy[i] * self.dt;
+            }
+            self.time += self.dt;
+        }
+        // Record trails
+        let n = self.px.len();
+        for i in 0..n {
+            self.trail_x[i].push(self.px[i]);
+            self.trail_y[i].push(self.py[i]);
+            if self.trail_x[i].len() > self.max_trail {
+                self.trail_x[i].remove(0);
+                self.trail_y[i].remove(0);
+            }
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        let n = self.px.len();
+        let mut out = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    pub fn masses(&self) -> Vec<f64> {
+        self.mass.clone()
+    }
+
+    pub fn trail_for(&self, idx: usize) -> Vec<f64> {
+        if idx >= self.trail_x.len() {
+            return vec![];
+        }
+        let n = self.trail_x[idx].len();
+        let mut out = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            out.push(self.trail_x[idx][i]);
+            out.push(self.trail_y[idx][i]);
+        }
+        out
+    }
+
+    pub fn num_bodies(&self) -> usize {
+        self.px.len()
     }
 
     pub fn time(&self) -> f64 {
@@ -3371,6 +3893,782 @@ impl WasmProbSim {
             var += dx * dx + dy * dy;
         }
         (var / self.n as f64).sqrt()
+    }
+}
+
+// ================================================================
+// Ragdoll Tumble (Verlet particles + distance constraints + stairs)
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmRagdollSim {
+    n: usize,
+    px: Vec<f64>,
+    py: Vec<f64>,
+    vx: Vec<f64>,
+    vy: Vec<f64>,
+    radius: Vec<f64>,
+    /// Distance constraints: (a, b, rest_length)
+    con_a: Vec<usize>,
+    con_b: Vec<usize>,
+    con_rest: Vec<f64>,
+    /// Stair steps: (x_left, y_top) — each step extends right to x_left+step_width
+    stair_x: Vec<f64>,
+    stair_y: Vec<f64>,
+    step_width: f64,
+    time: f64,
+    dt: f64,
+}
+
+#[wasm_bindgen]
+impl WasmRagdollSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmRagdollSim {
+        // Ragdoll joints (2D stick figure):
+        // 0: head, 1: neck, 2: torso_mid, 3: hip
+        // 4: l_elbow, 5: l_hand, 6: r_elbow, 7: r_hand
+        // 8: l_knee, 9: l_foot, 10: r_knee, 11: r_foot
+
+        let start_x = -1.5;
+        let start_y = 3.8;
+        let mut px = vec![0.0; 12];
+        let mut py = vec![0.0; 12];
+
+        px[0] = start_x; py[0] = start_y + 0.65; // head
+        px[1] = start_x; py[1] = start_y + 0.5;  // neck
+        px[2] = start_x; py[2] = start_y + 0.25; // torso mid
+        px[3] = start_x; py[3] = start_y;         // hip
+        px[4] = start_x - 0.2; py[4] = start_y + 0.35; // l_elbow
+        px[5] = start_x - 0.35; py[5] = start_y + 0.2; // l_hand
+        px[6] = start_x + 0.2; py[6] = start_y + 0.35; // r_elbow
+        px[7] = start_x + 0.35; py[7] = start_y + 0.2; // r_hand
+        px[8] = start_x - 0.08; py[8] = start_y - 0.3; // l_knee
+        px[9] = start_x - 0.08; py[9] = start_y - 0.6; // l_foot
+        px[10] = start_x + 0.08; py[10] = start_y - 0.3; // r_knee
+        px[11] = start_x + 0.08; py[11] = start_y - 0.6; // r_foot
+
+        let n = 12;
+        let mut vx = vec![0.0; n];
+        let vy = vec![0.0; n];
+        // Slight rightward push
+        for v in vx.iter_mut() {
+            *v = 1.5;
+        }
+
+        let radius = vec![
+            0.06,  // head
+            0.03, 0.03, 0.03, // neck, torso, hip
+            0.025, 0.025, 0.025, 0.025, // arms
+            0.025, 0.03, 0.025, 0.03, // legs
+        ];
+
+        // Distance constraints
+        let mut con_a = vec![];
+        let mut con_b = vec![];
+        let mut con_rest = vec![];
+        let links: &[(usize, usize)] = &[
+            (0, 1), (1, 2), (2, 3),       // spine
+            (1, 4), (4, 5),               // left arm
+            (1, 6), (6, 7),               // right arm
+            (3, 8), (8, 9),               // left leg
+            (3, 10), (10, 11),            // right leg
+            (1, 3),                        // torso cross-brace
+        ];
+        for &(a, b) in links {
+            let dx: f64 = px[b] - px[a];
+            let dy: f64 = py[b] - py[a];
+            con_a.push(a);
+            con_b.push(b);
+            con_rest.push((dx * dx + dy * dy).sqrt());
+        }
+
+        // Staircase: 8 steps descending right
+        let n_steps = 8;
+        let step_width = 0.6;
+        let step_height = 0.4;
+        let mut stair_x = Vec::with_capacity(n_steps);
+        let mut stair_y = Vec::with_capacity(n_steps);
+        for i in 0..n_steps {
+            stair_x.push(-2.0 + i as f64 * step_width);
+            stair_y.push(3.2 - i as f64 * step_height);
+        }
+
+        WasmRagdollSim {
+            n,
+            px,
+            py,
+            vx,
+            vy,
+            radius,
+            con_a,
+            con_b,
+            con_rest,
+            stair_x,
+            stair_y,
+            step_width,
+            time: 0.0,
+            dt: 0.002,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let g = GRAVITY;
+        let dt = self.dt;
+        let damping = 0.999;
+        let constraint_stiffness = 800.0; // spring-like constraint force
+
+        for _ in 0..steps {
+            // 1. Apply gravity + damping to velocities
+            for i in 0..self.n {
+                self.vy[i] -= g * dt;
+                self.vx[i] *= damping;
+                self.vy[i] *= damping;
+            }
+
+            // 2. Distance constraints as stiff spring impulses on velocity
+            for _ in 0..4 {
+                for c in 0..self.con_a.len() {
+                    let a = self.con_a[c];
+                    let b = self.con_b[c];
+                    let dx = self.px[b] - self.px[a];
+                    let dy = self.py[b] - self.py[a];
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d < 1e-10 { continue; }
+                    let err = d - self.con_rest[c];
+                    // Spring force along constraint axis
+                    let fx = constraint_stiffness * err * (dx / d) * dt;
+                    let fy = constraint_stiffness * err * (dy / d) * dt;
+                    self.vx[a] += fx * 0.5;
+                    self.vy[a] += fy * 0.5;
+                    self.vx[b] -= fx * 0.5;
+                    self.vy[b] -= fy * 0.5;
+                }
+            }
+
+            // 3. Integrate positions
+            for i in 0..self.n {
+                self.px[i] += self.vx[i] * dt;
+                self.py[i] += self.vy[i] * dt;
+            }
+
+            // 4. Position-level constraint projection (keep links from drifting)
+            for _ in 0..8 {
+                for c in 0..self.con_a.len() {
+                    let a = self.con_a[c];
+                    let b = self.con_b[c];
+                    let dx = self.px[b] - self.px[a];
+                    let dy = self.py[b] - self.py[a];
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d < 1e-10 { continue; }
+                    let corr = (d - self.con_rest[c]) / d * 0.5;
+                    self.px[a] += dx * corr;
+                    self.py[a] += dy * corr;
+                    self.px[b] -= dx * corr;
+                    self.py[b] -= dy * corr;
+                }
+            }
+
+            // 5. Collision with stairs + floor
+            for i in 0..self.n {
+                let r = self.radius[i];
+
+                // Find highest relevant surface
+                let mut surf = 0.0_f64; // floor
+                for s in 0..self.stair_x.len() {
+                    let sx = self.stair_x[s];
+                    let sy = self.stair_y[s];
+                    let sw = self.step_width;
+                    // On this step horizontally and near/below surface
+                    if self.px[i] >= sx && self.px[i] <= sx + sw
+                        && self.py[i] < sy + r + 0.05
+                        && self.py[i] > sy - 0.3
+                    {
+                        if sy > surf { surf = sy; }
+                    }
+                }
+
+                if self.py[i] < surf + r {
+                    self.py[i] = surf + r;
+                    // Kill downward velocity, apply restitution
+                    if self.vy[i] < 0.0 {
+                        self.vy[i] *= -0.05; // near-zero bounce
+                    }
+                    // Friction
+                    self.vx[i] *= 0.9;
+                }
+
+                // Also check step vertical faces (risers)
+                for s in 0..self.stair_x.len() {
+                    let sx = self.stair_x[s];
+                    let sy = self.stair_y[s];
+                    // Right edge of step = vertical wall going down
+                    let wall_x = sx + self.step_width;
+                    let step_below_y = if s + 1 < self.stair_x.len() {
+                        self.stair_y[s + 1]
+                    } else {
+                        0.0
+                    };
+                    if self.py[i] > step_below_y && self.py[i] < sy
+                        && (self.px[i] - wall_x).abs() < r
+                    {
+                        if self.px[i] < wall_x {
+                            self.px[i] = wall_x - r;
+                            if self.vx[i] > 0.0 { self.vx[i] *= -0.05; }
+                        } else {
+                            self.px[i] = wall_x + r;
+                            if self.vx[i] < 0.0 { self.vx[i] *= -0.05; }
+                        }
+                    }
+                }
+            }
+
+            // 6. Speed limit
+            let max_speed = 5.0;
+            for i in 0..self.n {
+                let spd = (self.vx[i] * self.vx[i] + self.vy[i] * self.vy[i]).sqrt();
+                if spd > max_speed {
+                    let s = max_speed / spd;
+                    self.vx[i] *= s;
+                    self.vy[i] *= s;
+                }
+            }
+
+            self.time += dt;
+        }
+    }
+
+    /// Particle positions as flat [x0,y0, x1,y1, ...]
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * 2);
+        for i in 0..self.n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    /// Constraint endpoints as flat [ax0,ay0, bx0,by0, ax1,ay1, ...]
+    pub fn constraint_endpoints(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.con_a.len() * 4);
+        for c in 0..self.con_a.len() {
+            let (a, b) = (self.con_a[c], self.con_b[c]);
+            out.push(self.px[a]);
+            out.push(self.py[a]);
+            out.push(self.px[b]);
+            out.push(self.py[b]);
+        }
+        out
+    }
+
+    pub fn num_constraints(&self) -> usize {
+        self.con_a.len()
+    }
+
+    /// Stair geometry as flat [x0,y0, x1,y1, ...] — each pair of points is one step (left-top, right-top).
+    pub fn stair_geometry(&self) -> Vec<f64> {
+        let mut out = Vec::new();
+        for s in 0..self.stair_x.len() {
+            out.push(self.stair_x[s]);
+            out.push(self.stair_y[s]);
+            out.push(self.stair_x[s] + self.step_width);
+            out.push(self.stair_y[s]);
+        }
+        out
+    }
+
+    pub fn num_steps(&self) -> usize {
+        self.stair_x.len()
+    }
+
+    pub fn num_particles(&self) -> usize {
+        self.n
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+}
+
+// ================================================================
+// Rube Goldberg Machine
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmRubeGoldbergSim {
+    // Ball: index 0
+    ball_x: f64,
+    ball_y: f64,
+    ball_ox: f64,
+    ball_oy: f64,
+    ball_r: f64,
+    // Dominoes: thin rectangles that can tip
+    dom_x: Vec<f64>,
+    dom_y: Vec<f64>,
+    dom_angle: Vec<f64>,
+    dom_angular_v: Vec<f64>,
+    dom_width: f64,
+    dom_height: f64,
+    dom_fallen: Vec<bool>,
+    // Pendulum
+    pend_anchor_x: f64,
+    pend_anchor_y: f64,
+    pend_angle: f64,
+    pend_angular_v: f64,
+    pend_length: f64,
+    pend_bob_r: f64,
+    // Second ball (knocked by pendulum)
+    ball2_x: f64,
+    ball2_y: f64,
+    ball2_ox: f64,
+    ball2_oy: f64,
+    ball2_r: f64,
+    // Ramp geometry
+    ramp_x0: f64,
+    ramp_y0: f64,
+    ramp_x1: f64,
+    ramp_y1: f64,
+    // Bucket
+    bucket_x: f64,
+    bucket_y: f64,
+    bucket_w: f64,
+    // State
+    time: f64,
+    dt: f64,
+}
+
+#[wasm_bindgen]
+impl WasmRubeGoldbergSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmRubeGoldbergSim {
+        let n_dom = 6;
+        let dom_spacing = 0.22;
+        let dom_start_x = -0.8;
+        let dom_y = 0.4;
+        let mut dom_x = Vec::with_capacity(n_dom);
+        let dom_angle = vec![0.0; n_dom];
+        let dom_angular_v = vec![0.0; n_dom];
+        let dom_fallen = vec![false; n_dom];
+        for i in 0..n_dom {
+            dom_x.push(dom_start_x + i as f64 * dom_spacing);
+        }
+
+        WasmRubeGoldbergSim {
+            // Ball starts on ramp
+            ball_x: -2.0,
+            ball_y: 1.2,
+            ball_ox: -2.005, // slight rightward velocity
+            ball_oy: 1.2,
+            ball_r: 0.05,
+            // Dominoes
+            dom_x,
+            dom_y: vec![dom_y; n_dom],
+            dom_angle,
+            dom_angular_v,
+            dom_width: 0.04,
+            dom_height: 0.2,
+            dom_fallen,
+            // Pendulum anchored above and to the right of dominoes
+            pend_anchor_x: 0.6,
+            pend_anchor_y: 1.2,
+            pend_angle: -0.4, // starts angled left
+            pend_angular_v: 0.0,
+            pend_length: 0.7,
+            pend_bob_r: 0.06,
+            // Second ball on shelf
+            ball2_x: 1.2,
+            ball2_y: 0.55,
+            ball2_ox: 1.2,
+            ball2_oy: 0.55,
+            ball2_r: 0.05,
+            // Ramp (slope down from left to floor level)
+            ramp_x0: -2.2,
+            ramp_y0: 1.3,
+            ramp_x1: -1.0,
+            ramp_y1: 0.4,
+            // Bucket at far right
+            bucket_x: 1.8,
+            bucket_y: 0.0,
+            bucket_w: 0.3,
+            time: 0.0,
+            dt: 0.0015,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let g = GRAVITY;
+        for _ in 0..steps {
+            // ---- Ball 1: Verlet on ramp ----
+            let bvx = (self.ball_x - self.ball_ox) * 0.999;
+            let bvy = (self.ball_y - self.ball_oy) * 0.999;
+            self.ball_ox = self.ball_x;
+            self.ball_oy = self.ball_y;
+            self.ball_x += bvx;
+            self.ball_y += bvy - g * self.dt * self.dt;
+
+            // Ramp collision
+            let (rx0, ry0, rx1, ry1) = (self.ramp_x0, self.ramp_y0, self.ramp_x1, self.ramp_y1);
+            if self.ball_x >= rx0 && self.ball_x <= rx1 {
+                let t = (self.ball_x - rx0) / (rx1 - rx0);
+                let ramp_y = ry0 + t * (ry1 - ry0);
+                if self.ball_y < ramp_y + self.ball_r {
+                    self.ball_y = ramp_y + self.ball_r;
+                    // Reflect velocity along ramp normal
+                    let dx = rx1 - rx0;
+                    let dy = ry1 - ry0;
+                    let len = (dx * dx + dy * dy).sqrt();
+                    let nx = -dy / len;
+                    let ny = dx / len;
+                    let vn = bvx * nx + bvy * ny;
+                    if vn < 0.0 {
+                        self.ball_ox = self.ball_x + vn * nx * 0.5;
+                        self.ball_oy = self.ball_y + vn * ny * 0.5;
+                    }
+                }
+            }
+            // Floor
+            if self.ball_y < self.ball_r {
+                self.ball_y = self.ball_r;
+                if bvy < 0.0 {
+                    self.ball_oy = self.ball_y + bvy * 0.3;
+                }
+            }
+
+            // ---- Domino physics ----
+            for i in 0..self.dom_x.len() {
+                if self.dom_fallen[i] {
+                    continue;
+                }
+                // Ball 1 → first domino
+                let dx = self.ball_x - self.dom_x[i];
+                let dy = self.ball_y - self.dom_y[i];
+                let touch_dist = self.ball_r + self.dom_width;
+                if dx * dx + dy * dy < touch_dist * touch_dist && dx > -0.05 {
+                    self.dom_angular_v[i] += 0.08;
+                }
+                // Domino → next domino
+                if i > 0 && self.dom_angle[i - 1] > 0.3 && !self.dom_fallen[i] {
+                    let prev_tip_x = self.dom_x[i - 1]
+                        + self.dom_height * self.dom_angle[i - 1].sin();
+                    if prev_tip_x > self.dom_x[i] - self.dom_width {
+                        self.dom_angular_v[i] += 0.05;
+                    }
+                }
+                // Gravity torque on tilted domino
+                self.dom_angular_v[i] += g * self.dom_angle[i].sin() * self.dt * 2.0;
+                self.dom_angular_v[i] *= 0.998; // damping
+                self.dom_angle[i] += self.dom_angular_v[i] * self.dt;
+                if self.dom_angle[i] > std::f64::consts::FRAC_PI_2 {
+                    self.dom_angle[i] = std::f64::consts::FRAC_PI_2;
+                    self.dom_angular_v[i] = 0.0;
+                    self.dom_fallen[i] = true;
+                }
+                if self.dom_angle[i] < 0.0 {
+                    self.dom_angle[i] = 0.0;
+                }
+            }
+
+            // Last domino hits pendulum
+            let last = self.dom_x.len() - 1;
+            if self.dom_fallen[last] {
+                let tip_x = self.dom_x[last] + self.dom_height;
+                let pend_bob_x =
+                    self.pend_anchor_x + self.pend_length * self.pend_angle.sin();
+                let pend_bob_y =
+                    self.pend_anchor_y - self.pend_length * self.pend_angle.cos();
+                let dx = tip_x - pend_bob_x;
+                let dy = self.dom_y[last] - pend_bob_y;
+                if dx * dx + dy * dy < (self.pend_bob_r + self.dom_height) * 0.5 {
+                    if self.pend_angular_v < 0.5 {
+                        self.pend_angular_v += 0.03;
+                    }
+                }
+            }
+
+            // ---- Pendulum physics ----
+            let pend_acc = -g / self.pend_length * self.pend_angle.sin();
+            self.pend_angular_v += pend_acc * self.dt;
+            self.pend_angular_v *= 0.9995;
+            self.pend_angle += self.pend_angular_v * self.dt;
+
+            // Pendulum bob → ball 2
+            let pb_x = self.pend_anchor_x + self.pend_length * self.pend_angle.sin();
+            let pb_y = self.pend_anchor_y - self.pend_length * self.pend_angle.cos();
+            let dx = self.ball2_x - pb_x;
+            let dy = self.ball2_y - pb_y;
+            let touch = self.pend_bob_r + self.ball2_r;
+            if dx * dx + dy * dy < touch * touch {
+                let d = (dx * dx + dy * dy).sqrt().max(0.001);
+                let push = (touch - d) * 0.5;
+                self.ball2_x += (dx / d) * push;
+                self.ball2_y += (dy / d) * push;
+                // Transfer velocity
+                let pv_x = self.pend_angular_v * self.pend_length * self.pend_angle.cos();
+                self.ball2_ox -= pv_x * self.dt * 0.3;
+            }
+
+            // ---- Ball 2: Verlet ----
+            let b2vx = (self.ball2_x - self.ball2_ox) * 0.999;
+            let b2vy = (self.ball2_y - self.ball2_oy) * 0.999;
+            self.ball2_ox = self.ball2_x;
+            self.ball2_oy = self.ball2_y;
+            self.ball2_x += b2vx;
+            self.ball2_y += b2vy - g * self.dt * self.dt;
+
+            // Shelf for ball 2 (y=0.5 from x=0.9 to x=1.5)
+            if self.ball2_x >= 0.9 && self.ball2_x <= 1.5 && self.ball2_y < 0.5 + self.ball2_r {
+                self.ball2_y = 0.5 + self.ball2_r;
+                if b2vy < 0.0 {
+                    self.ball2_oy = self.ball2_y + b2vy * 0.3;
+                }
+            }
+            // Floor
+            if self.ball2_y < self.ball2_r {
+                self.ball2_y = self.ball2_r;
+                if b2vy < 0.0 {
+                    self.ball2_oy = self.ball2_y + b2vy * 0.3;
+                }
+                let vx = self.ball2_x - self.ball2_ox;
+                self.ball2_ox = self.ball2_x - vx * 0.95;
+            }
+
+            self.time += self.dt;
+        }
+    }
+
+    /// Returns all renderable state as flat array:
+    /// [ball1_x, ball1_y, ball2_x, ball2_y,
+    ///  pend_anchor_x, pend_anchor_y, pend_bob_x, pend_bob_y,
+    ///  dom0_x, dom0_y, dom0_angle, dom1_x, ...,
+    ///  ramp_x0, ramp_y0, ramp_x1, ramp_y1,
+    ///  bucket_x, bucket_y, bucket_w]
+    pub fn state(&self) -> Vec<f64> {
+        let mut out = vec![];
+        // Balls
+        out.push(self.ball_x);
+        out.push(self.ball_y);
+        out.push(self.ball2_x);
+        out.push(self.ball2_y);
+        // Pendulum
+        out.push(self.pend_anchor_x);
+        out.push(self.pend_anchor_y);
+        let pb_x = self.pend_anchor_x + self.pend_length * self.pend_angle.sin();
+        let pb_y = self.pend_anchor_y - self.pend_length * self.pend_angle.cos();
+        out.push(pb_x);
+        out.push(pb_y);
+        // Dominoes
+        for i in 0..self.dom_x.len() {
+            out.push(self.dom_x[i]);
+            out.push(self.dom_y[i]);
+            out.push(self.dom_angle[i]);
+        }
+        // Ramp
+        out.push(self.ramp_x0);
+        out.push(self.ramp_y0);
+        out.push(self.ramp_x1);
+        out.push(self.ramp_y1);
+        // Bucket
+        out.push(self.bucket_x);
+        out.push(self.bucket_y);
+        out.push(self.bucket_w);
+        out
+    }
+
+    pub fn num_dominoes(&self) -> usize {
+        self.dom_x.len()
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    pub fn domino_height(&self) -> f64 {
+        self.dom_height
+    }
+
+    pub fn domino_width(&self) -> f64 {
+        self.dom_width
+    }
+}
+
+// ================================================================
+// Tendon-Driven Gripper
+// ================================================================
+
+#[wasm_bindgen]
+pub struct WasmGripperSim {
+    // 2-finger gripper: base + 2 fingers x 3 joints each + ball
+    n: usize,
+    px: Vec<f64>,
+    py: Vec<f64>,
+    ox: Vec<f64>,
+    oy: Vec<f64>,
+    radius: Vec<f64>,
+    /// Distance constraints
+    con_a: Vec<usize>,
+    con_b: Vec<usize>,
+    con_rest: Vec<f64>,
+    /// Ball index
+    ball_idx: usize,
+    time: f64,
+    dt: f64,
+}
+
+#[wasm_bindgen]
+impl WasmGripperSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmGripperSim {
+        // Indices: 0=base, 1-3=left finger, 4-6=right finger, 7=ball
+        let mut px = vec![0.0_f64; 8];
+        let mut py = vec![0.0_f64; 8];
+        let link_len = 0.25;
+
+        // Base (palm)
+        px[0] = 0.0; py[0] = 0.5;
+        // Left finger (angled left and down)
+        let la = -0.4_f64; // angle from vertical
+        for i in 0..3 {
+            let d = (i + 1) as f64 * link_len;
+            px[1 + i] = px[0] + d * la.sin();
+            py[1 + i] = py[0] - d * la.cos();
+        }
+        // Right finger (angled right and down)
+        let ra = 0.4_f64;
+        for i in 0..3 {
+            let d = (i + 1) as f64 * link_len;
+            px[4 + i] = px[0] + d * ra.sin();
+            py[4 + i] = py[0] - d * ra.cos();
+        }
+        // Ball (below, between fingers)
+        px[7] = 0.0; py[7] = -0.05;
+
+        let n = 8;
+        let ox = px.clone();
+        let oy = py.clone();
+        let radius = vec![0.05, 0.03, 0.03, 0.03, 0.03, 0.03, 0.03, 0.06];
+
+        // Build constraints
+        let mut con_a = vec![];
+        let mut con_b = vec![];
+        let mut con_rest = vec![];
+        let links: &[(usize, usize)] = &[
+            (0, 1), (1, 2), (2, 3), // left finger
+            (0, 4), (4, 5), (5, 6), // right finger
+        ];
+        for &(a, b) in links {
+            let dx = px[b] - px[a];
+            let dy = py[b] - py[a];
+            con_a.push(a);
+            con_b.push(b);
+            con_rest.push((dx * dx + dy * dy).sqrt());
+        }
+
+        WasmGripperSim {
+            n,
+            px,
+            py,
+            ox,
+            oy,
+            radius,
+            con_a,
+            con_b,
+            con_rest,
+            ball_idx: 7,
+            time: 0.0,
+            dt: 0.003,
+        }
+    }
+
+    pub fn step_n(&mut self, steps: usize) {
+        let g = -GRAVITY;
+        let damping = 0.995;
+
+        for _ in 0..steps {
+            // Verlet for ball only (fingers are kinematic)
+            let bi = self.ball_idx;
+            let bvx = (self.px[bi] - self.ox[bi]) * damping;
+            let bvy = (self.py[bi] - self.oy[bi]) * damping;
+            self.ox[bi] = self.px[bi];
+            self.oy[bi] = self.py[bi];
+            self.px[bi] += bvx;
+            self.py[bi] += bvy + g * self.dt * self.dt;
+
+            // Kinematic finger animation: sinusoidal open/close
+            let cycle = (self.time * 1.5).sin(); // -1 to 1
+            let grip_angle = 0.15 + 0.35 * (1.0 - cycle) * 0.5; // tighter when cycle=1
+            let link_len = 0.25;
+
+            // Base stays fixed
+            // Left finger
+            let la = -grip_angle;
+            for i in 0..3 {
+                let d = (i + 1) as f64 * link_len;
+                // Slight curl inward at tips
+                let curl = la - (i as f64) * 0.15 * (1.0 - cycle) * 0.5;
+                self.px[1 + i] = self.px[0] + d * curl.sin();
+                self.py[1 + i] = self.py[0] - d * curl.cos();
+            }
+            // Right finger
+            let ra = grip_angle;
+            for i in 0..3 {
+                let d = (i + 1) as f64 * link_len;
+                let curl = ra + (i as f64) * 0.15 * (1.0 - cycle) * 0.5;
+                self.px[4 + i] = self.px[0] + d * curl.sin();
+                self.py[4 + i] = self.py[0] - d * curl.cos();
+            }
+
+            // Ball-finger collision
+            let br = self.radius[bi];
+            for i in 1..7 {
+                let fr = self.radius[i];
+                let dx = self.px[bi] - self.px[i];
+                let dy = self.py[bi] - self.py[i];
+                let d2 = dx * dx + dy * dy;
+                let mind = br + fr;
+                if d2 < mind * mind && d2 > 1e-10 {
+                    let d = d2.sqrt();
+                    let overlap = mind - d;
+                    let nx = dx / d;
+                    let ny = dy / d;
+                    // Push ball out
+                    self.px[bi] += nx * overlap;
+                    self.py[bi] += ny * overlap;
+                    // Reflect velocity
+                    let vn = bvx * nx + bvy * ny;
+                    if vn < 0.0 {
+                        self.ox[bi] = self.px[bi] + vn * nx * 0.3;
+                        self.oy[bi] = self.py[bi] + vn * ny * 0.3;
+                    }
+                }
+            }
+
+            // Floor
+            if self.py[bi] < br {
+                self.py[bi] = br;
+                let vy = self.py[bi] - self.oy[bi];
+                if vy < 0.0 {
+                    self.oy[bi] = self.py[bi] + vy * 0.4;
+                }
+            }
+
+            self.time += self.dt;
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.n * 2);
+        for i in 0..self.n {
+            out.push(self.px[i]);
+            out.push(self.py[i]);
+        }
+        out
+    }
+
+    pub fn num_particles(&self) -> usize {
+        self.n
+    }
+
+    pub fn time(&self) -> f64 {
+        self.time
     }
 }
 

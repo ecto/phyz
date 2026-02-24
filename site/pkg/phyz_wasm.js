@@ -743,6 +743,93 @@ export class WasmEnsembleSim {
 }
 if (Symbol.dispose) WasmEnsembleSim.prototype[Symbol.dispose] = WasmEnsembleSim.prototype.free;
 
+export class WasmGravitySandboxSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmGravitySandboxSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmGravitySandboxSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmGravitySandboxSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmgravitysandboxsim_free(ptr, 0);
+    }
+    /**
+     * Add a new body at (x, y) with velocity (vx, vy) and given mass.
+     * @param {number} x
+     * @param {number} y
+     * @param {number} vx
+     * @param {number} vy
+     * @param {number} m
+     */
+    add_body(x, y, vx, vy, m) {
+        wasm.wasmgravitysandboxsim_add_body(this.__wbg_ptr, x, y, vx, vy, m);
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    masses() {
+        const ret = wasm.wasmgravitysandboxsim_masses(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {WasmGravitySandboxSim}
+     */
+    static new() {
+        const ret = wasm.wasmgravitysandboxsim_new();
+        return WasmGravitySandboxSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_bodies() {
+        const ret = wasm.wasmgravitysandboxsim_num_bodies(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmgravitysandboxsim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} steps
+     */
+    step_n(steps) {
+        wasm.wasmgravitysandboxsim_step_n(this.__wbg_ptr, steps);
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @param {number} idx
+     * @returns {Float64Array}
+     */
+    trail_for(idx) {
+        const ret = wasm.wasmgravitysandboxsim_trail_for(this.__wbg_ptr, idx);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+}
+if (Symbol.dispose) WasmGravitySandboxSim.prototype[Symbol.dispose] = WasmGravitySandboxSim.prototype.free;
+
 export class WasmGravitySim {
     static __wrap(ptr) {
         ptr = ptr >>> 0;
@@ -767,6 +854,14 @@ export class WasmGravitySim {
      */
     static binary_orbit() {
         const ret = wasm.wasmgravitysim_binary_orbit();
+        return WasmGravitySim.__wrap(ret);
+    }
+    /**
+     * Two disk galaxies colliding — tidal tails form as they merge.
+     * @returns {WasmGravitySim}
+     */
+    static galaxy_collision() {
+        const ret = wasm.wasmgravitysim_galaxy_collision();
         return WasmGravitySim.__wrap(ret);
     }
     /**
@@ -811,6 +906,16 @@ export class WasmGravitySim {
         return WasmGravitySim.__wrap(ret);
     }
     /**
+     * Return interleaved velocity magnitudes for coloring by speed.
+     * @returns {Float64Array}
+     */
+    speeds() {
+        const ret = wasm.wasmgravitysim_speeds(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * @param {number} steps
      */
     step_n(steps) {
@@ -843,6 +948,63 @@ export class WasmGravitySim {
     }
 }
 if (Symbol.dispose) WasmGravitySim.prototype[Symbol.dispose] = WasmGravitySim.prototype.free;
+
+export class WasmGripperSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmGripperSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmGripperSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmGripperSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmgrippersim_free(ptr, 0);
+    }
+    /**
+     * @returns {WasmGripperSim}
+     */
+    static new() {
+        const ret = wasm.wasmgrippersim_new();
+        return WasmGripperSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_particles() {
+        const ret = wasm.wasmcompilefusionsim_a_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmgrippersim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} steps
+     */
+    step_n(steps) {
+        wasm.wasmgrippersim_step_n(this.__wbg_ptr, steps);
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmGripperSim.prototype[Symbol.dispose] = WasmGripperSim.prototype.free;
 
 export class WasmGuardianSim {
     static __wrap(ptr) {
@@ -993,6 +1155,80 @@ export class WasmGuardianSim {
     }
 }
 if (Symbol.dispose) WasmGuardianSim.prototype[Symbol.dispose] = WasmGuardianSim.prototype.free;
+
+export class WasmHourglassSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmHourglassSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmHourglassSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmHourglassSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmhourglasssim_free(ptr, 0);
+    }
+    /**
+     * @returns {WasmHourglassSim}
+     */
+    static new() {
+        const ret = wasm.wasmhourglasssim_new();
+        return WasmHourglassSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_particles() {
+        const ret = wasm.wasmhourglasssim_num_particles(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Hourglass outline as [x0,y0, x1,y1, ...] for rendering the glass shape.
+     * @returns {Float64Array}
+     */
+    outline() {
+        const ret = wasm.wasmhourglasssim_outline(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    particle_radius() {
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmhourglasssim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} steps
+     */
+    step_n(steps) {
+        wasm.wasmhourglasssim_step_n(this.__wbg_ptr, steps);
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmhourglasssim_time(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmHourglassSim.prototype[Symbol.dispose] = WasmHourglassSim.prototype.free;
 
 export class WasmLbmSim {
     static __wrap(ptr) {
@@ -1216,6 +1452,14 @@ export class WasmMdSim {
     box_size() {
         const ret = wasm.wasmemsim_time(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Hot gas that gradually cools to form a crystal via LJ attraction.
+     * @returns {WasmMdSim}
+     */
+    static cooling_gas() {
+        const ret = wasm.wasmmdsim_cooling_gas();
+        return WasmMdSim.__wrap(ret);
     }
     /**
      * @returns {WasmMdSim}
@@ -1928,6 +2172,98 @@ export class WasmQftSim {
 }
 if (Symbol.dispose) WasmQftSim.prototype[Symbol.dispose] = WasmQftSim.prototype.free;
 
+export class WasmRagdollSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmRagdollSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmRagdollSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmRagdollSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmragdollsim_free(ptr, 0);
+    }
+    /**
+     * Constraint endpoints as flat [ax0,ay0, bx0,by0, ax1,ay1, ...]
+     * @returns {Float64Array}
+     */
+    constraint_endpoints() {
+        const ret = wasm.wasmragdollsim_constraint_endpoints(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {WasmRagdollSim}
+     */
+    static new() {
+        const ret = wasm.wasmragdollsim_new();
+        return WasmRagdollSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_constraints() {
+        const ret = wasm.wasmragdollsim_num_constraints(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    num_particles() {
+        const ret = wasm.wasmcompilefusionsim_fused_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    num_steps() {
+        const ret = wasm.wasmragdollsim_num_steps(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Particle positions as flat [x0,y0, x1,y1, ...]
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmragdollsim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Stair geometry as flat [x0,y0, x1,y1, ...] — each pair of points is one step (left-top, right-top).
+     * @returns {Float64Array}
+     */
+    stair_geometry() {
+        const ret = wasm.wasmragdollsim_stair_geometry(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} steps
+     */
+    step_n(steps) {
+        wasm.wasmragdollsim_step_n(this.__wbg_ptr, steps);
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmcompilefusionsim_time(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmRagdollSim.prototype[Symbol.dispose] = WasmRagdollSim.prototype.free;
+
 /**
  * Adam vs GD: compare two optimizers on the same problem.
  */
@@ -1969,14 +2305,14 @@ export class WasmReal2SimAdamVsGdSim {
      * @returns {number}
      */
     adam_mass() {
-        const ret = wasm.wasmreal2simadamvsgdsim_adam_mass(this.__wbg_ptr);
+        const ret = wasm.wasmmdsim_time(this.__wbg_ptr);
         return ret;
     }
     /**
      * @returns {number}
      */
     gd_length() {
-        const ret = wasm.wasmmdsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmreal2simadamvsgdsim_gd_length(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -2432,6 +2768,83 @@ export class WasmReggeSymmetrySim {
 }
 if (Symbol.dispose) WasmReggeSymmetrySim.prototype[Symbol.dispose] = WasmReggeSymmetrySim.prototype.free;
 
+export class WasmRubeGoldbergSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmRubeGoldbergSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmRubeGoldbergSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmRubeGoldbergSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmrubegoldbergsim_free(ptr, 0);
+    }
+    /**
+     * @returns {number}
+     */
+    domino_height() {
+        const ret = wasm.wasmreal2simadamvsgdsim_gd_length(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    domino_width() {
+        const ret = wasm.wasmguardiansim_q2_val(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {WasmRubeGoldbergSim}
+     */
+    static new() {
+        const ret = wasm.wasmrubegoldbergsim_new();
+        return WasmRubeGoldbergSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_dominoes() {
+        const ret = wasm.wasmrubegoldbergsim_num_dominoes(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Returns all renderable state as flat array:
+     * [ball1_x, ball1_y, ball2_x, ball2_y,
+     *  pend_anchor_x, pend_anchor_y, pend_bob_x, pend_bob_y,
+     *  dom0_x, dom0_y, dom0_angle, dom1_x, ...,
+     *  ramp_x0, ramp_y0, ramp_x1, ramp_y1,
+     *  bucket_x, bucket_y, bucket_w]
+     * @returns {Float64Array}
+     */
+    state() {
+        const ret = wasm.wasmrubegoldbergsim_state(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} steps
+     */
+    step_n(steps) {
+        wasm.wasmrubegoldbergsim_step_n(this.__wbg_ptr, steps);
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmrubegoldbergsim_time(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmRubeGoldbergSim.prototype[Symbol.dispose] = WasmRubeGoldbergSim.prototype.free;
+
 export class WasmSim {
     static __wrap(ptr) {
         ptr = ptr >>> 0;
@@ -2750,12 +3163,21 @@ const WasmEmSimFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmEnsembleSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmensemblesim_free(ptr >>> 0, 1));
+const WasmGravitySandboxSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmgravitysandboxsim_free(ptr >>> 0, 1));
 const WasmGravitySimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmgravitysim_free(ptr >>> 0, 1));
+const WasmGripperSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmgrippersim_free(ptr >>> 0, 1));
 const WasmGuardianSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmguardiansim_free(ptr >>> 0, 1));
+const WasmHourglassSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmhourglasssim_free(ptr >>> 0, 1));
 const WasmLbmSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmlbmsim_free(ptr >>> 0, 1));
@@ -2789,6 +3211,9 @@ const WasmProbSimFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmQftSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmqftsim_free(ptr >>> 0, 1));
+const WasmRagdollSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmragdollsim_free(ptr >>> 0, 1));
 const WasmReal2SimAdamVsGdSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmreal2simadamvsgdsim_free(ptr >>> 0, 1));
@@ -2807,6 +3232,9 @@ const WasmReggeCurvatureSimFinalization = (typeof FinalizationRegistry === 'unde
 const WasmReggeSymmetrySimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmreggesymmetrysim_free(ptr >>> 0, 1));
+const WasmRubeGoldbergSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmrubegoldbergsim_free(ptr >>> 0, 1));
 const WasmSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmsim_free(ptr >>> 0, 1));

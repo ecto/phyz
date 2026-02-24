@@ -51,9 +51,9 @@ body {
 }
 
 .container-wide {
-  max-width: 960px;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 40px;
 }
 
 
@@ -197,8 +197,8 @@ pre .mac { color: #6d4c41; }
 
 .examples-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 32px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
 }
 
 .example-card {
@@ -208,10 +208,11 @@ pre .mac { color: #6d4c41; }
 
 .example-card canvas {
   width: 100%;
-  aspect-ratio: 1;
+  aspect-ratio: 4 / 3;
   background: var(--code-bg);
   display: block;
   cursor: grab;
+  border-radius: 4px;
 }
 
 .example-card canvas:active {
@@ -314,8 +315,13 @@ footer .license {
 
 /* ---- Responsive ---- */
 
-@media (max-width: 800px) {
-  .examples-grid { grid-template-columns: 1fr; max-width: 400px; }
+@media (max-width: 1100px) {
+  .examples-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 700px) {
+  .examples-grid { grid-template-columns: 1fr; }
+  .container-wide { padding: 0 16px; }
 }
 
 @media (max-width: 600px) {
@@ -442,7 +448,17 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <a class="label" href="https://github.com/ecto/phyz/blob/main/examples/granular_column.rs">granular_column</a>
           <span class="desc">280 particles. Drucker-Prager yield via MPM.</span>
           <span class="stat" id="stat-granular">loading wasm...</span>
-          <span class="crate-also">Also: fluid_dam, elastic_blob</span>
+          <span class="crate-also">Also: fluid_dam, elastic_blob, hourglass</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-hourglass"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a>
+          <a class="label">hourglass</a>
+          <span class="desc">Sand flowing through a narrow neck. DEM with funnel boundaries.</span>
+          <span class="stat" id="stat-hourglass">loading wasm...</span>
         </div>
       </div>
 
@@ -453,7 +469,17 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <a class="label" href="https://github.com/ecto/phyz/blob/main/examples/tendon_demo.rs">tendon_demo</a>
           <span class="desc">4-link chain with sinusoidal tendon actuation.</span>
           <span class="stat" id="stat-tendon">loading wasm...</span>
-          <span class="crate-also">Also: random_chain, phase_portrait</span>
+          <span class="crate-also">Also: random_chain, phase_portrait, gripper</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-gripper"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-world">phyz-world</a>
+          <a class="label">tendon_gripper</a>
+          <span class="desc">2-finger gripper grasping a ball. Sinusoidal open/close cycle.</span>
+          <span class="stat" id="stat-gripper">loading wasm...</span>
         </div>
       </div>
 
@@ -475,7 +501,17 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <a class="label" href="https://github.com/ecto/phyz/blob/main/crates/phyz-md/examples/argon_fluid.rs">polymer_chain</a>
           <span class="desc">40-bead LJ chain. Coil-stretch dynamics.</span>
           <span class="stat" id="stat-polymer">loading wasm...</span>
-          <span class="crate-also">Also: argon_gas, crystal_lattice</span>
+          <span class="crate-also">Also: argon_gas, crystal_lattice, cooling_gas</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-cooling"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-md">phyz-md</a>
+          <a class="label">cooling_gas</a>
+          <span class="desc">120 LJ particles cooling from gas to crystal. Color by kinetic energy.</span>
+          <span class="stat" id="stat-cooling">loading wasm...</span>
         </div>
       </div>
 
@@ -508,7 +544,27 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <a class="label" href="https://github.com/ecto/phyz/blob/main/examples/mercury_precession.rs">solar_system</a>
           <span class="desc">5 planets. Kepler orbits with post-Newtonian corrections.</span>
           <span class="stat" id="stat-solar">loading wasm...</span>
-          <span class="crate-also">Also: binary_orbit, precession</span>
+          <span class="crate-also">Also: binary_orbit, precession, galaxy_collision</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-sandbox" style="cursor: crosshair"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-gravity">phyz-gravity</a>
+          <a class="label">gravity_sandbox</a>
+          <span class="desc">Click to place masses. Watch orbits form. Bodies merge on collision.</span>
+          <span class="stat" id="stat-sandbox">click to add bodies</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-galaxy"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-gravity">phyz-gravity</a>
+          <a class="label">galaxy_collision</a>
+          <span class="desc">Two disk galaxies merging. 400 bodies with tidal tails.</span>
+          <span class="stat" id="stat-galaxy">loading wasm...</span>
         </div>
       </div>
 
@@ -564,6 +620,26 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <span class="desc">Ant kinematic tree: 4 legs with hip and shin joints.</span>
           <span class="stat" id="stat-ant">loading wasm...</span>
           <span class="crate-also">Also: load_cartpole, model_editor</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-ragdoll"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-collision">phyz-collision</a>
+          <a class="label">ragdoll_tumble</a>
+          <span class="desc">12-joint ragdoll tumbling down stairs. Verlet + distance constraints.</span>
+          <span class="stat" id="stat-ragdoll">loading wasm...</span>
+        </div>
+      </div>
+
+      <div class="example-card">
+        <canvas id="ex-rube"></canvas>
+        <div class="example-meta">
+          <a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-coupling">phyz-coupling</a>
+          <a class="label">rube_goldberg</a>
+          <span class="desc">Ball → dominoes → pendulum → bucket. Multi-physics chain reaction.</span>
+          <span class="stat" id="stat-rube">loading wasm...</span>
         </div>
       </div>
 
@@ -696,7 +772,7 @@ function copyInstall(el) {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim, WasmDiffGradientSim, WasmDiffJacobianSim, WasmDiffSensitivitySim, WasmMjcfAntSim, WasmMjcfCartpoleSim, WasmMjcfEditorSim, WasmReal2SimFitSim, WasmReal2SimLandscapeSim, WasmReal2SimAdamVsGdSim, WasmReggeCurvatureSim, WasmReggeSymmetrySim, WasmReggeActionSim, WasmCompileIrSim, WasmCompileWgslSim, WasmCompileFusionSim } from './pkg/phyz_wasm.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim, WasmDiffGradientSim, WasmDiffJacobianSim, WasmDiffSensitivitySim, WasmMjcfAntSim, WasmMjcfCartpoleSim, WasmMjcfEditorSim, WasmReal2SimFitSim, WasmReal2SimLandscapeSim, WasmReal2SimAdamVsGdSim, WasmReggeCurvatureSim, WasmReggeSymmetrySim, WasmReggeActionSim, WasmCompileIrSim, WasmCompileWgslSim, WasmCompileFusionSim, WasmHourglassSim, WasmRagdollSim, WasmGravitySandboxSim, WasmGripperSim, WasmRubeGoldbergSim } from './pkg/phyz_wasm.js';
 
 // ---- Shared ----
 const BG = 0xfaf9f7;
@@ -1345,6 +1421,59 @@ registerViz('ex-elastic', () => {
 
 
 // =========================================
+// phyz-particle: Sand Hourglass
+// =========================================
+registerViz('ex-hourglass', () => {
+  const sim = WasmHourglassSim.new();
+  const N = sim.num_particles();
+  const R = sim.particle_radius();
+  const { scene, camera, controls, canvas } = createScene('ex-hourglass');
+  camera.position.set(0, 0.55, 3.0);
+  controls.target.set(0, 0.55, 0);
+  controls.enableRotate = false;
+
+  // Draw hourglass outline
+  const outline = sim.outline();
+  const outlineGeo = new THREE.BufferGeometry();
+  const pts = [];
+  for (let i = 0; i < outline.length; i += 2) {
+    pts.push(new THREE.Vector3(outline[i], outline[i+1], -0.01));
+  }
+  pts.push(pts[0].clone()); // close the loop
+  outlineGeo.setFromPoints(pts);
+  scene.add(new THREE.Line(outlineGeo, new THREE.LineBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.5 })));
+
+  // Sand particles
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 3, sizeAttenuation: false, vertexColors: true
+  })));
+
+  // Warm sand palette: darker when slow, brighter when fast
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(64);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      // Color by height: warm sandy gradient
+      const t = pos[i*2+1] / 1.1;
+      dotCol[i*3]   = 0.85 + 0.1 * t; // R
+      dotCol[i*3+1] = 0.65 + 0.15 * t; // G
+      dotCol[i*3+2] = 0.3 + 0.15 * t;  // B
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const el = document.getElementById('stat-hourglass');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} grains  DEM + funnel`;
+  }};
+});
+
+
+// =========================================
 // phyz-world: Random Chain
 // =========================================
 registerViz('ex-randchain', () => {
@@ -1468,6 +1597,68 @@ registerViz('ex-tendon', () => {
 
 
 // =========================================
+// phyz-world: Tendon Gripper
+// =========================================
+registerViz('ex-gripper', () => {
+  const sim = WasmGripperSim.new();
+  const N = sim.num_particles();
+  const { scene, camera, controls, canvas } = createScene('ex-gripper');
+  camera.position.set(0, 0.1, 3.5);
+  controls.target.set(0, 0.1, 0);
+
+  // Base (palm)
+  const base = makeSphere(0.05, DARK); scene.add(base);
+  // Left finger joints + rods
+  const lJoints = []; const lRods = [];
+  for (let i = 0; i < 3; i++) {
+    const j = makeSphere(0.03, ACCENT); scene.add(j); lJoints.push(j);
+    const r = makeCyl(0.012, 0.25, MUTED); scene.add(r); lRods.push(r);
+  }
+  // Right finger joints + rods
+  const rJoints = []; const rRods = [];
+  for (let i = 0; i < 3; i++) {
+    const j = makeSphere(0.03, 0x7c4dff); scene.add(j); rJoints.push(j);
+    const r = makeCyl(0.012, 0.25, MUTED); scene.add(r); rRods.push(r);
+  }
+  // Ball
+  const ball = makeSphere(0.06, 0xe74c3c); scene.add(ball);
+  scene.add(makeGround(2, 1, 0));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const pos = sim.positions();
+    base.position.set(pos[0], pos[1], 0);
+    // Left finger
+    let ppx = pos[0], ppy = pos[1];
+    for (let i = 0; i < 3; i++) {
+      const x = pos[(1+i)*2], y = pos[(1+i)*2+1];
+      lJoints[i].position.set(x, y, 0);
+      const dx = x - ppx, dy = y - ppy, len = Math.sqrt(dx*dx+dy*dy);
+      lRods[i].position.set((ppx+x)/2, (ppy+y)/2, 0);
+      lRods[i].rotation.z = Math.atan2(dx, -dy);
+      lRods[i].scale.y = Math.max(len / 0.25, 0.01);
+      ppx = x; ppy = y;
+    }
+    // Right finger
+    ppx = pos[0]; ppy = pos[1];
+    for (let i = 0; i < 3; i++) {
+      const x = pos[(4+i)*2], y = pos[(4+i)*2+1];
+      rJoints[i].position.set(x, y, 0);
+      const dx = x - ppx, dy = y - ppy, len = Math.sqrt(dx*dx+dy*dy);
+      rRods[i].position.set((ppx+x)/2, (ppy+y)/2, 0);
+      rRods[i].rotation.z = Math.atan2(dx, -dy);
+      rRods[i].scale.y = Math.max(len / 0.25, 0.01);
+      ppx = x; ppy = y;
+    }
+    // Ball
+    ball.position.set(pos[14], pos[15], 0);
+    const el = document.getElementById('stat-gripper');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  2 fingers  tendon-driven`;
+  }};
+});
+
+
+// =========================================
 // phyz-em: Helper
 // =========================================
 function makeEmViz(canvasId, sim, statId, label) {
@@ -1585,6 +1776,55 @@ function makeMdViz(canvasId, sim, statId, label, baseColor) {
 registerViz('ex-argon', () => makeMdViz('ex-argon', WasmMdSim.argon_gas(), 'stat-argon', 'LJ 12-6', ACCENT));
 registerViz('ex-crystal', () => makeMdViz('ex-crystal', WasmMdSim.crystal(), 'stat-crystal', 'phonons', 0x00897b));
 registerViz('ex-polymer', () => makeMdViz('ex-polymer', WasmMdSim.polymer(), 'stat-polymer', 'bonded chain', 0x7c4dff));
+
+// =========================================
+// phyz-md: Cooling Gas → Crystal Formation
+// =========================================
+registerViz('ex-cooling', () => {
+  const sim = WasmMdSim.cooling_gas();
+  const N = sim.num_particles();
+  const bs = sim.box_size();
+  const { scene, camera, controls, canvas } = createScene('ex-cooling');
+  camera.position.set(bs/2, bs/2, 2.5);
+  controls.target.set(bs/2, bs/2, 0);
+  controls.enableRotate = false;
+
+  // Box outline
+  const boxPts = [
+    new THREE.Vector3(0,0,0), new THREE.Vector3(bs,0,0),
+    new THREE.Vector3(bs,bs,0), new THREE.Vector3(0,bs,0), new THREE.Vector3(0,0,0)
+  ];
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(boxPts),
+    new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.3 })));
+
+  const dotPos = new Float32Array(N * 3);
+  const dotCol = new Float32Array(N * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(dotCol, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const pos = sim.positions();
+    const vel = sim.velocities();
+    for (let i = 0; i < N; i++) {
+      dotPos[i*3] = pos[i*2]; dotPos[i*3+1] = pos[i*2+1]; dotPos[i*3+2] = 0;
+      // Color by kinetic energy: hot=red/orange, cold=blue/purple
+      const ke = vel[i*2]*vel[i*2] + vel[i*2+1]*vel[i*2+1];
+      const t = Math.min(ke / 8.0, 1.0); // normalize
+      // Blue (cold) → Red (hot) via purple midpoint
+      dotCol[i*3]   = t;                       // R
+      dotCol[i*3+1] = 0.1 + 0.2 * (1.0 - t);  // G
+      dotCol[i*3+2] = 1.0 - t;                 // B
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    const T = sim.temperature();
+    const el = document.getElementById('stat-cooling');
+    if (el) el.textContent = `t=${sim.time().toFixed(2)}s  T=${T.toFixed(3)}  gas→crystal cooling`;
+  }};
+});
 
 
 // =========================================
@@ -1862,6 +2102,166 @@ registerViz('ex-precess', () => {
     pushTrail(trail, pos[2], pos[3], 0);
     const el = document.getElementById('stat-precess');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  perihelion precession  post-Newtonian`;
+  }};
+});
+
+
+// =========================================
+// phyz-gravity: Galaxy Collision
+// =========================================
+registerViz('ex-galaxy', () => {
+  const sim = WasmGravitySim.galaxy_collision();
+  const N = sim.num_bodies();
+  const { scene, camera, controls, canvas } = createScene('ex-galaxy');
+  camera.position.set(0, 0, 16);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  // Point cloud for stars — colored by velocity
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(N * 3);
+  const colors = new Float32Array(N * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const points = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 3, sizeAttenuation: false, vertexColors: true, transparent: true, opacity: 0.9
+  }));
+  scene.add(points);
+
+  // Core spheres (larger, brighter)
+  const coreA = makeSphere(0.12, 0xffcc00); scene.add(coreA);
+  const coreB = makeSphere(0.12, 0x4fc3f7); scene.add(coreB);
+
+  // Velocity→color: low=cool blue, high=warm yellow/white
+  function speedColor(v, maxV) {
+    const t = Math.min(v / maxV, 1.0);
+    // Blue (0.3,0.4,0.8) → White-yellow (1,0.95,0.7)
+    return [0.3 + 0.7 * t, 0.4 + 0.55 * t, 0.8 - 0.1 * t];
+  }
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const pos = sim.positions();
+    const spd = sim.speeds();
+
+    // Find max speed for normalization
+    let maxV = 0.1;
+    for (let i = 2; i < N; i++) { if (spd[i] > maxV) maxV = spd[i]; }
+
+    // Update cores
+    coreA.position.set(pos[0], pos[1], 0);
+    coreB.position.set(pos[2], pos[3], 0);
+
+    // Update point cloud
+    for (let i = 0; i < N; i++) {
+      positions[i*3]     = pos[i*2];
+      positions[i*3 + 1] = pos[i*2 + 1];
+      positions[i*3 + 2] = 0;
+      const [r, g, b] = speedColor(spd[i], maxV);
+      colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+
+    const el = document.getElementById('stat-galaxy');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  tidal interaction`;
+  }};
+});
+
+
+// =========================================
+// phyz-gravity: Interactive Gravity Sandbox
+// =========================================
+registerViz('ex-sandbox', () => {
+  const sim = WasmGravitySandboxSim.new();
+  const { scene, camera, controls, canvas } = createScene('ex-sandbox');
+  camera.position.set(0, 0, 10);
+  controls.target.set(0, 0, 0);
+  controls.enableRotate = false;
+
+  const bodyGroup = new THREE.Group();
+  scene.add(bodyGroup);
+  const trailGroup = new THREE.Group();
+  scene.add(trailGroup);
+
+  const bodyColors = [0xffcc00, 0xe74c3c, ACCENT, 0x2e7d32, 0x7c4dff, 0x00897b, 0xff9800, 0x9c27b0];
+  let spheres = [];
+  let trails = [];
+
+  // Central star
+  const star = makeSphere(0.15, 0xffcc00);
+  bodyGroup.add(star);
+  spheres.push(star);
+  trails.push(makeTrail(400, 0xffcc00, 0.2));
+  trailGroup.add(trails[0].line);
+
+  // Click to add body
+  const raycaster = new THREE.Raycaster();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  const mouse = new THREE.Vector2();
+  const intersect = new THREE.Vector3();
+
+  canvas.style.pointerEvents = 'auto';
+  canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(mouse, camera);
+    raycaster.ray.intersectPlane(plane, intersect);
+    const x = intersect.x, y = intersect.y;
+    // Orbital velocity perpendicular to radius from center
+    const r = Math.sqrt(x * x + y * y);
+    const v = r > 0.1 ? Math.sqrt(10.0 * 10.0 / r) * 0.7 : 0;
+    const vx = r > 0.1 ? -v * (y / r) : 0;
+    const vy = r > 0.1 ? v * (x / r) : 0;
+    sim.add_body(x, y, vx, vy, 0.3);
+    const idx = sim.num_bodies() - 1;
+    const color = bodyColors[idx % bodyColors.length];
+    const s = makeSphere(0.05, color);
+    bodyGroup.add(s); spheres.push(s);
+    const t = makeTrail(400, color, 0.25);
+    trailGroup.add(t.line); trails.push(t);
+  });
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const N = sim.num_bodies();
+    const pos = sim.positions();
+    const masses = sim.masses();
+
+    // Rebuild if merges happened (bodies removed)
+    while (spheres.length > N) {
+      const s = spheres.pop();
+      bodyGroup.remove(s);
+      const t = trails.pop();
+      trailGroup.remove(t.line);
+    }
+
+    for (let i = 0; i < N; i++) {
+      if (i < spheres.length) {
+        spheres[i].position.set(pos[i*2], pos[i*2+1], 0);
+        // Scale sphere by mass
+        const scale = Math.max(0.5, Math.cbrt(masses[i] / 0.3));
+        spheres[i].scale.setScalar(scale);
+        // Update trail
+        const tdata = sim.trail_for(i);
+        if (tdata.length >= 4 && i < trails.length) {
+          const tpts = trails[i].line.geometry.attributes.position;
+          const maxPts = tpts.count;
+          const nPts = Math.min(tdata.length / 2, maxPts);
+          const offset = tdata.length / 2 - nPts;
+          for (let j = 0; j < nPts; j++) {
+            tpts.array[j*3] = tdata[(offset + j) * 2];
+            tpts.array[j*3+1] = tdata[(offset + j) * 2 + 1];
+            tpts.array[j*3+2] = 0;
+          }
+          trails[i].line.geometry.setDrawRange(0, nPts);
+          tpts.needsUpdate = true;
+        }
+      }
+    }
+    const el = document.getElementById('stat-sandbox');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  click to add`;
   }};
 });
 
@@ -2369,6 +2769,161 @@ registerViz('ex-ant', () => {
     }
     const el = document.getElementById('stat-ant');
     if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} bodies  MJCF ant`;
+  }};
+});
+
+
+// =========================================
+// phyz-collision: Ragdoll Tumble
+// =========================================
+registerViz('ex-ragdoll', () => {
+  const sim = WasmRagdollSim.new();
+  const N = sim.num_particles();
+  const nCon = sim.num_constraints();
+  const { scene, camera, controls, canvas } = createScene('ex-ragdoll');
+  camera.position.set(0.5, 2.0, 6);
+  controls.target.set(0.5, 1.5, 0);
+
+  // Draw stairs
+  const stairGeo = sim.stair_geometry();
+  const nSteps = sim.num_steps();
+  for (let s = 0; s < nSteps; s++) {
+    const x0 = stairGeo[s*4], y0 = stairGeo[s*4+1];
+    const x1 = stairGeo[s*4+2];
+    const w = x1 - x0, h = 0.05;
+    const step = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 })
+    );
+    step.position.set((x0+x1)/2, y0 - h/2, 0);
+    scene.add(step);
+  }
+
+  // Floor
+  scene.add(makeGround(6, 2, 0));
+
+  // Ragdoll joints as spheres
+  const jointColors = [0xe74c3c, DARK, DARK, DARK, ACCENT, ACCENT, ACCENT, ACCENT, 0x2e7d32, 0x2e7d32, 0x2e7d32, 0x2e7d32];
+  const jointSizes = [0.06, 0.03, 0.03, 0.03, 0.025, 0.025, 0.025, 0.025, 0.025, 0.03, 0.025, 0.03];
+  const joints = [];
+  for (let i = 0; i < N; i++) {
+    const s = makeSphere(jointSizes[i], jointColors[i]);
+    scene.add(s); joints.push(s);
+  }
+
+  // Constraint links as line segments
+  const linkPos = new Float32Array(nCon * 6);
+  const linkGeo = new THREE.BufferGeometry();
+  linkGeo.setAttribute('position', new THREE.BufferAttribute(linkPos, 3));
+  scene.add(new THREE.LineSegments(linkGeo, new THREE.LineBasicMaterial({ color: MUTED, linewidth: 2 })));
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(8);
+    const pos = sim.positions();
+    for (let i = 0; i < N; i++) {
+      joints[i].position.set(pos[i*2], pos[i*2+1], 0);
+    }
+    const ep = sim.constraint_endpoints();
+    for (let c = 0; c < nCon; c++) {
+      linkPos[c*6]   = ep[c*4];   linkPos[c*6+1] = ep[c*4+1]; linkPos[c*6+2] = 0;
+      linkPos[c*6+3] = ep[c*4+2]; linkPos[c*6+4] = ep[c*4+3]; linkPos[c*6+5] = 0;
+    }
+    linkGeo.attributes.position.needsUpdate = true;
+    const el = document.getElementById('stat-ragdoll');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ${N} joints  ${nCon} constraints`;
+  }};
+});
+
+
+// =========================================
+// phyz-coupling: Rube Goldberg Machine
+// =========================================
+registerViz('ex-rube', () => {
+  const sim = WasmRubeGoldbergSim.new();
+  const nDom = sim.num_dominoes();
+  const dh = sim.domino_height();
+  const dw = sim.domino_width();
+  const { scene, camera, controls, canvas } = createScene('ex-rube');
+  camera.position.set(0, 0.6, 5);
+  controls.target.set(0, 0.4, 0);
+
+  // Ball 1
+  const ball1 = makeSphere(0.05, 0xe74c3c); scene.add(ball1);
+  // Ball 2
+  const ball2 = makeSphere(0.05, ACCENT); scene.add(ball2);
+  // Pendulum rod + bob
+  const pendRod = makeCyl(0.01, 0.7, MUTED); scene.add(pendRod);
+  const pendBob = makeSphere(0.06, 0x7c4dff); scene.add(pendBob);
+  const pendAnchor = makeSphere(0.02, DARK); scene.add(pendAnchor);
+  // Dominoes
+  const dominos = [];
+  for (let i = 0; i < nDom; i++) {
+    const dom = new THREE.Mesh(
+      new THREE.BoxGeometry(dw, dh, 0.08),
+      new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.6 })
+    );
+    scene.add(dom); dominos.push(dom);
+  }
+  // Ramp (static)
+  const rampGeo = new THREE.BufferGeometry();
+  // Will set from state
+  const rampLine = new THREE.Line(rampGeo, new THREE.LineBasicMaterial({ color: MUTED }));
+  scene.add(rampLine);
+  // Shelf
+  const shelf = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.04, 0.3),
+    new THREE.MeshStandardMaterial({ color: 0xcccccc })
+  );
+  shelf.position.set(1.2, 0.48, 0); scene.add(shelf);
+  // Floor
+  scene.add(makeGround(6, 2, 0));
+  // Bucket
+  const bucketL = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  const bucketR = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  const bucketB = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  scene.add(bucketL); scene.add(bucketR); scene.add(bucketB);
+
+  // Set initial ramp geometry
+  const initState = sim.state();
+  const rampIdx = 8 + nDom * 3;
+  const rampPts = [
+    new THREE.Vector3(initState[rampIdx], initState[rampIdx+1], 0),
+    new THREE.Vector3(initState[rampIdx+2], initState[rampIdx+3], 0)
+  ];
+  rampGeo.setFromPoints(rampPts);
+  // Bucket position
+  const bx = initState[rampIdx+4], by = initState[rampIdx+5], bw = initState[rampIdx+6];
+  bucketL.position.set(bx - bw/2, by + 0.1, 0);
+  bucketR.position.set(bx + bw/2, by + 0.1, 0);
+  bucketB.position.set(bx, by, 0);
+
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const s = sim.state();
+    // Ball 1
+    ball1.position.set(s[0], s[1], 0);
+    // Ball 2
+    ball2.position.set(s[2], s[3], 0);
+    // Pendulum
+    pendAnchor.position.set(s[4], s[5], 0);
+    pendBob.position.set(s[6], s[7], 0);
+    const pdx = s[6]-s[4], pdy = s[7]-s[5];
+    pendRod.position.set((s[4]+s[6])/2, (s[5]+s[7])/2, 0);
+    pendRod.rotation.z = Math.atan2(pdx, -pdy);
+    pendRod.scale.y = Math.sqrt(pdx*pdx + pdy*pdy) / 0.7;
+    // Dominoes
+    for (let i = 0; i < nDom; i++) {
+      const dx = s[8 + i*3];
+      const dy = s[8 + i*3 + 1];
+      const da = s[8 + i*3 + 2];
+      // Domino pivots at base, rotates clockwise
+      const cx = dx + (dh/2) * Math.sin(da);
+      const cy = dy + (dh/2) * Math.cos(da);
+      dominos[i].position.set(cx, cy, 0);
+      dominos[i].rotation.z = -da;
+    }
+    const el = document.getElementById('stat-rube');
+    if (el) el.textContent = `t=${sim.time().toFixed(1)}s  ball→dominos→pendulum→bucket`;
   }};
 });
 

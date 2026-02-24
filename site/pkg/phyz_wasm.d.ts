@@ -160,6 +160,23 @@ export class WasmEnsembleSim {
     time(): number;
 }
 
+export class WasmGravitySandboxSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Add a new body at (x, y) with velocity (vx, vy) and given mass.
+     */
+    add_body(x: number, y: number, vx: number, vy: number, m: number): void;
+    masses(): Float64Array;
+    static new(): WasmGravitySandboxSim;
+    num_bodies(): number;
+    positions(): Float64Array;
+    step_n(steps: number): void;
+    time(): number;
+    trail_for(idx: number): Float64Array;
+}
+
 export class WasmGravitySim {
     private constructor();
     free(): void;
@@ -168,6 +185,10 @@ export class WasmGravitySim {
      * Two bodies in mutual orbit.
      */
     static binary_orbit(): WasmGravitySim;
+    /**
+     * Two disk galaxies colliding — tidal tails form as they merge.
+     */
+    static galaxy_collision(): WasmGravitySim;
     masses(): Float64Array;
     num_bodies(): number;
     positions(): Float64Array;
@@ -179,10 +200,25 @@ export class WasmGravitySim {
      * 5 planets orbiting a central mass.
      */
     static solar_system(): WasmGravitySim;
+    /**
+     * Return interleaved velocity magnitudes for coloring by speed.
+     */
+    speeds(): Float64Array;
     step_n(steps: number): void;
     time(): number;
     trail_for(idx: number): Float64Array;
     trail_len(idx: number): number;
+}
+
+export class WasmGripperSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    static new(): WasmGripperSim;
+    num_particles(): number;
+    positions(): Float64Array;
+    step_n(steps: number): void;
+    time(): number;
 }
 
 export class WasmGuardianSim {
@@ -215,6 +251,22 @@ export class WasmGuardianSim {
     total_history(): Float64Array;
     total_history2(): Float64Array;
     v_val(): number;
+}
+
+export class WasmHourglassSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    static new(): WasmHourglassSim;
+    num_particles(): number;
+    /**
+     * Hourglass outline as [x0,y0, x1,y1, ...] for rendering the glass shape.
+     */
+    outline(): Float64Array;
+    particle_radius(): number;
+    positions(): Float64Array;
+    step_n(steps: number): void;
+    time(): number;
 }
 
 export class WasmLbmSim {
@@ -278,6 +330,10 @@ export class WasmMdSim {
     static argon_gas(): WasmMdSim;
     bond_endpoints(): Float64Array;
     box_size(): number;
+    /**
+     * Hot gas that gradually cools to form a crystal via LJ attraction.
+     */
+    static cooling_gas(): WasmMdSim;
     static crystal(): WasmMdSim;
     num_bonds(): number;
     num_particles(): number;
@@ -435,6 +491,30 @@ export class WasmQftSim {
     static wilson_loops(): WasmQftSim;
 }
 
+export class WasmRagdollSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Constraint endpoints as flat [ax0,ay0, bx0,by0, ax1,ay1, ...]
+     */
+    constraint_endpoints(): Float64Array;
+    static new(): WasmRagdollSim;
+    num_constraints(): number;
+    num_particles(): number;
+    num_steps(): number;
+    /**
+     * Particle positions as flat [x0,y0, x1,y1, ...]
+     */
+    positions(): Float64Array;
+    /**
+     * Stair geometry as flat [x0,y0, x1,y1, ...] — each pair of points is one step (left-top, right-top).
+     */
+    stair_geometry(): Float64Array;
+    step_n(steps: number): void;
+    time(): number;
+}
+
 /**
  * Adam vs GD: compare two optimizers on the same problem.
  */
@@ -553,6 +633,27 @@ export class WasmReggeSymmetrySim {
     time(): number;
 }
 
+export class WasmRubeGoldbergSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    domino_height(): number;
+    domino_width(): number;
+    static new(): WasmRubeGoldbergSim;
+    num_dominoes(): number;
+    /**
+     * Returns all renderable state as flat array:
+     * [ball1_x, ball1_y, ball2_x, ball2_y,
+     *  pend_anchor_x, pend_anchor_y, pend_bob_x, pend_bob_y,
+     *  dom0_x, dom0_y, dom0_angle, dom1_x, ...,
+     *  ramp_x0, ramp_y0, ramp_x1, ramp_y1,
+     *  bucket_x, bucket_y, bucket_w]
+     */
+    state(): Float64Array;
+    step_n(steps: number): void;
+    time(): number;
+}
+
 export class WasmSim {
     private constructor();
     free(): void;
@@ -625,8 +726,11 @@ export interface InitOutput {
     readonly __wbg_wasmdiffsensitivitysim_free: (a: number, b: number) => void;
     readonly __wbg_wasmemsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmensemblesim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmgravitysandboxsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmgravitysim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmgrippersim_free: (a: number, b: number) => void;
     readonly __wbg_wasmguardiansim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmhourglasssim_free: (a: number, b: number) => void;
     readonly __wbg_wasmlbmsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmlorentzsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmmdsim_free: (a: number, b: number) => void;
@@ -638,12 +742,14 @@ export interface InitOutput {
     readonly __wbg_wasmpolicygridsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmprobsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmqftsim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmragdollsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreal2simadamvsgdsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreal2simfitsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreal2simlandscapesim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreggeactionsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreggecurvaturesim_free: (a: number, b: number) => void;
     readonly __wbg_wasmreggesymmetrysim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmrubegoldbergsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmwavefieldsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmworldsim_free: (a: number, b: number) => void;
@@ -713,15 +819,27 @@ export interface InitOutput {
     readonly wasmensemblesim_num_instances: (a: number) => number;
     readonly wasmensemblesim_step_n: (a: number, b: number) => void;
     readonly wasmensemblesim_time: (a: number) => number;
+    readonly wasmgravitysandboxsim_add_body: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly wasmgravitysandboxsim_masses: (a: number) => [number, number];
+    readonly wasmgravitysandboxsim_new: () => number;
+    readonly wasmgravitysandboxsim_num_bodies: (a: number) => number;
+    readonly wasmgravitysandboxsim_positions: (a: number) => [number, number];
+    readonly wasmgravitysandboxsim_step_n: (a: number, b: number) => void;
+    readonly wasmgravitysandboxsim_trail_for: (a: number, b: number) => [number, number];
     readonly wasmgravitysim_binary_orbit: () => number;
+    readonly wasmgravitysim_galaxy_collision: () => number;
     readonly wasmgravitysim_masses: (a: number) => [number, number];
     readonly wasmgravitysim_num_bodies: (a: number) => number;
     readonly wasmgravitysim_positions: (a: number) => [number, number];
     readonly wasmgravitysim_precession: () => number;
     readonly wasmgravitysim_solar_system: () => number;
+    readonly wasmgravitysim_speeds: (a: number) => [number, number];
     readonly wasmgravitysim_step_n: (a: number, b: number) => void;
     readonly wasmgravitysim_trail_for: (a: number, b: number) => [number, number];
     readonly wasmgravitysim_trail_len: (a: number, b: number) => number;
+    readonly wasmgrippersim_new: () => number;
+    readonly wasmgrippersim_positions: (a: number) => [number, number];
+    readonly wasmgrippersim_step_n: (a: number, b: number) => void;
     readonly wasmguardiansim_adaptive_dt: () => number;
     readonly wasmguardiansim_correction_demo: () => number;
     readonly wasmguardiansim_energy_monitor: () => number;
@@ -735,6 +853,12 @@ export interface InitOutput {
     readonly wasmguardiansim_total_energy: (a: number) => number;
     readonly wasmguardiansim_total_history: (a: number) => [number, number];
     readonly wasmguardiansim_total_history2: (a: number) => [number, number];
+    readonly wasmhourglasssim_new: () => number;
+    readonly wasmhourglasssim_num_particles: (a: number) => number;
+    readonly wasmhourglasssim_outline: (a: number) => [number, number];
+    readonly wasmhourglasssim_positions: (a: number) => [number, number];
+    readonly wasmhourglasssim_step_n: (a: number, b: number) => void;
+    readonly wasmhourglasssim_time: (a: number) => number;
     readonly wasmlbmsim_cavity_flow: () => number;
     readonly wasmlbmsim_channel_flow: () => number;
     readonly wasmlbmsim_grid_ny: (a: number) => number;
@@ -753,6 +877,7 @@ export interface InitOutput {
     readonly wasmlorentzsim_trail_len: (a: number) => number;
     readonly wasmmdsim_argon_gas: () => number;
     readonly wasmmdsim_bond_endpoints: (a: number) => [number, number];
+    readonly wasmmdsim_cooling_gas: () => number;
     readonly wasmmdsim_crystal: () => number;
     readonly wasmmdsim_num_bonds: (a: number) => number;
     readonly wasmmdsim_num_particles: (a: number) => number;
@@ -810,8 +935,15 @@ export interface InitOutput {
     readonly wasmqftsim_u1_plaquette: () => number;
     readonly wasmqftsim_wilson_loop: (a: number, b: number, c: number) => number;
     readonly wasmqftsim_wilson_loops: () => number;
+    readonly wasmragdollsim_constraint_endpoints: (a: number) => [number, number];
+    readonly wasmragdollsim_new: () => number;
+    readonly wasmragdollsim_num_constraints: (a: number) => number;
+    readonly wasmragdollsim_num_steps: (a: number) => number;
+    readonly wasmragdollsim_positions: (a: number) => [number, number];
+    readonly wasmragdollsim_stair_geometry: (a: number) => [number, number];
+    readonly wasmragdollsim_step_n: (a: number, b: number) => void;
     readonly wasmreal2simadamvsgdsim_adam_loss: (a: number) => [number, number];
-    readonly wasmreal2simadamvsgdsim_adam_mass: (a: number) => number;
+    readonly wasmreal2simadamvsgdsim_gd_length: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_gd_loss: (a: number) => [number, number];
     readonly wasmreal2simadamvsgdsim_new: () => number;
     readonly wasmreal2simadamvsgdsim_step_n: (a: number, b: number) => void;
@@ -842,6 +974,11 @@ export interface InitOutput {
     readonly wasmreggecurvaturesim_new: () => number;
     readonly wasmreggesymmetrysim_compute: (a: number) => [number, number];
     readonly wasmreggesymmetrysim_new: () => number;
+    readonly wasmrubegoldbergsim_new: () => number;
+    readonly wasmrubegoldbergsim_num_dominoes: (a: number) => number;
+    readonly wasmrubegoldbergsim_state: (a: number) => [number, number];
+    readonly wasmrubegoldbergsim_step_n: (a: number, b: number) => void;
+    readonly wasmrubegoldbergsim_time: (a: number) => number;
     readonly wasmsim_body_endpoint_positions: (a: number) => [number, number];
     readonly wasmsim_chain: (a: number) => number;
     readonly wasmsim_double_pendulum: () => number;
@@ -869,11 +1006,15 @@ export interface InitOutput {
     readonly wasmreggesymmetrysim_time: (a: number) => number;
     readonly wasmdiffjacobiansim_time: (a: number) => number;
     readonly wasmdiffsensitivitysim_time: (a: number) => number;
+    readonly wasmgravitysandboxsim_time: (a: number) => number;
     readonly wasmgravitysim_time: (a: number) => number;
+    readonly wasmgrippersim_num_particles: (a: number) => number;
+    readonly wasmgrippersim_time: (a: number) => number;
     readonly wasmguardiansim_e0: (a: number) => number;
     readonly wasmguardiansim_q_val: (a: number) => number;
     readonly wasmguardiansim_time: (a: number) => number;
     readonly wasmguardiansim_v_val: (a: number) => number;
+    readonly wasmhourglasssim_particle_radius: (a: number) => number;
     readonly wasmlbmsim_grid_nx: (a: number) => number;
     readonly wasmlbmsim_time: (a: number) => number;
     readonly wasmmdsim_box_size: (a: number) => number;
@@ -890,8 +1031,10 @@ export interface InitOutput {
     readonly wasmprobsim_time: (a: number) => number;
     readonly wasmqftsim_beta: (a: number) => number;
     readonly wasmqftsim_lattice_size: (a: number) => number;
+    readonly wasmragdollsim_num_particles: (a: number) => number;
+    readonly wasmragdollsim_time: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_adam_length: (a: number) => number;
-    readonly wasmreal2simadamvsgdsim_gd_length: (a: number) => number;
+    readonly wasmreal2simadamvsgdsim_adam_mass: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_gd_mass: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_iteration: (a: number) => number;
     readonly wasmreal2simfitsim_est_length: (a: number) => number;
@@ -903,6 +1046,8 @@ export interface InitOutput {
     readonly wasmreal2simlandscapesim_est_mass: (a: number) => number;
     readonly wasmreal2simlandscapesim_grid_size: (a: number) => number;
     readonly wasmreggeactionsim_current_scale: (a: number) => number;
+    readonly wasmrubegoldbergsim_domino_height: (a: number) => number;
+    readonly wasmrubegoldbergsim_domino_width: (a: number) => number;
     readonly wasmsim_time: (a: number) => number;
     readonly wasmwavefieldsim_num_pendulums: (a: number) => number;
     readonly wasmwavefieldsim_time: (a: number) => number;
