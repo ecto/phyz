@@ -241,6 +241,25 @@ pub fn su2_entanglement_for_partition(
     observables::entanglement_entropy_raw(hilbert.basis_vecs(), hilbert.n_edges, state, &edges_a)
 }
 
+/// Entanglement entropy decomposed into superselection sectors for SU(2).
+///
+/// Returns Shannon (edge mode) and distillable components separately.
+pub fn su2_entanglement_decomposed(
+    hilbert: &Su2HilbertSpace,
+    state: &DVector<f64>,
+    complex: &SimplicialComplex,
+    partition_a: &[usize],
+) -> observables::EntropyDecomposition {
+    let (edges_a, _, boundary) = ryu_takayanagi::classify_edges(complex, partition_a);
+    observables::entanglement_entropy_decomposed(
+        hilbert.basis_vecs(),
+        hilbert.n_edges,
+        state,
+        &edges_a,
+        &boundary,
+    )
+}
+
 /// SU(2) j=1/2 Wilson loop expectation value.
 ///
 /// For the Z₂ reduction, the Wilson loop is diagonal:
@@ -448,5 +467,51 @@ mod tests {
             ratio_diff < 1e-12,
             "weights=[2.0] doesn't double magnetic term: diff={ratio_diff}"
         );
+    }
+
+    #[test]
+    fn test_su2_decomposition_self_consistent() {
+        // Verify decomposition is self-consistent across all partitions.
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        for part in ryu_takayanagi::vertex_bipartitions(5) {
+            let dec = su2_entanglement_decomposed(&hs, gs, &complex, &part);
+
+            // Sector probs sum to 1.
+            let p_sum: f64 = dec.sector_probs.iter().sum();
+            assert!(
+                (p_sum - 1.0).abs() < 1e-12,
+                "partition {:?}: sector probs sum to {p_sum}",
+                part
+            );
+
+            // Non-negative components.
+            assert!(
+                dec.shannon >= -1e-15,
+                "partition {:?}: shannon={}",
+                part,
+                dec.shannon
+            );
+            assert!(
+                dec.distillable >= -1e-15,
+                "partition {:?}: distillable={}",
+                part,
+                dec.distillable
+            );
+
+            // Total ≥ algebraic entropy (decoherent sum is upper bound).
+            let s_alg = su2_entanglement_for_partition(&hs, gs, &complex, &part);
+            assert!(
+                dec.total >= s_alg - 1e-10,
+                "partition {:?}: total={} < algebraic={}",
+                part,
+                dec.total,
+                s_alg
+            );
+        }
     }
 }

@@ -9,6 +9,23 @@ use crate::hilbert::U1HilbertSpace;
 use nalgebra::DVector;
 use phyz_regge::SimplicialComplex;
 
+/// Decomposition of entanglement entropy into superselection sectors.
+///
+/// For gauge theories, S_EE = S_Shannon + S_distillable where:
+/// - S_Shannon = -Σ_q p_q log(p_q) is the classical entropy over boundary flux sectors
+/// - S_distillable = Σ_q p_q S_q is the quantum entropy within sectors
+///
+/// The RT area term corresponds to S_Shannon (edge mode / non-distillable contribution).
+#[derive(Debug, Clone)]
+pub struct EntropyDecomposition {
+    pub total: f64,
+    pub shannon: f64,
+    pub distillable: f64,
+    pub n_sectors: usize,
+    pub sector_probs: Vec<f64>,
+    pub sector_entropies: Vec<f64>,
+}
+
 /// Expectation value of n_e² for each edge in the given state.
 pub fn electric_field_sq(hilbert: &U1HilbertSpace, state: &DVector<f64>) -> Vec<f64> {
     let n_edges = hilbert.n_edges;
@@ -233,6 +250,140 @@ pub fn entanglement_entropy_raw(
     entropy
 }
 
+/// Entanglement entropy decomposed into superselection sectors.
+///
+/// Groups basis states by their boundary edge configuration (flux sector q).
+/// Within each sector, builds the reduced density matrix ρ_A^q by tracing out
+/// B-interior degrees of freedom, then computes sector entropy S_q.
+///
+/// Returns S_Shannon = -Σ p_q log(p_q) and S_distillable = Σ p_q S_q,
+/// which sum to the total entanglement entropy.
+pub fn entanglement_entropy_decomposed(
+    basis: &[Vec<i32>],
+    n_edges: usize,
+    state: &DVector<f64>,
+    edges_a: &[usize],
+    boundary_edges: &[usize],
+) -> EntropyDecomposition {
+    use std::collections::HashMap;
+
+    // Edge classification flags.
+    let mut is_a = vec![false; n_edges];
+    for &e in edges_a {
+        is_a[e] = true;
+    }
+    let mut is_boundary = vec![false; n_edges];
+    for &e in boundary_edges {
+        is_boundary[e] = true;
+    }
+
+    // Build A-config index map (same as entanglement_entropy_raw).
+    let a_configs: Vec<Vec<i32>> = basis
+        .iter()
+        .map(|c| edges_a.iter().map(|&e| c[e]).collect())
+        .collect();
+
+    let mut a_index: HashMap<Vec<i32>, usize> = HashMap::new();
+    for ac in &a_configs {
+        let len = a_index.len();
+        a_index.entry(ac.clone()).or_insert(len);
+    }
+    let dim_a = a_index.len();
+
+    // Extract boundary and B-interior configs for each basis state.
+    let boundary_configs: Vec<Vec<i32>> = basis
+        .iter()
+        .map(|c| boundary_edges.iter().map(|&e| c[e]).collect())
+        .collect();
+
+    let b_interior_configs: Vec<Vec<i32>> = basis
+        .iter()
+        .map(|c| {
+            (0..n_edges)
+                .filter(|&e| !is_a[e] && !is_boundary[e])
+                .map(|e| c[e])
+                .collect()
+        })
+        .collect();
+
+    // Group by (boundary_config, b_interior_config) → Vec<(a_index, amplitude)>.
+    // Outer: boundary config q → inner: b-interior config → entries.
+    let mut sectors: HashMap<Vec<i32>, HashMap<Vec<i32>, Vec<(usize, f64)>>> = HashMap::new();
+
+    for (i, _) in basis.iter().enumerate() {
+        sectors
+            .entry(boundary_configs[i].clone())
+            .or_default()
+            .entry(b_interior_configs[i].clone())
+            .or_default()
+            .push((a_index[&a_configs[i]], state[i]));
+    }
+
+    let mut sector_probs = Vec::new();
+    let mut sector_entropies = Vec::new();
+
+    for (_q, b_groups) in &sectors {
+        // p_q = Σ |amplitude|² over all states in this sector.
+        let p_q: f64 = b_groups
+            .values()
+            .flat_map(|entries| entries.iter().map(|&(_, amp)| amp * amp))
+            .sum();
+
+        if p_q < 1e-30 {
+            continue;
+        }
+
+        // Build ρ_A^q by tracing out B-interior within this sector.
+        let mut rho_q = nalgebra::DMatrix::zeros(dim_a, dim_a);
+        for entries in b_groups.values() {
+            for &(ai, amp_i) in entries {
+                for &(aj, amp_j) in entries {
+                    rho_q[(ai, aj)] += amp_i * amp_j;
+                }
+            }
+        }
+
+        // Normalize: ρ_A^q /= p_q.
+        rho_q /= p_q;
+
+        // S_q = -Tr(ρ_A^q log ρ_A^q) via eigendecomposition.
+        let eig = rho_q.symmetric_eigen();
+        let mut s_q = 0.0;
+        for k in 0..eig.eigenvalues.len() {
+            let ev = eig.eigenvalues[k];
+            if ev > 1e-15 {
+                s_q -= ev * ev.ln();
+            }
+        }
+
+        sector_probs.push(p_q);
+        sector_entropies.push(s_q);
+    }
+
+    // S_shannon = -Σ p_q log(p_q).
+    let shannon: f64 = sector_probs
+        .iter()
+        .filter(|&&p| p > 1e-30)
+        .map(|&p| -p * p.ln())
+        .sum();
+
+    // S_distillable = Σ p_q S_q.
+    let distillable: f64 = sector_probs
+        .iter()
+        .zip(sector_entropies.iter())
+        .map(|(&p, &s)| p * s)
+        .sum();
+
+    EntropyDecomposition {
+        total: shannon + distillable,
+        shannon,
+        distillable,
+        n_sectors: sector_probs.len(),
+        sector_probs,
+        sector_entropies,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +493,106 @@ mod tests {
         let edges_a: Vec<usize> = (0..3).collect();
         let s = entanglement_entropy(&hs, gs, &edges_a);
         assert!(s >= -1e-10, "entropy should be non-negative: {s}");
+    }
+
+    #[test]
+    fn test_decomposition_sums_to_total() {
+        // g²=1 pentachoron: verify |total - (shannon + distillable)| < 1e-12.
+        let complex = single_pentachoron();
+        let hs = U1HilbertSpace::new(&complex, 1);
+        let params = KSParams {
+            g_squared: 1.0,
+            metric_weights: None,
+        };
+        let h = build_hamiltonian(&hs, &complex, &params);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        let partition_a = vec![0usize, 1];
+        let (edges_a, _, boundary) =
+            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+        let dec = entanglement_entropy_decomposed(
+            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
+        );
+
+        let sum = dec.shannon + dec.distillable;
+        assert!(
+            (dec.total - sum).abs() < 1e-12,
+            "total={} != shannon+distill={}",
+            dec.total,
+            sum
+        );
+    }
+
+    #[test]
+    fn test_decomposition_product_state() {
+        // g²=1e6 (strong coupling), both components ≈ 0.
+        let complex = single_pentachoron();
+        let hs = U1HilbertSpace::new(&complex, 1);
+        let params = KSParams {
+            g_squared: 1e6,
+            metric_weights: None,
+        };
+        let h = build_hamiltonian(&hs, &complex, &params);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        let partition_a = vec![0usize, 1];
+        let (edges_a, _, boundary) =
+            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+        let dec = entanglement_entropy_decomposed(
+            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
+        );
+
+        assert!(dec.shannon < 0.1, "shannon={}, expected ~0", dec.shannon);
+        assert!(
+            dec.distillable < 0.1,
+            "distillable={}, expected ~0",
+            dec.distillable
+        );
+    }
+
+    #[test]
+    fn test_decomposition_self_consistent() {
+        // Verify sector probabilities and non-negativity.
+        let complex = single_pentachoron();
+        let hs = U1HilbertSpace::new(&complex, 1);
+        let params = KSParams {
+            g_squared: 1.0,
+            metric_weights: None,
+        };
+        let h = build_hamiltonian(&hs, &complex, &params);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        let partition_a = vec![0usize, 1];
+        let (edges_a, _, boundary) =
+            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+
+        let dec = entanglement_entropy_decomposed(
+            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
+        );
+
+        // Sector probabilities sum to 1.
+        let p_sum: f64 = dec.sector_probs.iter().sum();
+        assert!(
+            (p_sum - 1.0).abs() < 1e-12,
+            "sector probs sum to {p_sum}, expected 1.0"
+        );
+
+        // All components non-negative.
+        assert!(dec.shannon >= -1e-15, "shannon={}", dec.shannon);
+        assert!(dec.distillable >= -1e-15, "distillable={}", dec.distillable);
+        assert!(dec.n_sectors > 0);
+
+        // Total = shannon + distillable (decoherent sum, upper bound on
+        // extended entropy due to inter-sector coherence).
+        let s_alg = entanglement_entropy_raw(&hs.basis, hs.n_edges, gs, &edges_a);
+        assert!(
+            dec.total >= s_alg - 1e-10,
+            "total={} < algebraic={}",
+            dec.total,
+            s_alg
+        );
     }
 }

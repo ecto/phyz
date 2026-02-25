@@ -137,6 +137,25 @@ pub fn entanglement_for_partition(
     observables::entanglement_entropy(hilbert, state, &edges_a)
 }
 
+/// Entanglement entropy decomposed into superselection sectors for U(1).
+///
+/// Returns Shannon (edge mode) and distillable components separately.
+pub fn entanglement_decomposed_for_partition(
+    hilbert: &U1HilbertSpace,
+    state: &DVector<f64>,
+    complex: &SimplicialComplex,
+    partition_a: &[usize],
+) -> observables::EntropyDecomposition {
+    let (edges_a, _, boundary) = classify_edges(complex, partition_a);
+    observables::entanglement_entropy_decomposed(
+        &hilbert.basis,
+        hilbert.n_edges,
+        state,
+        &edges_a,
+        &boundary,
+    )
+}
+
 /// Compute S_EE using the "extended" prescription.
 ///
 /// edges_a = edges with AT LEAST ONE endpoint in partition_a.

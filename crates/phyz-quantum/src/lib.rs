@@ -26,6 +26,7 @@ pub mod observables;
 pub mod triangulated_torus;
 pub mod qubit_map;
 pub mod ryu_takayanagi;
+pub mod jacobson;
 pub mod stabilizer;
 pub mod su2_quantum;
 

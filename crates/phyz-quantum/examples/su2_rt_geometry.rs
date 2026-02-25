@@ -12,7 +12,8 @@
 use phyz_quantum::diag;
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_quantum::su2_quantum::{
-    build_su2_hamiltonian, su2_entanglement_for_partition, Su2HilbertSpace,
+    build_su2_hamiltonian, su2_entanglement_decomposed, su2_entanglement_for_partition,
+    Su2HilbertSpace,
 };
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
@@ -338,6 +339,63 @@ fn run_analysis() {
                 f64::INFINITY
             };
             println!("{g_sq:.6e}\t{slope:.6e}\t{r2:.6}\t{g_n:.6e}");
+        }
+    }
+    println!();
+
+    // ── Section 6: Superselection Sector Decomposition ──
+    println!("# Section 6: Superselection Sector Decomposition (2-pentachoron, flat, g^2=1)");
+    println!("partition\t|A|\ttri_area\tS_total\tS_shannon\tS_distill\tn_sectors");
+
+    let h_sec6 = build_su2_hamiltonian(&hs_2, &complex_2, 1.0, None);
+    let spec_sec6 = diag::diagonalize(&h_sec6, Some(1));
+    let gs_sec6 = spec_sec6.ground_state();
+
+    let mut sec6_areas = Vec::new();
+    let mut sec6_total = Vec::new();
+    let mut sec6_shannon = Vec::new();
+    let mut sec6_distill = Vec::new();
+
+    for part in &parts_2 {
+        let tri_area = cut_area_triangles(&complex_2, part, &flat_lengths);
+        let dec = su2_entanglement_decomposed(&hs_2, gs_sec6, &complex_2, part);
+
+        println!(
+            "{}\t{}\t{tri_area:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{}",
+            partition_label(part),
+            part.len(),
+            dec.total,
+            dec.shannon,
+            dec.distillable,
+            dec.n_sectors
+        );
+
+        if dec.total > 1e-12 && tri_area > 1e-12 {
+            sec6_areas.push(tri_area);
+            sec6_total.push(dec.total);
+            sec6_shannon.push(dec.shannon);
+            sec6_distill.push(dec.distillable);
+        }
+    }
+    println!();
+
+    // Regressions: S_total vs area, S_shannon vs area, S_distill vs area.
+    println!("# Section 6: Regression Comparison");
+    println!("component\tslope\tR^2\tG_N");
+
+    for (label, values) in [
+        ("S_total", &sec6_total),
+        ("S_shannon", &sec6_shannon),
+        ("S_distill", &sec6_distill),
+    ] {
+        if sec6_areas.len() >= 2 {
+            let (slope, _intercept, r2) = linear_regression(&sec6_areas, values);
+            let g_n = if slope.abs() > 1e-15 {
+                1.0 / (4.0 * slope)
+            } else {
+                f64::INFINITY
+            };
+            println!("{label}\t{slope:.6e}\t{r2:.6}\t{g_n:.6e}");
         }
     }
     println!();
