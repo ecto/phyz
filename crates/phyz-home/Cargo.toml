@@ -29,6 +29,7 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent", "HtmlButtonElement",
     "AudioContext", "BaseAudioContext", "AudioDestinationNode",
     "AudioNode", "AudioParam", "OscillatorNode", "OscillatorType", "GainNode",
+    "WebSocket", "CloseEvent", "ErrorEvent",
 ] }
 js-sys = "0.3"
 serde = { workspace = true }

@@ -6,6 +6,15 @@ use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
 
 const SUPABASE_URL: &str = "https://ynhqxopghmhkeixgbfqi.supabase.co";
 const SUPABASE_ANON_KEY: &str = "sb_publishable_i-0RH4wZsFMaLNMXt2UCCg_ZqDoLmJr";
+const PROJECT_REF: &str = "ynhqxopghmhkeixgbfqi";
+
+pub fn anon_key() -> &'static str {
+    SUPABASE_ANON_KEY
+}
+
+pub fn project_ref() -> &'static str {
+    PROJECT_REF
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkUnit {
@@ -193,14 +202,14 @@ impl SupabaseClient {
         self.count_rows(&url).await
     }
 
-    /// Fetch experiment progress: (completed_units, total_units).
+    /// Fetch experiment progress: (results_submitted, total_work_units).
     pub async fn experiment_progress(&self) -> Result<(usize, usize), String> {
-        // Total work units
+        // Total work units in the experiment
         let total_url = format!("{}?select=id", self.api_url("work_units"));
         let total = self.count_rows(&total_url).await?;
 
-        // Completed work units
-        let done_url = format!("{}?select=id&status=eq.complete", self.api_url("work_units"));
+        // Total results submitted (each result = one work unit solved)
+        let done_url = format!("{}?select=id", self.api_url("results"));
         let done = self.count_rows(&done_url).await?;
 
         Ok((done, total))
@@ -258,7 +267,7 @@ impl SupabaseClient {
     /// Fetch the leaderboard view.
     pub async fn fetch_leaderboard(&self) -> Result<Vec<LeaderboardEntry>, String> {
         let url = format!(
-            "{}?select=player_id,name,units&order=units.desc&limit=20",
+            "{}?select=player_id,name,units&order=units.desc&limit=50",
             self.api_url("leaderboard"),
         );
         let resp = self.get(&url).await?;

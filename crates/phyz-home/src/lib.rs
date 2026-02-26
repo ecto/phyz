@@ -5,6 +5,7 @@ mod auth;
 mod cache;
 mod coordinator;
 mod dom;
+mod realtime;
 mod supabase;
 mod viz;
 mod worker;
