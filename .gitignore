@@ -1,1 +1,5 @@
 /target
+
+# Trunk copies wasm/.gitignore (which contains *) into dist — override it
+!crates/phyz-home/dist/wasm/*.js
+!crates/phyz-home/dist/wasm/*.wasm
