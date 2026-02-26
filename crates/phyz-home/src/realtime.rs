@@ -26,14 +26,17 @@ impl Status {
 }
 
 /// Supabase Realtime WebSocket client using Phoenix Channels protocol.
+/// Subscribes to both `contributors` (leaderboard) and `results` (viz feed) changes.
 pub struct RealtimeClient {
     ws: RefCell<Option<WebSocket>>,
     status: Rc<Cell<Status>>,
     ref_counter: Rc<Cell<u32>>,
     heartbeat_id: RefCell<Option<i32>>,
     debounce_id: RefCell<Option<i32>>,
+    debounce_results_id: RefCell<Option<i32>>,
     reconnect_delay: Rc<Cell<u32>>,
-    on_change: RefCell<Option<Rc<dyn Fn()>>>,
+    on_contributors_change: RefCell<Option<Rc<dyn Fn()>>>,
+    on_results_change: RefCell<Option<Rc<dyn Fn()>>>,
     // Store closures to prevent GC
     _closures: RefCell<Vec<Box<dyn std::any::Any>>>,
 }
@@ -46,8 +49,10 @@ impl RealtimeClient {
             ref_counter: Rc::new(Cell::new(0)),
             heartbeat_id: RefCell::new(None),
             debounce_id: RefCell::new(None),
+            debounce_results_id: RefCell::new(None),
             reconnect_delay: Rc::new(Cell::new(1000)),
-            on_change: RefCell::new(None),
+            on_contributors_change: RefCell::new(None),
+            on_results_change: RefCell::new(None),
             _closures: RefCell::new(Vec::new()),
         })
     }
@@ -56,9 +61,14 @@ impl RealtimeClient {
         self.status.get()
     }
 
-    /// Connect to Supabase Realtime and subscribe to `public:contributors` changes.
-    pub fn connect(self: &Rc<Self>, on_change: Rc<dyn Fn()>) {
-        *self.on_change.borrow_mut() = Some(on_change);
+    /// Connect to Supabase Realtime and subscribe to `contributors` + `results` changes.
+    pub fn connect(
+        self: &Rc<Self>,
+        on_contributors: Rc<dyn Fn()>,
+        on_results: Rc<dyn Fn()>,
+    ) {
+        *self.on_contributors_change.borrow_mut() = Some(on_contributors);
+        *self.on_results_change.borrow_mut() = Some(on_results);
         self.do_connect();
     }
 
@@ -90,11 +100,10 @@ impl RealtimeClient {
 
         let this = Rc::clone(self);
         let onopen = Closure::wrap(Box::new(move |_: JsValue| {
-            web_sys::console::log_1(&"realtime: websocket open, joining channel".into());
+            web_sys::console::log_1(&"realtime: websocket open, joining channels".into());
             this.reconnect_delay.set(1000);
-            this.join_channel();
+            this.join_channels();
             this.start_heartbeat();
-            // Status stays Connecting until we get a successful phx_reply
         }) as Box<dyn FnMut(JsValue)>);
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
 
@@ -145,11 +154,13 @@ impl RealtimeClient {
         }
     }
 
-    /// Join the `realtime:public:contributors` channel with postgres_changes config.
-    fn join_channel(&self) {
-        let r = self.next_ref();
+    /// Join both channels: `contributors` (leaderboard) and `results` (viz feed).
+    fn join_channels(&self) {
         let key = crate::supabase::anon_key();
-        let msg = serde_json::json!({
+
+        // Contributors channel (leaderboard updates)
+        let r1 = self.next_ref();
+        let msg1 = serde_json::json!({
             "topic": "realtime:public:contributors",
             "event": "phx_join",
             "payload": {
@@ -164,9 +175,30 @@ impl RealtimeClient {
                 },
                 "access_token": key
             },
-            "ref": r.to_string()
+            "ref": r1.to_string()
         });
-        self.send(&msg.to_string());
+        self.send(&msg1.to_string());
+
+        // Results channel (live viz feed)
+        let r2 = self.next_ref();
+        let msg2 = serde_json::json!({
+            "topic": "realtime:public:results",
+            "event": "phx_join",
+            "payload": {
+                "config": {
+                    "broadcast": { "self": false },
+                    "presence": { "key": "" },
+                    "postgres_changes": [{
+                        "event": "INSERT",
+                        "schema": "public",
+                        "table": "results"
+                    }]
+                },
+                "access_token": key
+            },
+            "ref": r2.to_string()
+        });
+        self.send(&msg2.to_string());
     }
 
     /// Start heartbeat every 30s.
@@ -206,28 +238,33 @@ impl RealtimeClient {
         }
     }
 
-    /// Handle incoming Phoenix message.
+    /// Handle incoming Phoenix message — dispatch by topic.
     fn handle_message(&self, text: &str) {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;
         };
 
         let event = msg.get("event").and_then(|e| e.as_str()).unwrap_or("");
+        let topic = msg.get("topic").and_then(|t| t.as_str()).unwrap_or("");
 
         match event {
             "postgres_changes" => {
-                web_sys::console::log_1(&"realtime: postgres_changes event".into());
-                self.debounce_change();
+                if topic.contains("contributors") {
+                    self.debounce_contributors();
+                } else if topic.contains("results") {
+                    self.debounce_results();
+                }
             }
             "phx_reply" => {
-                // Check join success/failure
                 let status = msg
                     .get("payload")
                     .and_then(|p| p.get("status"))
                     .and_then(|s| s.as_str())
                     .unwrap_or("");
                 if status == "ok" {
-                    web_sys::console::log_1(&"realtime: channel joined successfully".into());
+                    web_sys::console::log_1(
+                        &format!("realtime: channel joined: {topic}").into(),
+                    );
                     self.set_status(Status::Live);
                 } else if status == "error" {
                     let reason = msg
@@ -236,9 +273,8 @@ impl RealtimeClient {
                         .map(|r| r.to_string())
                         .unwrap_or_default();
                     web_sys::console::warn_1(
-                        &format!("realtime: join error: {reason}").into(),
+                        &format!("realtime: join error ({topic}): {reason}").into(),
                     );
-                    self.set_status(Status::Reconnecting);
                 }
             }
             "phx_error" => {
@@ -246,29 +282,27 @@ impl RealtimeClient {
                 self.set_status(Status::Reconnecting);
             }
             "system" => {
-                // Supabase system messages (e.g. extension info)
                 web_sys::console::log_1(
-                    &format!("realtime: system: {}", msg.get("payload").unwrap_or(&serde_json::Value::Null)).into(),
+                    &format!(
+                        "realtime: system: {}",
+                        msg.get("payload").unwrap_or(&serde_json::Value::Null)
+                    )
+                    .into(),
                 );
             }
-            _ => {
-                web_sys::console::log_1(
-                    &format!("realtime: unhandled event: {event}").into(),
-                );
-            }
+            _ => {}
         }
     }
 
-    /// Debounce change events by 500ms.
-    fn debounce_change(&self) {
-        // Cancel existing debounce timer
+    /// Debounce contributors change events by 500ms.
+    fn debounce_contributors(&self) {
         if let Some(id) = self.debounce_id.borrow_mut().take() {
             dom::window().clear_timeout_with_handle(id);
         }
 
-        let on_change = self.on_change.borrow().clone();
+        let cb_fn = self.on_contributors_change.borrow().clone();
         let cb = Closure::once(move || {
-            if let Some(f) = on_change {
+            if let Some(f) = cb_fn {
                 f();
             }
         });
@@ -281,6 +315,29 @@ impl RealtimeClient {
             .unwrap_or(0);
         cb.forget();
         *self.debounce_id.borrow_mut() = Some(id);
+    }
+
+    /// Debounce results change events by 2s (batches multiple inserts into one feed fetch).
+    fn debounce_results(&self) {
+        if let Some(id) = self.debounce_results_id.borrow_mut().take() {
+            dom::window().clear_timeout_with_handle(id);
+        }
+
+        let cb_fn = self.on_results_change.borrow().clone();
+        let cb = Closure::once(move || {
+            if let Some(f) = cb_fn {
+                f();
+            }
+        });
+
+        let id = dom::window()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                2000,
+            )
+            .unwrap_or(0);
+        cb.forget();
+        *self.debounce_results_id.borrow_mut() = Some(id);
     }
 
     /// Schedule reconnect with exponential backoff (1s → 30s cap).

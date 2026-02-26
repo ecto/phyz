@@ -57,14 +57,14 @@ pub async fn run() {
         for p in &mut r.points {
             p.age = 3.0;
         }
-        dom::set_text("n-points", &cached.len().to_string());
         web_sys::console::log_1(
             &format!("restored {} cached results", cached.len()).into(),
         );
     }
 
-    // Fetch from Supabase and merge any new results
-    match client.fetch_completed().await {
+    // Fetch global results feed with contributor names
+    let last_feed_ts: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    match client.fetch_results_feed(200, None).await {
         Ok(results) => {
             let n_before = renderer.borrow().points.len();
             let mut r = renderer.borrow_mut();
@@ -75,46 +75,53 @@ pub async fn run() {
                 (p.log_g2.to_bits(), p.a_cut as usize)
             }).collect();
 
+            // Track newest timestamp for incremental realtime fetching
+            if let Some(first) = results.first() {
+                *last_feed_ts.borrow_mut() = Some(first.submitted_at.clone());
+            }
+
             let mut new_cache_points = Vec::new();
             for res in &results {
-                if let Some(ref cr) = res.consensus_result {
-                    let log_g2 = res.params.coupling_g2.log10();
-                    let log_g2_bits = (log_g2 as f32).to_bits();
-                    let has_areas = !cr.boundary_area_per_partition.is_empty();
-                    for (i, &s_ee) in cr.entropy_per_partition.iter().enumerate() {
-                        if !existing.contains(&(log_g2_bits, i)) {
-                            let a_cut = if has_areas {
-                                cr.boundary_area_per_partition[i]
-                            } else {
-                                i as f64
-                            };
-                            r.add_point(log_g2, s_ee, a_cut);
-                            r.points.last_mut().unwrap().age = 3.0;
-                            new_cache_points.push(crate::cache::CachedPoint {
-                                log_g2, s_ee, a_cut,
-                                partition_index: i,
-                            });
-                        }
+                let log_g2 = res.coupling_g2.log10();
+                let log_g2_bits = (log_g2 as f32).to_bits();
+                let has_areas = !res.result_data.boundary_area_per_partition.is_empty();
+                for (i, &s_ee) in res.result_data.entropy_per_partition.iter().enumerate() {
+                    if !existing.contains(&(log_g2_bits, i)) {
+                        let a_cut = if has_areas {
+                            res.result_data.boundary_area_per_partition[i]
+                        } else {
+                            i as f64
+                        };
+                        // Label first partition with contributor name
+                        let label = if i == 0 {
+                            Some(res.contributor_name.clone())
+                        } else {
+                            None
+                        };
+                        r.add_point_labeled(log_g2, s_ee, a_cut, label);
+                        r.points.last_mut().unwrap().age = 3.0;
+                        new_cache_points.push(crate::cache::CachedPoint {
+                            log_g2, s_ee, a_cut,
+                            partition_index: i,
+                        });
                     }
                 }
             }
             let n_new = r.points.len() - n_before;
-            dom::set_text("n-points", &r.points.len().to_string());
             if n_new > 0 {
                 drop(r);
                 crate::cache::append_batch(&new_cache_points);
                 web_sys::console::log_1(
-                    &format!("merged {} new results from server", n_new).into(),
+                    &format!("merged {} new results from server ({} with names)", n_new, results.len()).into(),
                 );
             }
         }
         Err(e) => {
-            web_sys::console::warn_1(&format!("fetch completed: {e}").into());
+            web_sys::console::warn_1(&format!("fetch feed: {e}").into());
             // If no cache and no server, seed demo data
             if cached.is_empty() {
                 let mut r = renderer.borrow_mut();
                 seed_demo_data(&mut r);
-                dom::set_text("n-points", &r.points.len().to_string());
             }
         }
     }
@@ -343,13 +350,14 @@ pub async fn run() {
         });
     }
 
-    // Connect Supabase Realtime for live leaderboard updates
+    // Connect Supabase Realtime for live leaderboard + results feed
     let rt_client = crate::realtime::RealtimeClient::new();
     {
+        // Leaderboard callback (contributors changes)
         let client_rt = client.clone();
         let session_rt = session.clone();
         let lb_rt = lb_state.clone();
-        let on_change: Rc<dyn Fn()> = Rc::new(move || {
+        let on_contributors: Rc<dyn Fn()> = Rc::new(move || {
             let client = client_rt.clone();
             let sess = session_rt.clone();
             let lb = lb_rt.clone();
@@ -362,7 +370,73 @@ pub async fn run() {
                 }
             });
         });
-        rt_client.connect(on_change);
+
+        // Results feed callback (new results from other volunteers)
+        let client_feed = client.clone();
+        let renderer_feed = renderer.clone();
+        let my_cid = contributor_id_rc.clone();
+        let feed_ts = last_feed_ts.clone();
+        let on_results: Rc<dyn Fn()> = Rc::new(move || {
+            let client = client_feed.clone();
+            let renderer = renderer_feed.clone();
+            let my_cid = my_cid.clone();
+            let feed_ts = feed_ts.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let after = feed_ts.borrow().clone();
+                match client.fetch_results_feed(50, after.as_deref()).await {
+                    Ok(results) => {
+                        if results.is_empty() {
+                            return;
+                        }
+                        // Update timestamp to newest result
+                        if let Some(first) = results.first() {
+                            *feed_ts.borrow_mut() = Some(first.submitted_at.clone());
+                        }
+                        let mut r = renderer.borrow_mut();
+                        let mut n_added = 0usize;
+                        for res in &results {
+                            // Skip own results (already shown by coordinator)
+                            if res.contributor_id == *my_cid {
+                                continue;
+                            }
+                            let log_g2 = res.coupling_g2.log10();
+                            let has_areas =
+                                !res.result_data.boundary_area_per_partition.is_empty();
+                            for (i, &s_ee) in
+                                res.result_data.entropy_per_partition.iter().enumerate()
+                            {
+                                let a_cut = if has_areas {
+                                    res.result_data.boundary_area_per_partition[i]
+                                } else {
+                                    i as f64
+                                };
+                                // Label first partition with contributor name
+                                let label = if i == 0 {
+                                    Some(res.contributor_name.clone())
+                                } else {
+                                    None
+                                };
+                                r.add_point_labeled(log_g2, s_ee, a_cut, label);
+                                n_added += 1;
+                            }
+                        }
+                        if n_added > 0 {
+                            web_sys::console::log_1(
+                                &format!("realtime: added {} points from other volunteers", n_added)
+                                    .into(),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(
+                            &format!("realtime feed: {e}").into(),
+                        );
+                    }
+                }
+            });
+        });
+
+        rt_client.connect(on_contributors, on_results);
     }
 
     // Wire leaderboard panel collapse toggle (header click)
@@ -396,7 +470,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone());
+            start_render_loop(renderer.clone(), None, client.clone(), Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone());
             return;
         }
     };
@@ -574,7 +648,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), muted, base_units, lb_state);
+    start_render_loop(renderer, Some(coordinator), client, muted, base_units, lb_state);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -717,6 +791,7 @@ fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
 fn start_render_loop(
     renderer: Rc<RefCell<Renderer>>,
     coordinator: Option<Rc<Coordinator>>,
+    client: Rc<SupabaseClient>,
     muted: Rc<Cell<bool>>,
     base_units: Rc<Cell<i64>>,
     lb_state: Rc<RefCell<LeaderboardState>>,
@@ -729,6 +804,11 @@ fn start_render_loop(
     let completion_handled = Rc::new(RefCell::new(false));
     let last_rounds = Rc::new(Cell::new(0u32));
     let anim = Rc::new(RefCell::new(AnimState::new()));
+    // Experiment progress — polled from server
+    let exp_submitted: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_consensus: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_total: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_fetching: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -738,6 +818,11 @@ fn start_render_loop(
     let lrt = last_rate_time.clone();
     let ch = completion_handled.clone();
     let an = anim.clone();
+    let es = exp_submitted.clone();
+    let ec = exp_consensus.clone();
+    let et = exp_total.clone();
+    let ef = exp_fetching.clone();
+    let cl = client.clone();
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         // Render
         r.borrow_mut().render();
@@ -751,7 +836,6 @@ fn start_render_loop(
         {
             let mut a = an.borrow_mut();
             a.tick();
-            dom::set_text("n-points", &format!("{}", a.points.as_int()));
             dom::set_text("progress-num", &format!("{}", a.progress.as_int()));
             dom::set_text("my-rate", &format!("{:.1}", a.rate.current));
             dom::set_text("my-count", &format!("{}", a.completed.as_int()));
@@ -763,6 +847,17 @@ fn start_render_loop(
             }
             if a.r2.target != 0.0 {
                 dom::set_text("r2", &format!("{:.3}", a.r2.current));
+            }
+            // Experiment progress (target updated from async poll)
+            a.exp_submitted.set(es.get() as f64);
+            a.exp_consensus.set(ec.get() as f64);
+            a.exp_total.set(et.get() as f64);
+            dom::set_text("exp-submitted", &format!("{}", a.exp_submitted.as_int()));
+            dom::set_text("exp-total", &format!("{}", a.exp_total.as_int()));
+            let consensus = a.exp_consensus.as_int();
+            dom::set_text("exp-consensus", &format!("{}", consensus));
+            if consensus > 0 {
+                dom::set_class("exp-consensus-wrap", "");
             }
         }
 
@@ -827,6 +922,24 @@ fn start_render_loop(
         // Flush cache to localStorage every ~5s (not every frame)
         if count % 300 == 0 {
             crate::cache::flush();
+        }
+
+        // Poll experiment progress every ~30s (or immediately on first frame)
+        if (count == 1 || count % 1800 == 0) && !ef.get() {
+            ef.set(true);
+            let client_ep = cl.clone();
+            let es2 = es.clone();
+            let ec2 = ec.clone();
+            let et2 = et.clone();
+            let ef2 = ef.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(p) = client_ep.experiment_progress().await {
+                    es2.set(p.submitted);
+                    ec2.set(p.consensus);
+                    et2.set(p.total);
+                }
+                ef2.set(false);
+            });
         }
 
         if count % 60 == 0 {
@@ -1269,6 +1382,9 @@ struct AnimState {
     rate: Anim,
     gn: Anim,
     r2: Anim,
+    exp_submitted: Anim,
+    exp_consensus: Anim,
+    exp_total: Anim,
     initialized: bool,
 }
 
@@ -1281,6 +1397,9 @@ impl AnimState {
             rate: Anim::new(),
             gn: Anim::new(),
             r2: Anim::new(),
+            exp_submitted: Anim::new(),
+            exp_consensus: Anim::new(),
+            exp_total: Anim::new(),
             initialized: false,
         }
     }
@@ -1292,6 +1411,9 @@ impl AnimState {
         self.rate.tick(0.01);
         self.gn.tick(0.01);
         self.r2.tick(0.0001);
+        self.exp_submitted.tick(0.5);
+        self.exp_consensus.tick(0.5);
+        self.exp_total.tick(0.5);
     }
 
     fn snap_all(&mut self) {
@@ -1301,6 +1423,9 @@ impl AnimState {
         self.rate.snap();
         self.gn.snap();
         self.r2.snap();
+        self.exp_submitted.snap();
+        self.exp_consensus.snap();
+        self.exp_total.snap();
     }
 }
 

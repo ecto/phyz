@@ -13,8 +13,8 @@
   
   
 <script type="module">
-import init, * as bindings from '/phyz-home-e1e691525ef26e15.js';
-const wasm = await init({ module_or_path: '/phyz-home-e1e691525ef26e15_bg.wasm' });
+import init, * as bindings from '/phyz-home-b8887759f3c35d88.js';
+const wasm = await init({ module_or_path: '/phyz-home-b8887759f3c35d88_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -205,7 +205,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       cursor: default;
     }
 
-    /* ─── Leaderboard button ─── */
+    /* ─── Leaderboard panel toggle button ─── */
     #lb-btn {
       cursor: pointer;
       color: var(--dim);
@@ -214,6 +214,90 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       user-select: none;
     }
     #lb-btn:hover { color: var(--text); }
+
+    /* ─── Leaderboard side panel ─── */
+    #lb-panel {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: 260px;
+      z-index: 15;
+      background: color-mix(in srgb, var(--panel) 85%, transparent);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.2s ease;
+    }
+    #lb-panel.collapsed { transform: translateX(100%); }
+
+    #lb-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #lb-panel-header:hover { background: var(--border); }
+    .lb-panel-title { color: var(--bright); font-weight: 600; }
+    .lb-panel-toggle { color: var(--dim); font-size: 14px; }
+
+    #lb-panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 0;
+      font-size: 11px;
+    }
+    #lb-panel-body .lb-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 14px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    }
+    #lb-panel-body .lb-row:last-child { border-bottom: none; }
+    .lb-rank { color: var(--dim); width: 20px; text-align: right; font-size: 10px; flex-shrink: 0; }
+    .lb-change {
+      width: 14px; font-size: 9px; text-align: center; flex-shrink: 0;
+      transition: opacity 5s ease-out;
+    }
+    .lb-change.up { color: var(--green); }
+    .lb-change.down { color: var(--red); }
+    .lb-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-you { font-size: 8px; color: var(--green); margin-left: 2px; font-weight: 600; }
+    .lb-units { color: var(--amber); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .lb-row.me { background: var(--green-bg); }
+    .lb-empty { color: var(--dim); font-style: italic; padding: 12px 14px; text-align: center; }
+
+    #lb-me {
+      padding: 6px 14px;
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--dim);
+    }
+    #lb-me:empty { display: none; }
+
+    #lb-status {
+      padding: 4px 14px;
+      border-top: 1px solid var(--border);
+      font-size: 9px;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .lb-status-spacer { flex: 1; }
+    .rt-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .rt-dot.connecting { background: var(--amber); }
+    .rt-dot.live { background: var(--green); }
+    .rt-dot.reconnecting { background: var(--red); }
 
     /* ─── Effort slider (inline in bottombar) ─── */
     #effort {
@@ -237,68 +321,138 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     #effort-val { color: var(--text); font-size: 10px; }
     #effort-workers { color: var(--dim); font-size: 10px; }
 
+    /* ─── Splash animations ─── */
+    @keyframes splash-backdrop-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes splash-card-in {
+      from { opacity: 0; transform: scale(0.96) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    @keyframes card-glow {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(68,204,102,0.08), 0 8px 40px rgba(0,0,0,0.5), 0 0 60px rgba(68,204,102,0.03); }
+      50% { box-shadow: 0 0 0 1px rgba(68,204,102,0.18), 0 8px 40px rgba(0,0,0,0.5), 0 0 80px rgba(68,204,102,0.08); }
+    }
+    @keyframes shimmer {
+      0% { background-position: 200% center; }
+      100% { background-position: -200% center; }
+    }
+
     /* ─── Splash modal ─── */
     #splash-backdrop {
       position: fixed; inset: 0; z-index: 50;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      background: rgba(0,0,0,0.55);
+      background: rgba(0,0,0,0.25);
       display: flex; align-items: center; justify-content: center;
+      animation: splash-backdrop-in 0.3s ease-out;
     }
     #splash-backdrop.hidden { display: none; }
 
     #splash-card {
       position: relative;
-      max-width: 440px; width: 90%;
-      padding: 32px 36px;
-      background: var(--panel);
-      border: 1px solid var(--border);
+      max-width: 480px; width: 90%;
+      padding: 44px 48px 36px;
+      background: rgba(12, 12, 20, 0.72);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(68, 204, 102, 0.1);
+      border-radius: 12px;
       text-align: center;
+      animation: splash-card-in 0.5s ease-out 0.1s both, card-glow 6s ease-in-out 1s infinite;
+      box-shadow: 0 0 0 1px rgba(68,204,102,0.08), 0 8px 40px rgba(0,0,0,0.5), 0 0 60px rgba(68,204,102,0.03);
+    }
+    /* Glass top-edge reflection */
+    #splash-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 15%; right: 15%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+      pointer-events: none;
     }
     #splash-close {
-      position: absolute; top: 10px; right: 14px;
+      position: absolute; top: 14px; right: 18px;
       cursor: pointer; color: var(--dim); font-size: 18px;
+      opacity: 0.6; transition: opacity 0.15s;
     }
-    #splash-close:hover { color: var(--text); }
+    #splash-close:hover { opacity: 1; color: var(--text); }
     .splash-title {
-      font-weight: 600; font-size: 22px;
-      color: var(--bright); letter-spacing: -0.03em;
+      font-weight: 600; font-size: 28px;
+      color: var(--bright); letter-spacing: -0.04em;
+      margin-bottom: 4px;
+      text-shadow: 0 0 30px rgba(68, 204, 102, 0.2);
     }
     .splash-title .dim { color: var(--dim); font-weight: 400; }
     .splash-sub {
       font-style: italic; color: var(--dim);
-      margin: 4px 0 12px;
+      margin: 2px 0 20px;
+      font-size: 13px;
     }
     .splash-formula {
-      color: var(--amber); font-size: 13px;
-      margin-bottom: 14px;
+      color: var(--amber); font-size: 20px;
+      margin-bottom: 8px;
+      letter-spacing: 0.02em;
+      text-shadow: 0 0 24px rgba(204, 170, 51, 0.2);
     }
+    .splash-gn {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 20px;
+    }
+    .splash-gn .stat-label { font-size: 11px; }
     .splash-steps {
-      text-align: left; font-size: 11px;
-      line-height: 1.7; color: var(--dim);
-      margin-bottom: 10px;
+      text-align: left;
+      margin-bottom: 20px;
+    }
+    .step {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--dim);
+      padding: 3px 0;
+    }
+    .step-n {
+      color: var(--green);
+      font-weight: 600;
+      font-size: 11px;
+      flex-shrink: 0;
+      opacity: 0.7;
     }
     .splash-meta {
-      font-size: 11px; color: var(--dim);
-      margin-bottom: 4px;
+      font-size: 10px; color: var(--dim);
+      opacity: 0.7;
+      letter-spacing: 0.02em;
     }
     #splash-cta {
       display: block; width: 100%;
-      margin-top: 20px; padding: 12px;
+      margin-top: 24px; padding: 14px;
       font-family: var(--mono);
       font-size: 15px; font-weight: 600;
-      border: 1px solid var(--green);
-      background: var(--green); color: var(--panel);
+      border: none;
+      border-radius: 6px;
+      background: linear-gradient(105deg, var(--green) 0%, var(--green) 40%, #5aea7e 50%, var(--green) 60%, var(--green) 100%);
+      background-size: 250% 100%;
+      color: var(--panel);
       cursor: pointer;
+      box-shadow: 0 4px 16px rgba(68, 204, 102, 0.3);
+      transition: box-shadow 0.2s, transform 0.1s;
+      animation: shimmer 4s ease-in-out 2s infinite;
     }
-    #splash-cta:hover { opacity: 0.9; }
+    #splash-cta:hover {
+      box-shadow: 0 4px 24px rgba(68, 204, 102, 0.5);
+      transform: translateY(-1px);
+    }
+    #splash-cta:active { transform: translateY(0); }
     #learn-more {
-      display: inline-block; margin-top: 12px;
+      display: inline-block; margin-top: 16px;
       font-size: 11px;
       color: var(--green);
       text-decoration: none;
-      border-bottom: 1px solid var(--green-d);
+      border-bottom: 1px solid rgba(68, 204, 102, 0.3);
       padding-bottom: 1px;
+      transition: color 0.2s, border-color 0.2s;
     }
     #learn-more:hover {
       color: var(--bright);
@@ -306,7 +460,22 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     }
 
     @media (prefers-color-scheme: light) {
-      #splash-backdrop { background: rgba(200,200,200,0.5); }
+      #splash-backdrop { background: rgba(200,200,200,0.25); }
+      #splash-card {
+        background: rgba(234, 234, 230, 0.75);
+        border-color: rgba(26, 138, 68, 0.15);
+        box-shadow: 0 0 0 1px rgba(26,138,68,0.1), 0 8px 40px rgba(0,0,0,0.12), 0 0 60px rgba(26,138,68,0.04);
+      }
+      #splash-card::after {
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+      }
+      @keyframes card-glow {
+        0%, 100% { box-shadow: 0 0 0 1px rgba(26,138,68,0.1), 0 8px 40px rgba(0,0,0,0.12), 0 0 60px rgba(26,138,68,0.04); }
+        50% { box-shadow: 0 0 0 1px rgba(26,138,68,0.2), 0 8px 40px rgba(0,0,0,0.12), 0 0 80px rgba(26,138,68,0.08); }
+      }
+      .splash-title { text-shadow: none; }
+      .splash-formula { text-shadow: none; }
+      #learn-more { border-bottom-color: rgba(26, 138, 68, 0.3); }
     }
 
     /* ─── Worker lanes ─── */
@@ -391,49 +560,10 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     }
 
     @media (prefers-color-scheme: light) {
-      #auth-modal, #name-modal, #lb-modal { background: rgba(200,200,200,0.5); }
+      #auth-modal, #name-modal { background: rgba(200,200,200,0.5); }
     }
 
-    /* ─── Leaderboard modal ─── */
-    #lb-modal {
-      position: fixed; inset: 0; z-index: 50;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      background: rgba(0,0,0,0.55);
-      display: flex; align-items: center; justify-content: center;
-    }
-    #lb-modal.hidden { display: none; }
-    #lb-card {
-      position: relative;
-      max-width: 380px; width: 90%;
-      padding: 28px 32px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      text-align: center;
-    }
-    #lb-close {
-      position: absolute; top: 8px; right: 12px;
-      cursor: pointer; color: var(--dim); font-size: 18px;
-    }
-    #lb-close:hover { color: var(--text); }
-    #leaderboard {
-      padding: 6px 0;
-      font-size: 11px;
-      max-height: 300px;
-      overflow-y: auto;
-      text-align: left;
-    }
-    .lb-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 3px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .lb-row:last-child { border-bottom: none; }
-    .lb-rank { color: var(--dim); width: 20px; text-align: right; font-size: 10px; }
-    .lb-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lb-units { color: var(--amber); font-variant-numeric: tabular-nums; }
-    .lb-row.me { background: var(--green-bg); }
-    .lb-empty { color: var(--dim); font-style: italic; padding: 12px 0; text-align: center; }
+    /* (Leaderboard styles are in the panel section above) */
 
     /* ─── Confetti ─── */
     #confetti-container {
@@ -453,15 +583,24 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
     }
 
-    /* ─── Mute button ─── */
-    #mute-btn {
+    /* ─── Icon buttons (topbar) ─── */
+    .icon-btn {
+      width: 26px; height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
       color: var(--dim);
+      background: transparent;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
       font-size: 14px;
       line-height: 1;
-      user-select: none;
+      text-decoration: none;
+      flex-shrink: 0;
     }
-    #mute-btn:hover { color: var(--text); }
+    .icon-btn:hover { color: var(--text); border-color: var(--dim); }
+    #mute-btn { user-select: none; }
     #mute-btn.muted { opacity: 0.3; }
 
     /* New entry flash */
@@ -493,7 +632,21 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       .wk-result { display: none; }
       #effort { width: 40px; }
 
-      #splash-card { padding: 24px 20px; }
+      #splash-card { padding: 32px 24px 28px; }
+
+      /* Leaderboard panel: horizontal bar above bottombar on mobile */
+      #lb-panel {
+        top: auto; left: 0; right: 0; bottom: 0;
+        width: 100%;
+        height: auto;
+        max-height: 180px;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        margin-bottom: 0;
+        /* Push above bottombar */
+      }
+      #lb-panel.collapsed { transform: translateY(100%); }
+      #lb-panel-body { max-height: 120px; }
     }
 
     /* ─── Very small screens ─── */
@@ -502,7 +655,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       #log { height: 60px; }
     }
   </style>
-<link rel="modulepreload" href="/phyz-home-e1e691525ef26e15.js" crossorigin="anonymous" integrity="sha384-jcWJk+wIOfEv5dUbfSFpBn38N4eGqiCF0UzKpfQldQPE7E5pXSxtclOen4EUTdVl"><link rel="preload" href="/phyz-home-e1e691525ef26e15_bg.wasm" crossorigin="anonymous" integrity="sha384-AUCsCi/l8zW6X3uFgjmmESXOo37G2HP03raw4knzVI2WuShwsRqB9dhofcrRZR54" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/phyz-home-b8887759f3c35d88.js" crossorigin="anonymous" integrity="sha384-fszAvcXJnZ4A9Qh1wtweT78rg7pcsk9DWFEsQD94pN58PviER0cC7wERXBkTZK11"><link rel="preload" href="/phyz-home-b8887759f3c35d88_bg.wasm" crossorigin="anonymous" integrity="sha384-7LOvrEF8KTOq2XT9xsCviQuuKeoylN5bvsk93HDok6ANjU3ypkWjRJrY4vmrQ6bu" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viz"></canvas>
   <div id="confetti-container"></div>
@@ -511,26 +664,26 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
   <div id="topbar">
     <span class="title">phyz<span class="title-dim">@home</span></span>
     <span class="sep"></span>
-    <span class="stat-result" title="Newton's gravitational constant — slope of S_EE vs A_cut regression">
-      <span class="stat-label">G_N</span>
-      <span class="stat-hero" id="gn">&mdash;</span>
-    </span>
-    <span class="sep"></span>
-    <span title="Total data points collected across all contributors">
-      <span class="stat-value" id="n-points">0</span>
-      <span class="stat-label"> points</span>
-    </span>
-    <span class="sep"></span>
-    <span title="R² — goodness of fit for S_EE = (1/4G_N) × A_cut linear regression">
+    <span title="How well entropy scales with area — 1.0 = gravity emerges from entanglement">
       <span class="stat-label">R² </span>
-      <span class="stat-value" id="r2">&mdash;</span>
+      <span class="stat-hero" id="r2">&mdash;</span>
     </span>
     <div id="convergence-wrap" title="Convergence toward R² = 1.0 — click for details">
       <div id="convergence"><div id="convergence-fill"></div></div>
     </div>
-    <span id="auth-anon" title="Number of browsers currently contributing">
-      <span id="n-contributors">1</span>
-      <span class="stat-label"> contributors</span>
+    <span class="sep"></span>
+    <span title="Results submitted by all contributors">
+      <span class="stat-hero" id="exp-submitted">0</span><span class="stat-label"> / </span><span class="stat-value" id="exp-total">&mdash;</span>
+      <span class="stat-label"> submitted</span>
+    </span>
+    <span id="exp-consensus-wrap" class="hidden" title="Work units with verified consensus">
+      <span class="stat-label"> · </span>
+      <span class="stat-value" id="exp-consensus">0</span>
+      <span class="stat-label"> consensus</span>
+    </span>
+    <!-- G_N computed by Rust but not displayed in top bar -->
+    <span id="gn" class="hidden">&mdash;</span>
+    <span id="auth-anon">
       <button id="sign-in-btn" class="auth-btn">sign in</button>
     </span>
     <span id="auth-user" class="hidden">
@@ -538,19 +691,22 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       <span class="stat-label" id="user-points" title="Your total contributed work units"></span>
       <button id="sign-out-btn" class="auth-btn dim">sign out</button>
     </span>
-    <span id="lb-btn" title="leaderboard">&#9819;</span>
-    <span id="mute-btn" title="toggle sound">&#9834;</span>
+    <button id="info-btn" class="icon-btn" title="about phyz@home">?</button>
+    <button id="mute-btn" class="icon-btn" title="toggle sound">&#9834;</button>
+    <a href="https://github.com/ecto/phyz" target="_blank" rel="noopener" class="icon-btn" id="gh-link" title="GitHub">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
   </div>
 
   <!-- Bottom bar (current work + workers) -->
   <div id="bottombar">
     <div id="workers"></div>
-    <div id="progress-track" title="Phase progress — work units completed toward current phase goal"><div id="progress-fill"></div></div>
+    <div id="progress-track" title="Round progress — work units computed in this round"><div id="progress-fill"></div></div>
     <div id="bottombar-row">
       <button id="toggle" title="Start or pause computation">&#9654;</button>
-      <span title="Work units completed in current phase / total needed">
-        <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">7200</span>
-        <span class="stat-label"> p</span><span class="stat-value" id="progress-phase">1</span>
+      <span title="Work units computed in current round / total in round">
+        <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">0</span>
+        <span class="stat-label" id="round-status">idle</span>
       </span>
       <span class="sep"></span>
       <span title="Work units completed per second by your browser">
@@ -570,25 +726,22 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
   </div>
 
   <!-- Splash modal -->
-  <div id="splash-backdrop">
+  <div id="splash-backdrop" class="hidden">
     <div id="splash-card">
       <span id="splash-close">&times;</span>
       <div class="splash-title">phyz<span class="dim">@home</span></div>
       <div class="splash-sub">distributed quantum gravity</div>
-      <div class="splash-formula">S_EE = (1/4 G_N) &times; A_cut</div>
+      <div class="splash-formula">S<sub>EE</sub> = (1/4 G<sub>N</sub>) &times; A<sub>cut</sub></div>
+      <div class="splash-gn" title="Emergent Newton's constant in lattice units — stabilizes as R² → 1.0">
+        G<sub>N</sub> = <span id="gn-splash">&mdash;</span> <span class="stat-label">(lattice units)</span>
+      </div>
       <div class="splash-steps">
-        1. A Regge lattice (triangulated 4-sphere) defines discrete spacetime.<br>
-        2. Your browser solves for the ground state of an SU(2) gauge field
-        on this lattice &mdash; a 1024&times;1024 eigenvalue problem.<br>
-        3. The lattice is split into two regions. Entanglement entropy S<sub>EE</sub>
-        across the cut is measured, along with the geometric cut area A<sub>cut</sub>.<br>
-        4. If gravity emerges from entanglement, S<sub>EE</sub> scales linearly
-        with A<sub>cut</sub> &mdash; the slope gives Newton's constant G<sub>N</sub>.
+        <div class="step"><span class="step-n">1</span><span>A Regge lattice (triangulated 4-sphere) defines discrete spacetime.</span></div>
+        <div class="step"><span class="step-n">2</span><span>Your browser solves an SU(2) gauge field eigenvalue problem on it.</span></div>
+        <div class="step"><span class="step-n">3</span><span>The lattice is bisected; entropy S<sub>EE</sub> and cut area A<sub>cut</sub> are measured.</span></div>
+        <div class="step"><span class="step-n">4</span><span>If S<sub>EE</sub> &prop; A<sub>cut</sub>, the slope yields Newton&rsquo;s constant G<sub>N</sub>.</span></div>
       </div>
-      <div class="splash-meta">
-        phase 1: 7,200 eigensolves (levels 0&ndash;1) &bull;
-        phase 2: 6,100 eigensolves (level 3)
-      </div>
+      <div class="splash-meta">distributed eigensolves — results submitted in rounds</div>
       <button id="splash-cta">start computing &rarr;</button>
       <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
         learn more &rarr;
@@ -618,142 +771,22 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     </div>
   </div>
 
-  <!-- Leaderboard modal -->
-  <div id="lb-modal" class="hidden">
-    <div id="lb-card">
-      <span id="lb-close">&times;</span>
-      <div class="auth-title">leaderboard</div>
+  <!-- Leaderboard side panel -->
+  <div id="lb-panel">
+    <div id="lb-panel-header">
+      <span class="lb-panel-title">leaderboard</span>
+      <span class="lb-panel-toggle">&rsaquo;</span>
+    </div>
+    <div id="lb-panel-body">
       <div id="leaderboard"></div>
     </div>
+    <div id="lb-me"></div>
+    <div id="lb-status">
+      <span id="rt-dot" class="rt-dot connecting"></span>
+      <span id="rt-status">connecting&hellip;</span>
+      <span class="lb-status-spacer"></span>
+      <span id="n-contributors">0</span> contributors
+    </div>
   </div>
-<script>"use strict";
-
-(function () {
-
-    const address = '{{__TRUNK_ADDRESS__}}';
-    const base = '{{__TRUNK_WS_BASE__}}';
-    let protocol = '';
-    protocol =
-        protocol
-            ? protocol
-            : window.location.protocol === 'https:'
-                ? 'wss'
-                : 'ws';
-    const url = protocol + '://' + address + base + '.well-known/trunk/ws';
-
-    class Overlay {
-        constructor() {
-            // create an overlay
-            this._overlay = document.createElement("div");
-            const style = this._overlay.style;
-            style.height = "100vh";
-            style.width = "100vw";
-            style.position = "fixed";
-            style.top = "0";
-            style.left = "0";
-            style.backgroundColor = "rgba(222, 222, 222, 0.5)";
-            style.fontFamily = "sans-serif";
-            // not sure that's the right approach
-            style.zIndex = "1000000";
-            style.backdropFilter = "blur(1rem)";
-
-            const container = document.createElement("div");
-            // center it
-            container.style.position = "absolute";
-            container.style.top = "30%";
-            container.style.left = "15%";
-            container.style.maxWidth = "85%";
-
-            this._title = document.createElement("div");
-            this._title.innerText = "Build failure";
-            this._title.style.paddingBottom = "2rem";
-            this._title.style.fontSize = "2.5rem";
-
-            this._message = document.createElement("div");
-            this._message.style.whiteSpace = "pre-wrap";
-
-            const icon= document.createElement("div");
-            icon.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" fill="#dc3545" viewBox="0 0 16 16"><path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.9.995l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 5.995A.905.905 0 0 1 8 5zm.002 6a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></svg>';
-            this._title.prepend(icon);
-
-            container.append(this._title, this._message);
-            this._overlay.append(container);
-
-            this._inject();
-            window.setInterval(() => {
-                this._inject();
-            }, 250);
-        }
-
-        set reason(reason) {
-            this._message.textContent = reason;
-        }
-
-        _inject() {
-            if (!this._overlay.isConnected) {
-                // prepend it
-                document.body?.prepend(this._overlay);
-            }
-        }
-
-    }
-
-    class Client {
-        constructor(url) {
-            this.url = url;
-            this.poll_interval = 5000;
-            this._overlay = null;
-        }
-
-        start() {
-            const ws = new WebSocket(this.url);
-            ws.onmessage = (ev) => {
-                const msg = JSON.parse(ev.data);
-                switch (msg.type) {
-                    case "reload":
-                        this.reload();
-                        break;
-                    case "buildFailure":
-                        this.buildFailure(msg.data)
-                        break;
-                }
-            };
-            ws.onclose = () => this.onclose();
-        }
-
-        onclose() {
-            window.setTimeout(
-                () => {
-                    // when we successfully reconnect, we'll force a
-                    // reload (since we presumably lost connection to
-                    // trunk due to it being killed, so it will have
-                    // rebuilt on restart)
-                    const ws = new WebSocket(this.url);
-                    ws.onopen = () => window.location.reload();
-                    ws.onclose = () => this.onclose();
-                },
-                this.poll_interval);
-        }
-
-        reload() {
-            window.location.reload();
-        }
-
-        buildFailure({reason}) {
-            // also log the console
-            console.error("Build failed:", reason);
-
-            console.debug("Overlay", this._overlay);
-
-            if (!this._overlay) {
-                this._overlay = new Overlay();
-            }
-            this._overlay.reason = reason;
-        }
-    }
-
-    new Client(url).start();
-
-})()
-</script></body>
+</body>
 </html>

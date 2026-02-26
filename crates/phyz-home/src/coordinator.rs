@@ -35,6 +35,35 @@ pub struct WorkerSlot {
     pub last_result: Option<String>,
 }
 
+/// Compute slope and R² from a linear fit of y = slope * x + intercept.
+/// Returns (slope, r_squared). If fewer than 2 points or zero variance, returns (0, 0).
+fn linear_fit(x: &[f64], y: &[f64]) -> (f64, f64) {
+    let n = x.len().min(y.len());
+    if n < 2 {
+        return (0.0, 0.0);
+    }
+    let nf = n as f64;
+    let x_mean: f64 = x[..n].iter().sum::<f64>() / nf;
+    let y_mean: f64 = y[..n].iter().sum::<f64>() / nf;
+    let mut ss_xy = 0.0;
+    let mut ss_xx = 0.0;
+    let mut ss_yy = 0.0;
+    for i in 0..n {
+        let dx = x[i] - x_mean;
+        let dy = y[i] - y_mean;
+        ss_xy += dx * dy;
+        ss_xx += dx * dx;
+        ss_yy += dy * dy;
+    }
+    let slope = if ss_xx > 1e-30 { ss_xy / ss_xx } else { 0.0 };
+    let r2 = if ss_xx > 1e-30 && ss_yy > 1e-30 {
+        (ss_xy * ss_xy) / (ss_xx * ss_yy)
+    } else {
+        0.0
+    };
+    (slope, r2)
+}
+
 /// Client-side coordinator: fetches work, dispatches to workers, submits results.
 pub struct Coordinator {
     client: Rc<SupabaseClient>,
@@ -538,12 +567,23 @@ impl Coordinator {
             }
             crate::cache::append_batch(&cache_batch);
 
-            // Store per-worker last result summary
+            // Store per-worker last result summary with slope + R²
             if let Some(idx) = worker_idx {
-                let short = format!(
-                    "E\u{2080}={:.3} S\u{00D7}{} {:.0}ms",
-                    payload.ground_state_energy, n_partitions, payload.walltime_ms,
-                );
+                let short = if has_areas && n_partitions >= 2 {
+                    let (slope, r2) = linear_fit(
+                        &payload.boundary_area_per_partition,
+                        &payload.entropy_per_partition,
+                    );
+                    format!(
+                        "E\u{2080}={:.3} slope={:.3} R\u{00B2}={:.2} {:.0}ms",
+                        payload.ground_state_energy, slope, r2, payload.walltime_ms,
+                    )
+                } else {
+                    format!(
+                        "E\u{2080}={:.3} S\u{00D7}{} {:.0}ms",
+                        payload.ground_state_energy, n_partitions, payload.walltime_ms,
+                    )
+                };
                 self.worker_results.borrow_mut()[idx] = Some(short);
             }
         }

@@ -50,19 +50,23 @@ pub struct ResultPayload {
     pub walltime_ms: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompletedResult {
-    pub work_unit_id: String,
-    pub consensus_result: Option<ResultPayload>,
-    pub params: WorkParams,
-}
-
 /// A computed result waiting to be batch-submitted.
 #[derive(Debug, Clone, Serialize)]
 pub struct PendingResult {
     pub work_unit_id: String,
     pub contributor_id: String,
     pub result: ResultPayload,
+}
+
+/// A result from the global feed with contributor name and work unit context.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeedResult {
+    pub result_id: String,
+    pub contributor_id: String,
+    pub contributor_name: String,
+    pub coupling_g2: f64,
+    pub result_data: ResultPayload,
+    pub submitted_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +81,13 @@ pub struct LeaderboardEntry {
 pub struct ContributorStats {
     pub total_units: i64,
     pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExperimentProgress {
+    pub submitted: usize,
+    pub consensus: usize,
+    pub total: usize,
 }
 
 pub struct SupabaseClient {
@@ -123,32 +134,21 @@ impl SupabaseClient {
         serde_json::from_str(&text).map_err(|e| format!("parse error: {e}"))
     }
 
-    /// Fetch completed work units with consensus results (capped to avoid main-thread stall).
-    pub async fn fetch_completed(&self) -> Result<Vec<CompletedResult>, String> {
-        let url = format!(
-            "{}?status=eq.complete&select=id,consensus_result,params&limit=200",
-            self.api_url("work_units"),
-        );
-
-        let resp = self.get(&url).await?;
-        let text = self.text(resp).await?;
-
-        #[derive(Deserialize)]
-        struct Row {
-            id: String,
-            consensus_result: Option<ResultPayload>,
-            params: WorkParams,
+    /// Fetch recent results with contributor names for the live viz feed.
+    /// Pass `after` to get only results newer than a timestamp (for incremental updates).
+    pub async fn fetch_results_feed(
+        &self,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Vec<FeedResult>, String> {
+        let url = format!("{}/rest/v1/rpc/recent_results_feed", self.url);
+        let mut body = serde_json::json!({ "p_limit": limit });
+        if let Some(ts) = after {
+            body["p_after"] = serde_json::Value::String(ts.to_string());
         }
-
-        let rows: Vec<Row> = serde_json::from_str(&text).map_err(|e| format!("parse: {e}"))?;
-        Ok(rows
-            .into_iter()
-            .map(|r| CompletedResult {
-                work_unit_id: r.id,
-                consensus_result: r.consensus_result,
-                params: r.params,
-            })
-            .collect())
+        let resp = self.post(&url, &body.to_string()).await?;
+        let text = self.text(resp).await?;
+        serde_json::from_str(&text).map_err(|e| format!("parse feed: {e}"))
     }
 
     /// Register or update a contributor.
@@ -209,11 +209,12 @@ impl SupabaseClient {
         Ok(0)
     }
 
-    /// Fetch experiment-wide progress: (completed, total) work unit counts.
-    pub async fn experiment_progress(&self) -> Result<(usize, usize), String> {
+    /// Fetch experiment-wide progress: (results submitted, consensus complete, total work units).
+    pub async fn experiment_progress(&self) -> Result<ExperimentProgress, String> {
         let total = self.count_rows(&format!("{}?select=id", self.api_url("work_units"))).await?;
-        let done = self.count_rows(&format!("{}?select=id&status=eq.complete", self.api_url("work_units"))).await?;
-        Ok((done, total))
+        let submitted = self.count_rows(&format!("{}?select=id", self.api_url("results"))).await?;
+        let consensus = self.count_rows(&format!("{}?select=id&status=eq.complete", self.api_url("work_units"))).await?;
+        Ok(ExperimentProgress { submitted, consensus, total })
     }
 
     /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.
