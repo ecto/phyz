@@ -77,9 +77,8 @@
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 4px 16px;
-      padding: 5px 16px;
+      gap: 6px 16px;
+      padding: 8px 16px;
       font-size: 12px;
     }
     #topbar .title {
@@ -114,43 +113,65 @@
       gap: 4px;
       white-space: nowrap;
     }
-    #topbar .spacer { flex: 1; min-width: 8px; }
+    /* Worker count label */
+    #worker-count { white-space: nowrap; }
 
-    /* Indicator dot */
-    .indicator { width: 6px; height: 6px; display: inline-block; }
-    .indicator.idle { background: var(--dim); }
-    .indicator.active { background: var(--green); }
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+    /* Convergence bar (inline, clickable) */
+    #convergence-wrap {
+      flex: 1;
+      min-width: 60px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
     }
-    .indicator.active { animation: blink 1s ease-in-out infinite; }
-    .indicator.done { background: var(--green); }
-
-    /* Progress track */
-    #progress-track {
-      width: 100px; height: 4px;
+    #convergence-wrap:hover #convergence { background: var(--dim); }
+    #convergence {
+      flex: 1;
+      height: 4px;
       background: var(--border);
-      display: inline-block;
-      vertical-align: middle;
+      transition: background 0.15s;
     }
-    #progress-fill {
-      display: block;
-      height: 100%; width: 0%;
+    #convergence-fill {
+      height: 100%;
+      width: 0%;
       background: var(--green-d);
-      transition: width 0.5s;
+      transition: width 1s ease-out;
     }
+    /* ─── Bottom bar ─── */
+    #bottombar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      z-index: 20;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+    }
+    #progress-track { height: 3px; background: var(--border); }
+    #progress-fill { height: 100%; width: 0%; background: var(--green-d); transition: width 0.5s; }
+    #bottombar-row {
+      display: flex;
+      align-items: center;
+      gap: 6px 16px;
+      padding: 6px 16px;
+    }
+    .bottombar-spacer { flex: 1; min-width: 8px; }
 
     /* ─── Toggle button ─── */
     #toggle {
-      font-weight: 600;
-      font-size: 11px;
-      padding: 2px 12px;
+      width: 28px;
+      height: 28px;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
       cursor: pointer;
       border: 1px solid var(--green);
       background: var(--green-bg);
       color: var(--green);
       transition: all 0.1s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
     #toggle:hover {
       background: var(--green);
@@ -161,9 +182,6 @@
       border-color: var(--red);
       background: var(--red);
       color: var(--panel);
-      font-weight: 600;
-      font-size: 11px;
-      padding: 2px 12px;
     }
     #toggle.running:hover {
       background: transparent;
@@ -176,15 +194,37 @@
       cursor: default;
     }
 
-    /* ─── Info button ─── */
-    #info-btn {
+    /* ─── Leaderboard button ─── */
+    #lb-btn {
       cursor: pointer;
       color: var(--dim);
       font-size: 14px;
       line-height: 1;
       user-select: none;
     }
-    #info-btn:hover { color: var(--text); }
+    #lb-btn:hover { color: var(--text); }
+
+    /* ─── Effort slider (inline in bottombar) ─── */
+    #effort {
+      width: 60px; height: 3px;
+      -webkit-appearance: none; appearance: none;
+      background: var(--border); outline: none;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    #effort::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 10px; height: 10px;
+      background: var(--green); border-radius: 50%;
+      cursor: pointer;
+    }
+    #effort::-moz-range-thumb {
+      width: 10px; height: 10px; border: none;
+      background: var(--green); border-radius: 50%;
+      cursor: pointer;
+    }
+    #effort-val { color: var(--text); font-size: 10px; }
+    #effort-workers { color: var(--dim); font-size: 10px; }
 
     /* ─── Splash modal ─── */
     #splash-backdrop {
@@ -258,86 +298,17 @@
       #splash-backdrop { background: rgba(200,200,200,0.5); }
     }
 
-    /* ─── Log panel (top-left) ─── */
-    #logpanel {
-      position: absolute;
-      top: 42px;
-      left: 12px;
-      z-index: 10;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      width: 480px;
-    }
-    #log {
-      height: 148px;
-      overflow: hidden;
-      padding: 4px 12px;
-      font-size: 11px;
-      line-height: 1.6;
-    }
-    #log .entry {
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      border-bottom: 1px solid var(--border);
-      padding: 2px 0;
-    }
-    #log .entry:last-child { border-bottom: none; }
-    #log .entry .dot {
-      display: inline-block;
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      vertical-align: middle;
-      margin-right: 6px;
-    }
-    #log .entry .prompt { color: var(--green-d); }
-    #log .entry .param  { color: var(--dim); }
-    #log .entry .val    { color: var(--amber); }
-    #log .entry .ok     { color: var(--green); }
-    #log .entry .time   { color: var(--dim); font-size: 11px; }
-    #log .empty {
-      color: var(--dim);
-      font-style: italic;
-      padding: 8px 0;
-    }
-
     /* ─── Worker lanes ─── */
-    #workers { padding: 4px 12px; border-bottom: 1px solid var(--border); font-size: 10px; }
+    #workers { padding: 3px 16px; font-size: 10px; border-bottom: 1px solid var(--border); }
     #workers:empty { display: none; }
-    .wk { display: flex; align-items: center; gap: 6px; height: 18px; white-space: nowrap; }
-    .wk-idx { color: var(--dim); width: 18px; font-size: 9px; }
-    .wk-params { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; }
-    .wk-bar { width: 60px; height: 3px; background: var(--border); flex-shrink: 0; overflow: hidden; }
+    .wk { display: flex; align-items: center; gap: 6px; height: 16px; white-space: nowrap; }
+    .wk-idx { color: var(--dim); width: 16px; font-size: 9px; flex-shrink: 0; }
+    .wk-params { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+    .wk-bar { width: 80px; height: 3px; background: var(--border); flex-shrink: 0; overflow: hidden; }
     .wk-fill { display: block; height: 100%; background: var(--green-d); transition: width 0.3s; }
-    .wk.idle .wk-params { color: var(--dim); font-style: italic; }
-    .wk.idle .wk-bar { opacity: 0.3; }
-
-    /* ─── Effort bar ─── */
-    #effort-bar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 5px 12px; border-bottom: 1px solid var(--border);
-      font-size: 10px;
-    }
-    #effort-bar .stat-label { flex-shrink: 0; }
-    #effort {
-      flex: 1; height: 3px;
-      -webkit-appearance: none; appearance: none;
-      background: var(--border); outline: none;
-      cursor: pointer;
-    }
-    #effort::-webkit-slider-thumb {
-      -webkit-appearance: none; appearance: none;
-      width: 10px; height: 10px;
-      background: var(--green); border-radius: 50%;
-      cursor: pointer;
-    }
-    #effort::-moz-range-thumb {
-      width: 10px; height: 10px; border: none;
-      background: var(--green); border-radius: 50%;
-      cursor: pointer;
-    }
-    #effort-val { color: var(--text); min-width: 28px; text-align: right; }
-    #effort-workers { color: var(--dim); }
+    .wk-frac { color: var(--dim); font-size: 9px; width: 36px; flex-shrink: 0; }
+    .wk-result { color: var(--dim); margin-left: auto; flex-shrink: 0; font-size: 9px; }
+    .wk-idle-summary { color: var(--dim); font-style: italic; height: 16px; line-height: 16px; }
 
     /* ─── Auth button ─── */
     .auth-btn {
@@ -409,36 +380,38 @@
     }
 
     @media (prefers-color-scheme: light) {
-      #auth-modal, #name-modal { background: rgba(200,200,200,0.5); }
+      #auth-modal, #name-modal, #lb-modal { background: rgba(200,200,200,0.5); }
     }
 
-    /* ─── Panel tabs ─── */
-    #panel-tabs {
-      display: flex; gap: 0;
-      border-bottom: 1px solid var(--border);
-      font-size: 10px;
+    /* ─── Leaderboard modal ─── */
+    #lb-modal {
+      position: fixed; inset: 0; z-index: 50;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
     }
-    .tab {
-      padding: 4px 12px;
-      cursor: pointer;
-      color: var(--dim);
-      border-bottom: 2px solid transparent;
-      user-select: none;
+    #lb-modal.hidden { display: none; }
+    #lb-card {
+      position: relative;
+      max-width: 380px; width: 90%;
+      padding: 28px 32px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      text-align: center;
     }
-    .tab:hover { color: var(--text); }
-    .tab.active {
-      color: var(--text);
-      border-bottom-color: var(--green-d);
+    #lb-close {
+      position: absolute; top: 8px; right: 12px;
+      cursor: pointer; color: var(--dim); font-size: 18px;
     }
-
-    /* ─── Leaderboard ─── */
+    #lb-close:hover { color: var(--text); }
     #leaderboard {
-      padding: 6px 12px;
+      padding: 6px 0;
       font-size: 11px;
-      max-height: 220px;
+      max-height: 300px;
       overflow-y: auto;
+      text-align: left;
     }
-    #leaderboard.hidden { display: none; }
     .lb-row {
       display: flex; align-items: center; gap: 8px;
       padding: 3px 0;
@@ -492,29 +465,23 @@
       body { font-size: 12px; }
 
       #topbar {
-        gap: 4px 10px;
+        gap: 4px 8px;
         padding: 5px 10px;
         font-size: 11px;
       }
       #topbar .title { font-size: 13px; }
       #topbar .sep { display: none; }
-      #topbar .spacer { display: none; }
       .stat-hero { font-size: 13px; }
+      #convergence-wrap { min-width: 40px; }
 
-      #logpanel {
-        top: auto;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        width: auto;
-        border: none;
-        border-top: 1px solid var(--border);
-      }
-      #log { height: 80px; font-size: 10px; line-height: 1.5; }
-
-      #progress-track { width: 60px; }
-      #toggle { padding: 2px 10px; font-size: 10px; }
-      #toggle.running { padding: 2px 10px; font-size: 10px; }
+      #toggle { width: 24px; height: 24px; font-size: 12px; }
+      #bottombar { font-size: 11px; }
+      #bottombar-row { padding: 4px 10px; gap: 4px 10px; }
+      #workers { padding: 2px 10px; }
+      .wk-frac { display: none; }
+      .wk-result { display: none; }
+      .wk-bar { width: 50px; }
+      #effort { width: 40px; }
 
       #splash-card { padding: 24px 20px; }
     }
@@ -530,51 +497,27 @@
   <canvas id="viz"></canvas>
   <div id="confetti-container"></div>
 
-  <!-- Top bar -->
+  <!-- Top bar (global state) -->
   <div id="topbar">
     <span class="title">phyz<span class="title-dim">@home</span></span>
-    <button id="toggle">start</button>
-    <div class="status">
-      <span class="indicator idle" id="activity-dot"></span>
-      <span class="stat-value" id="status-text">idle</span>
-    </div>
-
     <span class="sep"></span>
-
     <span class="stat-result">
       <span class="stat-label">G_N</span>
       <span class="stat-hero" id="gn">&mdash;</span>
     </span>
-    <span class="stat-result">
-      <span class="stat-label">R&sup2;</span>
-      <span class="stat-value" id="r2">&mdash;</span>
-    </span>
-
     <span class="sep"></span>
-
-    <span>
-      <span class="stat-value" id="my-count">0</span>
-      <span class="stat-label"> units</span>
-    </span>
-    <span>
-      <span class="stat-value" id="my-rate">0.0</span>
-      <span class="stat-label">/s</span>
-    </span>
-    <span>
-      <span id="progress-track"><span id="progress-fill"></span></span>
-      <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">7200</span>
-      <span class="stat-label">phase </span><span class="stat-value" id="progress-phase">1</span>
-    </span>
-
-    <span class="sep"></span>
-
     <span>
       <span class="stat-value" id="n-points">0</span>
       <span class="stat-label"> points</span>
     </span>
-
-    <span class="spacer"></span>
-
+    <span class="sep"></span>
+    <span>
+      <span class="stat-label">R² </span>
+      <span class="stat-value" id="r2">&mdash;</span>
+    </span>
+    <div id="convergence-wrap" title="about phyz@home">
+      <div id="convergence"><div id="convergence-fill"></div></div>
+    </div>
     <span id="auth-anon">
       <span id="n-contributors">1</span>
       <span class="stat-label"> contributors</span>
@@ -585,10 +528,33 @@
       <span class="stat-label" id="user-rank"></span>
       <button id="sign-out-btn" class="auth-btn dim">sign out</button>
     </span>
-
+    <span id="lb-btn" title="leaderboard">&#9819;</span>
     <span id="mute-btn" title="toggle sound">&#9834;</span>
-    <span id="info-btn" title="about">?</span>
+  </div>
 
+  <!-- Bottom bar (current work + workers) -->
+  <div id="bottombar">
+    <div id="workers"></div>
+    <div id="progress-track"><div id="progress-fill"></div></div>
+    <div id="bottombar-row">
+      <button id="toggle">&#9654;</button>
+      <span>
+        <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">7200</span>
+        <span class="stat-label"> p</span><span class="stat-value" id="progress-phase">1</span>
+      </span>
+      <span class="sep"></span>
+      <span><span class="stat-value" id="my-rate">0.0</span><span class="stat-label">/s</span></span>
+      <span class="sep"></span>
+      <span id="worker-count" class="stat-label"></span>
+      <span class="bottombar-spacer"></span>
+      <span class="stat-label">effort</span>
+      <input type="range" id="effort" min="1" max="100" value="50">
+      <span id="effort-val">50%</span>
+    </div>
+    <!-- hidden elements still targeted by Rust -->
+    <span id="my-count" class="hidden">0</span>
+    <span id="status-text" class="hidden">idle</span>
+    <span id="activity-dot" class="hidden"></span>
   </div>
 
   <!-- Splash modal -->
@@ -640,25 +606,13 @@
     </div>
   </div>
 
-  <!-- Log panel -->
-  <div id="logpanel">
-    <div id="panel-tabs">
-      <span id="tab-workers" class="tab active">workers</span>
-      <span id="tab-leaderboard" class="tab">leaderboard</span>
+  <!-- Leaderboard modal -->
+  <div id="lb-modal" class="hidden">
+    <div id="lb-card">
+      <span id="lb-close">&times;</span>
+      <div class="auth-title">leaderboard</div>
+      <div id="leaderboard"></div>
     </div>
-    <div id="workers-panel">
-      <div id="effort-bar">
-        <span class="stat-label">effort</span>
-        <input type="range" id="effort" min="1" max="100" value="50">
-        <span id="effort-val">50%</span>
-        <span id="effort-workers"></span>
-      </div>
-      <div id="workers"></div>
-      <div id="log">
-        <div class="empty">waiting for computations...</div>
-      </div>
-    </div>
-    <div id="leaderboard" class="hidden"></div>
   </div>
 </body>
 </html>

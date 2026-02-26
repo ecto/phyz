@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::auth::{self, AuthSession};
-use crate::coordinator::{Coordinator, WorkerSlot};
+use crate::coordinator::Coordinator;
 use crate::dom;
 use crate::supabase::{self, SupabaseClient};
 use crate::viz::Renderer;
@@ -310,15 +310,11 @@ pub async fn run() {
         .ok();
     name_key_cb.forget();
 
-    // Wire leaderboard tabs
+    // Wire leaderboard modal
     let client_lb = client.clone();
     let session_lb = session.clone();
-    let tab_lb_cb = Closure::wrap(Box::new(move || {
-        dom::set_class("tab-workers", "tab");
-        dom::set_class("tab-leaderboard", "tab active");
-        dom::set_class("workers-panel", "hidden");
-        dom::set_class("leaderboard", "");
-
+    let lb_open_cb = Closure::wrap(Box::new(move || {
+        dom::set_class("lb-modal", "");
         let client = client_lb.clone();
         let sess = session_lb.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -336,19 +332,16 @@ pub async fn run() {
             }
         });
     }) as Box<dyn FnMut()>);
-    dom::get_el("tab-leaderboard")
-        .set_onclick(Some(tab_lb_cb.as_ref().unchecked_ref()));
-    tab_lb_cb.forget();
+    dom::get_el("lb-btn")
+        .set_onclick(Some(lb_open_cb.as_ref().unchecked_ref()));
+    lb_open_cb.forget();
 
-    let tab_workers_cb = Closure::wrap(Box::new(move || {
-        dom::set_class("tab-leaderboard", "tab");
-        dom::set_class("tab-workers", "tab active");
-        dom::set_class("leaderboard", "hidden");
-        dom::set_class("workers-panel", "");
+    let lb_close_cb = Closure::wrap(Box::new(move || {
+        dom::set_class("lb-modal", "hidden");
     }) as Box<dyn FnMut()>);
-    dom::get_el("tab-workers")
-        .set_onclick(Some(tab_workers_cb.as_ref().unchecked_ref()));
-    tab_workers_cb.forget();
+    dom::get_el("lb-close")
+        .set_onclick(Some(lb_close_cb.as_ref().unchecked_ref()));
+    lb_close_cb.forget();
 
     // Initialize worker pool (Rc, not Rc<RefCell> — pool uses interior mutability)
     let pool_size = WorkerPool::recommended_size();
@@ -362,7 +355,7 @@ pub async fn run() {
         Err(e) => {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
-            dom::set_text("toggle", "Workers unavailable");
+            dom::set_text("toggle", "\u{25B6}");
             start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)));
             return;
         }
@@ -379,13 +372,13 @@ pub async fn run() {
     // Gate auto-start behind splash flag
     if crate::cache::has_seen_splash() {
         coordinator.start();
-        dom::set_text("toggle", "stop");
+        dom::set_text("toggle", "\u{23F8}");
         dom::set_class("toggle", "running");
         dom::set_text("status-text", "running");
         dom::set_class("activity-dot", "indicator active");
         dom::set_class("splash-backdrop", "hidden");
     } else {
-        dom::set_text("toggle", "start");
+        dom::set_text("toggle", "\u{25B6}");
         dom::set_class("toggle", "");
         dom::set_text("status-text", "idle");
         dom::set_class("activity-dot", "indicator idle");
@@ -399,13 +392,13 @@ pub async fn run() {
         }
         if coord.is_running() {
             coord.stop();
-            dom::set_text("toggle", "start");
+            dom::set_text("toggle", "\u{25B6}");
             dom::set_class("toggle", "");
             dom::set_class("activity-dot", "indicator idle");
             dom::set_text("status-text", "idle");
         } else {
             coord.start();
-            dom::set_text("toggle", "stop");
+            dom::set_text("toggle", "\u{23F8}");
             dom::set_class("toggle", "running");
             dom::set_class("activity-dot", "indicator active");
             dom::set_text("status-text", "running");
@@ -422,7 +415,7 @@ pub async fn run() {
         crate::cache::mark_splash_seen();
         if !coord2.is_running() {
             coord2.start();
-            dom::set_text("toggle", "stop");
+            dom::set_text("toggle", "\u{23F8}");
             dom::set_class("toggle", "running");
             dom::set_class("activity-dot", "indicator active");
             dom::set_text("status-text", "running");
@@ -455,11 +448,11 @@ pub async fn run() {
         mute_cb.forget();
     }
 
-    // Wire up ? button — opens splash modal
+    // Wire up convergence bar click — opens splash modal
     let info_cb = Closure::wrap(Box::new(move || {
         dom::set_class("splash-backdrop", "");
     }) as Box<dyn FnMut()>);
-    dom::get_el("info-btn")
+    dom::get_el("convergence-wrap")
         .set_onclick(Some(info_cb.as_ref().unchecked_ref()));
     info_cb.forget();
 
@@ -479,10 +472,6 @@ pub async fn run() {
         el.set_attribute("value", &saved_effort.to_string()).ok();
     }
     dom::set_text("effort-val", &format!("{saved_effort}%"));
-    dom::set_text(
-        "effort-workers",
-        &format!("{}w", coordinator.max_workers()),
-    );
 
     let coord_effort = coordinator.clone();
     let effort_cb = Closure::wrap(Box::new(move |e: web_sys::Event| {
@@ -492,10 +481,6 @@ pub async fn run() {
         coord_effort.set_effort(val);
         crate::cache::save_effort(val);
         dom::set_text("effort-val", &format!("{val}%"));
-        dom::set_text(
-            "effort-workers",
-            &format!("{}w", coord_effort.max_workers()),
-        );
     }) as Box<dyn FnMut(web_sys::Event)>);
     dom::get_el("effort")
         .add_event_listener_with_callback("input", effort_cb.as_ref().unchecked_ref())
@@ -666,12 +651,6 @@ fn start_render_loop(
         // Tick coordinator (processes results, dispatches work)
         if let Some(ref c) = coord {
             c.tick();
-
-            // Update log entries
-            let recent = c.take_recent();
-            if !recent.is_empty() {
-                dom::append_log(&recent);
-            }
         }
 
         // Update stats periodically (~1s)
@@ -686,34 +665,40 @@ fn start_render_loop(
             if let Some(ref c) = coord {
                 let slots = c.worker_slots();
                 let mut html = String::new();
+                let mut n_active = 0usize;
+                let mut n_idle = 0usize;
                 for (i, slot) in slots.iter().enumerate() {
-                    match slot {
-                        WorkerSlot::Idle => {
-                            html.push_str(&format!(
-                                "<div class=\"wk idle\">\
-                                 <span class=\"wk-idx\">w{i}</span>\
-                                 <span class=\"wk-params\">idle</span>\
-                                 <span class=\"wk-bar\"><span class=\"wk-fill\" style=\"width:0%\"></span></span>\
-                                 </div>"
-                            ));
-                        }
-                        WorkerSlot::Active { label, done, total } => {
-                            let pct = if *total > 0 {
-                                (*done as f64 / *total as f64 * 100.0).min(100.0)
-                            } else {
-                                0.0
-                            };
-                            html.push_str(&format!(
-                                "<div class=\"wk\">\
-                                 <span class=\"wk-idx\">w{i}</span>\
-                                 <span class=\"wk-params\">{label}</span>\
-                                 <span class=\"wk-bar\"><span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
-                                 </div>"
-                            ));
-                        }
+                    if slot.active {
+                        n_active += 1;
+                        let pct = if slot.total > 0 {
+                            (slot.done as f64 / slot.total as f64 * 100.0).min(100.0)
+                        } else {
+                            0.0
+                        };
+                        let frac = format!("{}/{}", slot.done, slot.total);
+                        let result_html = slot.last_result.as_deref().unwrap_or("");
+                        html.push_str(&format!(
+                            "<div class=\"wk\">\
+                             <span class=\"wk-idx\">w{i}</span>\
+                             <span class=\"wk-params\">{}</span>\
+                             <span class=\"wk-bar\"><span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
+                             <span class=\"wk-frac\">{frac}</span>\
+                             <span class=\"wk-result\">{result_html}</span>\
+                             </div>",
+                            slot.label,
+                        ));
+                    } else {
+                        n_idle += 1;
                     }
                 }
+                if n_idle > 0 && n_active > 0 {
+                    html.push_str(&format!(
+                        "<div class=\"wk-idle-summary\">+ {n_idle} idle</div>"
+                    ));
+                }
                 dom::set_inner_html("workers", &html);
+                let total = n_active + n_idle;
+                dom::set_text("worker-count", &format!("{n_active}/{total}w"));
             }
         }
 
@@ -776,13 +761,15 @@ fn start_render_loop(
                 *lrt.borrow_mut() = now;
                 *lc.borrow_mut() = completed as u32;
 
-                // Compute G_N from all data
+                // Compute G_N from all data + update convergence bar
                 if n_points >= 10 {
                     let (slope, r2) = linear_regression(&r.borrow().points);
+                    let pct = (r2 * 100.0).min(100.0);
+                    dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
+                    dom::set_text("r2", &format!("{r2:.3}"));
                     if slope > 0.0 {
                         let g_n = 1.0 / (4.0 * slope);
                         dom::set_text("gn", &format!("{g_n:.1}"));
-                        dom::set_text("r2", &format!("{r2:.3}"));
                     }
                 }
 
@@ -790,17 +777,10 @@ fn start_render_loop(
                 if c.is_complete() && !*ch.borrow() {
                     *ch.borrow_mut() = true;
                     dom::set_text("status-text", "complete");
-                    dom::set_text("toggle", "complete");
+                    dom::set_text("toggle", "\u{2713}");
                     dom::set_class("toggle", "complete");
                     dom::set_class("activity-dot", "indicator done");
                     dom::set_text("my-rate", "0.0");
-
-                    // Reward log entry
-                    let completed = c.completed_count();
-                    dom::append_log(&[format!(
-                        "<span class=\"ok\">done</span> — you contributed \
-                         <span class=\"val\">{completed}</span> work units"
-                    )]);
                 }
             }
         }
@@ -932,10 +912,12 @@ fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
     }
 
     let (slope, r2) = linear_regression(&renderer.points);
+    let pct = (r2 * 100.0).min(100.0);
+    dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
+    dom::set_text("r2", &format!("{r2:.3} (demo)"));
     if slope > 0.0 {
         let g_n = 1.0 / (4.0 * slope);
         dom::set_text("gn", &format!("{g_n:.0}"));
-        dom::set_text("r2", &format!("{r2:.3} (demo)"));
     }
 }
 

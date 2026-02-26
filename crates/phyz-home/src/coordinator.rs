@@ -9,13 +9,12 @@ use crate::worker::WorkerPool;
 const BATCH_SIZE: usize = 25;
 
 /// State of a single worker slot for the UI.
-pub enum WorkerSlot {
-    Idle,
-    Active {
-        label: String,
-        done: usize,
-        total: usize,
-    },
+pub struct WorkerSlot {
+    pub active: bool,
+    pub label: String,
+    pub done: usize,
+    pub total: usize,
+    pub last_result: Option<String>,
 }
 
 /// Client-side coordinator: fetches work, dispatches to workers, submits results.
@@ -31,12 +30,14 @@ pub struct Coordinator {
     no_work: Rc<RefCell<bool>>,
     complete: Rc<RefCell<bool>>,
     renderer: Rc<RefCell<Renderer>>,
-    /// Recent result descriptions for the UI ticker.
-    recent: RefCell<Vec<String>>,
     /// When true, stop fetching/dispatching but keep draining in-flight work.
     draining: Rc<RefCell<bool>>,
     /// Per-worker label for the lane UI (worker_idx → label).
     worker_labels: RefCell<Vec<String>>,
+    /// Per-worker last result summary (worker_idx → short description).
+    worker_results: RefCell<Vec<Option<String>>>,
+    /// Maps work unit ID → worker index for attributing results.
+    unit_worker: RefCell<HashMap<String, usize>>,
     /// Effort level 1-100 — controls how many workers are active.
     effort: Rc<RefCell<u32>>,
 }
@@ -61,9 +62,10 @@ impl Coordinator {
             no_work: Rc::new(RefCell::new(false)),
             complete: Rc::new(RefCell::new(false)),
             renderer,
-            recent: RefCell::new(Vec::new()),
             draining: Rc::new(RefCell::new(false)),
             worker_labels: RefCell::new(vec![String::new(); n]),
+            worker_results: RefCell::new(vec![None; n]),
+            unit_worker: RefCell::new(HashMap::new()),
             effort: Rc::new(RefCell::new(50)),
         }
     }
@@ -88,11 +90,6 @@ impl Coordinator {
     pub fn stop(&self) {
         *self.running.borrow_mut() = false;
         web_sys::console::log_1(&"coordinator: stopped".into());
-    }
-
-    /// Take recent result descriptions for the UI ticker (drains the list).
-    pub fn take_recent(&self) -> Vec<String> {
-        std::mem::take(&mut *self.recent.borrow_mut())
     }
 
     /// Enter draining state: stop fetching/dispatching, let in-flight workers finish.
@@ -128,19 +125,16 @@ impl Coordinator {
     pub fn worker_slots(&self) -> Vec<WorkerSlot> {
         let progress = self.pool.worker_progress();
         let labels = self.worker_labels.borrow();
+        let results = self.worker_results.borrow();
         progress
             .iter()
             .enumerate()
-            .map(|(i, &(done, total))| {
-                if total == 0 {
-                    WorkerSlot::Idle
-                } else {
-                    WorkerSlot::Active {
-                        label: labels.get(i).cloned().unwrap_or_default(),
-                        done,
-                        total,
-                    }
-                }
+            .map(|(i, &(done, total))| WorkerSlot {
+                active: total > 0,
+                label: labels.get(i).cloned().unwrap_or_default(),
+                done,
+                total,
+                last_result: results.get(i).cloned().flatten(),
             })
             .collect()
     }
@@ -167,11 +161,6 @@ impl Coordinator {
                 if !*self.complete.borrow() {
                     *self.complete.borrow_mut() = true;
                     *self.running.borrow_mut() = false;
-                    self.recent.borrow_mut().push(
-                        "<span class=\"ok\">experiment complete</span> \
-                         — all work units finished"
-                            .to_string(),
-                    );
                     web_sys::console::log_1(&"experiment complete!".into());
                 }
             }
@@ -222,6 +211,10 @@ impl Coordinator {
 
             if let Some(worker_idx) = self.pool.dispatch_batch(&items) {
                 self.worker_labels.borrow_mut()[worker_idx] = label;
+                let mut uw = self.unit_worker.borrow_mut();
+                for u in &batch_units {
+                    uw.insert(u.id.clone(), worker_idx);
+                }
             }
         }
 
@@ -273,6 +266,9 @@ impl Coordinator {
             return;
         }
 
+        // Look up which worker produced this result
+        let worker_idx = self.unit_worker.borrow_mut().remove(&resp.id);
+
         let Some(result_val) = resp.result else {
             return;
         };
@@ -309,33 +305,13 @@ impl Coordinator {
             }
             crate::cache::append_batch(&cache_batch);
 
-            // Build log ticker entry
-            let n_completed = *self.completed_count.borrow() + 1;
-            let pert_str = match &unit.params.perturbation {
-                crate::supabase::Perturbation::Base => "base".to_string(),
-                crate::supabase::Perturbation::Edge { index, direction } => {
-                    let sign = if *direction > 0.0 { "+" } else { "-" };
-                    format!("{sign}e{index}")
-                }
-            };
-
-            let desc = format!(
-                "<span class=\"prompt\">#{n_completed}</span> \
-                 <span class=\"param\">L{}</span> \
-                 <span class=\"param\">g²=</span><span class=\"val\">{:.1e}</span> \
-                 <span class=\"param\">{pert_str}</span> \
-                 <span class=\"ok\">E₀={:.4}</span> \
-                 <span class=\"param\">S×{n_partitions}</span> \
-                 <span class=\"time\">{:.0}ms</span>",
-                unit.params.level,
-                unit.params.coupling_g2,
-                payload.ground_state_energy,
-                payload.walltime_ms,
-            );
-            let mut recent = self.recent.borrow_mut();
-            recent.push(desc);
-            if recent.len() > 6 {
-                recent.remove(0);
+            // Store per-worker last result summary
+            if let Some(idx) = worker_idx {
+                let short = format!(
+                    "E\u{2080}={:.3} S\u{00D7}{} {:.0}ms",
+                    payload.ground_state_energy, n_partitions, payload.walltime_ms,
+                );
+                self.worker_results.borrow_mut()[idx] = Some(short);
             }
         }
 
