@@ -6,7 +6,7 @@ use crate::supabase::{ResultPayload, SupabaseClient, WorkUnit};
 use crate::viz::Renderer;
 use crate::worker::WorkerPool;
 
-const BATCH_SIZE: usize = 5;
+const BATCH_SIZE: usize = 25;
 
 /// State of a single worker slot for the UI.
 pub enum WorkerSlot {
@@ -235,7 +235,7 @@ impl Coordinator {
         }
 
         // 4. Fetch more work if queue is low and not already fetching
-        if self.queue.borrow().len() < 5 && !*self.fetching.borrow() {
+        if self.queue.borrow().len() < BATCH_SIZE * 2 && !*self.fetching.borrow() {
             *self.fetching.borrow_mut() = true;
 
             let client = self.client.clone();
@@ -244,7 +244,7 @@ impl Coordinator {
             let no_work = self.no_work.clone();
 
             wasm_bindgen_futures::spawn_local(async move {
-                match client.fetch_pending_work(10).await {
+                match client.fetch_pending_work(BATCH_SIZE * 4).await {
                     Ok(units) => {
                         let count = units.len();
                         *no_work.borrow_mut() = count == 0;
@@ -288,18 +288,20 @@ impl Coordinator {
             let n_partitions = payload.entropy_per_partition.len();
 
             // Expand: one viz point + cache entry per partition entropy
+            let mut cache_batch = Vec::with_capacity(n_partitions);
             for (i, &s_ee) in payload.entropy_per_partition.iter().enumerate() {
                 self.renderer
                     .borrow_mut()
                     .add_point(log_g2, s_ee, i as f64);
 
-                crate::cache::append(crate::cache::CachedPoint {
+                cache_batch.push(crate::cache::CachedPoint {
                     log_g2,
                     s_ee,
                     a_cut: i as f64,
                     partition_index: i,
                 });
             }
+            crate::cache::append_batch(&cache_batch);
 
             // Build log ticker entry
             let n_completed = *self.completed_count.borrow() + 1;

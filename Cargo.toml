@@ -65,3 +65,12 @@ phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
 phyz-regge = { version = "0.1.0", path = "crates/phyz-regge", default-features = false }
 phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum", default-features = false }
 phyz = { version = "0.1.0", path = "crates/phyz" }
+
+# Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
+[profile.dev.package.phyz-home]
+opt-level = 2
+debug-assertions = false
+
+[profile.dev.package.phyz-wasm]
+opt-level = 2
+debug-assertions = false

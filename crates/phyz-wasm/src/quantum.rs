@@ -1,14 +1,10 @@
 use wasm_bindgen::prelude::*;
 
 use phyz_quantum::jacobson::{
-    boundary_5simplex, subdivided_s4, su2_ground_state, su2_ground_state_with_energy,
+    boundary_5simplex, subdivided_s4, su2_ground_state_with_energy,
 };
-use phyz_quantum::ryu_takayanagi::{
-    classify_edges, cut_area_triangles, perturbed_edge_lengths, vertex_bipartitions,
-};
-use phyz_quantum::su2_quantum::{
-    su2_entanglement_decomposed, su2_entanglement_for_partition, Su2HilbertSpace,
-};
+use phyz_quantum::ryu_takayanagi::{perturbed_edge_lengths, vertex_bipartitions};
+use phyz_quantum::su2_quantum::{su2_entanglement_for_partition, Su2HilbertSpace};
 use phyz_regge::complex::SimplicialComplex;
 
 #[wasm_bindgen]
@@ -83,59 +79,7 @@ impl QuantumSolver {
         Ok(result.to_string())
     }
 
-    /// Legacy single-partition solve (kept for backward compatibility).
-    pub fn solve(
-        &self,
-        edge_lengths: &[f64],
-        g_squared: f64,
-        partition: &[u32],
-    ) -> Result<String, JsError> {
-        let n_edges = self.complex.n_edges();
-        if edge_lengths.len() != n_edges {
-            return Err(JsError::new(&format!(
-                "expected {} edge lengths, got {}",
-                n_edges,
-                edge_lengths.len()
-            )));
-        }
 
-        let partition_usize: Vec<usize> = partition.iter().map(|&x| x as usize).collect();
-        let start = js_sys::Date::now();
-
-        let (gs, energy) =
-            su2_ground_state_with_energy(&self.hilbert, &self.complex, edge_lengths, g_squared);
-
-        let decomp =
-            su2_entanglement_decomposed(&self.hilbert, &gs, &self.complex, &partition_usize);
-
-        let a_cut = cut_area_triangles(&self.complex, &partition_usize, edge_lengths);
-        let (_, _, boundary_edges) = classify_edges(&self.complex, &partition_usize);
-        let n_boundary = boundary_edges.len();
-
-        let walltime_ms = js_sys::Date::now() - start;
-
-        // Sanity checks
-        assert!(decomp.total >= -1e-10, "negative entropy: {}", decomp.total);
-        assert!(
-            (decomp.shannon + decomp.distillable - decomp.total).abs() < 1e-10,
-            "decomposition mismatch: {} + {} != {}",
-            decomp.shannon,
-            decomp.distillable,
-            decomp.total
-        );
-
-        let result = serde_json::json!({
-            "s_ee": decomp.total,
-            "s_shannon": decomp.shannon,
-            "s_distillable": decomp.distillable,
-            "a_cut": a_cut,
-            "n_boundary": n_boundary,
-            "energy": energy,
-            "walltime_ms": walltime_ms,
-        });
-
-        Ok(result.to_string())
-    }
 
     pub fn info(&self) -> String {
         serde_json::json!({

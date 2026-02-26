@@ -91,10 +91,11 @@ impl SupabaseClient {
         Ok(headers)
     }
 
-    /// Fetch pending work units (up to `limit`).
+    /// Fetch pending work units (up to `limit`), prioritizing L1 over L0.
+    /// Phase 1 only (levels 0-1); L3 is too heavy for casual browsers.
     pub async fn fetch_pending_work(&self, limit: usize) -> Result<Vec<WorkUnit>, String> {
         let url = format!(
-            "{}?status=eq.pending&limit={}&select=*",
+            "{}?status=eq.pending&limit={}&select=*&params->>level=lt.3&order=params->>level.desc",
             self.api_url("work_units"),
             limit,
         );
@@ -104,10 +105,10 @@ impl SupabaseClient {
         serde_json::from_str(&text).map_err(|e| format!("parse error: {e}"))
     }
 
-    /// Fetch all completed work units with consensus results.
+    /// Fetch completed work units with consensus results (capped to avoid main-thread stall).
     pub async fn fetch_completed(&self) -> Result<Vec<CompletedResult>, String> {
         let url = format!(
-            "{}?status=eq.complete&select=id,consensus_result,params",
+            "{}?status=eq.complete&select=id,consensus_result,params&limit=200",
             self.api_url("work_units"),
         );
 

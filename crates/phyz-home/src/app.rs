@@ -68,22 +68,24 @@ pub async fn run() {
         Ok(results) => {
             let n_before = renderer.borrow().points.len();
             let mut r = renderer.borrow_mut();
-            let mut cache_points = crate::cache::load();
+
+            // Build a HashSet of existing (log_g2_bits, partition_index) for O(1) dedup
+            use std::collections::HashSet;
+            let existing: HashSet<(u32, usize)> = r.points.iter().map(|p| {
+                (p.log_g2.to_bits(), p.a_cut as usize)
+            }).collect();
+
+            let mut new_cache_points = Vec::new();
             for res in &results {
                 if let Some(ref cr) = res.consensus_result {
                     let log_g2 = res.params.coupling_g2.log10();
-                    // Expand per-partition entropies into viz points
+                    let log_g2_bits = (log_g2 as f32).to_bits();
                     for (i, &s_ee) in cr.entropy_per_partition.iter().enumerate() {
-                        let a_cut = i as f64;
-                        let already = r.points.iter().any(|p| {
-                            (p.log_g2 as f64 - log_g2).abs() < 1e-6
-                                && (p.a_cut as f64 - a_cut).abs() < 1e-6
-                        });
-                        if !already {
-                            r.add_point(log_g2, s_ee, a_cut);
+                        if !existing.contains(&(log_g2_bits, i)) {
+                            r.add_point(log_g2, s_ee, i as f64);
                             r.points.last_mut().unwrap().age = 3.0;
-                            cache_points.push(crate::cache::CachedPoint {
-                                log_g2, s_ee, a_cut,
+                            new_cache_points.push(crate::cache::CachedPoint {
+                                log_g2, s_ee, a_cut: i as f64,
                                 partition_index: i,
                             });
                         }
@@ -94,7 +96,7 @@ pub async fn run() {
             dom::set_text("n-points", &r.points.len().to_string());
             if n_new > 0 {
                 drop(r);
-                crate::cache::save(&cache_points);
+                crate::cache::append_batch(&new_cache_points);
                 web_sys::console::log_1(
                     &format!("merged {} new results from server", n_new).into(),
                 );
@@ -497,6 +499,15 @@ pub async fn run() {
     // Wire up mouse drag for orbit camera
     wire_mouse_controls(&renderer);
 
+    // Flush cache on page close
+    let unload_cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
+        crate::cache::flush();
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    dom::window()
+        .add_event_listener_with_callback("beforeunload", unload_cb.as_ref().unchecked_ref())
+        .ok();
+    unload_cb.forget();
+
     // Start render loop with coordinator tick
     start_render_loop(renderer, Some(coordinator), muted);
 }
@@ -698,6 +709,11 @@ fn start_render_loop(
                 }
                 dom::set_inner_html("workers", &html);
             }
+        }
+
+        // Flush cache to localStorage every ~5s (not every frame)
+        if count % 300 == 0 {
+            crate::cache::flush();
         }
 
         if count % 60 == 0 {

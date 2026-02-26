@@ -6,7 +6,19 @@
 //! Or with env vars:
 //!   SUPABASE_URL=https://xxx.supabase.co SUPABASE_KEY=sb_... cargo run -p phyz-quantum --example seed_work_units
 //!
-//! Inserts work units in batches of 100 via PostgREST bulk insert.
+//! Work unit decomposition (per level):
+//!   50 couplings × 2 geometry seeds × (1 base + 2×E_edges perturbations) = units
+//!
+//! Phase 1 (levels 0+1):
+//!   L0: V=6, E=15 → 31 perturbations × 50 × 2 = 3,100
+//!   L1: V=7, E=20 → 41 perturbations × 50 × 2 = 4,100
+//!   Total: 7,200
+//!
+//! Phase 2 (level 3):
+//!   L3: V=9, E=30 → 61 perturbations × 50 × 2 = 6,100
+//!   Total: 6,100
+//!
+//! Grand total: 13,300
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -22,14 +34,35 @@ fn main() {
         std::env::var("SUPABASE_KEY").expect("pass <anon_key> as arg or set SUPABASE_KEY")
     };
 
+    // Check for --delete flag
+    let delete_first = args.iter().any(|a| a == "--delete");
+
+    let client = ureq::Agent::new_with_defaults();
+    let endpoint = format!("{}/rest/v1/work_units", url);
+
+    if delete_first {
+        eprintln!("Deleting all existing work units...");
+        // Delete all rows (PostgREST needs a filter; use status != impossible)
+        match client
+            .delete(&format!("{endpoint}?status=neq.___impossible___"))
+            .header("apikey", &key)
+            .header("Authorization", &format!("Bearer {key}"))
+            .header("Prefer", "return=minimal")
+            .call()
+        {
+            Ok(_) => eprintln!("  deleted."),
+            Err(e) => {
+                eprintln!("  delete failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let work_units = generate_work_units();
     eprintln!("Generated {} work units", work_units.len());
 
     // Batch insert via PostgREST
     let batch_size = 100;
-    let endpoint = format!("{}/rest/v1/work_units", url);
-    let client = ureq::Agent::new_with_defaults();
-
     let mut inserted = 0;
     for chunk in work_units.chunks(batch_size) {
         let body = serde_json::to_string(chunk).unwrap();
@@ -41,7 +74,7 @@ fn main() {
             .header("Prefer", "return=minimal")
             .send(body.as_bytes())
         {
-            Ok(resp) => {
+            Ok(_) => {
                 inserted += chunk.len();
                 eprint!("\r  inserted {inserted}/{}", work_units.len());
             }
@@ -52,6 +85,17 @@ fn main() {
         }
     }
     eprintln!("\nDone. {inserted} work units seeded.");
+}
+
+/// Edge counts per level (from subdivided_s4 topology).
+fn edges_for_level(level: u32) -> usize {
+    match level {
+        0 => 15,
+        1 => 20,
+        2 => 25,
+        3 => 30,
+        _ => panic!("unsupported level {level}"),
+    }
 }
 
 fn generate_work_units() -> Vec<serde_json::Value> {
@@ -65,49 +109,44 @@ fn generate_work_units() -> Vec<serde_json::Value> {
         })
         .collect();
 
-    let triangulation = "s4_level0";
-    let n_vertices = 6;
-    let n_edges = 15;
-    let edge_lengths: Vec<f64> = vec![1.0; n_edges];
+    let geometry_seeds: Vec<u64> = vec![1, 2];
 
-    // All non-trivial vertex bipartitions up to 25
-    let mut partitions: Vec<Vec<usize>> = Vec::new();
-
-    // Size 1: C(6,1) = 6
-    for a in 0..n_vertices {
-        partitions.push(vec![a]);
-    }
-
-    // Size 2: C(6,2) = 15
-    for a in 0..n_vertices {
-        for b in (a + 1)..n_vertices {
-            partitions.push(vec![a, b]);
-        }
-    }
-
-    // Size 3: fill to 25
-    'outer: for a in 0..n_vertices {
-        for b in (a + 1)..n_vertices {
-            for c in (b + 1)..n_vertices {
-                partitions.push(vec![a, b, c]);
-                if partitions.len() >= 25 {
-                    break 'outer;
-                }
-            }
-        }
-    }
+    // Phase 1: levels 0, 1. Phase 2: level 3.
+    let levels: Vec<u32> = vec![0, 1, 3];
 
     let mut units = Vec::new();
-    for &g2 in &g2_values {
-        for partition in &partitions {
-            units.push(serde_json::json!({
-                "params": {
-                    "triangulation": triangulation,
-                    "edge_lengths": edge_lengths,
-                    "g_squared": g2,
-                    "partition": partition,
+    for &level in &levels {
+        let n_edges = edges_for_level(level);
+        for &g2 in &g2_values {
+            for &seed in &geometry_seeds {
+                // Base perturbation (unperturbed geometry)
+                units.push(serde_json::json!({
+                    "params": {
+                        "level": level,
+                        "coupling_g2": g2,
+                        "geometry_seed": seed,
+                        "perturbation": { "type": "base" },
+                    }
+                }));
+
+                // Edge perturbations: +ε and -ε for each edge
+                for ei in 0..n_edges {
+                    for &dir in &[1.0_f64, -1.0] {
+                        units.push(serde_json::json!({
+                            "params": {
+                                "level": level,
+                                "coupling_g2": g2,
+                                "geometry_seed": seed,
+                                "perturbation": {
+                                    "type": "edge",
+                                    "index": ei,
+                                    "direction": dir,
+                                },
+                            }
+                        }));
+                    }
                 }
-            }));
+            }
         }
     }
     units
