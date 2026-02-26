@@ -57,6 +57,14 @@ pub struct CompletedResult {
     pub params: WorkParams,
 }
 
+/// A computed result waiting to be batch-submitted.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingResult {
+    pub work_unit_id: String,
+    pub contributor_id: String,
+    pub result: ResultPayload,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct LeaderboardEntry {
     #[serde(rename = "name")]
@@ -144,24 +152,6 @@ impl SupabaseClient {
             .collect())
     }
 
-    /// Submit a result for a work unit.
-    pub async fn submit_result(
-        &self,
-        work_unit_id: &str,
-        contributor_id: &str,
-        result: &ResultPayload,
-    ) -> Result<(), String> {
-        let body = serde_json::json!({
-            "work_unit_id": work_unit_id,
-            "contributor_id": contributor_id,
-            "result": result,
-        });
-
-        let url = self.api_url("results");
-        self.post(&url, &body.to_string()).await?;
-        Ok(())
-    }
-
     /// Register or update a contributor.
     pub async fn upsert_contributor(&self, fingerprint: &str) -> Result<String, String> {
         let body = serde_json::json!({
@@ -199,24 +189,6 @@ impl SupabaseClient {
     /// Get total contributor count.
     pub async fn contributor_count(&self) -> Result<usize, String> {
         let url = format!("{}?select=id", self.api_url("contributors"));
-        self.count_rows(&url).await
-    }
-
-    /// Fetch experiment progress: (results_submitted, total_work_units).
-    pub async fn experiment_progress(&self) -> Result<(usize, usize), String> {
-        // Total work units in the experiment
-        let total_url = format!("{}?select=id", self.api_url("work_units"));
-        let total = self.count_rows(&total_url).await?;
-
-        // Total results submitted (each result = one work unit solved)
-        let done_url = format!("{}?select=id", self.api_url("results"));
-        let done = self.count_rows(&done_url).await?;
-
-        Ok((done, total))
-    }
-
-    /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.
-    async fn count_rows(&self, url: &str) -> Result<usize, String> {
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
         headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
         headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
@@ -226,7 +198,7 @@ impl SupabaseClient {
         opts.set_headers(&headers.into());
         opts.set_mode(RequestMode::Cors);
 
-        let request = Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
+        let request = Request::new_with_str_and_init(&url, &opts).map_err(|e| format!("{e:?}"))?;
         let resp = self.do_fetch(request).await?;
 
         let headers = resp.headers();
@@ -236,6 +208,17 @@ impl SupabaseClient {
             }
         }
         Ok(0)
+    }
+
+    /// Submit a batch of results in one POST (PostgREST array insert).
+    pub async fn submit_results_batch(&self, results: &[PendingResult]) -> Result<(), String> {
+        if results.is_empty() {
+            return Ok(());
+        }
+        let body = serde_json::to_string(results).map_err(|e| format!("serialize: {e}"))?;
+        let url = self.api_url("results");
+        self.post(&url, &body).await?;
+        Ok(())
     }
 
     /// Send a magic link email via Supabase Auth.

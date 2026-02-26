@@ -2,11 +2,29 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use crate::supabase::{ResultPayload, SupabaseClient, WorkUnit};
+use crate::supabase::{PendingResult, ResultPayload, SupabaseClient, WorkUnit};
 use crate::viz::Renderer;
 use crate::worker::WorkerPool;
 
 const BATCH_SIZE: usize = 25;
+const ROUND_SIZE: usize = 1024;
+
+/// Round lifecycle state machine.
+enum RoundState {
+    Idle,
+    Fetching,
+    Computing {
+        round_total: usize,
+        results: Vec<PendingResult>,
+    },
+    Submitting {
+        round_total: usize,
+    },
+    Draining {
+        results: Vec<PendingResult>,
+    },
+    Complete,
+}
 
 /// State of a single worker slot for the UI.
 pub struct WorkerSlot {
@@ -22,16 +40,12 @@ pub struct Coordinator {
     client: Rc<SupabaseClient>,
     pool: Rc<WorkerPool>,
     contributor_id: String,
-    queue: Rc<RefCell<VecDeque<WorkUnit>>>,
+    state: Rc<RefCell<RoundState>>,
+    round_queue: RefCell<VecDeque<WorkUnit>>,
     dispatched: RefCell<HashMap<String, WorkUnit>>,
     completed_count: Rc<RefCell<u32>>,
     running: Rc<RefCell<bool>>,
-    fetching: Rc<RefCell<bool>>,
-    no_work: Rc<RefCell<bool>>,
-    complete: Rc<RefCell<bool>>,
     renderer: Rc<RefCell<Renderer>>,
-    /// When true, stop fetching/dispatching but keep draining in-flight work.
-    draining: Rc<RefCell<bool>>,
     /// Per-worker label for the lane UI (worker_idx → label).
     worker_labels: RefCell<Vec<String>>,
     /// Per-worker last result summary (worker_idx → short description).
@@ -40,6 +54,8 @@ pub struct Coordinator {
     unit_worker: RefCell<HashMap<String, usize>>,
     /// Effort level 1-100 — controls how many workers are active.
     effort: Rc<RefCell<u32>>,
+    /// Number of rounds successfully submitted (for celebration triggers).
+    rounds_completed: Rc<RefCell<u32>>,
 }
 
 impl Coordinator {
@@ -54,19 +70,17 @@ impl Coordinator {
             client,
             pool,
             contributor_id,
-            queue: Rc::new(RefCell::new(VecDeque::new())),
+            state: Rc::new(RefCell::new(RoundState::Idle)),
+            round_queue: RefCell::new(VecDeque::new()),
             dispatched: RefCell::new(HashMap::new()),
             completed_count: Rc::new(RefCell::new(0)),
             running: Rc::new(RefCell::new(false)),
-            fetching: Rc::new(RefCell::new(false)),
-            no_work: Rc::new(RefCell::new(false)),
-            complete: Rc::new(RefCell::new(false)),
             renderer,
-            draining: Rc::new(RefCell::new(false)),
             worker_labels: RefCell::new(vec![String::new(); n]),
             worker_results: RefCell::new(vec![None; n]),
             unit_worker: RefCell::new(HashMap::new()),
             effort: Rc::new(RefCell::new(50)),
+            rounds_completed: Rc::new(RefCell::new(0)),
         }
     }
 
@@ -75,11 +89,16 @@ impl Coordinator {
     }
 
     pub fn is_complete(&self) -> bool {
-        *self.complete.borrow()
+        matches!(*self.state.borrow(), RoundState::Complete)
     }
 
     pub fn completed_count(&self) -> u32 {
         *self.completed_count.borrow()
+    }
+
+    /// Number of rounds successfully submitted.
+    pub fn rounds_completed(&self) -> u32 {
+        *self.rounds_completed.borrow()
     }
 
     pub fn start(&self) {
@@ -94,16 +113,19 @@ impl Coordinator {
 
     /// Enter draining state: stop fetching/dispatching, let in-flight workers finish.
     pub fn drain(&self) {
-        if *self.draining.borrow() {
-            return;
+        let mut state = self.state.borrow_mut();
+        match &*state {
+            RoundState::Draining { .. } | RoundState::Complete => return,
+            _ => {}
         }
-        *self.draining.borrow_mut() = true;
+        // Take accumulated results from Computing state if present
+        let results = match std::mem::replace(&mut *state, RoundState::Idle) {
+            RoundState::Computing { results, .. } => results,
+            _ => Vec::new(),
+        };
+        *state = RoundState::Draining { results };
         crate::dom::set_text("status-text", "finishing up");
         web_sys::console::log_1(&"coordinator: draining".into());
-    }
-
-    pub fn is_draining(&self) -> bool {
-        *self.draining.borrow()
     }
 
     pub fn set_effort(&self, pct: u32) {
@@ -119,6 +141,30 @@ impl Coordinator {
         let effort = *self.effort.borrow() as f64;
         let total = self.pool.pool_size() as f64;
         (total * effort / 100.0).ceil().max(1.0) as usize
+    }
+
+    /// (computed, round_total) for round progress display.
+    pub fn round_progress(&self) -> (usize, usize) {
+        match &*self.state.borrow() {
+            RoundState::Computing {
+                round_total,
+                results,
+            } => (results.len(), *round_total),
+            RoundState::Submitting { round_total } => (*round_total, *round_total),
+            _ => (0, 0),
+        }
+    }
+
+    /// Human-readable state label for the UI.
+    pub fn state_label(&self) -> &'static str {
+        match &*self.state.borrow() {
+            RoundState::Idle => "idle",
+            RoundState::Fetching => "fetching",
+            RoundState::Computing { .. } => "computing",
+            RoundState::Submitting { .. } => "submitting",
+            RoundState::Draining { .. } => "finishing",
+            RoundState::Complete => "complete",
+        }
     }
 
     /// Build worker slot info for the UI.
@@ -145,38 +191,123 @@ impl Coordinator {
             return;
         }
 
-        // 1. Always process completed results from workers (even when draining)
-        let results = self.pool.drain_results();
-        for resp in results {
+        // Always drain worker results first
+        let worker_results = self.pool.drain_results();
+        for resp in worker_results {
             self.handle_result(resp);
         }
 
-        let draining = *self.draining.borrow();
+        // State machine transitions
+        let current_state = {
+            // Brief borrow to determine what to do
+            std::mem::discriminant(&*self.state.borrow())
+        };
 
-        if draining {
-            // Draining: skip dispatch + fetch. When all workers idle → complete.
-            if self.pool.available() == self.pool.pool_size()
-                && self.dispatched.borrow().is_empty()
+        match current_state {
+            d if d == std::mem::discriminant(&RoundState::Idle) => {
+                self.start_fetch();
+            }
+            d if d == std::mem::discriminant(&RoundState::Fetching) => {
+                // no-op: async fetch callback will transition us
+            }
+            d if d
+                == std::mem::discriminant(&RoundState::Computing {
+                    round_total: 0,
+                    results: Vec::new(),
+                }) =>
             {
-                if !*self.complete.borrow() {
-                    *self.complete.borrow_mut() = true;
-                    *self.running.borrow_mut() = false;
-                    web_sys::console::log_1(&"experiment complete!".into());
+                self.tick_computing();
+            }
+            d if d == std::mem::discriminant(&RoundState::Submitting { round_total: 0 }) => {
+                // no-op: async submit callback will transition us
+            }
+            d if d
+                == std::mem::discriminant(&RoundState::Draining {
+                    results: Vec::new(),
+                }) =>
+            {
+                self.tick_draining();
+            }
+            _ => {
+                // Complete — no-op
+            }
+        }
+    }
+
+    fn start_fetch(&self) {
+        *self.state.borrow_mut() = RoundState::Fetching;
+
+        let client = self.client.clone();
+        let state = self.state.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            match client.fetch_pending_work(ROUND_SIZE).await {
+                Ok(units) => {
+                    let count = units.len();
+                    if count == 0 {
+                        *state.borrow_mut() = RoundState::Complete;
+                        web_sys::console::log_1(&"no more work — complete".into());
+                    } else {
+                        // Check if we were stopped/drained while fetching
+                        let is_fetching =
+                            matches!(*state.borrow(), RoundState::Fetching);
+                        if is_fetching {
+                            web_sys::console::log_1(
+                                &format!("fetched {count} work units").into(),
+                            );
+                            // We'll set up Computing state — queue goes into round_queue
+                            // but we can't access round_queue from here (not Send).
+                            // Instead, stash units in a temporary state variant.
+                            *state.borrow_mut() = RoundState::Computing {
+                                round_total: count,
+                                results: Vec::new(),
+                            };
+                        }
+                        // If state was changed to Draining while we were fetching,
+                        // the units are lost — server will re-serve them as pending.
+                        // Push units into round_queue via a separate mechanism.
+                        // Since we're in an async block that captured state but not
+                        // round_queue, we need to store them somewhere accessible.
+                        // Solution: we'll use a shared stash.
+                        if matches!(*state.borrow(), RoundState::Computing { .. }) {
+                            // Store units in a JS-side stash via a RefCell we captured
+                            FETCH_STASH.with(|s| {
+                                *s.borrow_mut() = units;
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("fetch work: {e}").into());
+                    // Go back to idle to retry next tick
+                    *state.borrow_mut() = RoundState::Idle;
                 }
             }
-            return;
-        }
+        });
+    }
 
-        // 2. Dispatch batches to idle workers (limited by effort)
+    fn tick_computing(&self) {
+        // Pull any stashed fetch results into round_queue
+        FETCH_STASH.with(|s| {
+            let mut stash = s.borrow_mut();
+            if !stash.is_empty() {
+                let mut rq = self.round_queue.borrow_mut();
+                for u in stash.drain(..) {
+                    rq.push_back(u);
+                }
+            }
+        });
+
+        // Dispatch batches to idle workers
         let max_active = self.max_workers();
         while self.pool.available() > 0
             && (self.pool.pool_size() - self.pool.available()) < max_active
         {
             let mut batch_units = Vec::new();
             {
-                let mut q = self.queue.borrow_mut();
+                let mut rq = self.round_queue.borrow_mut();
                 for _ in 0..BATCH_SIZE {
-                    match q.pop_front() {
+                    match rq.pop_front() {
                         Some(u) => batch_units.push(u),
                         None => break,
                     }
@@ -218,46 +349,92 @@ impl Coordinator {
             }
         }
 
-        // 3. Enter drain when server says no more work and local queue is empty
-        if self.queue.borrow().is_empty()
-            && *self.no_work.borrow()
-            && !*self.fetching.borrow()
-        {
-            self.drain();
-            return;
+        // Check if all results for this round are in
+        let (round_total, n_results) = {
+            let state = self.state.borrow();
+            match &*state {
+                RoundState::Computing {
+                    round_total,
+                    results,
+                } => (*round_total, results.len()),
+                _ => return,
+            }
+        };
+
+        if n_results >= round_total {
+            // All done — take results and submit
+            let results = match std::mem::replace(
+                &mut *self.state.borrow_mut(),
+                RoundState::Submitting { round_total },
+            ) {
+                RoundState::Computing { results, .. } => results,
+                _ => unreachable!(),
+            };
+            self.submit_batch(results, round_total);
         }
+    }
 
-        // 4. Fetch more work if queue is low and not already fetching
-        if self.queue.borrow().len() < BATCH_SIZE * 2 && !*self.fetching.borrow() {
-            *self.fetching.borrow_mut() = true;
-
-            let client = self.client.clone();
-            let queue = self.queue.clone();
-            let fetching = self.fetching.clone();
-            let no_work = self.no_work.clone();
-
-            wasm_bindgen_futures::spawn_local(async move {
-                match client.fetch_pending_work(BATCH_SIZE * 4).await {
-                    Ok(units) => {
-                        let count = units.len();
-                        *no_work.borrow_mut() = count == 0;
-                        let mut q = queue.borrow_mut();
-                        for u in units {
-                            q.push_back(u);
-                        }
-                        if count > 0 {
+    fn tick_draining(&self) {
+        // When all workers are idle and dispatched is empty, submit and complete
+        if self.pool.available() == self.pool.pool_size()
+            && self.dispatched.borrow().is_empty()
+        {
+            let results = match std::mem::replace(
+                &mut *self.state.borrow_mut(),
+                RoundState::Complete,
+            ) {
+                RoundState::Draining { results } => results,
+                _ => Vec::new(),
+            };
+            if !results.is_empty() {
+                let client = self.client.clone();
+                let count = self.completed_count.clone();
+                let n = results.len();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match client.submit_results_batch(&results).await {
+                        Ok(()) => {
+                            *count.borrow_mut() += n as u32;
                             web_sys::console::log_1(
-                                &format!("fetched {count} work units").into(),
+                                &format!("drain: submitted {n} results").into(),
+                            );
+                        }
+                        Err(e) => {
+                            web_sys::console::warn_1(
+                                &format!("drain submit: {e}").into(),
                             );
                         }
                     }
-                    Err(e) => {
-                        web_sys::console::warn_1(&format!("fetch work: {e}").into());
-                    }
-                }
-                *fetching.borrow_mut() = false;
-            });
+                });
+            }
+            *self.running.borrow_mut() = false;
+            web_sys::console::log_1(&"coordinator: complete".into());
         }
+    }
+
+    fn submit_batch(&self, results: Vec<PendingResult>, round_total: usize) {
+        let client = self.client.clone();
+        let state = self.state.clone();
+        let count = self.completed_count.clone();
+        let rounds = self.rounds_completed.clone();
+        let n = results.len();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            match client.submit_results_batch(&results).await {
+                Ok(()) => {
+                    *count.borrow_mut() += n as u32;
+                    *rounds.borrow_mut() += 1;
+                    web_sys::console::log_1(
+                        &format!("submitted {n}/{round_total} results").into(),
+                    );
+                    *state.borrow_mut() = RoundState::Idle;
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("batch submit: {e}").into());
+                    // Go back to idle — server will re-serve those units
+                    *state.borrow_mut() = RoundState::Idle;
+                }
+            }
+        });
     }
 
     fn handle_result(&self, resp: crate::worker::WorkerResponse) {
@@ -315,20 +492,32 @@ impl Coordinator {
             }
         }
 
-        // Submit result to Supabase — only count as completed on success
-        let client = self.client.clone();
-        let uid = resp.id;
-        let cid = self.contributor_id.clone();
-        let count = self.completed_count.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            match client.submit_result(&uid, &cid, &payload).await {
-                Ok(()) => {
-                    *count.borrow_mut() += 1;
-                }
-                Err(e) => {
-                    web_sys::console::warn_1(&format!("submit: {e}").into());
-                }
+        // Push result into the state's results vec (for batch submission)
+        let pending = PendingResult {
+            work_unit_id: resp.id,
+            contributor_id: self.contributor_id.clone(),
+            result: payload,
+        };
+
+        let mut state = self.state.borrow_mut();
+        match &mut *state {
+            RoundState::Computing { results, .. } => {
+                results.push(pending);
             }
-        });
+            RoundState::Draining { results } => {
+                results.push(pending);
+            }
+            _ => {
+                // Result arrived in unexpected state — log and drop
+                web_sys::console::warn_1(
+                    &format!("result in unexpected state: {}", pending.work_unit_id).into(),
+                );
+            }
+        }
     }
+}
+
+thread_local! {
+    /// Stash for work units fetched asynchronously, consumed by tick_computing.
+    static FETCH_STASH: RefCell<Vec<WorkUnit>> = RefCell::new(Vec::new());
 }

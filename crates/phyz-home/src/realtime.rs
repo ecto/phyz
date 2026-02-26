@@ -90,11 +90,11 @@ impl RealtimeClient {
 
         let this = Rc::clone(self);
         let onopen = Closure::wrap(Box::new(move |_: JsValue| {
-            web_sys::console::log_1(&"realtime: connected".into());
+            web_sys::console::log_1(&"realtime: websocket open, joining channel".into());
             this.reconnect_delay.set(1000);
             this.join_channel();
             this.start_heartbeat();
-            this.set_status(Status::Live);
+            // Status stays Connecting until we get a successful phx_reply
         }) as Box<dyn FnMut(JsValue)>);
         ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
 
@@ -148,17 +148,21 @@ impl RealtimeClient {
     /// Join the `realtime:public:contributors` channel with postgres_changes config.
     fn join_channel(&self) {
         let r = self.next_ref();
+        let key = crate::supabase::anon_key();
         let msg = serde_json::json!({
             "topic": "realtime:public:contributors",
             "event": "phx_join",
             "payload": {
                 "config": {
+                    "broadcast": { "self": false },
+                    "presence": { "key": "" },
                     "postgres_changes": [{
                         "event": "*",
                         "schema": "public",
                         "table": "contributors"
                     }]
-                }
+                },
+                "access_token": key
             },
             "ref": r.to_string()
         });
@@ -204,7 +208,6 @@ impl RealtimeClient {
 
     /// Handle incoming Phoenix message.
     fn handle_message(&self, text: &str) {
-        // Parse just enough to detect postgres_changes events
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
             return;
         };
@@ -213,16 +216,46 @@ impl RealtimeClient {
 
         match event {
             "postgres_changes" => {
+                web_sys::console::log_1(&"realtime: postgres_changes event".into());
                 self.debounce_change();
             }
             "phx_reply" => {
-                // Join acknowledgement — already live
+                // Check join success/failure
+                let status = msg
+                    .get("payload")
+                    .and_then(|p| p.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                if status == "ok" {
+                    web_sys::console::log_1(&"realtime: channel joined successfully".into());
+                    self.set_status(Status::Live);
+                } else if status == "error" {
+                    let reason = msg
+                        .get("payload")
+                        .and_then(|p| p.get("response"))
+                        .map(|r| r.to_string())
+                        .unwrap_or_default();
+                    web_sys::console::warn_1(
+                        &format!("realtime: join error: {reason}").into(),
+                    );
+                    self.set_status(Status::Reconnecting);
+                }
             }
             "phx_error" => {
                 web_sys::console::warn_1(&"realtime: channel error, reconnecting".into());
                 self.set_status(Status::Reconnecting);
             }
-            _ => {}
+            "system" => {
+                // Supabase system messages (e.g. extension info)
+                web_sys::console::log_1(
+                    &format!("realtime: system: {}", msg.get("payload").unwrap_or(&serde_json::Value::Null)).into(),
+                );
+            }
+            _ => {
+                web_sys::console::log_1(
+                    &format!("realtime: unhandled event: {event}").into(),
+                );
+            }
         }
     }
 

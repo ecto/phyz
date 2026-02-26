@@ -413,7 +413,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), client.clone(), lb_state.clone());
+            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone());
             return;
         }
     };
@@ -583,7 +583,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), muted, base_units, client, lb_state);
+    start_render_loop(renderer, Some(coordinator), muted, base_units, lb_state);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -728,7 +728,6 @@ fn start_render_loop(
     coordinator: Option<Rc<Coordinator>>,
     muted: Rc<Cell<bool>>,
     base_units: Rc<Cell<i64>>,
-    client: Rc<SupabaseClient>,
     lb_state: Rc<RefCell<LeaderboardState>>,
 ) {
     let r = renderer;
@@ -737,12 +736,8 @@ fn start_render_loop(
     let last_count = Rc::new(RefCell::new(0u32));
     let last_rate_time = Rc::new(RefCell::new(0.0f64));
     let completion_handled = Rc::new(RefCell::new(false));
-    let last_phase = Rc::new(Cell::new(0u32));
+    let last_rounds = Rc::new(Cell::new(0u32));
     let anim = Rc::new(RefCell::new(AnimState::new()));
-    // Experiment progress from server: (done, total)
-    let exp_done: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let exp_total: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let exp_fetching: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -842,10 +837,6 @@ fn start_render_loop(
         }
 
         if count % 60 == 0 {
-            const PHASE1_TOTAL: usize = 7200;
-            const PHASE2_TOTAL: usize = 6100;
-            const GRAND_TOTAL: usize = 13300;
-
             let n_points = r.borrow().points.len();
 
             let mut a = an.borrow_mut();
@@ -856,38 +847,22 @@ fn start_render_loop(
                 let my_units = (base_units.get() as u32 + c.completed_count()) as usize;
                 a.completed.set(my_units as f64);
 
-                // Experiment progress from server (fetched periodically below)
-                let done = exp_done.get();
-                let total = exp_total.get();
-
-                // Phase-aware progress using experiment-wide counts
-                let (phase, phase_done, phase_total) = if total == 0 {
-                    (1, 0, PHASE1_TOTAL)
-                } else if done < PHASE1_TOTAL {
-                    (1, done, PHASE1_TOTAL)
-                } else {
-                    (2, done - PHASE1_TOTAL, PHASE2_TOTAL)
-                };
-                let pct = if phase_total > 0 {
-                    (phase_done as f64 / phase_total as f64 * 100.0).min(100.0)
+                // Round progress
+                let (round_done, round_total) = c.round_progress();
+                a.progress.set(round_done as f64);
+                dom::set_text("progress-total", &round_total.to_string());
+                dom::set_text("round-status", c.state_label());
+                let pct = if round_total > 0 {
+                    (round_done as f64 / round_total as f64 * 100.0).min(100.0)
                 } else {
                     0.0
                 };
                 dom::set_style("progress-fill", &format!("width:{pct:.1}%"));
-                a.progress.set(phase_done as f64);
-                dom::set_text("progress-total", &phase_total.to_string());
-                dom::set_text("progress-phase", &phase.to_string());
 
-                // Phase completion celebration
-                let completed_phase = if done >= GRAND_TOTAL {
-                    2u32
-                } else if done >= PHASE1_TOTAL {
-                    1
-                } else {
-                    0
-                };
-                if completed_phase > last_phase.get() {
-                    last_phase.set(completed_phase);
+                // Celebrate round completion
+                let rounds_now = c.rounds_completed();
+                if rounds_now > last_rounds.get() {
+                    last_rounds.set(rounds_now);
                     spawn_confetti();
                     if !muted.get() {
                         play_success_sound();
@@ -927,22 +902,6 @@ fn start_render_loop(
                     a.initialized = true;
                 }
 
-                // Fetch experiment progress from server every ~30s
-                if !exp_fetching.get() && (count % 1800 == 0 || exp_total.get() == 0) {
-                    exp_fetching.set(true);
-                    let cl = client.clone();
-                    let ed = exp_done.clone();
-                    let et = exp_total.clone();
-                    let ef = exp_fetching.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        if let Ok((done, total)) = cl.experiment_progress().await {
-                            ed.set(done);
-                            et.set(total);
-                        }
-                        ef.set(false);
-                    });
-                }
-
                 // Detect experiment completion
                 if c.is_complete() && !*ch.borrow() {
                     *ch.borrow_mut() = true;
@@ -970,7 +929,6 @@ fn spawn_confetti() {
     };
     let colors = ["#44cc66", "#ccaa33", "#cc4444", "#4488cc", "#cc44cc", "#44cccc"];
 
-    // Simple seeded RNG from frame time
     let mut seed: u64 = js_sys::Date::now() as u64;
     let mut rng = |max: f64| -> f64 {
         seed ^= seed << 13;
@@ -999,7 +957,6 @@ fn spawn_confetti() {
         container.append_child(&el).ok();
     }
 
-    // Clear after 3s
     let window = dom::window();
     let clear_cb = Closure::once(move || {
         container.set_inner_html("");
@@ -1023,7 +980,6 @@ fn play_success_sound() {
     gain.gain().set_value(0.15);
     gain.connect_with_audio_node(&ctx.destination()).ok();
 
-    // C5 (523 Hz) for 100ms
     let osc1 = ctx.create_oscillator().unwrap();
     osc1.set_type(web_sys::OscillatorType::Sine);
     osc1.frequency().set_value(523.0);
@@ -1032,7 +988,6 @@ fn play_success_sound() {
     osc1.start_with_when(now).ok();
     osc1.stop_with_when(now + 0.1).ok();
 
-    // E5 (659 Hz) for 100ms, starting after first note
     let osc2 = ctx.create_oscillator().unwrap();
     osc2.set_type(web_sys::OscillatorType::Sine);
     osc2.frequency().set_value(659.0);
@@ -1040,7 +995,6 @@ fn play_success_sound() {
     osc2.start_with_when(now + 0.1).ok();
     osc2.stop_with_when(now + 0.2).ok();
 
-    // Close context after sound finishes
     let close_cb = Closure::once(move || {
         ctx.close().ok();
     });

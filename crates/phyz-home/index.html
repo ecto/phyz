@@ -312,8 +312,8 @@
     /* ─── Splash modal ─── */
     #splash-backdrop {
       position: fixed; inset: 0; z-index: 50;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
       background: rgba(0,0,0,0.55);
       display: flex; align-items: center; justify-content: center;
     }
@@ -325,6 +325,7 @@
       padding: 32px 36px;
       background: var(--panel);
       border: 1px solid var(--border);
+      border-radius: 6px;
       text-align: center;
     }
     #splash-close {
@@ -333,26 +334,27 @@
     }
     #splash-close:hover { color: var(--text); }
     .splash-title {
-      font-weight: 600; font-size: 22px;
+      font-weight: 600; font-size: 24px;
       color: var(--bright); letter-spacing: -0.03em;
+      margin-bottom: 2px;
     }
     .splash-title .dim { color: var(--dim); font-weight: 400; }
     .splash-sub {
       font-style: italic; color: var(--dim);
-      margin: 4px 0 12px;
+      margin: 2px 0 16px;
     }
     .splash-formula {
-      color: var(--amber); font-size: 13px;
-      margin-bottom: 14px;
+      color: var(--amber); font-size: 17px;
+      margin-bottom: 20px;
     }
     .splash-steps {
-      text-align: left; font-size: 11px;
-      line-height: 1.7; color: var(--dim);
-      margin-bottom: 10px;
+      text-align: left; font-size: 12px;
+      line-height: 1.8; color: var(--dim);
+      margin-bottom: 16px;
     }
     .splash-meta {
       font-size: 11px; color: var(--dim);
-      margin-bottom: 4px;
+      margin-bottom: 8px;
     }
     #splash-cta {
       display: block; width: 100%;
@@ -360,13 +362,19 @@
       font-family: var(--mono);
       font-size: 15px; font-weight: 600;
       border: 1px solid var(--green);
+      border-radius: 4px;
       background: var(--green); color: var(--panel);
       cursor: pointer;
+      box-shadow: 0 2px 8px rgba(68, 204, 102, 0.25);
+      transition: opacity 0.15s, box-shadow 0.15s;
     }
-    #splash-cta:hover { opacity: 0.9; }
+    #splash-cta:hover {
+      opacity: 0.9;
+      box-shadow: 0 2px 12px rgba(68, 204, 102, 0.4);
+    }
     #learn-more {
-      display: inline-block; margin-top: 12px;
-      font-size: 11px;
+      display: inline-block; margin-top: 14px;
+      font-size: 12px;
       color: var(--green);
       text-decoration: none;
       border-bottom: 1px solid var(--green-d);
@@ -592,12 +600,12 @@
   <!-- Bottom bar (current work + workers) -->
   <div id="bottombar">
     <div id="workers"></div>
-    <div id="progress-track" title="Phase progress — work units completed toward current phase goal"><div id="progress-fill"></div></div>
+    <div id="progress-track" title="Round progress — work units computed in this round"><div id="progress-fill"></div></div>
     <div id="bottombar-row">
       <button id="toggle" title="Start or pause computation">&#9654;</button>
-      <span title="Work units completed in current phase / total needed">
-        <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">7200</span>
-        <span class="stat-label"> p</span><span class="stat-value" id="progress-phase">1</span>
+      <span title="Work units computed in current round / total in round">
+        <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">0</span>
+        <span class="stat-label" id="round-status">idle</span>
       </span>
       <span class="sep"></span>
       <span title="Work units completed per second by your browser">
@@ -622,20 +630,14 @@
       <span id="splash-close">&times;</span>
       <div class="splash-title">phyz<span class="dim">@home</span></div>
       <div class="splash-sub">distributed quantum gravity</div>
-      <div class="splash-formula">S_EE = (1/4 G_N) &times; A_cut</div>
+      <div class="splash-formula">S<sub>EE</sub> = (1/4 G<sub>N</sub>) &times; A<sub>cut</sub></div>
       <div class="splash-steps">
         1. A Regge lattice (triangulated 4-sphere) defines discrete spacetime.<br>
-        2. Your browser solves for the ground state of an SU(2) gauge field
-        on this lattice &mdash; a 1024&times;1024 eigenvalue problem.<br>
-        3. The lattice is split into two regions. Entanglement entropy S<sub>EE</sub>
-        across the cut is measured, along with the geometric cut area A<sub>cut</sub>.<br>
-        4. If gravity emerges from entanglement, S<sub>EE</sub> scales linearly
-        with A<sub>cut</sub> &mdash; the slope gives Newton's constant G<sub>N</sub>.
+        2. Your browser solves an SU(2) gauge field eigenvalue problem on this lattice.<br>
+        3. The lattice is bisected; entanglement entropy S<sub>EE</sub> and cut area A<sub>cut</sub> are measured.<br>
+        4. If S<sub>EE</sub> scales linearly with A<sub>cut</sub>, the slope yields Newton's constant G<sub>N</sub>.
       </div>
-      <div class="splash-meta">
-        phase 1: 7,200 eigensolves (levels 0&ndash;1) &bull;
-        phase 2: 6,100 eigensolves (level 3)
-      </div>
+      <div class="splash-meta">distributed eigensolves — results submitted in rounds</div>
       <button id="splash-cta">start computing &rarr;</button>
       <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
         learn more &rarr;
