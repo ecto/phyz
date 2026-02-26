@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>phyz@home</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+  <link data-trunk rel="css" href="input.css">
+  <link data-trunk rel="copy-dir" href="workers">
+  <link data-trunk rel="copy-dir" href="wasm">
+  <link data-trunk rel="rust" data-wasm-opt="z"/>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    /* ─── Dark theme (default) ─── */
+    :root {
+      --bg:       #0a0a10;
+      --panel:    #0c0c14;
+      --border:   #2a2a3a;
+      --dim:      #555566;
+      --text:     #aaaabb;
+      --bright:   #ddddee;
+      --green:    #44cc66;
+      --green-d:  #227744;
+      --green-bg: rgba(34, 119, 68, 0.15);
+      --amber:    #ccaa33;
+      --red:      #cc4444;
+      --red-bg:   rgba(204, 68, 68, 0.08);
+      --mono:     'IBM Plex Mono', 'Menlo', monospace;
+    }
+
+    /* ─── Light theme ─── */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:       #f4f4f0;
+        --panel:    #eaeae6;
+        --border:   #c8c8c0;
+        --dim:      #888880;
+        --text:     #444440;
+        --bright:   #1a1a18;
+        --green:    #1a8a44;
+        --green-d:  #116633;
+        --green-bg: rgba(26, 138, 68, 0.12);
+        --amber:    #8a7722;
+        --red:      #aa3333;
+        --red-bg:   rgba(170, 51, 51, 0.08);
+      }
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      height: 100vh;
+      overflow: hidden;
+      line-height: 1.5;
+    }
+
+    #viz {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ─── Top bar ─── */
+    #topbar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 20;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      padding: 5px 16px;
+      font-size: 12px;
+    }
+    #topbar .title {
+      font-weight: 600;
+      font-size: 15px;
+      letter-spacing: -0.03em;
+      color: var(--bright);
+      white-space: nowrap;
+    }
+    #topbar .title-dim { color: var(--dim); font-weight: 400; }
+    #topbar .sep {
+      width: 1px;
+      height: 14px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    #topbar .status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .stat-label { color: var(--dim); }
+    .stat-value { color: var(--text); }
+    .stat-hero {
+      color: var(--green);
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .stat-result {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    #topbar .spacer { flex: 1; min-width: 8px; }
+
+    /* Indicator dot */
+    .indicator { width: 6px; height: 6px; display: inline-block; }
+    .indicator.idle { background: var(--dim); }
+    .indicator.active { background: var(--green); }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .indicator.active { animation: blink 1s ease-in-out infinite; }
+    .indicator.done { background: var(--green); }
+
+    /* Progress track */
+    #progress-track {
+      width: 100px; height: 4px;
+      background: var(--border);
+      display: inline-block;
+      vertical-align: middle;
+    }
+    #progress-fill {
+      display: block;
+      height: 100%; width: 0%;
+      background: var(--green-d);
+      transition: width 0.5s;
+    }
+
+    /* ─── Toggle button ─── */
+    #toggle {
+      font-weight: 600;
+      font-size: 11px;
+      padding: 2px 12px;
+      cursor: pointer;
+      border: 1px solid var(--green);
+      background: var(--green-bg);
+      color: var(--green);
+      transition: all 0.1s;
+    }
+    #toggle:hover {
+      background: var(--green);
+      color: var(--panel);
+    }
+    #toggle:active { transform: scale(0.97); }
+    #toggle.running {
+      border-color: var(--red);
+      background: var(--red);
+      color: var(--panel);
+      font-weight: 600;
+      font-size: 11px;
+      padding: 2px 12px;
+    }
+    #toggle.running:hover {
+      background: transparent;
+      color: var(--red);
+    }
+    #toggle.complete {
+      border-color: var(--green);
+      background: var(--green);
+      color: var(--panel);
+      cursor: default;
+    }
+
+    /* ─── Info button ─── */
+    #info-btn {
+      cursor: pointer;
+      color: var(--dim);
+      font-size: 14px;
+      line-height: 1;
+      user-select: none;
+    }
+    #info-btn:hover { color: var(--text); }
+
+    /* ─── Splash modal ─── */
+    #splash-backdrop {
+      position: fixed; inset: 0; z-index: 50;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #splash-backdrop.hidden { display: none; }
+
+    #splash-card {
+      position: relative;
+      max-width: 440px; width: 90%;
+      padding: 32px 36px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    #splash-close {
+      position: absolute; top: 10px; right: 14px;
+      cursor: pointer; color: var(--dim); font-size: 18px;
+    }
+    #splash-close:hover { color: var(--text); }
+    .splash-title {
+      font-weight: 600; font-size: 22px;
+      color: var(--bright); letter-spacing: -0.03em;
+    }
+    .splash-title .dim { color: var(--dim); font-weight: 400; }
+    .splash-sub {
+      font-style: italic; color: var(--dim);
+      margin: 4px 0 12px;
+    }
+    .splash-formula {
+      color: var(--amber); font-size: 13px;
+      margin-bottom: 14px;
+    }
+    .splash-steps {
+      text-align: left; font-size: 11px;
+      line-height: 1.7; color: var(--dim);
+      margin-bottom: 10px;
+    }
+    .splash-meta {
+      font-size: 11px; color: var(--dim);
+      margin-bottom: 4px;
+    }
+    #splash-cta {
+      display: block; width: 100%;
+      margin-top: 20px; padding: 12px;
+      font-family: var(--mono);
+      font-size: 15px; font-weight: 600;
+      border: 1px solid var(--green);
+      background: var(--green); color: var(--panel);
+      cursor: pointer;
+    }
+    #splash-cta:hover { opacity: 0.9; }
+    #learn-more {
+      display: inline-block; margin-top: 12px;
+      font-size: 11px;
+      color: var(--green);
+      text-decoration: none;
+      border-bottom: 1px solid var(--green-d);
+      padding-bottom: 1px;
+    }
+    #learn-more:hover {
+      color: var(--bright);
+      border-color: var(--bright);
+    }
+
+    @media (prefers-color-scheme: light) {
+      #splash-backdrop { background: rgba(200,200,200,0.5); }
+    }
+
+    /* ─── Log panel (top-left) ─── */
+    #logpanel {
+      position: absolute;
+      top: 42px;
+      left: 12px;
+      z-index: 10;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      width: 480px;
+    }
+    #log {
+      height: 148px;
+      overflow: hidden;
+      padding: 4px 12px;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    #log .entry {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-bottom: 1px solid var(--border);
+      padding: 2px 0;
+    }
+    #log .entry:last-child { border-bottom: none; }
+    #log .entry .dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    #log .entry .prompt { color: var(--green-d); }
+    #log .entry .param  { color: var(--dim); }
+    #log .entry .val    { color: var(--amber); }
+    #log .entry .ok     { color: var(--green); }
+    #log .entry .time   { color: var(--dim); font-size: 11px; }
+    #log .empty {
+      color: var(--dim);
+      font-style: italic;
+      padding: 8px 0;
+    }
+
+    /* ─── Worker lanes ─── */
+    #workers { padding: 4px 12px; border-bottom: 1px solid var(--border); font-size: 10px; }
+    #workers:empty { display: none; }
+    .wk { display: flex; align-items: center; gap: 6px; height: 18px; white-space: nowrap; }
+    .wk-idx { color: var(--dim); width: 18px; font-size: 9px; }
+    .wk-params { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .wk-bar { width: 60px; height: 3px; background: var(--border); flex-shrink: 0; overflow: hidden; }
+    .wk-fill { display: block; height: 100%; background: var(--green-d); transition: width 0.3s; }
+    .wk.idle .wk-params { color: var(--dim); font-style: italic; }
+    .wk.idle .wk-bar { opacity: 0.3; }
+
+    /* ─── Effort bar ─── */
+    #effort-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 12px; border-bottom: 1px solid var(--border);
+      font-size: 10px;
+    }
+    #effort-bar .stat-label { flex-shrink: 0; }
+    #effort {
+      flex: 1; height: 3px;
+      -webkit-appearance: none; appearance: none;
+      background: var(--border); outline: none;
+      cursor: pointer;
+    }
+    #effort::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 10px; height: 10px;
+      background: var(--green); border-radius: 50%;
+      cursor: pointer;
+    }
+    #effort::-moz-range-thumb {
+      width: 10px; height: 10px; border: none;
+      background: var(--green); border-radius: 50%;
+      cursor: pointer;
+    }
+    #effort-val { color: var(--text); min-width: 28px; text-align: right; }
+    #effort-workers { color: var(--dim); }
+
+    /* ─── Auth button ─── */
+    .auth-btn {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 1px 8px;
+      cursor: pointer;
+      border: 1px solid var(--green-d);
+      background: transparent;
+      color: var(--green);
+    }
+    .auth-btn:hover { background: var(--green-bg); }
+    .auth-btn.dim {
+      border-color: var(--border);
+      color: var(--dim);
+    }
+    .auth-btn.dim:hover { color: var(--text); background: var(--red-bg); }
+
+    /* ─── Auth + name modals ─── */
+    #auth-modal, #name-modal {
+      position: fixed; inset: 0; z-index: 50;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      background: rgba(0,0,0,0.55);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #auth-modal.hidden, #name-modal.hidden { display: none; }
+
+    #auth-card, #name-card {
+      position: relative;
+      max-width: 340px; width: 90%;
+      padding: 28px 32px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    #auth-close {
+      position: absolute; top: 8px; right: 12px;
+      cursor: pointer; color: var(--dim); font-size: 18px;
+    }
+    #auth-close:hover { color: var(--text); }
+    .auth-title {
+      font-weight: 600; font-size: 16px;
+      color: var(--bright); margin-bottom: 12px;
+    }
+    .auth-sub {
+      font-size: 11px; color: var(--dim); margin: -8px 0 12px;
+    }
+    #auth-email, #name-input {
+      display: block; width: 100%;
+      padding: 8px 10px; margin-bottom: 10px;
+      font-family: var(--mono); font-size: 13px;
+      background: var(--bg); color: var(--bright);
+      border: 1px solid var(--border); outline: none;
+    }
+    #auth-email:focus, #name-input:focus { border-color: var(--green-d); }
+    #auth-send, #name-save {
+      display: block; width: 100%;
+      padding: 8px; font-family: var(--mono);
+      font-size: 13px; font-weight: 600;
+      border: 1px solid var(--green);
+      background: var(--green); color: var(--panel);
+      cursor: pointer;
+    }
+    #auth-send:hover, #name-save:hover { opacity: 0.9; }
+    #auth-status, #name-status {
+      margin-top: 10px; font-size: 11px; color: var(--dim);
+      min-height: 16px;
+    }
+
+    @media (prefers-color-scheme: light) {
+      #auth-modal, #name-modal { background: rgba(200,200,200,0.5); }
+    }
+
+    /* ─── Panel tabs ─── */
+    #panel-tabs {
+      display: flex; gap: 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 10px;
+    }
+    .tab {
+      padding: 4px 12px;
+      cursor: pointer;
+      color: var(--dim);
+      border-bottom: 2px solid transparent;
+      user-select: none;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--text);
+      border-bottom-color: var(--green-d);
+    }
+
+    /* ─── Leaderboard ─── */
+    #leaderboard {
+      padding: 6px 12px;
+      font-size: 11px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    #leaderboard.hidden { display: none; }
+    .lb-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .lb-row:last-child { border-bottom: none; }
+    .lb-rank { color: var(--dim); width: 20px; text-align: right; font-size: 10px; }
+    .lb-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-units { color: var(--amber); font-variant-numeric: tabular-nums; }
+    .lb-row.me { background: var(--green-bg); }
+    .lb-empty { color: var(--dim); font-style: italic; padding: 12px 0; text-align: center; }
+
+    /* New entry flash */
+    @keyframes entry-flash {
+      0%   { background: var(--green-bg); }
+      100% { background: transparent; }
+    }
+    #log .entry.fresh { animation: entry-flash 1s ease-out; }
+
+    /* ─── Mobile ─── */
+    @media (max-width: 700px) {
+      body { font-size: 12px; }
+
+      #topbar {
+        gap: 4px 10px;
+        padding: 5px 10px;
+        font-size: 11px;
+      }
+      #topbar .title { font-size: 13px; }
+      #topbar .sep { display: none; }
+      #topbar .spacer { display: none; }
+      .stat-hero { font-size: 13px; }
+
+      #logpanel {
+        top: auto;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: auto;
+        border: none;
+        border-top: 1px solid var(--border);
+      }
+      #log { height: 80px; font-size: 10px; line-height: 1.5; }
+
+      #progress-track { width: 60px; }
+      #toggle { padding: 2px 10px; font-size: 10px; }
+      #toggle.running { padding: 2px 10px; font-size: 10px; }
+
+      #splash-card { padding: 24px 20px; }
+    }
+
+    /* ─── Very small screens ─── */
+    @media (max-width: 380px) {
+      .stat-result { display: none; }
+      #log { height: 60px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="viz"></canvas>
+
+  <!-- Top bar -->
+  <div id="topbar">
+    <span class="title">phyz<span class="title-dim">@home</span></span>
+    <button id="toggle">start</button>
+    <div class="status">
+      <span class="indicator idle" id="activity-dot"></span>
+      <span class="stat-value" id="status-text">idle</span>
+    </div>
+
+    <span class="sep"></span>
+
+    <span class="stat-result">
+      <span class="stat-label">G_N</span>
+      <span class="stat-hero" id="gn">&mdash;</span>
+    </span>
+    <span class="stat-result">
+      <span class="stat-label">R&sup2;</span>
+      <span class="stat-value" id="r2">&mdash;</span>
+    </span>
+
+    <span class="sep"></span>
+
+    <span>
+      <span class="stat-value" id="my-count">0</span>
+      <span class="stat-label"> units</span>
+    </span>
+    <span>
+      <span class="stat-value" id="my-rate">0.0</span>
+      <span class="stat-label">/s</span>
+    </span>
+    <span>
+      <span id="progress-track"><span id="progress-fill"></span></span>
+      <span class="stat-value" id="progress-num">0</span><span class="stat-label">/1250</span>
+      <span class="stat-label">round </span><span class="stat-value" id="progress-round">1</span>
+    </span>
+
+    <span class="sep"></span>
+
+    <span>
+      <span class="stat-value" id="n-points">0</span>
+      <span class="stat-label"> points</span>
+    </span>
+
+    <span class="spacer"></span>
+
+    <span id="auth-anon">
+      <span id="n-contributors">1</span>
+      <span class="stat-label"> contributors</span>
+      <button id="sign-in-btn" class="auth-btn">sign in</button>
+    </span>
+    <span id="auth-user" class="hidden">
+      <span class="stat-value" id="user-name"></span>
+      <span class="stat-label" id="user-rank"></span>
+      <button id="sign-out-btn" class="auth-btn dim">sign out</button>
+    </span>
+
+    <span id="info-btn" title="about">?</span>
+
+  </div>
+
+  <!-- Splash modal -->
+  <div id="splash-backdrop">
+    <div id="splash-card">
+      <span id="splash-close">&times;</span>
+      <div class="splash-title">phyz<span class="dim">@home</span></div>
+      <div class="splash-sub">distributed quantum gravity</div>
+      <div class="splash-formula">S_EE = (1/4 G_N) &times; A_cut</div>
+      <div class="splash-steps">
+        1. A Regge lattice (triangulated 4-sphere) defines discrete spacetime.<br>
+        2. Your browser solves for the ground state of an SU(2) gauge field
+        on this lattice &mdash; a 1024&times;1024 eigenvalue problem.<br>
+        3. The lattice is split into two regions. Entanglement entropy S<sub>EE</sub>
+        across the cut is measured, along with the geometric cut area A<sub>cut</sub>.<br>
+        4. If gravity emerges from entanglement, S<sub>EE</sub> scales linearly
+        with A<sub>cut</sub> &mdash; the slope gives Newton's constant G<sub>N</sub>.
+      </div>
+      <div class="splash-meta">50 couplings &times; 25 partitions = 1,250 work units</div>
+      <button id="splash-cta">start computing &rarr;</button>
+      <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
+        learn more &rarr;
+      </a>
+    </div>
+  </div>
+
+  <!-- Auth modal -->
+  <div id="auth-modal" class="hidden">
+    <div id="auth-card">
+      <span id="auth-close">&times;</span>
+      <div class="auth-title">sign in</div>
+      <input type="email" id="auth-email" placeholder="email" autocomplete="email">
+      <button id="auth-send">send magic link</button>
+      <div id="auth-status"></div>
+    </div>
+  </div>
+
+  <!-- Display name prompt modal -->
+  <div id="name-modal" class="hidden">
+    <div id="name-card">
+      <div class="auth-title">choose a name</div>
+      <div class="auth-sub">this appears on the leaderboard</div>
+      <input type="text" id="name-input" placeholder="display name" maxlength="24" autocomplete="off">
+      <button id="name-save">save</button>
+      <div id="name-status"></div>
+    </div>
+  </div>
+
+  <!-- Log panel -->
+  <div id="logpanel">
+    <div id="panel-tabs">
+      <span id="tab-workers" class="tab active">workers</span>
+      <span id="tab-leaderboard" class="tab">leaderboard</span>
+    </div>
+    <div id="workers-panel">
+      <div id="effort-bar">
+        <span class="stat-label">effort</span>
+        <input type="range" id="effort" min="1" max="100" value="50">
+        <span id="effort-val">50%</span>
+        <span id="effort-workers"></span>
+      </div>
+      <div id="workers"></div>
+      <div id="log">
+        <div class="empty">waiting for computations...</div>
+      </div>
+    </div>
+    <div id="leaderboard" class="hidden"></div>
+  </div>
+</body>
+</html>

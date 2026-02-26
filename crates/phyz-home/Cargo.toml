@@ -1,0 +1,34 @@
+[package]
+name = "phyz-home"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement",
+    "Event",
+    "CanvasRenderingContext2d", "CanvasGradient",
+    "Worker", "MessageEvent",
+    "Navigator",
+    "Headers", "Request", "RequestInit", "RequestMode", "Response",
+    "Performance",
+    "MouseEvent", "WheelEvent",
+    "TouchEvent", "TouchList", "Touch",
+    "MediaQueryList",
+    "Storage",
+    "EventTarget", "AddEventListenerOptions",
+    "console",
+    "Url", "UrlSearchParams",
+    "History", "Location",
+    "KeyboardEvent", "HtmlButtonElement",
+] }
+js-sys = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+getrandom = { version = "0.2", features = ["js"] }
