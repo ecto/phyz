@@ -315,18 +315,23 @@ pub async fn run() {
         .ok();
     name_key_cb.forget();
 
-    // Wire leaderboard modal
-    let client_lb = client.clone();
-    let session_lb = session.clone();
-    let lb_open_cb = Closure::wrap(Box::new(move || {
-        dom::set_class("lb-modal", "");
-        let client = client_lb.clone();
-        let sess = session_lb.clone();
+    // Initialize leaderboard state
+    let lb_state = Rc::new(RefCell::new(LeaderboardState::new(
+        contributor_id_rc.as_ref().clone(),
+    )));
+
+    // Initial leaderboard fetch (REST, before WebSocket connects)
+    {
+        let client_lb = client.clone();
+        let session_lb = session.clone();
+        let lb = lb_state.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match client.fetch_leaderboard().await {
+            match client_lb.fetch_leaderboard().await {
                 Ok(entries) => {
-                    let my_id = sess.borrow().as_ref().map(|s| s.user_id.clone());
-                    render_leaderboard(&entries, my_id.as_deref());
+                    let my_id = session_lb.borrow().as_ref().map(|s| s.user_id.clone());
+                    let mut state = lb.borrow_mut();
+                    state.update(&entries, my_id.as_deref());
+                    render_leaderboard_panel(&state);
                 }
                 Err(e) => {
                     dom::set_inner_html(
@@ -336,17 +341,64 @@ pub async fn run() {
                 }
             }
         });
-    }) as Box<dyn FnMut()>);
-    dom::get_el("lb-btn")
-        .set_onclick(Some(lb_open_cb.as_ref().unchecked_ref()));
-    lb_open_cb.forget();
+    }
 
-    let lb_close_cb = Closure::wrap(Box::new(move || {
-        dom::set_class("lb-modal", "hidden");
-    }) as Box<dyn FnMut()>);
-    dom::get_el("lb-close")
-        .set_onclick(Some(lb_close_cb.as_ref().unchecked_ref()));
-    lb_close_cb.forget();
+    // Connect Supabase Realtime for live leaderboard updates
+    let rt_client = crate::realtime::RealtimeClient::new();
+    {
+        let client_rt = client.clone();
+        let session_rt = session.clone();
+        let lb_rt = lb_state.clone();
+        let on_change: Rc<dyn Fn()> = Rc::new(move || {
+            let client = client_rt.clone();
+            let sess = session_rt.clone();
+            let lb = lb_rt.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(entries) = client.fetch_leaderboard().await {
+                    let my_id = sess.borrow().as_ref().map(|s| s.user_id.clone());
+                    let mut state = lb.borrow_mut();
+                    state.update(&entries, my_id.as_deref());
+                    render_leaderboard_panel(&state);
+                }
+            });
+        });
+        rt_client.connect(on_change);
+    }
+
+    // Wire leaderboard panel collapse toggle (header click)
+    let lb_collapsed = Rc::new(Cell::new(false));
+    {
+        let collapsed = lb_collapsed.clone();
+        let toggle_cb = Closure::wrap(Box::new(move || {
+            let new_val = !collapsed.get();
+            collapsed.set(new_val);
+            if new_val {
+                dom::set_class("lb-panel", "collapsed");
+            } else {
+                dom::set_class("lb-panel", "");
+            }
+        }) as Box<dyn FnMut()>);
+        dom::get_el("lb-panel-header")
+            .set_onclick(Some(toggle_cb.as_ref().unchecked_ref()));
+        toggle_cb.forget();
+    }
+
+    // Wire topbar leaderboard icon to toggle panel
+    {
+        let collapsed = lb_collapsed.clone();
+        let lb_btn_cb = Closure::wrap(Box::new(move || {
+            let new_val = !collapsed.get();
+            collapsed.set(new_val);
+            if new_val {
+                dom::set_class("lb-panel", "collapsed");
+            } else {
+                dom::set_class("lb-panel", "");
+            }
+        }) as Box<dyn FnMut()>);
+        dom::get_el("lb-btn")
+            .set_onclick(Some(lb_btn_cb.as_ref().unchecked_ref()));
+        lb_btn_cb.forget();
+    }
 
     // Initialize worker pool (Rc, not Rc<RefCell> — pool uses interior mutability)
     let pool_size = WorkerPool::recommended_size();
@@ -361,7 +413,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), client.clone());
+            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), client.clone(), lb_state.clone());
             return;
         }
     };
@@ -381,12 +433,14 @@ pub async fn run() {
         dom::set_class("toggle", "running");
         dom::set_text("status-text", "running");
         dom::set_class("activity-dot", "indicator active");
-        dom::set_class("splash-backdrop", "hidden");
+        // splash stays hidden (default in HTML)
     } else {
         dom::set_text("toggle", "\u{25B6}");
         dom::set_class("toggle", "");
         dom::set_text("status-text", "idle");
         dom::set_class("activity-dot", "indicator idle");
+        // Show splash only on first visit
+        dom::set_class("splash-backdrop", "");
     }
 
     // Wire up toggle button
@@ -469,6 +523,30 @@ pub async fn run() {
         .set_onclick(Some(close_cb.as_ref().unchecked_ref()));
     close_cb.forget();
 
+    // Click backdrop (outside card) to dismiss splash
+    let backdrop_cb = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
+        let target = e.target().unwrap();
+        let el: &web_sys::Element = target.unchecked_ref();
+        if el.id() == "splash-backdrop" {
+            dom::set_class("splash-backdrop", "hidden");
+        }
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    dom::get_el("splash-backdrop")
+        .add_event_listener_with_callback("click", backdrop_cb.as_ref().unchecked_ref())
+        .ok();
+    backdrop_cb.forget();
+
+    // Escape key dismisses splash modal
+    let esc_cb = Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+        if e.key() == "Escape" {
+            dom::set_class("splash-backdrop", "hidden");
+        }
+    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    dom::window()
+        .add_event_listener_with_callback("keydown", esc_cb.as_ref().unchecked_ref())
+        .ok();
+    esc_cb.forget();
+
     // Wire up effort slider
     let saved_effort = crate::cache::load_effort();
     coordinator.set_effort(saved_effort);
@@ -505,7 +583,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), muted, base_units, client);
+    start_render_loop(renderer, Some(coordinator), muted, base_units, client, lb_state);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -651,6 +729,7 @@ fn start_render_loop(
     muted: Rc<Cell<bool>>,
     base_units: Rc<Cell<i64>>,
     client: Rc<SupabaseClient>,
+    lb_state: Rc<RefCell<LeaderboardState>>,
 ) {
     let r = renderer;
     let coord = coordinator;
@@ -696,6 +775,14 @@ fn start_render_loop(
             }
             if a.r2.target != 0.0 {
                 dom::set_text("r2", &format!("{:.3}", a.r2.current));
+            }
+        }
+
+        // Tick leaderboard animations and re-render if in-flight
+        {
+            let mut lb = lb_state.borrow_mut();
+            if lb.tick() {
+                render_leaderboard_panel(&lb);
             }
         }
 
@@ -1012,29 +1099,182 @@ fn show_auth_ui(name: &str) {
     dom::set_class("auth-modal", "hidden");
 }
 
-fn render_leaderboard(entries: &[crate::supabase::LeaderboardEntry], my_id: Option<&str>) {
-    if entries.is_empty() {
+/// A single row in the leaderboard with animation state.
+struct LeaderboardRow {
+    player_id: String,
+    name: String,
+    units: Anim,
+    prev_rank: Option<u32>,
+    rank_change_age: f64,
+}
+
+/// Manages the full leaderboard state with animated transitions.
+struct LeaderboardState {
+    rows: Vec<LeaderboardRow>,
+    my_id: String,
+    my_rank: Option<u32>,
+    initialized: bool,
+}
+
+impl LeaderboardState {
+    fn new(my_id: String) -> Self {
+        Self {
+            rows: Vec::new(),
+            my_id,
+            my_rank: None,
+            initialized: false,
+        }
+    }
+
+    /// Update with new entries from REST. Computes rank changes and preserves animation state.
+    fn update(&mut self, entries: &[crate::supabase::LeaderboardEntry], auth_id: Option<&str>) {
+        use std::collections::HashMap;
+
+        // Build lookup of existing rows by player_id
+        let old_ranks: HashMap<String, u32> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.player_id.clone(), i as u32 + 1))
+            .collect();
+
+        let mut new_rows = Vec::with_capacity(entries.len());
+        self.my_rank = None;
+
+        for (i, entry) in entries.iter().enumerate() {
+            let rank = i as u32 + 1;
+            let is_me = auth_id.map_or(false, |id| id == entry.player_id)
+                || entry.player_id == self.my_id;
+
+            if is_me {
+                self.my_rank = Some(rank);
+            }
+
+            // Find existing row to preserve animation state
+            let prev_rank = old_ranks.get(&entry.player_id).copied();
+            let (units_anim, rank_change_age) =
+                if let Some(old_row) = self.rows.iter().find(|r| r.player_id == entry.player_id) {
+                    let mut a = Anim {
+                        current: old_row.units.current,
+                        target: old_row.units.target,
+                    };
+                    a.set(entry.units as f64);
+                    // New rank change if rank actually changed
+                    let age = if prev_rank != Some(rank) && self.initialized {
+                        0.0
+                    } else {
+                        old_row.rank_change_age
+                    };
+                    (a, age)
+                } else {
+                    let mut a = Anim::new();
+                    a.set(entry.units as f64);
+                    if !self.initialized {
+                        a.snap();
+                    }
+                    (a, 300.0) // no change indicator for new entries
+                };
+
+            new_rows.push(LeaderboardRow {
+                player_id: entry.player_id.clone(),
+                name: entry.name.clone().unwrap_or_else(|| "anonymous".to_string()),
+                units: units_anim,
+                prev_rank,
+                rank_change_age,
+            });
+        }
+
+        self.rows = new_rows;
+        self.initialized = true;
+    }
+
+    /// Tick all animations. Returns true if any animation is still in-flight.
+    fn tick(&mut self) -> bool {
+        let mut any_active = false;
+        for row in &mut self.rows {
+            row.units.tick(0.5);
+            if (row.units.current - row.units.target).abs() > 0.5 {
+                any_active = true;
+            }
+            if row.rank_change_age < 300.0 {
+                row.rank_change_age += 1.0;
+                any_active = true;
+            }
+        }
+        any_active
+    }
+}
+
+fn render_leaderboard_panel(state: &LeaderboardState) {
+    if state.rows.is_empty() {
         dom::set_inner_html("leaderboard", "<div class=\"lb-empty\">no entries yet</div>");
+        dom::set_inner_html("lb-me", "");
         return;
     }
 
     let mut html = String::new();
-    for (i, entry) in entries.iter().enumerate() {
-        let name = entry.name.as_deref().unwrap_or("anonymous");
-        let is_me = my_id.map_or(false, |id| id == entry.player_id);
+    let mut found_me = false;
+
+    for (i, row) in state.rows.iter().enumerate() {
+        let rank = i + 1;
+        let is_me = row.player_id == state.my_id;
+        if is_me {
+            found_me = true;
+        }
         let me_class = if is_me { " me" } else { "" };
+
+        // Rank change indicator (fades over ~5s = ~300 frames)
+        let change_html = if let Some(prev) = row.prev_rank {
+            let current_rank = rank as u32;
+            if prev > current_rank && row.rank_change_age < 300.0 {
+                let opacity = 1.0 - (row.rank_change_age / 300.0);
+                format!(
+                    "<span class=\"lb-change up\" style=\"opacity:{opacity:.2}\">\u{25B2}</span>"
+                )
+            } else if prev < current_rank && row.rank_change_age < 300.0 {
+                let opacity = 1.0 - (row.rank_change_age / 300.0);
+                format!(
+                    "<span class=\"lb-change down\" style=\"opacity:{opacity:.2}\">\u{25BC}</span>"
+                )
+            } else {
+                "<span class=\"lb-change\"></span>".to_string()
+            }
+        } else {
+            "<span class=\"lb-change\"></span>".to_string()
+        };
+
+        let you_badge = if is_me {
+            "<span class=\"lb-you\">you</span>"
+        } else {
+            ""
+        };
+
         html.push_str(&format!(
             "<div class=\"lb-row{me_class}\">\
-             <span class=\"lb-rank\">{}</span>\
-             <span class=\"lb-name\">{}</span>\
+             <span class=\"lb-rank\">{rank}</span>\
+             {change_html}\
+             <span class=\"lb-name\">{}{you_badge}</span>\
              <span class=\"lb-units\">{}</span>\
              </div>",
-            i + 1,
-            name,
-            entry.units,
+            row.name,
+            row.units.as_int(),
         ));
     }
     dom::set_inner_html("leaderboard", &html);
+
+    // Personal rank footer when user is outside visible top N
+    if let Some(my_rank) = state.my_rank {
+        if !found_me {
+            dom::set_inner_html(
+                "lb-me",
+                &format!("you \u{2014} #{my_rank}"),
+            );
+        } else {
+            dom::set_inner_html("lb-me", "");
+        }
+    } else {
+        dom::set_inner_html("lb-me", "");
+    }
 }
 
 /// Smoothly animated numeric display value.

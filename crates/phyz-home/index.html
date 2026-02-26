@@ -194,7 +194,7 @@
       cursor: default;
     }
 
-    /* ─── Leaderboard button ─── */
+    /* ─── Leaderboard panel toggle button ─── */
     #lb-btn {
       cursor: pointer;
       color: var(--dim);
@@ -203,6 +203,89 @@
       user-select: none;
     }
     #lb-btn:hover { color: var(--text); }
+
+    /* ─── Leaderboard side panel ─── */
+    #lb-panel {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: 260px;
+      z-index: 15;
+      background: color-mix(in srgb, var(--panel) 85%, transparent);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.2s ease;
+    }
+    #lb-panel.collapsed { transform: translateX(100%); }
+
+    #lb-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #lb-panel-header:hover { background: var(--border); }
+    .lb-panel-title { color: var(--bright); font-weight: 600; }
+    .lb-panel-toggle { color: var(--dim); font-size: 14px; }
+
+    #lb-panel-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 0;
+      font-size: 11px;
+    }
+    #lb-panel-body .lb-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 14px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+    }
+    #lb-panel-body .lb-row:last-child { border-bottom: none; }
+    .lb-rank { color: var(--dim); width: 20px; text-align: right; font-size: 10px; flex-shrink: 0; }
+    .lb-change {
+      width: 14px; font-size: 9px; text-align: center; flex-shrink: 0;
+      transition: opacity 5s ease-out;
+    }
+    .lb-change.up { color: var(--green); }
+    .lb-change.down { color: var(--red); }
+    .lb-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lb-you { font-size: 8px; color: var(--green); margin-left: 2px; font-weight: 600; }
+    .lb-units { color: var(--amber); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .lb-row.me { background: var(--green-bg); }
+    .lb-empty { color: var(--dim); font-style: italic; padding: 12px 14px; text-align: center; }
+
+    #lb-me {
+      padding: 6px 14px;
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--dim);
+    }
+    #lb-me:empty { display: none; }
+
+    #lb-status {
+      padding: 4px 14px;
+      border-top: 1px solid var(--border);
+      font-size: 9px;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .rt-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .rt-dot.connecting { background: var(--amber); }
+    .rt-dot.live { background: var(--green); }
+    .rt-dot.reconnecting { background: var(--red); }
 
     /* ─── Effort slider (inline in bottombar) ─── */
     #effort {
@@ -380,49 +463,10 @@
     }
 
     @media (prefers-color-scheme: light) {
-      #auth-modal, #name-modal, #lb-modal { background: rgba(200,200,200,0.5); }
+      #auth-modal, #name-modal { background: rgba(200,200,200,0.5); }
     }
 
-    /* ─── Leaderboard modal ─── */
-    #lb-modal {
-      position: fixed; inset: 0; z-index: 50;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      background: rgba(0,0,0,0.55);
-      display: flex; align-items: center; justify-content: center;
-    }
-    #lb-modal.hidden { display: none; }
-    #lb-card {
-      position: relative;
-      max-width: 380px; width: 90%;
-      padding: 28px 32px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      text-align: center;
-    }
-    #lb-close {
-      position: absolute; top: 8px; right: 12px;
-      cursor: pointer; color: var(--dim); font-size: 18px;
-    }
-    #lb-close:hover { color: var(--text); }
-    #leaderboard {
-      padding: 6px 0;
-      font-size: 11px;
-      max-height: 300px;
-      overflow-y: auto;
-      text-align: left;
-    }
-    .lb-row {
-      display: flex; align-items: center; gap: 8px;
-      padding: 3px 0;
-      border-bottom: 1px solid var(--border);
-    }
-    .lb-row:last-child { border-bottom: none; }
-    .lb-rank { color: var(--dim); width: 20px; text-align: right; font-size: 10px; }
-    .lb-name { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lb-units { color: var(--amber); font-variant-numeric: tabular-nums; }
-    .lb-row.me { background: var(--green-bg); }
-    .lb-empty { color: var(--dim); font-style: italic; padding: 12px 0; text-align: center; }
+    /* (Leaderboard styles are in the panel section above) */
 
     /* ─── Confetti ─── */
     #confetti-container {
@@ -483,6 +527,20 @@
       #effort { width: 40px; }
 
       #splash-card { padding: 24px 20px; }
+
+      /* Leaderboard panel: horizontal bar above bottombar on mobile */
+      #lb-panel {
+        top: auto; left: 0; right: 0; bottom: 0;
+        width: 100%;
+        height: auto;
+        max-height: 180px;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        margin-bottom: 0;
+        /* Push above bottombar */
+      }
+      #lb-panel.collapsed { transform: translateY(100%); }
+      #lb-panel-body { max-height: 120px; }
     }
 
     /* ─── Very small screens ─── */
@@ -559,7 +617,7 @@
   </div>
 
   <!-- Splash modal -->
-  <div id="splash-backdrop">
+  <div id="splash-backdrop" class="hidden">
     <div id="splash-card">
       <span id="splash-close">&times;</span>
       <div class="splash-title">phyz<span class="dim">@home</span></div>
@@ -607,12 +665,19 @@
     </div>
   </div>
 
-  <!-- Leaderboard modal -->
-  <div id="lb-modal" class="hidden">
-    <div id="lb-card">
-      <span id="lb-close">&times;</span>
-      <div class="auth-title">leaderboard</div>
+  <!-- Leaderboard side panel -->
+  <div id="lb-panel">
+    <div id="lb-panel-header">
+      <span class="lb-panel-title">leaderboard</span>
+      <span class="lb-panel-toggle">&rsaquo;</span>
+    </div>
+    <div id="lb-panel-body">
       <div id="leaderboard"></div>
+    </div>
+    <div id="lb-me"></div>
+    <div id="lb-status">
+      <span id="rt-dot" class="rt-dot connecting"></span>
+      <span id="rt-status">connecting&hellip;</span>
     </div>
   </div>
 </body>
