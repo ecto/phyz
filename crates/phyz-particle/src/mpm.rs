@@ -255,11 +255,18 @@ impl MpmSolver {
                         // Outer product: v * grad_w^T
                         let v = node.velocity;
                         let g = grad_w;
-                        grad_v = grad_v + Mat3::new(
-                            v.x * g.x, v.x * g.y, v.x * g.z,
-                            v.y * g.x, v.y * g.y, v.y * g.z,
-                            v.z * g.x, v.z * g.y, v.z * g.z,
-                        );
+                        grad_v = grad_v
+                            + Mat3::new(
+                                v.x * g.x,
+                                v.x * g.y,
+                                v.x * g.z,
+                                v.y * g.x,
+                                v.y * g.y,
+                                v.y * g.z,
+                                v.z * g.x,
+                                v.z * g.y,
+                                v.z * g.z,
+                            );
 
                         total_w += w;
                     }

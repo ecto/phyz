@@ -2,10 +2,10 @@
 //!
 //! Demonstrates GPU-accelerated batch simulation with 1000 independent pendulum environments.
 
-use std::time::Instant;
 use phyz_gpu::GpuSimulator;
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
+use std::time::Instant;
 
 fn main() {
     println!("=== GPU Parallel Pendula Benchmark ===\n");

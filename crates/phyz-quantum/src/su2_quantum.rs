@@ -52,16 +52,10 @@ impl Su2HilbertSpace {
 
         let basis = cycle_basis_enumerate(complex);
 
-        let index_map: HashMap<u64, usize> = basis
-            .iter()
-            .enumerate()
-            .map(|(i, &s)| (s, i))
-            .collect();
+        let index_map: HashMap<u64, usize> =
+            basis.iter().enumerate().map(|(i, &s)| (s, i)).collect();
 
-        let basis_vecs: Vec<Vec<i32>> = basis
-            .iter()
-            .map(|&s| bitmask_to_vec(s, n_edges))
-            .collect();
+        let basis_vecs: Vec<Vec<i32>> = basis.iter().map(|&s| bitmask_to_vec(s, n_edges)).collect();
 
         Self {
             n_edges,
@@ -89,9 +83,7 @@ impl Su2HilbertSpace {
 
 /// Convert bitmask to Vec<i32>.
 fn bitmask_to_vec(state: u64, n_edges: usize) -> Vec<i32> {
-    (0..n_edges)
-        .map(|e| ((state >> e) & 1) as i32)
-        .collect()
+    (0..n_edges).map(|e| ((state >> e) & 1) as i32).collect()
 }
 
 /// Enumerate gauge-invariant states via cycle basis.
@@ -292,9 +284,7 @@ pub fn su2_lanczos_diagonalize(
     eprintln!("  SU(2) Lanczos: dim={dim}, k={n_eigenvalues}, max_iter={max_iter}");
 
     let mw = metric_weights.map(|w| w.to_vec());
-    let matvec = |v: &DVec| {
-        su2_hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref())
-    };
+    let matvec = |v: &DVec| su2_hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref());
 
     lanczos::lanczos(matvec, dim, n_eigenvalues, max_iter, tol)
 }
@@ -338,11 +328,7 @@ pub fn su2_entanglement_decomposed(
 /// where mask = Σ (1 << e) for edges in the loop.
 ///
 /// Returns ⟨ψ|W|ψ⟩ = Σ_i |ψ_i|² × (-1)^(popcount(basis[i] & mask)).
-pub fn su2_wilson_loop(
-    hilbert: &Su2HilbertSpace,
-    state: &DVec,
-    loop_edges: &[usize],
-) -> f64 {
+pub fn su2_wilson_loop(hilbert: &Su2HilbertSpace, state: &DVec, loop_edges: &[usize]) -> f64 {
     let mask: u64 = loop_edges.iter().fold(0u64, |m, &e| m | (1 << e));
     let mut expectation = 0.0;
     for (i, &basis_state) in hilbert.basis.iter().enumerate() {
@@ -386,8 +372,7 @@ mod tests {
 
     #[test]
     fn test_su2_2pent_dimension() {
-        let complex =
-            SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
+        let complex = SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
         let hs = Su2HilbertSpace::new(&complex);
         let b1 = complex.n_edges() - complex.n_vertices + 1;
         assert_eq!(hs.dim(), 1 << b1);

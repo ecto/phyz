@@ -5,12 +5,12 @@
 //! Section 3: Page curve in SU(2) gauge theory
 
 use phyz_quantum::diag;
-use phyz_quantum::hamiltonian::{build_hamiltonian, KSParams};
+use phyz_quantum::hamiltonian::{KSParams, build_hamiltonian};
 use phyz_quantum::hilbert::U1HilbertSpace;
 use phyz_quantum::lanczos::lanczos_diagonalize;
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_quantum::su2_quantum::{
-    build_su2_hamiltonian, su2_entanglement_for_partition, Su2HilbertSpace,
+    Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_for_partition,
 };
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
@@ -107,7 +107,12 @@ fn section2_emergent_metric() {
 
     // Build SU(2) Hilbert space and compute ground state with target geometry
     let hs = Su2HilbertSpace::new(&complex);
-    eprintln!("  2-pentachoron: V={}, E={}, dim={}", n_vertices, n_edges, hs.dim());
+    eprintln!(
+        "  2-pentachoron: V={}, E={}, dim={}",
+        n_vertices,
+        n_edges,
+        hs.dim()
+    );
 
     let h = build_su2_hamiltonian(&hs, &complex, g_squared, Some(&target_weights));
     let spec = diag::diagonalize(&h, Some(1));
@@ -125,7 +130,10 @@ fn section2_emergent_metric() {
     eprintln!("  Bipartitions: {}", n_parts);
 
     println!("# Section 2: Emergent Metric from Entanglement");
-    println!("# Complex: 2-pentachoron, g^2={}, target=schwarzschild_M{}", g_squared, mass);
+    println!(
+        "# Complex: 2-pentachoron, g^2={}, target=schwarzschild_M{}",
+        g_squared, mass
+    );
     println!("# Bipartitions: {}", n_parts);
 
     // Gradient ascent on R² to recover edge lengths from entanglement
@@ -193,7 +201,10 @@ fn section2_emergent_metric() {
 
     for e in 0..n_edges {
         let rel_err = (lengths[e] - target_lengths[e]).abs() / target_lengths[e];
-        println!("{}\t{:.6}\t{:.6}\t{:.6}", e, target_lengths[e], lengths[e], rel_err);
+        println!(
+            "{}\t{:.6}\t{:.6}\t{:.6}",
+            e, target_lengths[e], lengths[e], rel_err
+        );
     }
 
     // Correlation between recovered and target

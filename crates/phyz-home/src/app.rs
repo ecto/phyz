@@ -1,8 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use crate::auth::{self, AuthSession};
 use crate::coordinator::Coordinator;
@@ -57,9 +57,7 @@ pub async fn run() {
         for p in &mut r.points {
             p.age = 3.0;
         }
-        web_sys::console::log_1(
-            &format!("restored {} cached results", cached.len()).into(),
-        );
+        web_sys::console::log_1(&format!("restored {} cached results", cached.len()).into());
     }
 
     // Fetch global results feed with contributor names
@@ -71,9 +69,11 @@ pub async fn run() {
 
             // Build a HashSet of existing (log_g2_bits, partition_index) for O(1) dedup
             use std::collections::HashSet;
-            let existing: HashSet<(u32, usize)> = r.points.iter().map(|p| {
-                (p.log_g2.to_bits(), p.a_cut as usize)
-            }).collect();
+            let existing: HashSet<(u32, usize)> = r
+                .points
+                .iter()
+                .map(|p| (p.log_g2.to_bits(), p.a_cut as usize))
+                .collect();
 
             // Track newest timestamp for incremental realtime fetching
             if let Some(first) = results.first() {
@@ -101,7 +101,9 @@ pub async fn run() {
                         r.add_point_labeled(log_g2, s_ee, a_cut, label);
                         r.points.last_mut().unwrap().age = 3.0;
                         new_cache_points.push(crate::cache::CachedPoint {
-                            log_g2, s_ee, a_cut,
+                            log_g2,
+                            s_ee,
+                            a_cut,
                             partition_index: i,
                         });
                     }
@@ -112,7 +114,12 @@ pub async fn run() {
                 drop(r);
                 crate::cache::append_batch(&new_cache_points);
                 web_sys::console::log_1(
-                    &format!("merged {} new results from server ({} with names)", n_new, results.len()).into(),
+                    &format!(
+                        "merged {} new results from server ({} with names)",
+                        n_new,
+                        results.len()
+                    )
+                    .into(),
                 );
             }
         }
@@ -171,25 +178,21 @@ pub async fn run() {
         dom::set_class("auth-modal", "");
         dom::set_text("auth-status", "");
     }) as Box<dyn FnMut()>);
-    dom::get_el("sign-in-btn")
-        .set_onclick(Some(sign_in_cb.as_ref().unchecked_ref()));
+    dom::get_el("sign-in-btn").set_onclick(Some(sign_in_cb.as_ref().unchecked_ref()));
     sign_in_cb.forget();
 
     // Wire auth modal close
     let auth_close_cb = Closure::wrap(Box::new(move || {
         dom::set_class("auth-modal", "hidden");
     }) as Box<dyn FnMut()>);
-    dom::get_el("auth-close")
-        .set_onclick(Some(auth_close_cb.as_ref().unchecked_ref()));
+    dom::get_el("auth-close").set_onclick(Some(auth_close_cb.as_ref().unchecked_ref()));
     auth_close_cb.forget();
 
     // Shared magic link send logic
     let send_magic_link = {
         let client_ml = client.clone();
         Rc::new(move || {
-            let email_el: web_sys::HtmlInputElement = dom::get_el("auth-email")
-                .dyn_into()
-                .unwrap();
+            let email_el: web_sys::HtmlInputElement = dom::get_el("auth-email").dyn_into().unwrap();
             let email = email_el.value();
             if email.is_empty() || !email.contains('@') {
                 dom::set_text("auth-status", "enter a valid email");
@@ -197,9 +200,7 @@ pub async fn run() {
             }
             // Disable inputs
             email_el.set_disabled(true);
-            let send_el: web_sys::HtmlButtonElement = dom::get_el("auth-send")
-                .dyn_into()
-                .unwrap();
+            let send_el: web_sys::HtmlButtonElement = dom::get_el("auth-send").dyn_into().unwrap();
             send_el.set_disabled(true);
             dom::set_text("auth-status", "sending...");
             let client = client_ml.clone();
@@ -209,13 +210,11 @@ pub async fn run() {
                     Err(e) => {
                         dom::set_text("auth-status", &format!("error: {e}"));
                         // Re-enable on error
-                        let el: web_sys::HtmlInputElement = dom::get_el("auth-email")
-                            .dyn_into()
-                            .unwrap();
+                        let el: web_sys::HtmlInputElement =
+                            dom::get_el("auth-email").dyn_into().unwrap();
                         el.set_disabled(false);
-                        let btn: web_sys::HtmlButtonElement = dom::get_el("auth-send")
-                            .dyn_into()
-                            .unwrap();
+                        let btn: web_sys::HtmlButtonElement =
+                            dom::get_el("auth-send").dyn_into().unwrap();
                         btn.set_disabled(false);
                     }
                 }
@@ -226,8 +225,7 @@ pub async fn run() {
     // Wire send button click
     let send_fn = send_magic_link.clone();
     let send_cb = Closure::wrap(Box::new(move || send_fn()) as Box<dyn FnMut()>);
-    dom::get_el("auth-send")
-        .set_onclick(Some(send_cb.as_ref().unchecked_ref()));
+    dom::get_el("auth-send").set_onclick(Some(send_cb.as_ref().unchecked_ref()));
     send_cb.forget();
 
     // Wire Enter key on email input
@@ -250,8 +248,7 @@ pub async fn run() {
         dom::set_class("auth-anon", "");
         dom::set_class("auth-user", "hidden");
     }) as Box<dyn FnMut()>);
-    dom::get_el("sign-out-btn")
-        .set_onclick(Some(sign_out_cb.as_ref().unchecked_ref()));
+    dom::get_el("sign-out-btn").set_onclick(Some(sign_out_cb.as_ref().unchecked_ref()));
     sign_out_cb.forget();
 
     // Shared display name save logic
@@ -260,18 +257,14 @@ pub async fn run() {
         let cid_name = contributor_id_rc.clone();
         let session_name = session.clone();
         Rc::new(move || {
-            let name_el: web_sys::HtmlInputElement = dom::get_el("name-input")
-                .dyn_into()
-                .unwrap();
+            let name_el: web_sys::HtmlInputElement = dom::get_el("name-input").dyn_into().unwrap();
             let name = name_el.value().trim().to_string();
             if name.is_empty() {
                 dom::set_text("name-status", "enter a name");
                 return;
             }
             name_el.set_disabled(true);
-            let save_el: web_sys::HtmlButtonElement = dom::get_el("name-save")
-                .dyn_into()
-                .unwrap();
+            let save_el: web_sys::HtmlButtonElement = dom::get_el("name-save").dyn_into().unwrap();
             save_el.set_disabled(true);
             dom::set_text("name-status", "saving...");
             let client = client_name.clone();
@@ -288,13 +281,11 @@ pub async fn run() {
                         }
                         Err(e) => {
                             dom::set_text("name-status", &format!("error: {e}"));
-                            let el: web_sys::HtmlInputElement = dom::get_el("name-input")
-                                .dyn_into()
-                                .unwrap();
+                            let el: web_sys::HtmlInputElement =
+                                dom::get_el("name-input").dyn_into().unwrap();
                             el.set_disabled(false);
-                            let btn: web_sys::HtmlButtonElement = dom::get_el("name-save")
-                                .dyn_into()
-                                .unwrap();
+                            let btn: web_sys::HtmlButtonElement =
+                                dom::get_el("name-save").dyn_into().unwrap();
                             btn.set_disabled(false);
                         }
                     }
@@ -306,8 +297,7 @@ pub async fn run() {
     // Wire save button click
     let save_fn = save_display_name.clone();
     let name_save_cb = Closure::wrap(Box::new(move || save_fn()) as Box<dyn FnMut()>);
-    dom::get_el("name-save")
-        .set_onclick(Some(name_save_cb.as_ref().unchecked_ref()));
+    dom::get_el("name-save").set_onclick(Some(name_save_cb.as_ref().unchecked_ref()));
     name_save_cb.forget();
 
     // Wire Enter key on name input
@@ -417,8 +407,7 @@ pub async fn run() {
                                 continue;
                             }
                             let log_g2 = res.coupling_g2.log10();
-                            let has_areas =
-                                !res.result_data.boundary_area_per_partition.is_empty();
+                            let has_areas = !res.result_data.boundary_area_per_partition.is_empty();
                             for (i, &s_ee) in
                                 res.result_data.entropy_per_partition.iter().enumerate()
                             {
@@ -439,8 +428,11 @@ pub async fn run() {
                         }
                         if n_added > 0 {
                             web_sys::console::log_1(
-                                &format!("realtime: added {} points from other volunteers", n_added)
-                                    .into(),
+                                &format!(
+                                    "realtime: added {} points from other volunteers",
+                                    n_added
+                                )
+                                .into(),
                             );
                         }
                         // Refresh experiment progress for defrag bar
@@ -453,9 +445,7 @@ pub async fn run() {
                         }
                     }
                     Err(e) => {
-                        web_sys::console::warn_1(
-                            &format!("realtime feed: {e}").into(),
-                        );
+                        web_sys::console::warn_1(&format!("realtime feed: {e}").into());
                     }
                 }
             });
@@ -477,8 +467,7 @@ pub async fn run() {
                 dom::set_class("lb-panel", "");
             }
         }) as Box<dyn FnMut()>);
-        dom::get_el("lb-panel-header")
-            .set_onclick(Some(toggle_cb.as_ref().unchecked_ref()));
+        dom::get_el("lb-panel-header").set_onclick(Some(toggle_cb.as_ref().unchecked_ref()));
         toggle_cb.forget();
     }
 
@@ -486,16 +475,26 @@ pub async fn run() {
     let pool_size = WorkerPool::recommended_size();
     let pool = match WorkerPool::new(pool_size) {
         Ok(p) => {
-            web_sys::console::log_1(
-                &format!("worker pool: {pool_size} workers").into(),
-            );
+            web_sys::console::log_1(&format!("worker pool: {pool_size} workers").into());
             Rc::new(p)
         }
         Err(e) => {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, client.clone(), Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone(), exp_submitted.clone(), exp_consensus.clone(), exp_partial.clone(), exp_total.clone(), defrag_dirty.clone());
+            start_render_loop(
+                renderer.clone(),
+                None,
+                client.clone(),
+                Rc::new(Cell::new(false)),
+                Rc::new(Cell::new(0i64)),
+                lb_state.clone(),
+                exp_submitted.clone(),
+                exp_consensus.clone(),
+                exp_partial.clone(),
+                exp_total.clone(),
+                defrag_dirty.clone(),
+            );
             return;
         }
     };
@@ -546,8 +545,7 @@ pub async fn run() {
         }
     }) as Box<dyn FnMut()>);
 
-    dom::get_el("toggle")
-        .set_onclick(Some(toggle_cb.as_ref().unchecked_ref()));
+    dom::get_el("toggle").set_onclick(Some(toggle_cb.as_ref().unchecked_ref()));
     toggle_cb.forget();
 
     // Wire up splash CTA button
@@ -563,8 +561,7 @@ pub async fn run() {
         }
         dom::set_class("splash-backdrop", "hidden");
     }) as Box<dyn FnMut()>);
-    dom::get_el("splash-cta")
-        .set_onclick(Some(cta_cb.as_ref().unchecked_ref()));
+    dom::get_el("splash-cta").set_onclick(Some(cta_cb.as_ref().unchecked_ref()));
     cta_cb.forget();
 
     // Wire up mute button
@@ -584,8 +581,7 @@ pub async fn run() {
                 dom::set_class("mute-btn", "");
             }
         }) as Box<dyn FnMut()>);
-        dom::get_el("mute-btn")
-            .set_onclick(Some(mute_cb.as_ref().unchecked_ref()));
+        dom::get_el("mute-btn").set_onclick(Some(mute_cb.as_ref().unchecked_ref()));
         mute_cb.forget();
     }
 
@@ -593,24 +589,21 @@ pub async fn run() {
     let info_cb = Closure::wrap(Box::new(move || {
         dom::set_class("splash-backdrop", "");
     }) as Box<dyn FnMut()>);
-    dom::get_el("convergence-wrap")
-        .set_onclick(Some(info_cb.as_ref().unchecked_ref()));
+    dom::get_el("convergence-wrap").set_onclick(Some(info_cb.as_ref().unchecked_ref()));
     info_cb.forget();
 
     // Wire up ? button — opens splash modal
     let info_btn_cb = Closure::wrap(Box::new(move || {
         dom::set_class("splash-backdrop", "");
     }) as Box<dyn FnMut()>);
-    dom::get_el("info-btn")
-        .set_onclick(Some(info_btn_cb.as_ref().unchecked_ref()));
+    dom::get_el("info-btn").set_onclick(Some(info_btn_cb.as_ref().unchecked_ref()));
     info_btn_cb.forget();
 
     // Wire up × close button — hides splash modal
     let close_cb = Closure::wrap(Box::new(move || {
         dom::set_class("splash-backdrop", "hidden");
     }) as Box<dyn FnMut()>);
-    dom::get_el("splash-close")
-        .set_onclick(Some(close_cb.as_ref().unchecked_ref()));
+    dom::get_el("splash-close").set_onclick(Some(close_cb.as_ref().unchecked_ref()));
     close_cb.forget();
 
     // Click backdrop (outside card) to dismiss splash
@@ -673,7 +666,19 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), client, muted, base_units, lb_state, exp_submitted, exp_consensus, exp_partial, exp_total, defrag_dirty);
+    start_render_loop(
+        renderer,
+        Some(coordinator),
+        client,
+        muted,
+        base_units,
+        lb_state,
+        exp_submitted,
+        exp_consensus,
+        exp_partial,
+        exp_total,
+        defrag_dirty,
+    );
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -1086,7 +1091,9 @@ fn spawn_confetti() {
     let Some(container) = doc.get_element_by_id("confetti-container") else {
         return;
     };
-    let colors = ["#44cc66", "#ccaa33", "#cc4444", "#4488cc", "#cc44cc", "#44cccc"];
+    let colors = [
+        "#44cc66", "#ccaa33", "#cc4444", "#4488cc", "#cc44cc", "#44cccc",
+    ];
 
     let mut seed: u64 = js_sys::Date::now() as u64;
     let mut rng = |max: f64| -> f64 {
@@ -1256,8 +1263,8 @@ impl LeaderboardState {
 
         for (i, entry) in entries.iter().enumerate() {
             let rank = i as u32 + 1;
-            let is_me = auth_id.map_or(false, |id| id == entry.player_id)
-                || entry.player_id == self.my_id;
+            let is_me =
+                auth_id.map_or(false, |id| id == entry.player_id) || entry.player_id == self.my_id;
 
             if is_me {
                 self.my_rank = Some(rank);
@@ -1290,7 +1297,10 @@ impl LeaderboardState {
 
             new_rows.push(LeaderboardRow {
                 player_id: entry.player_id.clone(),
-                name: entry.name.clone().unwrap_or_else(|| "anonymous".to_string()),
+                name: entry
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "anonymous".to_string()),
                 units: units_anim,
                 prev_rank,
                 rank_change_age,
@@ -1320,7 +1330,10 @@ impl LeaderboardState {
 
 fn render_leaderboard_panel(state: &LeaderboardState) {
     if state.rows.is_empty() {
-        dom::set_inner_html("leaderboard", "<div class=\"lb-empty\">no entries yet</div>");
+        dom::set_inner_html(
+            "leaderboard",
+            "<div class=\"lb-empty\">no entries yet</div>",
+        );
         dom::set_inner_html("lb-me", "");
         return;
     }
@@ -1378,10 +1391,7 @@ fn render_leaderboard_panel(state: &LeaderboardState) {
     // Personal rank footer when user is outside visible top N
     if let Some(my_rank) = state.my_rank {
         if !found_me {
-            dom::set_inner_html(
-                "lb-me",
-                &format!("you \u{2014} #{my_rank}"),
-            );
+            dom::set_inner_html("lb-me", &format!("you \u{2014} #{my_rank}"));
         } else {
             dom::set_inner_html("lb-me", "");
         }
@@ -1398,7 +1408,10 @@ struct Anim {
 
 impl Anim {
     fn new() -> Self {
-        Anim { current: 0.0, target: 0.0 }
+        Anim {
+            current: 0.0,
+            target: 0.0,
+        }
     }
 
     fn set(&mut self, target: f64) {

@@ -3,9 +3,9 @@
 use crate::domain::{BodySpec, DomainType, JointSpec, JointTypeSpec};
 use crate::error::{Result, TauFormatError};
 use crate::schema::{PhyzSpec, WorldConfig};
-use std::collections::HashMap;
 use phyz_mjcf::MjcfLoader;
 use phyz_model::{JointType, Model};
+use std::collections::HashMap;
 
 /// Convert MJCF file to PhyzSpec.
 pub fn from_mjcf(path: &str) -> Result<PhyzSpec> {

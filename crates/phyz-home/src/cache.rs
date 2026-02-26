@@ -38,7 +38,9 @@ fn ensure_loaded() {
 
 fn load_from_storage() -> Vec<CachedPoint> {
     let Some(s) = storage() else { return vec![] };
-    let Some(json) = s.get_item(KEY).ok().flatten() else { return vec![] };
+    let Some(json) = s.get_item(KEY).ok().flatten() else {
+        return vec![];
+    };
     serde_json::from_str(&json).unwrap_or_default()
 }
 
@@ -79,7 +81,10 @@ pub fn append_batch(new_points: &[CachedPoint]) {
     }
     ensure_loaded();
     CACHE.with(|c| {
-        c.borrow_mut().as_mut().unwrap().extend_from_slice(new_points);
+        c.borrow_mut()
+            .as_mut()
+            .unwrap()
+            .extend_from_slice(new_points);
     });
     DIRTY.with(|d| *d.borrow_mut() = true);
 }

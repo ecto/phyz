@@ -7,10 +7,10 @@
 //!   cargo run --example spectral_gap -p phyz-quantum --release
 
 use phyz_quantum::diag;
-use phyz_quantum::hamiltonian::{build_hamiltonian, KSParams};
+use phyz_quantum::hamiltonian::{KSParams, build_hamiltonian};
 use phyz_quantum::hilbert::U1HilbertSpace;
 use phyz_quantum::hypercubic::{
-    build_hypercubic_hamiltonian, HypercubicHilbert, HypercubicLattice,
+    HypercubicHilbert, HypercubicLattice, build_hypercubic_hamiltonian,
 };
 use phyz_regge::complex::SimplicialComplex;
 
@@ -30,7 +30,9 @@ fn main() {
     println!("# Simplicial: single pentachoron (10 tri plaquettes, 10 edges)");
     println!("# Hypercubic 2D: 2x2 periodic torus (4 sq plaquettes, 4 edges)");
     println!("# Hypercubic 3D: 2^3 periodic torus (12 sq plaquettes, 12 edges)");
-    println!("lambda\tsimp_dim\thyp2d_dim\thyp3d_dim\tsimp_E0\tsimp_gap\thyp2d_E0\thyp2d_gap\thyp3d_E0\thyp3d_gap\tratio_2d\tratio_3d");
+    println!(
+        "lambda\tsimp_dim\thyp2d_dim\thyp3d_dim\tsimp_E0\tsimp_gap\thyp2d_E0\thyp2d_gap\thyp3d_E0\thyp3d_gap\tratio_2d\tratio_3d"
+    );
 
     for lambda in 1..=2 {
         // Λ=3 has dim=30429 — too slow for dense diag in a quick analysis.
@@ -40,11 +42,16 @@ fn main() {
 
         eprintln!(
             "  Λ={lambda}: simp dim={}, hyp2d dim={}, hyp3d dim={}",
-            hs_s.dim(), hh_2d.dim(), hh_3d.dim()
+            hs_s.dim(),
+            hh_2d.dim(),
+            hh_3d.dim()
         );
 
         let g_sq = 1.0;
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
 
         let h_s = build_hamiltonian(&hs_s, &pent, &params);
         let spec_s = diag::diagonalize(&h_s, Some(5));
@@ -61,11 +68,17 @@ fn main() {
 
         println!(
             "{lambda}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}\t{:.4}",
-            hs_s.dim(), hh_2d.dim(), hh_3d.dim(),
-            spec_s.ground_energy(), gap_s,
-            spec_2.ground_energy(), gap_2,
-            spec_3.ground_energy(), gap_3,
-            gap_s / gap_2, gap_s / gap_3,
+            hs_s.dim(),
+            hh_2d.dim(),
+            hh_3d.dim(),
+            spec_s.ground_energy(),
+            gap_s,
+            spec_2.ground_energy(),
+            gap_2,
+            spec_3.ground_energy(),
+            gap_3,
+            gap_s / gap_2,
+            gap_s / gap_3,
         );
     }
     println!();
@@ -84,7 +97,10 @@ fn main() {
 
         let couplings = [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0];
         for &g_sq in &couplings {
-            let params = KSParams { g_squared: g_sq, metric_weights: None };
+            let params = KSParams {
+                g_squared: g_sq,
+                metric_weights: None,
+            };
             let h_s = build_hamiltonian(&hs_s, &pent, &params);
             let spec_s = diag::diagonalize(&h_s, Some(3));
 
@@ -93,7 +109,11 @@ fn main() {
 
             let gap_s = spec_s.gap();
             let gap_2 = spec_2.gap();
-            let ratio = if gap_2.abs() > 1e-15 { gap_s / gap_2 } else { f64::NAN };
+            let ratio = if gap_2.abs() > 1e-15 {
+                gap_s / gap_2
+            } else {
+                f64::NAN
+            };
 
             println!("{lambda}\t{g_sq:.6e}\t{gap_s:.6}\t{gap_2:.6}\t{ratio:.4}");
         }
@@ -108,13 +128,18 @@ fn main() {
     println!("# Section 3: Magnetic Hamiltonian connectivity");
     println!("# For each lattice type: count non-zero off-diagonal entries per row");
     println!("# in the magnetic Hamiltonian only (g^2 -> 0 limit)");
-    println!("type\tlambda\tdim\tn_plaquettes\tn_edges\tavg_nnz_per_row\tmax_nnz_per_row\tmagnetic_bandwidth");
+    println!(
+        "type\tlambda\tdim\tn_plaquettes\tn_edges\tavg_nnz_per_row\tmax_nnz_per_row\tmagnetic_bandwidth"
+    );
 
     for lambda in 1..=1 {
         // Connectivity analysis: O(dim²) scanning, keep at Λ=1 for speed.
         // Simplicial magnetic-only
         let hs_s = U1HilbertSpace::new(&pent, lambda);
-        let params_mag = KSParams { g_squared: 1e-6, metric_weights: None };
+        let params_mag = KSParams {
+            g_squared: 1e-6,
+            metric_weights: None,
+        };
         let h_s = build_hamiltonian(&hs_s, &pent, &params_mag);
         let dim_s = hs_s.dim();
 
@@ -124,7 +149,8 @@ fn main() {
 
         println!(
             "simplicial\t{lambda}\t{dim_s}\t{}\t{}\t{avg_nnz_s:.2}\t{max_nnz_s}\t{bw_s:.4}",
-            pent.n_triangles(), pent.n_edges()
+            pent.n_triangles(),
+            pent.n_edges()
         );
 
         // Hypercubic 2D magnetic-only
@@ -138,7 +164,8 @@ fn main() {
 
         println!(
             "hypercubic_2d\t{lambda}\t{dim_2}\t{}\t{}\t{avg_nnz_2:.2}\t{max_nnz_2}\t{bw_2:.4}",
-            lat_2d.n_plaquettes(), lat_2d.n_edges()
+            lat_2d.n_plaquettes(),
+            lat_2d.n_edges()
         );
 
         // Hypercubic 3D magnetic-only
@@ -152,7 +179,8 @@ fn main() {
 
         println!(
             "hypercubic_3d\t{lambda}\t{dim_3}\t{}\t{}\t{avg_nnz_3:.2}\t{max_nnz_3}\t{bw_3:.4}",
-            lat_3d.n_plaquettes(), lat_3d.n_edges()
+            lat_3d.n_plaquettes(),
+            lat_3d.n_edges()
         );
     }
     println!();
@@ -171,7 +199,10 @@ fn main() {
 
         // Simplicial
         let hs_s = U1HilbertSpace::new(&pent, lambda);
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h_s = build_hamiltonian(&hs_s, &pent, &params);
         let spec_s = diag::diagonalize(&h_s, Some(3));
         let gap_s = spec_s.gap();
@@ -180,7 +211,9 @@ fn main() {
         let b1_s = ne_s - pent.n_vertices + 1;
         println!(
             "simplicial\t{lambda}\t{gap_s:.6}\t{np_s}\t{ne_s}\t{b1_s}\t{:.6}\t{:.6}\t{:.6}",
-            gap_s / np_s as f64, gap_s / ne_s as f64, gap_s / b1_s as f64,
+            gap_s / np_s as f64,
+            gap_s / ne_s as f64,
+            gap_s / b1_s as f64,
         );
 
         // Hypercubic 2D
@@ -193,7 +226,9 @@ fn main() {
         let b1_2 = ne_2 - lat_2d.n_vertices + 1;
         println!(
             "hypercubic_2d\t{lambda}\t{gap_2:.6}\t{np_2}\t{ne_2}\t{b1_2}\t{:.6}\t{:.6}\t{:.6}",
-            gap_2 / np_2 as f64, gap_2 / ne_2 as f64, gap_2 / b1_2 as f64,
+            gap_2 / np_2 as f64,
+            gap_2 / ne_2 as f64,
+            gap_2 / b1_2 as f64,
         );
 
         // Hypercubic 3D
@@ -206,7 +241,9 @@ fn main() {
         let b1_3 = ne_3 - lat_3d.n_vertices + 1;
         println!(
             "hypercubic_3d\t{lambda}\t{gap_3:.6}\t{np_3}\t{ne_3}\t{b1_3}\t{:.6}\t{:.6}\t{:.6}",
-            gap_3 / np_3 as f64, gap_3 / ne_3 as f64, gap_3 / b1_3 as f64,
+            gap_3 / np_3 as f64,
+            gap_3 / ne_3 as f64,
+            gap_3 / b1_3 as f64,
         );
     }
     println!();
@@ -224,7 +261,10 @@ fn main() {
         let n_low = 10;
 
         let hs_s = U1HilbertSpace::new(&pent, lambda);
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h_s = build_hamiltonian(&hs_s, &pent, &params);
         let spec_s = diag::diagonalize(&h_s, Some(n_low));
         print!("simplicial\t{lambda}");
@@ -262,7 +302,14 @@ fn main() {
     println!("# Energy levels grouped by degeneracy (threshold = 1e-6)");
 
     let hs1 = U1HilbertSpace::new(&pent, 1);
-    let h1 = build_hamiltonian(&hs1, &pent, &KSParams { g_squared: 1.0, metric_weights: None });
+    let h1 = build_hamiltonian(
+        &hs1,
+        &pent,
+        &KSParams {
+            g_squared: 1.0,
+            metric_weights: None,
+        },
+    );
     let spec1 = diag::diagonalize(&h1, Some(30));
 
     println!("type\tlevel\tenergy\tdegeneracy");
@@ -271,9 +318,7 @@ fn main() {
     while i < spec1.energies.len() {
         let e = spec1.energies[i];
         let mut deg = 1;
-        while i + deg < spec1.energies.len()
-            && (spec1.energies[i + deg] - e).abs() < 1e-6
-        {
+        while i + deg < spec1.energies.len() && (spec1.energies[i + deg] - e).abs() < 1e-6 {
             deg += 1;
         }
         println!("simplicial\t{level}\t{e:.6}\t{deg}");
@@ -290,9 +335,7 @@ fn main() {
     while i < spec2.energies.len() {
         let e = spec2.energies[i];
         let mut deg = 1;
-        while i + deg < spec2.energies.len()
-            && (spec2.energies[i + deg] - e).abs() < 1e-6
-        {
+        while i + deg < spec2.energies.len() && (spec2.energies[i + deg] - e).abs() < 1e-6 {
             deg += 1;
         }
         println!("hypercubic_2d\t{level}\t{e:.6}\t{deg}");

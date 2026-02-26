@@ -14,8 +14,8 @@
 //!   cargo run -p phyz-quantum --release --example jacobson_equilibrium
 
 use phyz_quantum::jacobson::{
-    boundary_5simplex, cut_area_gradient, entanglement_gradient_su2, project_out_conformal,
-    EquilibriumConfig,
+    EquilibriumConfig, boundary_5simplex, cut_area_gradient, entanglement_gradient_su2,
+    project_out_conformal,
 };
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_regge::regge::regge_action_grad;
@@ -55,7 +55,10 @@ fn main() {
     // On equilateral S⁴, Regge gradient is uniform (pure conformal) by S₆ symmetry.
     let regge_grad = regge_action_grad(&complex, &equilateral);
     let regge_g0 = regge_grad[0];
-    let max_regge_var = regge_grad.iter().map(|g| (g - regge_g0).abs()).fold(0.0, f64::max);
+    let max_regge_var = regge_grad
+        .iter()
+        .map(|g| (g - regge_g0).abs())
+        .fold(0.0, f64::max);
     eprintln!("  ∂S_R/∂l (uniform) = {regge_g0:.4e}, max variation = {max_regge_var:.2e}");
 
     let (_, regge_conf) = project_out_conformal(&regge_grad);
@@ -337,7 +340,11 @@ fn main() {
     println!("# On-shell: max|∂S_EE^⊥/∂l| = {max_ds_ee_perp:.4e} (want < 1e-3)");
     println!("# Off-shell: R²_raw = {r2_raw:.4}, R²_proj = {r2:.4} (want > 0.5)");
     println!("# RT differential: R²_proj = {rt_r2:.4}, G_N = {rt_gn:.4e}");
-    println!("# Partitions: {} balanced (from {} total)", partitions.len(), all_partitions.len());
+    println!(
+        "# Partitions: {} balanced (from {} total)",
+        partitions.len(),
+        all_partitions.len()
+    );
 
     eprintln!("\n=== Jacobson equilibrium analysis complete ===");
 }

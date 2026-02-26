@@ -262,9 +262,7 @@ pub fn tent_edges_for_vertex(
     for (ei, e) in fc.complex.edges.iter().enumerate() {
         let s0 = fc.vertex_slice(e[0]);
         let s1 = fc.vertex_slice(e[1]);
-        if s0 == target_slice && s1 == target_slice
-            && (e[0] == target_v || e[1] == target_v)
-        {
+        if s0 == target_slice && s1 == target_slice && (e[0] == target_v || e[1] == target_v) {
             tent_edges.push(ei);
         }
     }
@@ -429,7 +427,6 @@ mod tests {
     use super::*;
     use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic};
 
-
     /// Flat Minkowski is a fixed point: zero residual at all edges.
     #[test]
     fn test_flat_minkowski_zero_residual() {
@@ -476,11 +473,7 @@ mod tests {
             "converged in {} iters, residual = {:.2e}",
             result.newton_iters, result.residual
         );
-        assert!(
-            result.residual < 1e-8,
-            "residual = {:.2e}",
-            result.residual
-        );
+        assert!(result.residual < 1e-8, "residual = {:.2e}", result.residual);
     }
 
     /// Gradient vs FD on a perturbed Lorentzian lattice.
@@ -572,8 +565,7 @@ mod tests {
 
         eprintln!(
             "analytical: {} iters, res={:.2e}; FD: {} iters, res={:.2e}",
-            result_a.newton_iters, result_a.residual,
-            result_fd.newton_iters, result_fd.residual
+            result_a.newton_iters, result_a.residual, result_fd.newton_iters, result_fd.residual
         );
 
         // Both should converge; iteration counts may differ by ±1-2
@@ -586,9 +578,6 @@ mod tests {
             .zip(sq_fd.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f64, f64::max);
-        assert!(
-            max_diff < 1e-4,
-            "solutions differ: max_diff={max_diff:.2e}"
-        );
+        assert!(max_diff < 1e-4, "solutions differ: max_diff={max_diff:.2e}");
     }
 }

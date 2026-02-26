@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
 
@@ -125,10 +125,7 @@ impl SupabaseClient {
     /// Fetch pending work units (up to `limit`) in random order, prioritizing L1 over L0.
     /// Uses a server-side RPC function so different volunteers get different subsets.
     pub async fn fetch_pending_work(&self, limit: usize) -> Result<Vec<WorkUnit>, String> {
-        let url = format!(
-            "{}/rest/v1/rpc/fetch_pending_work",
-            self.url,
-        );
+        let url = format!("{}/rest/v1/rpc/fetch_pending_work", self.url,);
         let body = serde_json::json!({ "p_limit": limit }).to_string();
         let resp = self.post(&url, &body).await?;
         let text = self.text(resp).await?;
@@ -158,13 +155,15 @@ impl SupabaseClient {
             "fingerprint": fingerprint,
         });
 
-        let url = format!(
-            "{}?on_conflict=fingerprint",
-            self.api_url("contributors"),
-        );
+        let url = format!("{}?on_conflict=fingerprint", self.api_url("contributors"),);
 
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
-        headers.set("Prefer", "return=representation,resolution=merge-duplicates").map_err(|e| format!("{e:?}"))?;
+        headers
+            .set(
+                "Prefer",
+                "return=representation,resolution=merge-duplicates",
+            )
+            .map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
         opts.set_method("POST");
@@ -188,9 +187,14 @@ impl SupabaseClient {
 
     /// Get total contributor count.
     pub async fn contributor_count(&self) -> Result<usize, String> {
-        let url = format!("{}?select=id&total_units=gt.0", self.api_url("contributors"));
+        let url = format!(
+            "{}?select=id&total_units=gt.0",
+            self.api_url("contributors")
+        );
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
-        headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("Prefer", "count=exact")
+            .map_err(|e| format!("{e:?}"))?;
         headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
@@ -212,17 +216,38 @@ impl SupabaseClient {
 
     /// Fetch experiment-wide progress: (results submitted, consensus complete, total work units).
     pub async fn experiment_progress(&self) -> Result<ExperimentProgress, String> {
-        let total = self.count_rows(&format!("{}?select=id", self.api_url("work_units"))).await?;
-        let submitted = self.count_rows(&format!("{}?select=id", self.api_url("results"))).await?;
-        let consensus = self.count_rows(&format!("{}?select=id&status=eq.complete", self.api_url("work_units"))).await?;
-        let partial = self.count_rows(&format!("{}?select=id&completed_count=gt.0&status=neq.complete", self.api_url("work_units"))).await?;
-        Ok(ExperimentProgress { submitted, consensus, partial, total })
+        let total = self
+            .count_rows(&format!("{}?select=id", self.api_url("work_units")))
+            .await?;
+        let submitted = self
+            .count_rows(&format!("{}?select=id", self.api_url("results")))
+            .await?;
+        let consensus = self
+            .count_rows(&format!(
+                "{}?select=id&status=eq.complete",
+                self.api_url("work_units")
+            ))
+            .await?;
+        let partial = self
+            .count_rows(&format!(
+                "{}?select=id&completed_count=gt.0&status=neq.complete",
+                self.api_url("work_units")
+            ))
+            .await?;
+        Ok(ExperimentProgress {
+            submitted,
+            consensus,
+            partial,
+            total,
+        })
     }
 
     /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.
     async fn count_rows(&self, url: &str) -> Result<usize, String> {
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
-        headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("Prefer", "count=exact")
+            .map_err(|e| format!("{e:?}"))?;
         headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
@@ -259,8 +284,12 @@ impl SupabaseClient {
         let body = serde_json::json!({ "email": email });
 
         let headers = Headers::new().map_err(|e| format!("{e:?}"))?;
-        headers.set("apikey", &self.key).map_err(|e| format!("{e:?}"))?;
-        headers.set("Content-Type", "application/json").map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("apikey", &self.key)
+            .map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("Content-Type", "application/json")
+            .map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
         opts.set_method("POST");
@@ -297,17 +326,17 @@ impl SupabaseClient {
         auth_id: &str,
         jwt: &str,
     ) -> Result<(), String> {
-        let url = format!(
-            "{}?id=eq.{}",
-            self.api_url("contributors"),
-            contributor_id,
-        );
+        let url = format!("{}?id=eq.{}", self.api_url("contributors"), contributor_id,);
         let body = serde_json::json!({
             "auth_id": auth_id,
         });
 
-        let headers = self.headers_with_auth(Some(jwt)).map_err(|e| format!("{e:?}"))?;
-        headers.set("Prefer", "return=minimal").map_err(|e| format!("{e:?}"))?;
+        let headers = self
+            .headers_with_auth(Some(jwt))
+            .map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("Prefer", "return=minimal")
+            .map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
         opts.set_method("PATCH");
@@ -327,15 +356,15 @@ impl SupabaseClient {
         name: &str,
         jwt: &str,
     ) -> Result<(), String> {
-        let url = format!(
-            "{}?id=eq.{}",
-            self.api_url("contributors"),
-            contributor_id,
-        );
+        let url = format!("{}?id=eq.{}", self.api_url("contributors"), contributor_id,);
         let body = serde_json::json!({ "display_name": name });
 
-        let headers = self.headers_with_auth(Some(jwt)).map_err(|e| format!("{e:?}"))?;
-        headers.set("Prefer", "return=minimal").map_err(|e| format!("{e:?}"))?;
+        let headers = self
+            .headers_with_auth(Some(jwt))
+            .map_err(|e| format!("{e:?}"))?;
+        headers
+            .set("Prefer", "return=minimal")
+            .map_err(|e| format!("{e:?}"))?;
 
         let opts = RequestInit::new();
         opts.set_method("PATCH");
@@ -392,7 +421,9 @@ impl SupabaseClient {
         let resp_val = JsFuture::from(window.fetch_with_request(&request))
             .await
             .map_err(|e| format!("fetch error: {e:?}"))?;
-        let resp: Response = resp_val.dyn_into().map_err(|_| "not a Response".to_string())?;
+        let resp: Response = resp_val
+            .dyn_into()
+            .map_err(|_| "not a Response".to_string())?;
 
         if !resp.ok() {
             let status = resp.status();

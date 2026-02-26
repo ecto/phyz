@@ -11,7 +11,7 @@ use crate::lorentzian_regge::{
     local_lorentzian_regge_action_grad, local_lorentzian_regge_hessian,
     lorentzian_regge_action_grad,
 };
-use crate::tent_move::{TentConfig, TentMoveError, EvolutionResult};
+use crate::tent_move::{EvolutionResult, TentConfig, TentMoveError};
 
 /// Trait for stress-energy sources on a simplicial lattice.
 ///
@@ -188,7 +188,8 @@ pub fn solve_regge_with_source(
 
         // Jacobian: local analytical Hessian for geometry + FD for matter coupling
         let jac = if config.use_analytical_jacobian {
-            let mut j = local_lorentzian_regge_hessian(complex, sq_lengths, free_edges, config.fd_eps);
+            let mut j =
+                local_lorentzian_regge_hessian(complex, sq_lengths, free_edges, config.fd_eps);
             // Add matter Jacobian via FD (typically cheap)
             for k in 0..n_free {
                 let ek = free_edges[k];
@@ -203,8 +204,7 @@ pub fn solve_regge_with_source(
                 sq_lengths[ek] = old;
 
                 for (i, &ei) in free_edges.iter().enumerate() {
-                    j[(i, k)] +=
-                        eight_pi * (src_plus[ei] - src_minus[ei]) / (2.0 * config.fd_eps);
+                    j[(i, k)] += eight_pi * (src_plus[ei] - src_minus[ei]) / (2.0 * config.fd_eps);
                 }
             }
             j
@@ -235,8 +235,7 @@ pub fn solve_regge_with_source(
         };
 
         // SVD solve
-        let rhs =
-            phyz_math::DVec::from_fn(n_free, |i| -residual[i]);
+        let rhs = phyz_math::DVec::from_fn(n_free, |i| -residual[i]);
         let svd = jac.svd(true, true);
         let delta = svd
             .solve(&rhs, config.svd_tol)
@@ -343,11 +342,7 @@ mod tests {
         let result = solve_regge_with_source(&fc.complex, &mut sq_lengths, &free, &source, &config)
             .expect("should converge");
 
-        assert!(
-            result.residual < 1e-8,
-            "residual = {:.2e}",
-            result.residual
-        );
+        assert!(result.residual < 1e-8, "residual = {:.2e}", result.residual);
     }
 
     /// Mass current loop produces non-zero source terms on loop edges.

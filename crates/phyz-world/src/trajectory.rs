@@ -1,8 +1,8 @@
 //! Trajectory recording and export for machine learning training data.
 
 use crate::SensorOutput;
-use std::collections::HashMap;
 use phyz_model::State;
+use std::collections::HashMap;
 
 /// Records trajectories of (q, v, ctrl, time) for ML training.
 pub struct TrajectoryRecorder {

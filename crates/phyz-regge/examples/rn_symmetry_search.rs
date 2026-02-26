@@ -20,14 +20,12 @@
 use std::env;
 use std::time::Instant;
 
+use phyz_regge::mesh;
 use phyz_regge::symmetry::{
     all_boost_generators, all_gauge_generators, all_rotation_generators, conformal_generator,
     translation_generator,
 };
-use phyz_regge::{
-    search_symmetries, ActionParams, Fields, SearchConfig,
-};
-use phyz_regge::mesh;
+use phyz_regge::{ActionParams, Fields, SearchConfig, search_symmetries};
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
@@ -64,7 +62,12 @@ fn main() {
     // --- background fields (zero gauge field — geometry carries the charge) ---
     let phases = vec![0.0; complex.n_edges()];
     let fields = Fields::new(lengths, phases);
-    println!("DOF: {} ({} lengths + {} phases)", fields.n_dof(), complex.n_edges(), complex.n_edges());
+    println!(
+        "DOF: {} ({} lengths + {} phases)",
+        fields.n_dof(),
+        complex.n_edges(),
+        complex.n_edges()
+    );
     println!();
 
     // --- known generators ---
@@ -147,8 +150,5 @@ fn main() {
     }
 
     println!();
-    println!(
-        "Total: {:.1?}",
-        mesh_time + gen_time + search_time,
-    );
+    println!("Total: {:.1?}", mesh_time + gen_time + search_time,);
 }

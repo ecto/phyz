@@ -155,14 +155,7 @@ fn run_scaling_study() {
             let spec = if use_gpu {
                 // catch_unwind handles wgpu panics (e.g. buffer size limits)
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    gpu_lanczos_diagonalize(
-                        hs,
-                        complex,
-                        g_sq,
-                        None,
-                        n_eigenvalues,
-                        iter_override,
-                    )
+                    gpu_lanczos_diagonalize(hs, complex, g_sq, None, n_eigenvalues, iter_override)
                 }));
                 match result {
                     Ok(Ok(s)) => s,

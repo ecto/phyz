@@ -12,10 +12,10 @@
 
 use phyz_quantum::diag;
 use phyz_quantum::hypercubic::{
-    build_hypercubic_hamiltonian, HypercubicHilbert, HypercubicLattice,
+    HypercubicHilbert, HypercubicLattice, build_hypercubic_hamiltonian,
 };
 use phyz_quantum::triangulated_torus::{
-    build_triangulated_torus_hamiltonian, TriangulatedTorus, TriangulatedTorusHilbert,
+    TriangulatedTorus, TriangulatedTorusHilbert, build_triangulated_torus_hamiltonian,
 };
 
 fn main() {
@@ -36,11 +36,15 @@ fn main() {
 
         println!(
             "hypercubic\t{n}\t{}\t{}\t{}\t4\t{hyp_b1}",
-            hyp.n_vertices, hyp.n_edges(), hyp.n_plaquettes()
+            hyp.n_vertices,
+            hyp.n_edges(),
+            hyp.n_plaquettes()
         );
         println!(
             "triangulated\t{n}\t{}\t{}\t{}\t3\t{tri_b1}",
-            tri.n_vertices, tri.n_edges(), tri.n_plaquettes()
+            tri.n_vertices,
+            tri.n_edges(),
+            tri.n_plaquettes()
         );
     }
     println!();
@@ -54,12 +58,20 @@ fn main() {
     let tri2 = TriangulatedTorus::new(2);
 
     println!("# 2x2 torus spectral comparison");
-    println!("# hypercubic: V={} E={} plaq={} b1={}",
-        hyp2.n_vertices, hyp2.n_edges(), hyp2.n_plaquettes(),
-        hyp2.n_edges() - hyp2.n_vertices + 1);
-    println!("# triangulated: V={} E={} plaq={} b1={}",
-        tri2.n_vertices, tri2.n_edges(), tri2.n_plaquettes(),
-        tri2.n_edges() - tri2.n_vertices + 1);
+    println!(
+        "# hypercubic: V={} E={} plaq={} b1={}",
+        hyp2.n_vertices,
+        hyp2.n_edges(),
+        hyp2.n_plaquettes(),
+        hyp2.n_edges() - hyp2.n_vertices + 1
+    );
+    println!(
+        "# triangulated: V={} E={} plaq={} b1={}",
+        tri2.n_vertices,
+        tri2.n_edges(),
+        tri2.n_plaquettes(),
+        tri2.n_edges() - tri2.n_vertices + 1
+    );
 
     for lambda in [1u32, 2, 3] {
         let hh = HypercubicHilbert::new(&hyp2, lambda);
@@ -67,7 +79,11 @@ fn main() {
 
         eprintln!("  Λ={lambda}: hyp dim={}, tri dim={}", hh.dim(), th.dim());
 
-        println!("# lambda={lambda} hyp_dim={} tri_dim={}", hh.dim(), th.dim());
+        println!(
+            "# lambda={lambda} hyp_dim={} tri_dim={}",
+            hh.dim(),
+            th.dim()
+        );
         println!("lambda\tg_squared\thyp_E0\thyp_gap\ttri_E0\ttri_gap\tgap_ratio");
 
         let couplings = [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0];
@@ -80,12 +96,18 @@ fn main() {
 
             let gap_h = spec_hyp.gap();
             let gap_t = spec_tri.gap();
-            let ratio = if gap_h.abs() > 1e-15 { gap_t / gap_h } else { f64::NAN };
+            let ratio = if gap_h.abs() > 1e-15 {
+                gap_t / gap_h
+            } else {
+                f64::NAN
+            };
 
             println!(
                 "{lambda}\t{g_sq:.6e}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}",
-                spec_hyp.ground_energy(), gap_h,
-                spec_tri.ground_energy(), gap_t,
+                spec_hyp.ground_energy(),
+                gap_h,
+                spec_tri.ground_energy(),
+                gap_t,
                 ratio,
             );
         }
@@ -103,8 +125,20 @@ fn main() {
     let hyp3_b1 = hyp3.n_edges() - hyp3.n_vertices + 1;
     let tri3_b1 = tri3.n_edges() - tri3.n_vertices + 1;
 
-    eprintln!("  hyp3: V={} E={} plaq={} b1={}", hyp3.n_vertices, hyp3.n_edges(), hyp3.n_plaquettes(), hyp3_b1);
-    eprintln!("  tri3: V={} E={} plaq={} b1={}", tri3.n_vertices, tri3.n_edges(), tri3.n_plaquettes(), tri3_b1);
+    eprintln!(
+        "  hyp3: V={} E={} plaq={} b1={}",
+        hyp3.n_vertices,
+        hyp3.n_edges(),
+        hyp3.n_plaquettes(),
+        hyp3_b1
+    );
+    eprintln!(
+        "  tri3: V={} E={} plaq={} b1={}",
+        tri3.n_vertices,
+        tri3.n_edges(),
+        tri3.n_plaquettes(),
+        tri3_b1
+    );
 
     // b1 for tri3 = 27 - 9 + 1 = 19, so search space at Λ=1 is 3^19 ≈ 1.2 billion.
     // Too large to enumerate. Use Λ=1 only for the hypercubic (b1=10, 3^10=59049).
@@ -120,7 +154,11 @@ fn main() {
             let th3 = TriangulatedTorusHilbert::new(&tri3, lambda);
             eprintln!("  tri3 Λ={lambda}: dim={}", th3.dim());
 
-            println!("# 3x3 torus Λ={lambda}: hyp_dim={} tri_dim={}", hh3.dim(), th3.dim());
+            println!(
+                "# 3x3 torus Λ={lambda}: hyp_dim={} tri_dim={}",
+                hh3.dim(),
+                th3.dim()
+            );
             println!("lambda\tg_squared\thyp_E0\thyp_gap\ttri_E0\ttri_gap\tgap_ratio");
 
             for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
@@ -132,18 +170,26 @@ fn main() {
 
                 let gap_h = spec_hyp.gap();
                 let gap_t = spec_tri.gap();
-                let ratio = if gap_h.abs() > 1e-15 { gap_t / gap_h } else { f64::NAN };
+                let ratio = if gap_h.abs() > 1e-15 {
+                    gap_t / gap_h
+                } else {
+                    f64::NAN
+                };
 
                 println!(
                     "{lambda}\t{g_sq:.6e}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}",
-                    spec_hyp.ground_energy(), gap_h,
-                    spec_tri.ground_energy(), gap_t,
+                    spec_hyp.ground_energy(),
+                    gap_h,
+                    spec_tri.ground_energy(),
+                    gap_t,
                     ratio,
                 );
             }
         } else {
             eprintln!("  tri3 Λ={lambda}: search space {tri3_search} too large, skipping");
-            println!("# 3x3 triangulated torus at Λ={lambda}: search space too large ({tri3_search}), skipped");
+            println!(
+                "# 3x3 triangulated torus at Λ={lambda}: search space too large ({tri3_search}), skipped"
+            );
 
             // Still output hypercubic data
             println!("# 3x3 hypercubic only: dim={}", hh3.dim());
@@ -151,8 +197,11 @@ fn main() {
             for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
                 let h_hyp = build_hypercubic_hamiltonian(&hh3, &hyp3, g_sq);
                 let spec_hyp = diag::diagonalize(&h_hyp, Some(5));
-                println!("{lambda}\t{g_sq:.6e}\t{:.6}\t{:.6}",
-                    spec_hyp.ground_energy(), spec_hyp.gap());
+                println!(
+                    "{lambda}\t{g_sq:.6e}\t{:.6}\t{:.6}",
+                    spec_hyp.ground_energy(),
+                    spec_hyp.gap()
+                );
             }
         }
     }
@@ -177,8 +226,11 @@ fn main() {
         let ratio = spec_tri.gap() / spec_hyp.gap();
         println!(
             "{lambda}\t{}\t{}\t{:.6}\t{:.6}\t{:.4}",
-            hh.dim(), th.dim(),
-            spec_hyp.gap(), spec_tri.gap(), ratio,
+            hh.dim(),
+            th.dim(),
+            spec_hyp.gap(),
+            spec_tri.gap(),
+            ratio,
         );
     }
 

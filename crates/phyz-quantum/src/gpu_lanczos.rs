@@ -8,8 +8,8 @@ use crate::csr::{build_csr, build_csr_su2};
 use crate::diag::Spectrum;
 use crate::hilbert::U1HilbertSpace;
 use crate::su2_quantum::Su2HilbertSpace;
+use phyz_gpu::sparse::{GpuPrecision, GpuSparseMatrix, GpuVecOps, request_device};
 use phyz_math::{DMat, DVec};
-use phyz_gpu::sparse::{request_device, GpuPrecision, GpuSparseMatrix, GpuVecOps};
 use phyz_regge::SimplicialComplex;
 use std::sync::Arc;
 
@@ -293,7 +293,17 @@ pub fn gpu_lanczos_diagonalize_su2(
         precision
     );
 
-    gpu_lanczos_inner(device, queue, precision, &csr, dim, k, m, tol, double_reorth)
+    gpu_lanczos_inner(
+        device,
+        queue,
+        precision,
+        &csr,
+        dim,
+        k,
+        m,
+        tol,
+        double_reorth,
+    )
 }
 
 /// Inner GPU Lanczos loop. Separated for testability.
@@ -528,7 +538,7 @@ fn recover_eigenvectors_gpu(
 mod tests {
     use super::*;
     use crate::diag;
-    use crate::hamiltonian::{build_hamiltonian, KSParams};
+    use crate::hamiltonian::{KSParams, build_hamiltonian};
     use crate::lanczos::lanczos_diagonalize;
 
     fn single_pentachoron() -> SimplicialComplex {
@@ -662,8 +672,7 @@ mod tests {
             return;
         }
 
-        let complex =
-            SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
+        let complex = SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
         let hs = U1HilbertSpace::new(&complex, 1);
 
         let cpu = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);
@@ -691,7 +700,7 @@ mod tests {
             return;
         }
 
-        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+        use crate::su2_quantum::{Su2HilbertSpace, build_su2_hamiltonian};
 
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);

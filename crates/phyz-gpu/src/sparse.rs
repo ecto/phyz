@@ -80,9 +80,7 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
     }))
     .ok_or("No GPU adapter found")?;
 
-    let has_f64 = adapter
-        .features()
-        .contains(wgpu::Features::SHADER_F64);
+    let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
 
     let required_features = if has_f64 {
         wgpu::Features::SHADER_F64
@@ -467,8 +465,7 @@ impl GpuVecOps {
     pub fn upload_vec(&self, buf: &wgpu::Buffer, data: &[f64]) {
         match self.precision {
             GpuPrecision::F64 => {
-                self.queue
-                    .write_buffer(buf, 0, bytemuck::cast_slice(data));
+                self.queue.write_buffer(buf, 0, bytemuck::cast_slice(data));
             }
             GpuPrecision::F32 => {
                 let f32_data: Vec<f32> = data.iter().map(|&v| v as f32).collect();
@@ -502,38 +499,36 @@ impl GpuVecOps {
         x_buf: &wgpu::Buffer,
         y_buf: &wgpu::Buffer,
     ) {
-        let bg = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("spmv_bg"),
-                layout: &self.spmv_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: matrix.row_ptr_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: matrix.col_idx_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: matrix.vals_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: x_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: y_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: self.dim_uniform.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("spmv_bg"),
+            layout: &self.spmv_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: matrix.row_ptr_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: matrix.col_idx_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: matrix.vals_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: x_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: y_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.dim_uniform.as_entire_binding(),
+                },
+            ],
+        });
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("spmv_pass"),
@@ -576,26 +571,24 @@ impl GpuVecOps {
             }
         }
 
-        let bg = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("axpy_bg"),
-                layout: &self.axpy_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: x_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: y_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("axpy_bg"),
+            layout: &self.axpy_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: x_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: y_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("axpy_pass"),
@@ -635,22 +628,20 @@ impl GpuVecOps {
             }
         }
 
-        let bg = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("scale_bg"),
-                layout: &self.scale_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: x_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scale_bg"),
+            layout: &self.scale_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: x_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("scale_pass"),
@@ -670,30 +661,28 @@ impl GpuVecOps {
         b_buf: &wgpu::Buffer,
     ) {
         // Phase 1: partial sums
-        let bg1 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("dot_phase1_bg"),
-                layout: &self.dot_phase1_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: a_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: b_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.dim_uniform.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dot_phase1_bg"),
+            layout: &self.dot_phase1_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: a_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: b_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.dim_uniform.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -718,26 +707,24 @@ impl GpuVecOps {
             bytemuck::bytes_of(&self.n_workgroups),
         );
 
-        let bg2 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("dot_phase2_bg"),
-                layout: &self.dot_phase2_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.scalar_result_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: n_partials_uniform.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dot_phase2_bg"),
+            layout: &self.dot_phase2_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.scalar_result_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: n_partials_uniform.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -774,30 +761,28 @@ impl GpuVecOps {
         self.queue
             .write_buffer(&params_buf, 0, bytemuck::cast_slice(&params_data));
 
-        let bg1 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mdot_phase1_bg"),
-                layout: &self.multi_dot_phase1_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: q_bank.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: w_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mdot_phase1_bg"),
+            layout: &self.multi_dot_phase1_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: q_bank.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: w_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -820,26 +805,24 @@ impl GpuVecOps {
         self.queue
             .write_buffer(&params2_buf, 0, bytemuck::cast_slice(&params2_data));
 
-        let bg2 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mdot_phase2_bg"),
-                layout: &self.multi_dot_phase2_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params2_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.scalar_result_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mdot_phase2_bg"),
+            layout: &self.multi_dot_phase2_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params2_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.scalar_result_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -876,30 +859,28 @@ impl GpuVecOps {
         self.queue
             .write_buffer(&params_buf, 0, bytemuck::cast_slice(&params_data));
 
-        let bg = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bsub_bg"),
-                layout: &self.batch_subtract_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: q_bank.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: overlaps_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: w_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bsub_bg"),
+            layout: &self.batch_subtract_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: q_bank.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: overlaps_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: w_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("bsub_pass"),
@@ -1088,30 +1069,28 @@ impl GpuVecOps {
         self.queue
             .write_buffer(&params_buf, 0, bytemuck::cast_slice(&params_data));
 
-        let bg1 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mdot_range_phase1_bg"),
-                layout: &self.multi_dot_phase1_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: q_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: w_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mdot_range_phase1_bg"),
+            layout: &self.multi_dot_phase1_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: q_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: w_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1137,30 +1116,28 @@ impl GpuVecOps {
         let result_byte_offset = result_offset as u64 * elem_size;
         let result_byte_size = n_vecs as u64 * elem_size;
 
-        let bg2 = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("mdot_range_phase2_bg"),
-                layout: &self.multi_dot_phase2_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params2_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: self.partials_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.scalar_result_buf,
-                            offset: result_byte_offset,
-                            size: std::num::NonZeroU64::new(result_byte_size),
-                        }),
-                    },
-                ],
-            });
+        let bg2 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mdot_range_phase2_bg"),
+            layout: &self.multi_dot_phase2_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params2_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.partials_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.scalar_result_buf,
+                        offset: result_byte_offset,
+                        size: std::num::NonZeroU64::new(result_byte_size),
+                    }),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1207,34 +1184,32 @@ impl GpuVecOps {
         let overlaps_byte_offset = overlaps_offset as u64 * elem_size;
         let overlaps_byte_size = n_vecs as u64 * elem_size;
 
-        let bg = self
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("bsub_range_bg"),
-                layout: &self.batch_subtract_pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: params_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: q_buf.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &self.scalar_result_buf,
-                            offset: overlaps_byte_offset,
-                            size: std::num::NonZeroU64::new(overlaps_byte_size),
-                        }),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: w_buf.as_entire_binding(),
-                    },
-                ],
-            });
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bsub_range_bg"),
+            layout: &self.batch_subtract_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: q_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.scalar_result_buf,
+                        offset: overlaps_byte_offset,
+                        size: std::num::NonZeroU64::new(overlaps_byte_size),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: w_buf.as_entire_binding(),
+                },
+            ],
+        });
 
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1298,7 +1273,8 @@ mod tests {
             row_ptr[(i + 1) as usize] = col_indices.len() as u32;
         }
 
-        let mat = GpuSparseMatrix::upload(&device, &queue, &row_ptr, &col_indices, &values, precision);
+        let mat =
+            GpuSparseMatrix::upload(&device, &queue, &row_ptr, &col_indices, &values, precision);
         let ops = GpuVecOps::new(device, queue, precision, n);
 
         let x = vec![1.0, 2.0, 3.0, 4.0, 5.0];

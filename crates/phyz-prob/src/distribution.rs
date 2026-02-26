@@ -1,7 +1,7 @@
 //! Distribution representation for uncertain variables.
 
-use rand::Rng;
 use phyz_math::{DMat, DVec};
+use rand::Rng;
 
 /// Distribution represented as a weighted particle ensemble.
 #[derive(Debug, Clone)]

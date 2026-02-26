@@ -5,8 +5,8 @@
 use crate::gpu_state::GpuState;
 use crate::shaders::{ABA_SIMPLE_SHADER, INTEGRATE_SHADER};
 use bytemuck::{Pod, Zeroable};
-use std::sync::Arc;
 use phyz_model::{Model, State};
+use std::sync::Arc;
 
 /// Parameters passed to compute shaders.
 #[repr(C)]

@@ -18,14 +18,14 @@
 //!   cargo run --example ryu_takayanagi -p phyz-quantum --release
 
 use phyz_quantum::diag;
-use phyz_quantum::hamiltonian::{build_hamiltonian, KSParams};
+use phyz_quantum::hamiltonian::{KSParams, build_hamiltonian};
 use phyz_quantum::hilbert::U1HilbertSpace;
 use phyz_quantum::lanczos::lanczos_diagonalize;
 use phyz_quantum::observables;
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_quantum::su2_quantum::{self, Su2HilbertSpace};
 use phyz_quantum::triangulated_torus::{
-    build_triangulated_torus_hamiltonian, TriangulatedTorus, TriangulatedTorusHilbert,
+    TriangulatedTorus, TriangulatedTorusHilbert, build_triangulated_torus_hamiltonian,
 };
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
@@ -69,14 +69,32 @@ fn main() {
     let hs2 = U1HilbertSpace::new(&pent2, lambda);
     let hs3 = U1HilbertSpace::new(&pent3, lambda);
 
-    eprintln!("1-pent: V={}, E={}, dim={}", pent1.n_vertices, pent1.n_edges(), hs1.dim());
-    eprintln!("2-pent: V={}, E={}, dim={}", pent2.n_vertices, pent2.n_edges(), hs2.dim());
-    eprintln!("3-pent: V={}, E={}, dim={}", pent3.n_vertices, pent3.n_edges(), hs3.dim());
+    eprintln!(
+        "1-pent: V={}, E={}, dim={}",
+        pent1.n_vertices,
+        pent1.n_edges(),
+        hs1.dim()
+    );
+    eprintln!(
+        "2-pent: V={}, E={}, dim={}",
+        pent2.n_vertices,
+        pent2.n_edges(),
+        hs2.dim()
+    );
+    eprintln!(
+        "3-pent: V={}, E={}, dim={}",
+        pent3.n_vertices,
+        pent3.n_edges(),
+        hs3.dim()
+    );
 
     // Ground states at g²=1, flat background.
     let gs1 = ground_state_simplicial(&hs1, &pent1, g_squared, None);
     let gs2 = ground_state_simplicial(&hs2, &pent2, g_squared, None);
-    eprintln!("  Computing 3-pent ground state (Lanczos, dim={})...", hs3.dim());
+    eprintln!(
+        "  Computing 3-pent ground state (Lanczos, dim={})...",
+        hs3.dim()
+    );
     let gs3 = ground_state_simplicial(&hs3, &pent3, g_squared, None);
 
     // Collect (area, S_EE) for regression.
@@ -95,7 +113,12 @@ fn main() {
         ("2-pent", &pent2, &hs2, &gs2),
         ("3-pent", &pent3, &hs3, &gs3),
     ] {
-        println!("# {name}: V={}, E={}, dim={}", complex.n_vertices, complex.n_edges(), hs.dim());
+        println!(
+            "# {name}: V={}, E={}, dim={}",
+            complex.n_vertices,
+            complex.n_edges(),
+            hs.dim()
+        );
         println!("partition\t|A|\t#cut_edges\tS_EE");
 
         let parts = vertex_bipartitions(complex.n_vertices);
@@ -123,14 +146,22 @@ fn main() {
     let mass_values = [0.0, 0.1, 0.5, 1.0];
     for &m in &mass_values {
         let lengths = schwarzschild_edge_lengths(&pent2, m);
-        let mw = if m > 0.0 { Some(metric_weights(&pent2, &lengths)) } else { None };
+        let mw = if m > 0.0 {
+            Some(metric_weights(&pent2, &lengths))
+        } else {
+            None
+        };
         let gs_b = ground_state_simplicial(&hs2, &pent2, g_squared, mw.as_deref());
 
         for part in &vertex_bipartitions(pent2.n_vertices) {
             let geom = cut_area_geometric(&pent2, part, &lengths);
             let tri = cut_area_triangles(&pent2, part, &lengths);
             let s = entanglement_for_partition(&hs2, &gs_b, &pent2, part);
-            println!("{m:.1}\t{}\t{}\t{geom:.6e}\t{tri:.6e}\t{s:.6e}", partition_label(part), part.len());
+            println!(
+                "{m:.1}\t{}\t{}\t{geom:.6e}\t{tri:.6e}\t{s:.6e}",
+                partition_label(part),
+                part.len()
+            );
         }
     }
     println!();
@@ -145,7 +176,9 @@ fn main() {
     let flat_lengths_1 = vec![1.0; pent1.n_edges()];
     let cut_area = cut_area_geometric(&pent1, &test_partition, &flat_lengths_1);
 
-    println!("# Phase C: Coupling dependence (1-pentachoron, partition={{0,1}}, cut_area={cut_area:.1})");
+    println!(
+        "# Phase C: Coupling dependence (1-pentachoron, partition={{0,1}}, cut_area={cut_area:.1})"
+    );
     println!("g_squared\tS_EE\tS_EE/area\t1/(4*g^2)");
 
     let g_sq_sweep = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
@@ -166,7 +199,9 @@ fn main() {
     // ─────────────────────────────────────────────────────────────────
     eprintln!("── Phase D: Linear Regression ──\n");
 
-    let filtered: Vec<(f64, f64)> = flat_areas.iter().zip(flat_entropies.iter())
+    let filtered: Vec<(f64, f64)> = flat_areas
+        .iter()
+        .zip(flat_entropies.iter())
         .filter(|&(&a, &s)| s > 1e-12 && a > 1e-12)
         .map(|(&a, &s)| (a, s))
         .collect();
@@ -175,12 +210,21 @@ fn main() {
     let fe: Vec<f64> = filtered.iter().map(|&(_, s)| s).collect();
     let (slope, intercept, r2) = linear_regression(&fa, &fe);
 
-    println!("# Phase D: Linear regression S_EE = alpha * Area + beta (flat background, all complexes)");
+    println!(
+        "# Phase D: Linear regression S_EE = alpha * Area + beta (flat background, all complexes)"
+    );
     println!("# N = {} data points", filtered.len());
     println!("# slope (alpha) = {slope:.6e}");
     println!("# intercept (beta) = {intercept:.6e}");
     println!("# R^2 = {r2:.6}");
-    println!("# Effective G_N = 1/(4*alpha) = {:.6e}", if slope.abs() > 1e-15 { 1.0 / (4.0 * slope) } else { f64::INFINITY });
+    println!(
+        "# Effective G_N = 1/(4*alpha) = {:.6e}",
+        if slope.abs() > 1e-15 {
+            1.0 / (4.0 * slope)
+        } else {
+            f64::INFINITY
+        }
+    );
     println!();
 
     // Summary: average S_EE by #cut_edges per complex.
@@ -191,7 +235,8 @@ fn main() {
         ("2-pent", &pent2, &hs2, &gs2),
         ("3-pent", &pent3, &hs3, &gs3),
     ] {
-        let mut by_cut: std::collections::BTreeMap<usize, Vec<f64>> = std::collections::BTreeMap::new();
+        let mut by_cut: std::collections::BTreeMap<usize, Vec<f64>> =
+            std::collections::BTreeMap::new();
         for part in &vertex_bipartitions(complex.n_vertices) {
             let n_cut = cut_area_topological(complex, part);
             let s = entanglement_for_partition(hs, gs, complex, part);
@@ -210,7 +255,9 @@ fn main() {
     // ─────────────────────────────────────────────────────────────────
     eprintln!("── Phase E: Extended vs Algebraic Prescription ──\n");
 
-    println!("# Phase E: Extended prescription (at least one endpoint in A) vs algebraic (both endpoints)");
+    println!(
+        "# Phase E: Extended prescription (at least one endpoint in A) vs algebraic (both endpoints)"
+    );
     println!("# 1-pentachoron, g^2={g_squared}");
     println!("partition\t|A|\t#cut\tS_algebraic\tS_extended");
 
@@ -220,7 +267,8 @@ fn main() {
         let s_ext = entanglement_for_partition_extended(&hs1, &gs1, &pent1, part);
         println!(
             "{}\t{}\t{n_cut}\t{s_alg:.6e}\t{s_ext:.6e}",
-            partition_label(part), part.len()
+            partition_label(part),
+            part.len()
         );
     }
     println!();
@@ -234,7 +282,8 @@ fn main() {
         let s_ext = entanglement_for_partition_extended(&hs2, &gs2, &pent2, part);
         println!(
             "{}\t{}\t{n_cut}\t{s_alg:.6e}\t{s_ext:.6e}",
-            partition_label(part), part.len()
+            partition_label(part),
+            part.len()
         );
     }
     println!();
@@ -250,7 +299,9 @@ fn main() {
             ext_entropies.push(s);
         }
     }
-    let ext_f: Vec<(f64, f64)> = ext_areas.iter().zip(ext_entropies.iter())
+    let ext_f: Vec<(f64, f64)> = ext_areas
+        .iter()
+        .zip(ext_entropies.iter())
         .filter(|&(&a, &s)| s > 1e-12 && a > 1e-12)
         .map(|(&a, &s)| (a, s))
         .collect();
@@ -258,8 +309,18 @@ fn main() {
     let exe: Vec<f64> = ext_f.iter().map(|&(_, s)| s).collect();
     let (es, ei, er2) = linear_regression(&exa, &exe);
     println!("# Extended prescription regression (all complexes):");
-    println!("# N = {}, slope = {es:.6e}, intercept = {ei:.6e}, R^2 = {er2:.6}", ext_f.len());
-    println!("# G_N(ext) = {:.6e}", if es.abs() > 1e-15 { 1.0 / (4.0 * es) } else { f64::INFINITY });
+    println!(
+        "# N = {}, slope = {es:.6e}, intercept = {ei:.6e}, R^2 = {er2:.6}",
+        ext_f.len()
+    );
+    println!(
+        "# G_N(ext) = {:.6e}",
+        if es.abs() > 1e-15 {
+            1.0 / (4.0 * es)
+        } else {
+            f64::INFINITY
+        }
+    );
     println!();
 
     eprintln!("  Phase E complete\n");
@@ -288,7 +349,8 @@ fn main() {
             let mi = mutual_information(hs, gs, complex, part);
             println!(
                 "{}\t{}\t{n_cut}\t{s:.6e}\t{mi:.6e}",
-                partition_label(part), part.len()
+                partition_label(part),
+                part.len()
             );
             if mi > 1e-12 && n_cut > 0 {
                 mi_areas.push(n_cut as f64);
@@ -329,10 +391,16 @@ fn main() {
             }
         }
         let (sl, _int, r2_local) = linear_regression(&areas, &ents);
-        let g_n = if sl.abs() > 1e-15 { 1.0 / (4.0 * sl) } else { f64::INFINITY };
+        let g_n = if sl.abs() > 1e-15 {
+            1.0 / (4.0 * sl)
+        } else {
+            f64::INFINITY
+        };
         println!(
             "{name}\t{}\t{}\t{}\t{sl:.6e}\t{r2_local:.6}\t{g_n:.6e}",
-            complex.n_vertices, complex.n_edges(), hs.dim()
+            complex.n_vertices,
+            complex.n_edges(),
+            hs.dim()
         );
     }
     println!();
@@ -362,7 +430,12 @@ fn main() {
     let torus_parts = vertex_bipartitions(torus.n_vertices);
 
     println!("# Phase H: Triangulated 2x2 torus RT");
-    println!("# V={}, E={}, dim={}, g^2={g_squared}", torus.n_vertices, torus.n_edges(), ths.dim());
+    println!(
+        "# V={}, E={}, dim={}, g^2={g_squared}",
+        torus.n_vertices,
+        torus.n_edges(),
+        ths.dim()
+    );
     println!("partition\t|A|\t#cut\tS_alg\tS_ext");
 
     // Classify edges for torus (edges are (usize, usize) not [usize; 2]).
@@ -396,16 +469,13 @@ fn main() {
         }
 
         // Compute entanglement entropy using raw basis.
-        let s_alg = observables::entanglement_entropy_raw(
-            &ths.basis, ths.n_edges, tgs, &edges_a,
-        );
-        let s_ext = observables::entanglement_entropy_raw(
-            &ths.basis, ths.n_edges, tgs, &edges_ext,
-        );
+        let s_alg = observables::entanglement_entropy_raw(&ths.basis, ths.n_edges, tgs, &edges_a);
+        let s_ext = observables::entanglement_entropy_raw(&ths.basis, ths.n_edges, tgs, &edges_ext);
 
         println!(
             "{}\t{}\t{n_boundary}\t{s_alg:.6e}\t{s_ext:.6e}",
-            partition_label(part), part.len()
+            partition_label(part),
+            part.len()
         );
 
         if s_alg > 1e-12 && n_boundary > 0 {
@@ -417,8 +487,14 @@ fn main() {
 
     if torus_areas.len() >= 2 {
         let (ts, ti, tr2) = linear_regression(&torus_areas, &torus_ents);
-        let tgn = if ts.abs() > 1e-15 { 1.0 / (4.0 * ts) } else { f64::INFINITY };
-        println!("# Torus RT regression: slope={ts:.6e}, intercept={ti:.6e}, R^2={tr2:.6}, G_N={tgn:.6e}");
+        let tgn = if ts.abs() > 1e-15 {
+            1.0 / (4.0 * ts)
+        } else {
+            f64::INFINITY
+        };
+        println!(
+            "# Torus RT regression: slope={ts:.6e}, intercept={ti:.6e}, R^2={tr2:.6}, G_N={tgn:.6e}"
+        );
         println!();
     }
 
@@ -434,11 +510,7 @@ fn main() {
     println!("# Hilbert space dimension = 2^b₁ (much smaller than U(1))");
     println!();
 
-    for (name, complex) in [
-        ("1-pent", &pent1),
-        ("2-pent", &pent2),
-        ("3-pent", &pent3),
-    ] {
+    for (name, complex) in [("1-pent", &pent1), ("2-pent", &pent2), ("3-pent", &pent3)] {
         let su2_hs = Su2HilbertSpace::new(complex);
         let su2_h = su2_quantum::build_su2_hamiltonian(&su2_hs, complex, g_squared, None);
         let su2_spec = diag::diagonalize(&su2_h, Some(1));
@@ -473,8 +545,7 @@ fn main() {
         let parts = vertex_bipartitions(complex.n_vertices);
         for part in &parts {
             let n_cut = cut_area_topological(complex, part);
-            let s_su2 =
-                su2_quantum::su2_entanglement_for_partition(&su2_hs, su2_gs, complex, part);
+            let s_su2 = su2_quantum::su2_entanglement_for_partition(&su2_hs, su2_gs, complex, part);
 
             // Get corresponding U(1) entropy.
             let s_u1 = if name == "1-pent" {

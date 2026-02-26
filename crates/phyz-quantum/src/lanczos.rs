@@ -104,7 +104,7 @@ where
 
     // Tridiagonal elements
     let mut alpha: Vec<f64> = Vec::with_capacity(m); // diagonal
-    let mut beta: Vec<f64> = Vec::with_capacity(m);  // off-diagonal
+    let mut beta: Vec<f64> = Vec::with_capacity(m); // off-diagonal
 
     // Initial random vector (deterministic seed for reproducibility)
     let mut q = DVec::zeros(dim);
@@ -194,12 +194,7 @@ fn diagonalize_tridiagonal(alpha: &[f64], beta: &[f64], k: usize) -> Vec<f64> {
 }
 
 /// Recover eigenvectors from Lanczos vectors and tridiagonal eigenvectors.
-fn recover_eigenvectors(
-    alpha: &[f64],
-    beta: &[f64],
-    q_vecs: &[DVec],
-    k: usize,
-) -> Spectrum {
+fn recover_eigenvectors(alpha: &[f64], beta: &[f64], q_vecs: &[DVec], k: usize) -> Spectrum {
     let m = alpha.len();
     let mut t = DMat::zeros(m, m);
     for i in 0..m {
@@ -264,14 +259,10 @@ pub fn lanczos_diagonalize(
         .min(dim);
     let tol = 1e-10;
 
-    eprintln!(
-        "  Lanczos: dim={dim}, k={n_eigenvalues}, max_iter={max_iter}"
-    );
+    eprintln!("  Lanczos: dim={dim}, k={n_eigenvalues}, max_iter={max_iter}");
 
     let mw = metric_weights.map(|w| w.to_vec());
-    let matvec = |v: &DVec| {
-        hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref())
-    };
+    let matvec = |v: &DVec| hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref());
 
     lanczos(matvec, dim, n_eigenvalues, max_iter, tol)
 }
@@ -280,7 +271,7 @@ pub fn lanczos_diagonalize(
 mod tests {
     use super::*;
     use crate::diag;
-    use crate::hamiltonian::{build_hamiltonian, KSParams};
+    use crate::hamiltonian::{KSParams, build_hamiltonian};
 
     fn single_pentachoron() -> SimplicialComplex {
         SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]])
@@ -383,8 +374,7 @@ mod tests {
     #[test]
     #[ignore] // slow in debug mode (dim=3135, unoptimized matvec)
     fn test_lanczos_two_pentachorons() {
-        let complex =
-            SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
+        let complex = SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
         let hs = U1HilbertSpace::new(&complex, 1);
 
         // Dense reference
@@ -429,10 +419,7 @@ mod tests {
             let hv_lanczos = hamiltonian_matvec(&v, &hs, &complex, 1.0, None);
 
             let diff = (&hv_dense - &hv_lanczos).norm();
-            assert!(
-                diff < 1e-10,
-                "matvec mismatch at seed {seed}: diff={diff}"
-            );
+            assert!(diff < 1e-10, "matvec mismatch at seed {seed}: diff={diff}");
         }
     }
 }

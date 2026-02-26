@@ -1,8 +1,8 @@
 //! Simple water molecule model with harmonic bonds.
 
-use std::sync::Arc;
 use phyz_math::Vec3;
 use phyz_md::{Coulomb, MdSystem, Particle};
+use std::sync::Arc;
 
 fn main() {
     // Constants

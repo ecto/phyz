@@ -80,8 +80,8 @@ pub fn triangle_area_sq_lorentzian(s01: f64, s02: f64, s12: f64) -> f64 {
     // Expand the 4×4 CM determinant for a triangle:
     // 16 A² = 2*s01*s02 + 2*s02*s12 + 2*s12*s01 - s01² - s02² - s12²
     // (same formula as Euclidean Heron, but with signed inputs)
-    let val = 2.0 * s01 * s02 + 2.0 * s02 * s12 + 2.0 * s12 * s01
-        - s01 * s01 - s02 * s02 - s12 * s12;
+    let val =
+        2.0 * s01 * s02 + 2.0 * s02 * s12 + 2.0 * s12 * s01 - s01 * s01 - s02 * s02 - s12 * s12;
     val / 16.0
 }
 
@@ -121,11 +121,7 @@ pub fn pent_volume_sq_lorentzian(sq_lengths: &[f64; 10]) -> f64 {
 ///
 /// The hinge type is determined by the signs of C_ll and C_mm:
 /// both positive → spacelike hinge; mixed signs → timelike hinge.
-pub fn lorentzian_dihedral(
-    sq_lengths: &[f64; 10],
-    l: usize,
-    m: usize,
-) -> (f64, HingeType) {
+pub fn lorentzian_dihedral(sq_lengths: &[f64; 10], l: usize, m: usize) -> (f64, HingeType) {
     let cm = cm_matrix_signed(sq_lengths);
     let rl = l + 1;
     let rm = m + 1;
@@ -226,10 +222,7 @@ pub fn all_lorentzian_dihedrals(sq_lengths: &[f64; 10]) -> [(f64, HingeType); 10
 ///
 /// Returns `[dihedral_idx][edge_idx] = ∂θ_k/∂s_e`, computed via central finite differences
 /// on `all_lorentzian_dihedrals`. Cost: 21 calls (10 edges × 2 perturbations + 1 baseline).
-pub fn all_lorentzian_dihedrals_jacobian(
-    sq_lengths: &[f64; 10],
-    eps: f64,
-) -> [[f64; 10]; 10] {
+pub fn all_lorentzian_dihedrals_jacobian(sq_lengths: &[f64; 10], eps: f64) -> [[f64; 10]; 10] {
     let mut jac = [[0.0; 10]; 10];
     let mut work = *sq_lengths;
 
@@ -257,10 +250,7 @@ pub fn all_lorentzian_dihedrals_jacobian(
 /// For triangle with local vertices (a, b, c) in the pent, the area squared
 /// depends on only the three edges sa_sb, sa_sc, sb_sc.
 /// Returns ∂(A²_tri)/∂s_e for each of the 10 edges.
-pub fn tri_area_sq_grad_in_pent(
-    sq_lengths: &[f64; 10],
-    tri_local: [usize; 3],
-) -> [f64; 10] {
+pub fn tri_area_sq_grad_in_pent(sq_lengths: &[f64; 10], tri_local: [usize; 3]) -> [f64; 10] {
     let edge_idx = |a: usize, b: usize| -> usize {
         let (lo, hi) = if a < b { (a, b) } else { (b, a) };
         match (lo, hi) {
@@ -404,16 +394,16 @@ mod tests {
         let dx2 = dx * dx;
 
         let sq = [
-            -dt2,           // s01
-            dx2,            // s02
-            dx2,            // s03
-            dx2,            // s04
-            -dt2 + dx2,     // s12
-            -dt2 + dx2,     // s13
-            -dt2 + dx2,     // s14
-            2.0 * dx2,      // s23
-            2.0 * dx2,      // s24
-            2.0 * dx2,      // s34
+            -dt2,       // s01
+            dx2,        // s02
+            dx2,        // s03
+            dx2,        // s04
+            -dt2 + dx2, // s12
+            -dt2 + dx2, // s13
+            -dt2 + dx2, // s14
+            2.0 * dx2,  // s23
+            2.0 * dx2,  // s24
+            2.0 * dx2,  // s34
         ];
 
         let v_sq = pent_volume_sq_lorentzian(&sq);
@@ -512,25 +502,22 @@ mod tests {
         let dt2 = 1.0;
         let dx2 = 1.0;
         let sq = [
-            -dt2,           // s01
-            dx2,            // s02
-            dx2,            // s03
-            dx2,            // s04
-            -dt2 + dx2,     // s12
-            -dt2 + dx2,     // s13
-            -dt2 + dx2,     // s14
-            2.0 * dx2,      // s23
-            2.0 * dx2,      // s24
-            2.0 * dx2,      // s34
+            -dt2,       // s01
+            dx2,        // s02
+            dx2,        // s03
+            dx2,        // s04
+            -dt2 + dx2, // s12
+            -dt2 + dx2, // s13
+            -dt2 + dx2, // s14
+            2.0 * dx2,  // s23
+            2.0 * dx2,  // s24
+            2.0 * dx2,  // s34
         ];
 
         let dihedrals = all_lorentzian_dihedrals(&sq);
         // Just check all values are finite and hinge types are determined
         for (i, &(val, htype)) in dihedrals.iter().enumerate() {
-            assert!(
-                val.is_finite(),
-                "dihedral {i} is not finite: {val}"
-            );
+            assert!(val.is_finite(), "dihedral {i} is not finite: {val}");
             assert!(
                 val >= 0.0 || htype == HingeType::Timelike,
                 "dihedral {i}: negative angle {val} with type {htype:?}"
@@ -597,7 +584,9 @@ mod tests {
                 assert!(
                     err < 1e-4,
                     "dihedral_jac[{k}][{e}]: analytical={:.8e}, fd={:.8e}, err={:.2e}",
-                    jac[k][e], fd, err
+                    jac[k][e],
+                    fd,
+                    err
                 );
             }
         }

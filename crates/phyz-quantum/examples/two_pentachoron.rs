@@ -12,7 +12,7 @@
 //!   cargo run --example two_pentachoron -p phyz-quantum --release
 
 use phyz_quantum::diag;
-use phyz_quantum::hamiltonian::{build_hamiltonian, KSParams};
+use phyz_quantum::hamiltonian::{KSParams, build_hamiltonian};
 use phyz_quantum::hilbert::U1HilbertSpace;
 use phyz_quantum::observables;
 use phyz_quantum::stabilizer;
@@ -40,23 +40,43 @@ fn main() {
     // ─────────────────────────────────────────────────────────────────
     eprintln!("── 1. E₀(g²) coupling sweep ──\n");
 
-    println!("# Section 1: Coupling sweep (2 pentachorons, Λ={lambda}, dim={})", hs.dim());
+    println!(
+        "# Section 1: Coupling sweep (2 pentachorons, Λ={lambda}, dim={})",
+        hs.dim()
+    );
     println!("# V={n_v} E={n_e} T={n_t} b1={b1}");
     println!("g_squared\tE0\tE1\tgap\tE2\tE3\tE4");
 
-    let couplings = [0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 2.0, 3.0, 5.0, 10.0, 50.0, 100.0];
+    let couplings = [
+        0.01, 0.05, 0.1, 0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 2.0, 3.0, 5.0, 10.0, 50.0, 100.0,
+    ];
     for &g_sq in &couplings {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h = build_hamiltonian(&hs, &complex, &params);
         let spec = diag::diagonalize(&h, Some(5));
 
-        let e: Vec<f64> = (0..5).map(|i| {
-            if i < spec.energies.len() { spec.energies[i] } else { f64::NAN }
-        }).collect();
+        let e: Vec<f64> = (0..5)
+            .map(|i| {
+                if i < spec.energies.len() {
+                    spec.energies[i]
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
 
         println!(
             "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-            g_sq, e[0], e[1], e[1] - e[0], e[2], e[3], e[4]
+            g_sq,
+            e[0],
+            e[1],
+            e[1] - e[0],
+            e[2],
+            e[3],
+            e[4]
         );
     }
     println!();
@@ -76,7 +96,10 @@ fn main() {
 
     let gap_couplings = [0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0];
     for &g_sq in &gap_couplings {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
 
         let h1 = build_hamiltonian(&hs1, &pent1, &params);
         let spec1 = diag::diagonalize(&h1, Some(3));
@@ -86,13 +109,19 @@ fn main() {
 
         let gap1 = spec1.gap();
         let gap2 = spec2.gap();
-        let ratio = if gap1.abs() > 1e-15 { gap2 / gap1 } else { f64::NAN };
+        let ratio = if gap1.abs() > 1e-15 {
+            gap2 / gap1
+        } else {
+            f64::NAN
+        };
 
         println!(
             "{:.6e}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{:.4}",
             g_sq,
-            spec1.ground_energy(), gap1,
-            spec2.ground_energy(), gap2,
+            spec1.ground_energy(),
+            gap1,
+            spec2.ground_energy(),
+            gap2,
             ratio,
         );
     }
@@ -122,20 +151,32 @@ fn main() {
 
     let wilson_couplings = [0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0];
     for &g_sq in &wilson_couplings {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h = build_hamiltonian(&hs, &complex, &params);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
 
         for (&len, indices) in &loops_by_len {
-            let avg_w: f64 = indices.iter()
+            let avg_w: f64 = indices
+                .iter()
                 .map(|&li| observables::wilson_loop(&hs, gs, &loops[li]))
-                .sum::<f64>() / indices.len() as f64;
-            let neg_log = if avg_w > 1e-15 { -avg_w.ln() } else { f64::INFINITY };
+                .sum::<f64>()
+                / indices.len() as f64;
+            let neg_log = if avg_w > 1e-15 {
+                -avg_w.ln()
+            } else {
+                f64::INFINITY
+            };
 
             println!(
                 "{:.6e}\t{len}\t{}\t{:.6e}\t{:.4}",
-                g_sq, indices.len(), avg_w, neg_log
+                g_sq,
+                indices.len(),
+                avg_w,
+                neg_log
             );
         }
     }
@@ -178,9 +219,21 @@ fn main() {
         })
         .collect();
 
-    eprintln!("  edges touching v4: {:?} ({})", edges_touching_4, edges_touching_4.len());
-    eprintln!("  edges touching v5: {:?} ({})", edges_touching_5, edges_touching_5.len());
-    eprintln!("  shared edges [0-3]: {:?} ({})", shared_edges, shared_edges.len());
+    eprintln!(
+        "  edges touching v4: {:?} ({})",
+        edges_touching_4,
+        edges_touching_4.len()
+    );
+    eprintln!(
+        "  edges touching v5: {:?} ({})",
+        edges_touching_5,
+        edges_touching_5.len()
+    );
+    eprintln!(
+        "  shared edges [0-3]: {:?} ({})",
+        shared_edges,
+        shared_edges.len()
+    );
 
     // Bipartition A: all edges from pent1 (touching v4 + shared)
     let mut edges_a: Vec<usize> = shared_edges.clone();
@@ -192,18 +245,26 @@ fn main() {
     eprintln!("  partition B (pent2-only): {} edges", n_e - edges_a.len());
 
     println!("# Section 4: Entanglement entropy across shared face");
-    println!("# partition A = pent1 edges ({} edges), B = pent2-only edges ({} edges)", edges_a.len(), n_e - edges_a.len());
+    println!(
+        "# partition A = pent1 edges ({} edges), B = pent2-only edges ({} edges)",
+        edges_a.len(),
+        n_e - edges_a.len()
+    );
     println!("g_squared\tS_A\tS_max");
 
     // Maximum entropy = log(min(dim_A, dim_B))
     for &g_sq in &[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 100.0] {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h = build_hamiltonian(&hs, &complex, &params);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
 
         let s = observables::entanglement_entropy(&hs, gs, &edges_a);
-        let s_max = (edges_a.len().min(n_e - edges_a.len()) as f64 * (2.0 * lambda as f64 + 1.0)).ln();
+        let s_max =
+            (edges_a.len().min(n_e - edges_a.len()) as f64 * (2.0 * lambda as f64 + 1.0)).ln();
 
         println!("{:.6e}\t{:.6}\t{:.4}", g_sq, s, s_max);
     }
@@ -211,11 +272,18 @@ fn main() {
 
     // Also try a symmetric cut: half the shared edges + one pent
     let edges_half: Vec<usize> = (0..n_e / 2).collect();
-    println!("# Symmetric half-half cut ({} / {} edges)", edges_half.len(), n_e - edges_half.len());
+    println!(
+        "# Symmetric half-half cut ({} / {} edges)",
+        edges_half.len(),
+        n_e - edges_half.len()
+    );
     println!("g_squared\tS_half");
 
     for &g_sq in &[0.1, 1.0, 10.0] {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h = build_hamiltonian(&hs, &complex, &params);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
@@ -230,7 +298,10 @@ fn main() {
     // ─────────────────────────────────────────────────────────────────
     eprintln!("── 5. Multiplet structure ──\n");
 
-    let params = KSParams { g_squared: 1.0, metric_weights: None };
+    let params = KSParams {
+        g_squared: 1.0,
+        metric_weights: None,
+    };
     let h = build_hamiltonian(&hs, &complex, &params);
     let spec = diag::diagonalize(&h, Some(30));
 
@@ -242,9 +313,7 @@ fn main() {
     while i < spec.energies.len() {
         let e = spec.energies[i];
         let mut deg = 1;
-        while i + deg < spec.energies.len()
-            && (spec.energies[i + deg] - e).abs() < 1e-6
-        {
+        while i + deg < spec.energies.len() && (spec.energies[i + deg] - e).abs() < 1e-6 {
             deg += 1;
         }
         println!("{level}\t{e:.6}\t{deg}");
@@ -261,7 +330,10 @@ fn main() {
     let code = stabilizer::stabilizer_code(&complex);
     println!("# Section 6: Z2 stabilizer code (2 pentachorons)");
     println!("n\tk\td\tn_stars\tn_plaquettes");
-    println!("{}\t{}\t{}\t{}\t{}", code.n, code.k, code.d, code.n_stars, code.n_plaquettes);
+    println!(
+        "{}\t{}\t{}\t{}\t{}",
+        code.n, code.k, code.d, code.n_stars, code.n_plaquettes
+    );
     println!("star_weights\t{:?}", code.star_weights);
     println!("plaquette_weight\t{}", code.plaquette_weight);
 

@@ -18,8 +18,8 @@
 //!   cargo run -p phyz-quantum --release --example jacobson_continuum -- --level 1 --scan-only
 
 use phyz_quantum::jacobson::{
-    cut_area_gradient, entanglement_gradient_su2, project_out_conformal, subdivided_s4,
-    EquilibriumConfig,
+    EquilibriumConfig, cut_area_gradient, entanglement_gradient_su2, project_out_conformal,
+    subdivided_s4,
 };
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_regge::regge::regge_action_grad;
@@ -48,7 +48,9 @@ fn main() {
     let hubble_list = [0.3, 0.7];
 
     if !scan_only {
-        println!("level\tV\tE\tb1\tdim\tN_part\tN_geom\tN_pts\tslope_raw\tR2_raw\tslope_proj\tR2_proj\tRT_R2_raw\tRT_R2_proj\ttime_s");
+        println!(
+            "level\tV\tE\tb1\tdim\tN_part\tN_geom\tN_pts\tslope_raw\tR2_raw\tslope_proj\tR2_proj\tRT_R2_raw\tRT_R2_proj\ttime_s"
+        );
     }
 
     for level in 0..=max_level {
@@ -147,8 +149,7 @@ fn main() {
                 let (regge_proj, _) = project_out_conformal(&regge_g);
 
                 for &part in partitions {
-                    let ds_ee =
-                        entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
+                    let ds_ee = entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
                     let (ee_proj, _) = project_out_conformal(&ds_ee);
 
                     for ei in 0..n_e {
@@ -162,8 +163,7 @@ fn main() {
                 eprintln!("  {} done ({elapsed:.1}s)", geo.name);
             }
 
-            let (slope_raw, _, r2_raw) =
-                linear_regression(&pooled_ds_regge, &pooled_ds_ee);
+            let (slope_raw, _, r2_raw) = linear_regression(&pooled_ds_regge, &pooled_ds_ee);
             let (slope_proj, _, r2_proj) =
                 linear_regression(&pooled_ds_regge_proj, &pooled_ds_ee_proj);
 
@@ -193,8 +193,7 @@ fn main() {
             for geo in &rt_geos {
                 let t0 = Instant::now();
                 for &part in partitions {
-                    let ds_ee =
-                        entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
+                    let ds_ee = entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
                     let da_cut = cut_area_gradient(&complex, part, &geo.lengths);
                     let (ee_proj, _) = project_out_conformal(&ds_ee);
                     let (cut_proj, _) = project_out_conformal(&da_cut);
@@ -211,8 +210,7 @@ fn main() {
             }
 
             let (_, _, rt_r2_raw) = linear_regression(&rt_da_cut, &rt_ds_ee);
-            let (_, _, rt_r2_proj) =
-                linear_regression(&rt_da_cut_proj, &rt_ds_ee_proj);
+            let (_, _, rt_r2_proj) = linear_regression(&rt_da_cut_proj, &rt_ds_ee_proj);
 
             let elapsed_level = t_level.elapsed().as_secs_f64();
 
@@ -270,8 +268,7 @@ fn main() {
                 let mut geo_regge: Vec<f64> = Vec::new();
 
                 for &part in partitions {
-                    let ds_ee =
-                        entanglement_gradient_su2(&complex, &l, part, &scan_config);
+                    let ds_ee = entanglement_gradient_su2(&complex, &l, part, &scan_config);
                     let (ee_proj, _) = project_out_conformal(&ds_ee);
                     for ei in 0..n_e {
                         cs_ee.push(ds_ee[ei]);
@@ -287,8 +284,16 @@ fn main() {
                 // Per-geometry R².
                 let (_, _, geo_r2) = linear_regression(&geo_regge, &geo_ee);
                 let (_, _, geo_r2_proj) = {
-                    let geo_ee_proj: Vec<f64> = geo_ee.iter().enumerate().map(|(i, _)| cs_ee_proj[cs_ee_proj.len() - geo_ee.len() + i]).collect();
-                    let geo_regge_proj: Vec<f64> = geo_regge.iter().enumerate().map(|(i, _)| cs_regge_proj[cs_regge_proj.len() - geo_regge.len() + i]).collect();
+                    let geo_ee_proj: Vec<f64> = geo_ee
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| cs_ee_proj[cs_ee_proj.len() - geo_ee.len() + i])
+                        .collect();
+                    let geo_regge_proj: Vec<f64> = geo_regge
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| cs_regge_proj[cs_regge_proj.len() - geo_regge.len() + i])
+                        .collect();
                     linear_regression(&geo_regge_proj, &geo_ee_proj)
                 };
                 per_geo_r2.push((format!("s{seed}"), geo_r2, geo_r2_proj));
@@ -334,7 +339,9 @@ fn main() {
     println!("# Summary: R²(level) — expect R² → 1.0 as mesh refines");
     println!("# If ∂S_EE ∝ ∂S_R becomes exact in continuum, this establishes");
     println!("# Einstein equations from entanglement alone.");
-    println!("# Coupling scan: coupling\\tlevel\\tg²\\tN_part\\tN_pts\\tslope_raw\\tR2_raw\\tslope_proj\\tR2_proj\\tslope_avg\\tR2_avg\\tslope_avg_proj\\tR2_avg_proj\\ttime_s");
+    println!(
+        "# Coupling scan: coupling\\tlevel\\tg²\\tN_part\\tN_pts\\tslope_raw\\tR2_raw\\tslope_proj\\tR2_proj\\tslope_avg\\tR2_avg\\tslope_avg_proj\\tR2_avg_proj\\ttime_s"
+    );
 
     eprintln!("\n=== Continuum limit analysis complete ===");
 }

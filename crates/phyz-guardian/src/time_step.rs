@@ -9,10 +9,14 @@ use phyz_math::DVec;
 use phyz_model::{Model, State};
 
 /// Helper: add two DVec values (owned + owned).
-fn dvec_add(a: &DVec, b: &DVec) -> DVec { a + b }
+fn dvec_add(a: &DVec, b: &DVec) -> DVec {
+    a + b
+}
 
 /// Helper: subtract two DVec values (owned - owned).
-fn dvec_sub(a: &DVec, b: &DVec) -> DVec { a - b }
+fn dvec_sub(a: &DVec, b: &DVec) -> DVec {
+    a - b
+}
 
 /// PI controller for adaptive time-stepping.
 ///
@@ -219,24 +223,12 @@ impl EmbeddedRkError {
         // k5
         let mut s5 = state.clone();
         let dq5_inc = dvec_add(
-            &dvec_add(
-                &(&dq1 * (-11.0 / 54.0)),
-                &(&dq2 * (5.0 / 2.0)),
-            ),
-            &dvec_add(
-                &(&dq3 * (-70.0 / 27.0)),
-                &(&dq4 * (35.0 / 27.0)),
-            ),
+            &dvec_add(&(&dq1 * (-11.0 / 54.0)), &(&dq2 * (5.0 / 2.0))),
+            &dvec_add(&(&dq3 * (-70.0 / 27.0)), &(&dq4 * (35.0 / 27.0))),
         );
         let dv5_inc = dvec_add(
-            &dvec_add(
-                &(&dv1 * (-11.0 / 54.0)),
-                &(&dv2 * (5.0 / 2.0)),
-            ),
-            &dvec_add(
-                &(&dv3 * (-70.0 / 27.0)),
-                &(&dv4 * (35.0 / 27.0)),
-            ),
+            &dvec_add(&(&dv1 * (-11.0 / 54.0)), &(&dv2 * (5.0 / 2.0))),
+            &dvec_add(&(&dv3 * (-70.0 / 27.0)), &(&dv4 * (35.0 / 27.0))),
         );
         s5.q += &(&dq5_inc * dt);
         s5.v += &(&dv5_inc * dt);
@@ -244,24 +236,12 @@ impl EmbeddedRkError {
 
         // 5th order solution
         let dq_final = dvec_add(
-            &dvec_add(
-                &(&dq1 * (37.0 / 378.0)),
-                &(&dq3 * (250.0 / 621.0)),
-            ),
-            &dvec_add(
-                &(&dq4 * (125.0 / 594.0)),
-                &(&dq5 * (512.0 / 1771.0)),
-            ),
+            &dvec_add(&(&dq1 * (37.0 / 378.0)), &(&dq3 * (250.0 / 621.0))),
+            &dvec_add(&(&dq4 * (125.0 / 594.0)), &(&dq5 * (512.0 / 1771.0))),
         );
         let dv_final = dvec_add(
-            &dvec_add(
-                &(&dv1 * (37.0 / 378.0)),
-                &(&dv3 * (250.0 / 621.0)),
-            ),
-            &dvec_add(
-                &(&dv4 * (125.0 / 594.0)),
-                &(&dv5 * (512.0 / 1771.0)),
-            ),
+            &dvec_add(&(&dv1 * (37.0 / 378.0)), &(&dv3 * (250.0 / 621.0))),
+            &dvec_add(&(&dv4 * (125.0 / 594.0)), &(&dv5 * (512.0 / 1771.0))),
         );
         result.q += &(&dq_final * dt);
         result.v += &(&dv_final * dt);

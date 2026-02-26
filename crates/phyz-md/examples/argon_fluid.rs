@@ -1,8 +1,8 @@
 //! Argon fluid simulation using Lennard-Jones potential.
 
-use std::sync::Arc;
 use phyz_math::Vec3;
 use phyz_md::{LennardJones, MdSystem, Particle};
+use std::sync::Arc;
 
 fn main() {
     // Constants

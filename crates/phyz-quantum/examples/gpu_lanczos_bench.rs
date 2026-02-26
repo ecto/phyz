@@ -15,7 +15,9 @@ fn main() {
     #[cfg(not(feature = "gpu"))]
     {
         eprintln!("This example requires the 'gpu' feature.");
-        eprintln!("Run with: cargo run -p phyz-quantum --features gpu --release --example gpu_lanczos_bench");
+        eprintln!(
+            "Run with: cargo run -p phyz-quantum --features gpu --release --example gpu_lanczos_bench"
+        );
         return;
     }
 
@@ -67,11 +69,10 @@ fn run_bench() {
 
     // --- 3-pentachoron Lambda=1 (main benchmark) ---
     {
-        let complex = SimplicialComplex::from_pentachorons(7, &[
-            [0, 1, 2, 3, 4],
-            [0, 1, 2, 3, 5],
-            [0, 1, 2, 3, 6],
-        ]);
+        let complex = SimplicialComplex::from_pentachorons(
+            7,
+            &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 3, 6]],
+        );
         let hs = U1HilbertSpace::new(&complex, 1);
         eprintln!("\n=== 3-pentachoron Lambda=1 (dim={}) ===", hs.dim());
 
@@ -103,14 +104,20 @@ fn run_bench() {
 
     // --- 4-pentachoron Lambda=1 (GPU only, too slow for CPU) ---
     {
-        let complex = SimplicialComplex::from_pentachorons(8, &[
-            [0, 1, 2, 3, 4],
-            [0, 1, 2, 3, 5],
-            [0, 1, 2, 3, 6],
-            [0, 1, 2, 3, 7],
-        ]);
+        let complex = SimplicialComplex::from_pentachorons(
+            8,
+            &[
+                [0, 1, 2, 3, 4],
+                [0, 1, 2, 3, 5],
+                [0, 1, 2, 3, 6],
+                [0, 1, 2, 3, 7],
+            ],
+        );
         let hs = U1HilbertSpace::new(&complex, 1);
-        eprintln!("\n=== 4-pentachoron Lambda=1 (dim={}) [GPU only] ===", hs.dim());
+        eprintln!(
+            "\n=== 4-pentachoron Lambda=1 (dim={}) [GPU only] ===",
+            hs.dim()
+        );
 
         let t0 = Instant::now();
         match gpu_lanczos_diagonalize(&hs, &complex, 1.0, None, n_eigenvalues, None) {

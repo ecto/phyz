@@ -8,9 +8,7 @@ use phyz_model::{JointType, Model, State};
 /// Compute joint velocity contribution S * qd for any joint type.
 fn joint_velocity(joint: &phyz_model::Joint, qd: &[f64]) -> SpatialVec {
     match joint.joint_type {
-        JointType::Revolute | JointType::Hinge => {
-            SpatialVec::new(joint.axis * qd[0], Vec3::zero())
-        }
+        JointType::Revolute | JointType::Hinge => SpatialVec::new(joint.axis * qd[0], Vec3::zero()),
         JointType::Prismatic | JointType::Slide => {
             SpatialVec::new(Vec3::zero(), joint.axis * qd[0])
         }

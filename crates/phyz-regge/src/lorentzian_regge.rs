@@ -19,8 +19,8 @@
 use crate::complex::SimplicialComplex;
 use crate::geometry::cofactor_6x6;
 use crate::lorentzian::{
-    all_lorentzian_dihedrals_jacobian, cm_matrix_signed, tri_area_sq_grad_in_pent,
-    triangle_area_sq_grad, triangle_area_sq_lorentzian, HingeType,
+    HingeType, all_lorentzian_dihedrals_jacobian, cm_matrix_signed, tri_area_sq_grad_in_pent,
+    triangle_area_sq_grad, triangle_area_sq_lorentzian,
 };
 use phyz_math::DMat;
 #[cfg(feature = "parallel")]
@@ -104,11 +104,8 @@ pub fn lorentzian_deficit_angles(
                 let rl = l + 1;
                 let rm = m + 1;
 
-                let (val, ht) = compute_dihedral(
-                    cofactors[rl][rm],
-                    cofactors[rl][rl],
-                    cofactors[rm][rm],
-                );
+                let (val, ht) =
+                    compute_dihedral(cofactors[rl][rm], cofactors[rl][rl], cofactors[rm][rm]);
 
                 // Find the triangle index
                 let mut tri_verts = [0usize; 3];
@@ -181,10 +178,7 @@ pub fn lorentzian_regge_action(complex: &SimplicialComplex, sq_lengths: &[f64]) 
 ///   ∂S_R/∂s_e = Σ_{t∋e} (∂|A_t|/∂s_e) · δ_t
 ///
 /// where ∂|A_t|/∂s_e = sign(A²_t) · ∂(A²_t)/∂s_e / (2|A_t|).
-pub fn lorentzian_regge_action_grad(
-    complex: &SimplicialComplex,
-    sq_lengths: &[f64],
-) -> Vec<f64> {
+pub fn lorentzian_regge_action_grad(complex: &SimplicialComplex, sq_lengths: &[f64]) -> Vec<f64> {
     let deficits = lorentzian_deficit_angles(complex, sq_lengths);
     let n_edges = complex.n_edges();
     let mut grad = vec![0.0; n_edges];
@@ -315,8 +309,7 @@ pub fn lorentzian_regge_action_hessian(
         for ii in 0..3 {
             for jj in 0..3 {
                 let h_a2 = if ii == jj { -1.0 / 8.0 } else { 1.0 / 8.0 };
-                let h_abs_a =
-                    sign_a * h_a2 * inv_2a - da_sq[ii] * da_sq[jj] * inv_4a3;
+                let h_abs_a = sign_a * h_a2 * inv_2a - da_sq[ii] * da_sq[jj] * inv_4a3;
                 hessian[e_idx[ii]][e_idx[jj]] += h_abs_a * deficit;
             }
         }
@@ -353,9 +346,7 @@ pub fn lorentzian_regge_action_hessian(
                 let e_ab = local_edge_idx(tri_local[0], tri_local[1]);
                 let e_ac = local_edge_idx(tri_local[0], tri_local[2]);
                 let e_bc = local_edge_idx(tri_local[1], tri_local[2]);
-                let a_sq = triangle_area_sq_lorentzian(
-                    pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc],
-                );
+                let a_sq = triangle_area_sq_lorentzian(pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc]);
                 let abs_a = a_sq.abs().sqrt();
                 if abs_a < 1e-30 {
                     dih_idx += 1;
@@ -411,42 +402,41 @@ pub fn local_deficit_angles(
     #[cfg(not(feature = "parallel"))]
     let iter = relevant_tris_vec.iter();
 
-    iter
-        .map(|&ti| {
-            let mut hinge_type: Option<HingeType> = None;
-            let mut angle_sum = 0.0;
+    iter.map(|&ti| {
+        let mut hinge_type: Option<HingeType> = None;
+        let mut angle_sum = 0.0;
 
-            // Use ALL pents touching this triangle (critical for correct deficit)
-            for &pi in &complex.tri_to_pents[ti] {
-                let pent = &complex.pents[pi];
-                let tri = &complex.triangles[ti];
-                let (l, m) = SimplicialComplex::opposite_local_indices(pent, tri);
+        // Use ALL pents touching this triangle (critical for correct deficit)
+        for &pi in &complex.tri_to_pents[ti] {
+            let pent = &complex.pents[pi];
+            let tri = &complex.triangles[ti];
+            let (l, m) = SimplicialComplex::opposite_local_indices(pent, tri);
 
-                let pent_sq = pent_sq_lengths(complex, pi, sq_lengths);
-                let cm = cm_matrix_signed(&pent_sq);
+            let pent_sq = pent_sq_lengths(complex, pi, sq_lengths);
+            let cm = cm_matrix_signed(&pent_sq);
 
-                let rl = l + 1;
-                let rm = m + 1;
-                let c_lm = cofactor_6x6(&cm, rl, rm);
-                let c_ll = cofactor_6x6(&cm, rl, rl);
-                let c_mm = cofactor_6x6(&cm, rm, rm);
+            let rl = l + 1;
+            let rm = m + 1;
+            let c_lm = cofactor_6x6(&cm, rl, rm);
+            let c_ll = cofactor_6x6(&cm, rl, rl);
+            let c_mm = cofactor_6x6(&cm, rm, rm);
 
-                let (val, ht) = compute_dihedral(c_lm, c_ll, c_mm);
+            let (val, ht) = compute_dihedral(c_lm, c_ll, c_mm);
 
-                if hinge_type.is_none() {
-                    hinge_type = Some(ht);
-                }
-                angle_sum += val;
+            if hinge_type.is_none() {
+                hinge_type = Some(ht);
             }
+            angle_sum += val;
+        }
 
-            let ht = hinge_type.unwrap_or(HingeType::Spacelike);
-            let deficit = match ht {
-                HingeType::Spacelike => 2.0 * PI - angle_sum,
-                HingeType::Timelike => -angle_sum,
-            };
-            (ti, (deficit, ht))
-        })
-        .collect()
+        let ht = hinge_type.unwrap_or(HingeType::Spacelike);
+        let deficit = match ht {
+            HingeType::Spacelike => 2.0 * PI - angle_sum,
+            HingeType::Timelike => -angle_sum,
+        };
+        (ti, (deficit, ht))
+    })
+    .collect()
 }
 
 /// Local Hessian of the Lorentzian Regge action restricted to free edges.
@@ -461,7 +451,11 @@ pub fn local_lorentzian_regge_hessian(
 ) -> DMat {
     let n_free = free_edges.len();
     let free_set: HashSet<usize> = free_edges.iter().copied().collect();
-    let free_idx: HashMap<usize, usize> = free_edges.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+    let free_idx: HashMap<usize, usize> = free_edges
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (e, i))
+        .collect();
 
     let mut hessian = DMat::zeros(n_free, n_free);
 
@@ -517,12 +511,15 @@ pub fn local_lorentzian_regge_hessian(
         let inv_4a3 = 1.0 / (4.0 * abs_a * abs_a * abs_a);
 
         for ii in 0..3 {
-            let Some(&fi) = free_idx.get(&e_idx[ii]) else { continue };
+            let Some(&fi) = free_idx.get(&e_idx[ii]) else {
+                continue;
+            };
             for jj in 0..3 {
-                let Some(&fj) = free_idx.get(&e_idx[jj]) else { continue };
+                let Some(&fj) = free_idx.get(&e_idx[jj]) else {
+                    continue;
+                };
                 let h_a2 = if ii == jj { -1.0 / 8.0 } else { 1.0 / 8.0 };
-                let h_abs_a =
-                    sign_a * h_a2 * inv_2a - da_sq[ii] * da_sq[jj] * inv_4a3;
+                let h_abs_a = sign_a * h_a2 * inv_2a - da_sq[ii] * da_sq[jj] * inv_4a3;
                 hessian[(fi, fj)] += h_abs_a * deficit;
             }
         }
@@ -560,9 +557,7 @@ pub fn local_lorentzian_regge_hessian(
                 let e_ab = local_edge_idx(tri_local[0], tri_local[1]);
                 let e_ac = local_edge_idx(tri_local[0], tri_local[2]);
                 let e_bc = local_edge_idx(tri_local[1], tri_local[2]);
-                let a_sq = triangle_area_sq_lorentzian(
-                    pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc],
-                );
+                let a_sq = triangle_area_sq_lorentzian(pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc]);
                 let abs_a = a_sq.abs().sqrt();
                 if abs_a < 1e-30 {
                     dih_idx += 1;
@@ -573,14 +568,18 @@ pub fn local_lorentzian_regge_hessian(
 
                 for e_local in 0..10 {
                     let ge = global_edge[e_local];
-                    let Some(&fi) = free_idx.get(&ge) else { continue };
+                    let Some(&fi) = free_idx.get(&ge) else {
+                        continue;
+                    };
                     let da_e = area_factor * area_grad_local[e_local];
                     if da_e.abs() < 1e-30 {
                         continue;
                     }
                     for f_local in 0..10 {
                         let gf = global_edge[f_local];
-                        let Some(&fj) = free_idx.get(&gf) else { continue };
+                        let Some(&fj) = free_idx.get(&gf) else {
+                            continue;
+                        };
                         local_h[(fi, fj)] += da_e * (-dihedral_jac[dih_idx][f_local]);
                     }
                 }
@@ -598,15 +597,14 @@ pub fn local_lorentzian_regge_hessian(
             || DMat::zeros(n_free, n_free),
             |local_h, pi| accumulate(local_h, pi),
         )
-        .reduce(
-            || DMat::zeros(n_free, n_free),
-            |a, b| &a + &b,
-        );
+        .reduce(|| DMat::zeros(n_free, n_free), |a, b| &a + &b);
 
     #[cfg(not(feature = "parallel"))]
     let term2 = relevant_pents_vec
         .iter()
-        .fold(DMat::zeros(n_free, n_free), |local_h, pi| accumulate(local_h, pi));
+        .fold(DMat::zeros(n_free, n_free), |local_h, pi| {
+            accumulate(local_h, pi)
+        });
 
     &hessian + &term2
 }
@@ -620,7 +618,11 @@ pub fn local_lorentzian_regge_action_grad(
     free_edges: &[usize],
 ) -> Vec<f64> {
     let n_free = free_edges.len();
-    let free_idx: HashMap<usize, usize> = free_edges.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+    let free_idx: HashMap<usize, usize> = free_edges
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (e, i))
+        .collect();
 
     let deficits = local_deficit_angles(complex, sq_lengths, free_edges);
     let mut grad = vec![0.0; n_free];
@@ -808,7 +810,9 @@ mod tests {
         }
 
         let rel_err = max_err / max_scale.max(1e-15);
-        eprintln!("Hessian vs FD: max_err={max_err:.2e}, max_scale={max_scale:.2e}, rel={rel_err:.2e}");
+        eprintln!(
+            "Hessian vs FD: max_err={max_err:.2e}, max_scale={max_scale:.2e}, rel={rel_err:.2e}"
+        );
         assert!(
             rel_err < 1e-3,
             "Hessian relative error too large: {rel_err:.2e}"
@@ -838,7 +842,10 @@ mod tests {
             }
         }
         eprintln!("max asymmetry = {max_asym:.2e}");
-        assert!(max_asym < 1e-6, "Hessian not symmetric: max_asym={max_asym:.2e}");
+        assert!(
+            max_asym < 1e-6,
+            "Hessian not symmetric: max_asym={max_asym:.2e}"
+        );
     }
 
     /// Local Hessian matches the submatrix of the full Hessian at free edges.
@@ -875,7 +882,9 @@ mod tests {
         }
 
         let rel_err = max_err / max_scale.max(1e-15);
-        eprintln!("local vs full Hessian: n_free={n_free}, max_err={max_err:.2e}, rel={rel_err:.2e}");
+        eprintln!(
+            "local vs full Hessian: n_free={n_free}, max_err={max_err:.2e}, rel={rel_err:.2e}"
+        );
         assert!(
             rel_err < 1e-10,
             "local Hessian relative error too large: {rel_err:.2e}"

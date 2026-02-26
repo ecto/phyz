@@ -109,11 +109,13 @@ impl ContactPipeline {
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("contact_pipeline"),
-            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("contact_pl"),
-                bind_group_layouts: &[&bgl],
-                push_constant_ranges: &[],
-            })),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("contact_pl"),
+                    bind_group_layouts: &[&bgl],
+                    push_constant_ranges: &[],
+                }),
+            ),
             module: &module,
             entry_point: Some("main"),
             compilation_options: Default::default(),

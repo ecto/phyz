@@ -1,8 +1,8 @@
 //! Molecular dynamics system with Velocity Verlet integration.
 
 use crate::{ForceField, HarmonicBond, NeighborList, Particle};
-use std::sync::Arc;
 use phyz_math::Vec3;
+use std::sync::Arc;
 
 /// Bond definition between two particles.
 #[derive(Clone, Debug)]
@@ -237,8 +237,11 @@ impl MdSystem {
             // Apply periodic boundary conditions
             if let Some(box_size) = self.box_size {
                 fn wrap_coord(val: &mut f64, size: f64) {
-                    if *val < 0.0 { *val += size; }
-                    else if *val >= size { *val -= size; }
+                    if *val < 0.0 {
+                        *val += size;
+                    } else if *val >= size {
+                        *val -= size;
+                    }
                 }
                 wrap_coord(&mut particle.x.x, box_size.x);
                 wrap_coord(&mut particle.x.y, box_size.y);

@@ -61,8 +61,7 @@ pub fn flat_hypercubic(n: usize, spacing: f64) -> (SimplicialComplex, Vec<f64>) 
 
                         for step in 0..4 {
                             coords[perm[step]] += 1;
-                            verts[step + 1] =
-                                vidx(coords[0], coords[1], coords[2], coords[3]);
+                            verts[step + 1] = vidx(coords[0], coords[1], coords[2], coords[3]);
                         }
 
                         verts.sort_unstable();
@@ -180,12 +179,7 @@ fn deform_by_metric_with(
         let p0 = vertex_pos(edge[0]);
         let p1 = vertex_pos(edge[1]);
 
-        let dx = [
-            p1[0] - p0[0],
-            p1[1] - p0[1],
-            p1[2] - p0[2],
-            p1[3] - p0[3],
-        ];
+        let dx = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2], p1[3] - p0[3]];
 
         let length = match integration {
             MetricIntegration::Midpoint => {
@@ -274,8 +268,8 @@ pub fn reissner_nordstrom_with(
         let c = 1.0 - r_plus / (2.0 * r);
         let d = 1.0 - r_minus / (2.0 * r);
 
-        let f = (c * d) / (a * b);       // g_tt
-        let g = (a * b) * (a * b);       // g_xx = g_yy = g_zz
+        let f = (c * d) / (a * b); // g_tt
+        let g = (a * b) * (a * b); // g_xx = g_yy = g_zz
 
         let f = f.abs().max(0.01);
         let g = g.max(0.01);
@@ -493,7 +487,10 @@ pub fn kerr_bl_with(
         let psi4 = psi * psi;
 
         // g_tt (Euclidean: positive)
-        let f_tt = (delta_safe * sigma_safe / ((r_bl * r_bl + a * a) * (r_bl * r_bl + a * a) + a * a * delta_safe).max(0.01)).abs().max(0.01);
+        let f_tt = (delta_safe * sigma_safe
+            / ((r_bl * r_bl + a * a) * (r_bl * r_bl + a * a) + a * a * delta_safe).max(0.01))
+        .abs()
+        .max(0.01);
 
         // Spatial part
         let g_rr = psi4;
@@ -529,7 +526,13 @@ pub fn de_sitter_static(
     cosmological_length: f64,
     r_min: f64,
 ) -> (SimplicialComplex, Vec<f64>) {
-    de_sitter_static_with(n, spacing, cosmological_length, r_min, MetricIntegration::Midpoint)
+    de_sitter_static_with(
+        n,
+        spacing,
+        cosmological_length,
+        r_min,
+        MetricIntegration::Midpoint,
+    )
 }
 
 /// Like `de_sitter_static` with configurable integration method.
@@ -669,8 +672,10 @@ mod tests {
     #[test]
     fn test_simpson_flat_matches_midpoint() {
         // For flat metric (M=0), both methods should produce the same set of lengths.
-        let (_, mut lengths_mid) = reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Midpoint);
-        let (_, mut lengths_simp) = reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Simpson);
+        let (_, mut lengths_mid) =
+            reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Midpoint);
+        let (_, mut lengths_simp) =
+            reissner_nordstrom_with(3, 1.0, 0.0, 0.0, 0.5, MetricIntegration::Simpson);
 
         lengths_mid.sort_by(|a, b| a.partial_cmp(b).unwrap());
         lengths_simp.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -687,7 +692,8 @@ mod tests {
 
     #[test]
     fn test_simpson_rn_positive_lengths() {
-        let (complex, lengths) = reissner_nordstrom_with(3, 1.0, 0.1, 0.0, 0.5, MetricIntegration::Simpson);
+        let (complex, lengths) =
+            reissner_nordstrom_with(3, 1.0, 0.1, 0.0, 0.5, MetricIntegration::Simpson);
         assert!(complex.n_pents() > 0);
         for &l in &lengths {
             assert!(l > 0.0, "negative or zero edge length: {l}");

@@ -3,7 +3,10 @@
 //! Simulates Mercury's orbit around the Sun with 1PN post-Newtonian corrections.
 //! Demonstrates the famous 43 arcsec/century perihelion precession predicted by GR.
 
-use phyz_gravity::{GravitySolver, GravityParticle, PostNewtonianSolver, orbital_elements, perihelion_precession_rate};
+use phyz_gravity::{
+    GravityParticle, GravitySolver, PostNewtonianSolver, orbital_elements,
+    perihelion_precession_rate,
+};
 use phyz_math::Vec3;
 
 fn main() {
@@ -27,12 +30,19 @@ fn main() {
     println!("  Semi-major axis: {:.3e} m ({:.3} AU)", a, a / au);
     println!("  Eccentricity: {:.4}", e);
     println!("  Period: {:.2} days", period / 86400.0);
-    println!("  Perihelion distance: {:.3e} m ({:.3} AU)", r_perihelion, r_perihelion / au);
+    println!(
+        "  Perihelion distance: {:.3e} m ({:.3} AU)",
+        r_perihelion,
+        r_perihelion / au
+    );
     println!("  Perihelion velocity: {:.3} km/s\n", v_perihelion / 1e3);
 
     // Predicted perihelion precession (GR)
     let predicted_precession = perihelion_precession_rate(a, e, m_sun, period);
-    println!("Predicted precession (1PN): {:.2} arcsec/century", predicted_precession);
+    println!(
+        "Predicted precession (1PN): {:.2} arcsec/century",
+        predicted_precession
+    );
     println!("Observed (historical): 43.11 ± 0.45 arcsec/century\n");
 
     // Create particles
@@ -114,8 +124,8 @@ fn main() {
 
     // Compute precession from first and last perihelion
     if perihelion_longitudes.len() >= 2 {
-        let delta_omega = perihelion_longitudes.last().unwrap()
-            - perihelion_longitudes.first().unwrap();
+        let delta_omega =
+            perihelion_longitudes.last().unwrap() - perihelion_longitudes.first().unwrap();
         let n_completed = (perihelion_longitudes.len() - 1) as f64;
 
         let precession_per_orbit = delta_omega / n_completed;
@@ -125,12 +135,26 @@ fn main() {
         let precession_arcsec_century = precession_per_orbit * orbits_per_century * 206265.0;
 
         println!("\nSimulated precession:");
-        println!("  Δω over {} orbits: {:.6} rad ({:.4}°)", n_completed, delta_omega, delta_omega.to_degrees());
+        println!(
+            "  Δω over {} orbits: {:.6} rad ({:.4}°)",
+            n_completed,
+            delta_omega,
+            delta_omega.to_degrees()
+        );
         println!("  Per orbit: {:.6} rad", precession_per_orbit);
-        println!("  Extrapolated: {:.2} arcsec/century", precession_arcsec_century);
+        println!(
+            "  Extrapolated: {:.2} arcsec/century",
+            precession_arcsec_century
+        );
         println!("\nComparison:");
         println!("  Predicted: {:.2} arcsec/century", predicted_precession);
-        println!("  Simulated: {:.2} arcsec/century", precession_arcsec_century);
-        println!("  Difference: {:.2}%", (precession_arcsec_century - predicted_precession).abs() / predicted_precession * 100.0);
+        println!(
+            "  Simulated: {:.2} arcsec/century",
+            precession_arcsec_century
+        );
+        println!(
+            "  Difference: {:.2}%",
+            (precession_arcsec_century - predicted_precession).abs() / predicted_precession * 100.0
+        );
     }
 }

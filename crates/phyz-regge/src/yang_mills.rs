@@ -9,7 +9,7 @@
 //! the metric weight (same as for U(1)).
 
 use crate::complex::SimplicialComplex;
-use crate::gauge::{metric_weights, GaugeField};
+use crate::gauge::{GaugeField, metric_weights};
 use crate::su2::Su2;
 
 /// SU(2) gauge field: one SU(2) group element per edge.
@@ -76,11 +76,7 @@ impl GaugeField for Su2Field {
 ///
 /// For triangle [v0, v1, v2] with v0 < v1 < v2:
 ///   U_t = U_{01} · U_{12} · U_{02}^{-1}
-fn triangle_holonomy(
-    complex: &SimplicialComplex,
-    elements: &[Su2],
-    tri: &[usize; 3],
-) -> Su2 {
+fn triangle_holonomy(complex: &SimplicialComplex, elements: &[Su2], tri: &[usize; 3]) -> Su2 {
     let e01 = complex.edge_index[&[tri[0], tri[1]]];
     let e02 = complex.edge_index[&[tri[0], tri[2]]];
     let e12 = complex.edge_index[&[tri[1], tri[2]]];
@@ -92,11 +88,7 @@ fn triangle_holonomy(
 /// Wilson action for SU(2) gauge field.
 ///
 ///   S_YM = Σ_t (1 - Re(Tr(U_t))/2) · W_t
-pub fn wilson_action(
-    complex: &SimplicialComplex,
-    lengths: &[f64],
-    elements: &[Su2],
-) -> f64 {
+pub fn wilson_action(complex: &SimplicialComplex, lengths: &[f64], elements: &[Su2]) -> f64 {
     let w = metric_weights(complex, lengths);
     let mut action = 0.0;
 
@@ -574,15 +566,16 @@ mod tests {
         let s_u1 = crate::gauge::maxwell_action(&complex, &lengths, &phases);
 
         // SU(2) with abelian embedding along σ3.
-        let elements: Vec<Su2> = phases
-            .iter()
-            .map(|&p| Su2::exp(&[0.0, 0.0, p]))
-            .collect();
+        let elements: Vec<Su2> = phases.iter().map(|&p| Su2::exp(&[0.0, 0.0, p])).collect();
         let s_su2 = wilson_action(&complex, &lengths, &elements);
 
         // Normalization: Wilson uses (1 - cos(F/2)), Maxwell uses F²/2.
         // For small F: 1 - cos(F/2) ≈ F²/8, so ratio = 1/4.
-        let ratio = if s_u1.abs() > 1e-15 { s_su2 / s_u1 } else { 0.25 };
+        let ratio = if s_u1.abs() > 1e-15 {
+            s_su2 / s_u1
+        } else {
+            0.25
+        };
         assert!(
             (ratio - 0.25).abs() < 0.05,
             "abelian embedding: SU(2)={s_su2:.6e}, U(1)={s_u1:.6e}, ratio={ratio:.4} (expected ~0.25)"

@@ -26,11 +26,11 @@ use std::env;
 use std::time::Instant;
 
 use phyz_regge::mesh;
-use phyz_regge::search::{search_symmetries_generic, SearchConfig};
+use phyz_regge::search::{SearchConfig, search_symmetries_generic};
 use phyz_regge::su2::Su2;
 use phyz_regge::yang_mills::{
-    all_su2_gauge_generators, einstein_yang_mills_grad,
-    su2_conformal_generator, su2_rotation_generator, su2_translation_generator,
+    all_su2_gauge_generators, einstein_yang_mills_grad, su2_conformal_generator,
+    su2_rotation_generator, su2_translation_generator,
 };
 
 use rand::rngs::StdRng;
@@ -52,11 +52,7 @@ fn env_str(key: &str, default: &str) -> String {
 /// For each edge, the SU(2) element is exp(r̂ × ê · σ · f(r)), where r̂ is
 /// the radial direction from center and ê is the edge direction. This gives
 /// a hedgehog-like configuration respecting spherical symmetry (up to gauge).
-fn monopole_field(
-    complex: &phyz_regge::SimplicialComplex,
-    n: usize,
-    strength: f64,
-) -> Vec<Su2> {
+fn monopole_field(complex: &phyz_regge::SimplicialComplex, n: usize, strength: f64) -> Vec<Su2> {
     use phyz_regge::symmetry::{vertex_coords_4d, vertex_index_4d};
     let _ = vertex_index_4d; // suppress warning
 
@@ -145,7 +141,12 @@ fn main() {
         "Mesh: {} vertices, {} edges  ({:.1?})",
         complex.n_vertices, n_edges, mesh_time,
     );
-    println!("DOF: {} ({} lengths + {} SU(2) field)", dim, n_edges, 3 * n_edges);
+    println!(
+        "DOF: {} ({} lengths + {} SU(2) field)",
+        dim,
+        n_edges,
+        3 * n_edges
+    );
     println!();
 
     // --- SU(2) field ---
@@ -169,7 +170,10 @@ fn main() {
     // Compute Wilson action for info.
     let s_ym = phyz_regge::yang_mills::wilson_action(&complex, &lengths, &elements);
     let s_r = phyz_regge::regge::regge_action(&complex, &lengths);
-    println!("S_R = {s_r:.6e}, S_YM = {s_ym:.6e}, S_total = {:.6e}", s_r + alpha * s_ym);
+    println!(
+        "S_R = {s_r:.6e}, S_YM = {s_ym:.6e}, S_total = {:.6e}",
+        s_r + alpha * s_ym
+    );
     println!();
 
     // --- known generators ---
@@ -181,21 +185,27 @@ fn main() {
 
     // Geometric generators with proper SU(2) field transport.
     for axis in 0..4 {
-        known.push(su2_translation_generator(&complex, &lengths, &elements, axis, n));
+        known.push(su2_translation_generator(
+            &complex, &lengths, &elements, axis, n,
+        ));
     }
     let n_trans = 4;
 
     // Spatial rotations (xy, xz, yz) with SU(2) field transport.
     let mut n_rot = 0;
     for (a1, a2) in [(1, 2), (1, 3), (2, 3)] {
-        known.push(su2_rotation_generator(&complex, &lengths, &elements, a1, a2, n));
+        known.push(su2_rotation_generator(
+            &complex, &lengths, &elements, a1, a2, n,
+        ));
         n_rot += 1;
     }
 
     // Boosts (time-space rotations) with SU(2) field transport.
     let mut n_boost = 0;
     for axis in 1..=3 {
-        known.push(su2_rotation_generator(&complex, &lengths, &elements, 0, axis, n));
+        known.push(su2_rotation_generator(
+            &complex, &lengths, &elements, 0, axis, n,
+        ));
         n_boost += 1;
     }
 
@@ -205,7 +215,12 @@ fn main() {
     let gen_time = t0.elapsed();
     println!(
         "Known generators: {} SU(2) gauge + {} translation + {} rotation + {} boost + 1 conformal = {}  ({:.1?})",
-        n_gauge, n_trans, n_rot, n_boost, known.len(), gen_time,
+        n_gauge,
+        n_trans,
+        n_rot,
+        n_boost,
+        known.len(),
+        gen_time,
     );
     println!();
 
@@ -214,7 +229,10 @@ fn main() {
     if n_samples < dim.saturating_sub(n_known) {
         eprintln!(
             "WARNING: n_samples ({}) < DOF - n_known ({} - {} = {}). Consider increasing SU2_SAMPLES.",
-            n_samples, dim, n_known, dim.saturating_sub(n_known),
+            n_samples,
+            dim,
+            n_known,
+            dim.saturating_sub(n_known),
         );
         eprintln!();
     }
@@ -231,31 +249,26 @@ fn main() {
     let complex_ref = &complex;
 
     let t0 = Instant::now();
-    let results = search_symmetries_generic(
-        dim,
-        &known,
-        &config,
-        |rng| {
-            let perturbed_lengths: Vec<f64> = bg_lengths
-                .iter()
-                .map(|&l| l * (1.0 + pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0)))
-                .collect();
+    let results = search_symmetries_generic(dim, &known, &config, |rng| {
+        let perturbed_lengths: Vec<f64> = bg_lengths
+            .iter()
+            .map(|&l| l * (1.0 + pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0)))
+            .collect();
 
-            let perturbed_elements: Vec<Su2> = bg_elements
-                .iter()
-                .map(|u| {
-                    let delta = [
-                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                    ];
-                    Su2::exp(&delta).mul(u)
-                })
-                .collect();
+        let perturbed_elements: Vec<Su2> = bg_elements
+            .iter()
+            .map(|u| {
+                let delta = [
+                    pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                    pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                    pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                ];
+                Su2::exp(&delta).mul(u)
+            })
+            .collect();
 
-            einstein_yang_mills_grad(complex_ref, &perturbed_lengths, &perturbed_elements, alpha)
-        },
-    );
+        einstein_yang_mills_grad(complex_ref, &perturbed_lengths, &perturbed_elements, alpha)
+    });
     let search_time = t0.elapsed();
 
     // --- analysis ---
@@ -268,20 +281,32 @@ fn main() {
     let mut prev = 0.0_f64;
     println!("Violation spectrum:");
     for &t in &thresholds {
-        let count = results.candidates.iter().filter(|c| c.violation >= prev && c.violation < t).count();
+        let count = results
+            .candidates
+            .iter()
+            .filter(|c| c.violation >= prev && c.violation < t)
+            .count();
         if count > 0 {
             println!("  [{:.0e}, {:.0e}): {count}", prev, t);
         }
         prev = t;
     }
-    let above = results.candidates.iter().filter(|c| c.violation >= prev).count();
+    let above = results
+        .candidates
+        .iter()
+        .filter(|c| c.violation >= prev)
+        .count();
     if above > 0 {
         println!("  [{:.0e}, ∞): {above}", prev);
     }
     println!();
 
     // Exact symmetries.
-    let n_exact = results.candidates.iter().filter(|c| c.violation < 1e-10).count();
+    let n_exact = results
+        .candidates
+        .iter()
+        .filter(|c| c.violation < 1e-10)
+        .count();
     println!("Exact symmetries (violation < 1e-10): {n_exact}");
     println!("Expected SU(2) gauge: {n_gauge}");
 
@@ -290,22 +315,20 @@ fn main() {
     let novel: Vec<_> = results
         .candidates
         .iter()
-        .filter(|c| {
-            c.violation < novel_threshold
-                && c.overlaps.iter().all(|(_, o)| o.abs() < 0.3)
-        })
+        .filter(|c| c.violation < novel_threshold && c.overlaps.iter().all(|(_, o)| o.abs() < 0.3))
         .collect();
 
     if novel.is_empty() {
-        println!("\nNo novel symmetry candidates (violation < {novel_threshold:.0e}, overlap < 0.3).");
+        println!(
+            "\nNo novel symmetry candidates (violation < {novel_threshold:.0e}, overlap < 0.3)."
+        );
     } else {
         println!("\n=== NOVEL CANDIDATES (violation < {novel_threshold:.0e}) ===");
         for (i, c) in novel.iter().enumerate() {
             println!("  [{i}] violation = {:.2e}", c.violation);
             // Show top overlaps.
-            let mut top_overlaps: Vec<_> = c.overlaps.iter()
-                .filter(|(_, o)| o.abs() > 0.05)
-                .collect();
+            let mut top_overlaps: Vec<_> =
+                c.overlaps.iter().filter(|(_, o)| o.abs() > 0.05).collect();
             top_overlaps.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
             for (name, overlap) in top_overlaps.iter().take(5) {
                 println!("       overlap with {name}: {overlap:.4}");
@@ -319,7 +342,11 @@ fn main() {
         let idx = n_exact + i;
         print!("  [{idx}] violation={:.2e}", c.violation);
         // Show strongest overlap.
-        if let Some((name, overlap)) = c.overlaps.iter().max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap()) {
+        if let Some((name, overlap)) = c
+            .overlaps
+            .iter()
+            .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+        {
             if overlap.abs() > 0.1 {
                 print!("  strongest: {name}={overlap:.3}");
             }

@@ -134,16 +134,16 @@ fn compute_code_distance(complex: &SimplicialComplex, b1: usize) -> usize {
         }
     }
 
-    if min_weight > n_edges {
-        0
-    } else {
-        min_weight
-    }
+    if min_weight > n_edges { 0 } else { min_weight }
 }
 
 impl std::fmt::Display for StabilizerCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Z₂ Stabilizer Code [[{}, {}, {}]]", self.n, self.k, self.d)?;
+        writeln!(
+            f,
+            "Z₂ Stabilizer Code [[{}, {}, {}]]",
+            self.n, self.k, self.d
+        )?;
         writeln!(f, "  Physical qubits:  {}", self.n)?;
         writeln!(f, "  Logical qubits:   {}", self.k)?;
         writeln!(f, "  Code distance:    {}", self.d)?;
@@ -183,8 +183,7 @@ mod tests {
 
     #[test]
     fn test_two_pentachorons_code() {
-        let complex =
-            SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
+        let complex = SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]);
         let code = stabilizer_code(&complex);
 
         // 6 vertices, edges between two pents sharing [0,1,2,3].

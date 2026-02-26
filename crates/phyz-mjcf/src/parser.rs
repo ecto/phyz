@@ -2,13 +2,13 @@
 
 use crate::defaults::DefaultsManager;
 use crate::{MjcfError, Result};
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
 
 /// Parsed body element from MJCF.
 #[derive(Debug, Clone)]

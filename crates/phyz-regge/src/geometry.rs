@@ -122,7 +122,11 @@ pub fn cofactor_6x6(m: &[[f64; 6]; 6], row: usize, col: usize) -> f64 {
         mi += 1;
     }
 
-    let sign = if (row + col).is_multiple_of(2) { 1.0 } else { -1.0 };
+    let sign = if (row + col).is_multiple_of(2) {
+        1.0
+    } else {
+        -1.0
+    };
     sign * det_5x5(&minor)
 }
 

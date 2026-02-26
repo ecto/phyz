@@ -1,8 +1,8 @@
 //! Procedural world generation for creating random articulated systems.
 
-use rand::prelude::*;
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Model, ModelBuilder};
+use rand::prelude::*;
 
 /// Procedural world generator with seeded randomness.
 pub struct WorldGenerator {

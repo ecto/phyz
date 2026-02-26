@@ -14,3 +14,10 @@ phyz-rigid.workspace = true
 tang.workspace = true
 tang-la.workspace = true
 tang-expr.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "jacobians"
+harness = false

@@ -106,11 +106,7 @@ pub fn regge_action_grad(complex: &SimplicialComplex, lengths: &[f64]) -> Vec<f6
 }
 
 /// Compute Regge action via finite differences for gradient verification.
-pub fn regge_action_grad_fd(
-    complex: &SimplicialComplex,
-    lengths: &[f64],
-    eps: f64,
-) -> Vec<f64> {
+pub fn regge_action_grad_fd(complex: &SimplicialComplex, lengths: &[f64], eps: f64) -> Vec<f64> {
     let n_edges = complex.n_edges();
     let mut grad = vec![0.0; n_edges];
     let mut l_work = lengths.to_vec();

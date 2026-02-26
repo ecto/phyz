@@ -1,10 +1,10 @@
 use wasm_bindgen::prelude::*;
 
-use phyz_quantum::jacobson::{
-    boundary_5simplex, subdivided_s4, su2_ground_state_with_energy,
+use phyz_quantum::jacobson::{boundary_5simplex, su2_ground_state_with_energy, subdivided_s4};
+use phyz_quantum::ryu_takayanagi::{
+    cut_area_geometric, perturbed_edge_lengths, vertex_bipartitions,
 };
-use phyz_quantum::ryu_takayanagi::{cut_area_geometric, perturbed_edge_lengths, vertex_bipartitions};
-use phyz_quantum::su2_quantum::{su2_entanglement_for_partition, Su2HilbertSpace};
+use phyz_quantum::su2_quantum::{Su2HilbertSpace, su2_entanglement_for_partition};
 use phyz_regge::complex::SimplicialComplex;
 
 #[wasm_bindgen]
@@ -84,8 +84,6 @@ impl QuantumSolver {
 
         Ok(result.to_string())
     }
-
-
 
     pub fn info(&self) -> String {
         serde_json::json!({

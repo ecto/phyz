@@ -21,14 +21,14 @@ pub mod gauss_law;
 pub mod hamiltonian;
 pub mod hilbert;
 pub mod hypercubic;
+pub mod jacobson;
 pub mod lanczos;
 pub mod observables;
-pub mod triangulated_torus;
 pub mod qubit_map;
 pub mod ryu_takayanagi;
-pub mod jacobson;
 pub mod stabilizer;
 pub mod su2_quantum;
+pub mod triangulated_torus;
 
 #[cfg(feature = "gpu")]
 pub mod csr;

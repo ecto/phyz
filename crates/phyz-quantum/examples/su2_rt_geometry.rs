@@ -12,8 +12,8 @@
 use phyz_quantum::diag;
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_quantum::su2_quantum::{
-    build_su2_hamiltonian, su2_entanglement_decomposed, su2_entanglement_for_partition,
-    Su2HilbertSpace,
+    Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_decomposed,
+    su2_entanglement_for_partition,
 };
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
@@ -91,7 +91,9 @@ fn main() {
     #[cfg(not(feature = "gpu"))]
     {
         eprintln!("This example requires the 'gpu' feature.");
-        eprintln!("Run with: cargo run -p phyz-quantum --features gpu --release --example su2_rt_geometry");
+        eprintln!(
+            "Run with: cargo run -p phyz-quantum --features gpu --release --example su2_rt_geometry"
+        );
         return;
     }
 
@@ -107,11 +109,7 @@ fn run_analysis() {
 
     let pentachoron_sets: &[&[[usize; 5]]] = &[
         &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]],
-        &[
-            [0, 1, 2, 3, 4],
-            [0, 1, 2, 3, 5],
-            [0, 1, 2, 3, 6],
-        ],
+        &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 3, 6]],
         &[
             [0, 1, 2, 3, 4],
             [0, 1, 2, 3, 5],
@@ -181,9 +179,8 @@ fn run_analysis() {
                 let spec = diag::diagonalize(&h, Some(1));
                 spec.states[0].clone()
             } else {
-                match gpu_lanczos_diagonalize_su2(
-                    &hs, &complex, g_squared, Some(&mw), 1, Some(300),
-                ) {
+                match gpu_lanczos_diagonalize_su2(&hs, &complex, g_squared, Some(&mw), 1, Some(300))
+                {
                     Ok(spec) => spec.states[0].clone(),
                     Err(e) => {
                         eprintln!("  GPU failed for {}: {e}", geo.name);
@@ -262,9 +259,17 @@ fn run_analysis() {
     for (&n_pent, gn_vals) in &gn_by_size {
         let n = gn_vals.len() as f64;
         let mean = gn_vals.iter().sum::<f64>() / n;
-        let var = gn_vals.iter().map(|&g| (g - mean) * (g - mean)).sum::<f64>() / n;
+        let var = gn_vals
+            .iter()
+            .map(|&g| (g - mean) * (g - mean))
+            .sum::<f64>()
+            / n;
         let std = var.sqrt();
-        let cv = if mean.abs() > 1e-30 { std / mean } else { f64::INFINITY };
+        let cv = if mean.abs() > 1e-30 {
+            std / mean
+        } else {
+            f64::INFINITY
+        };
         let universal = if cv < 0.1 { "YES" } else { "no" };
         println!(
             "{n_pent}\t{}\t{mean:.6e}\t{std:.6e}\t{cv:.4}\t{universal}",
@@ -296,7 +301,11 @@ fn run_analysis() {
     for (&n_pent, gn_vals) in &gn_by_size {
         let n = gn_vals.len() as f64;
         let mean = gn_vals.iter().sum::<f64>() / n;
-        let var = gn_vals.iter().map(|&g| (g - mean) * (g - mean)).sum::<f64>() / n;
+        let var = gn_vals
+            .iter()
+            .map(|&g| (g - mean) * (g - mean))
+            .sum::<f64>()
+            / n;
         let cv = if mean.abs() > 1e-30 {
             var.sqrt() / mean
         } else {

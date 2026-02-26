@@ -1,8 +1,8 @@
 //! Trajectory matching for real2sim parameter estimation.
 
-use std::collections::HashMap;
 use phyz_model::Model;
 use phyz_rigid::aba;
+use std::collections::HashMap;
 
 /// A single observation in a trajectory.
 #[derive(Debug, Clone)]

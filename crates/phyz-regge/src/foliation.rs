@@ -64,13 +64,15 @@ fn sorted4(a: usize, b: usize, c: usize, d: usize) -> [usize; 4] {
 /// Each cube is subdivided into 6 tetrahedra using Kuhn triangulation.
 pub fn flat_spatial_cube(n: usize, spacing: f64) -> (SpatialSlice, Vec<f64>) {
     let n_verts = n * n * n;
-    let vidx = |x: usize, y: usize, z: usize| -> usize {
-        (x % n) + n * (y % n) + n * n * (z % n)
-    };
+    let vidx = |x: usize, y: usize, z: usize| -> usize { (x % n) + n * (y % n) + n * n * (z % n) };
 
     let perms: [[usize; 3]; 6] = [
-        [0, 1, 2], [0, 2, 1], [1, 0, 2],
-        [1, 2, 0], [2, 0, 1], [2, 1, 0],
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
     ];
 
     let mut tet_set: Vec<[usize; 4]> = Vec::new();
@@ -104,13 +106,19 @@ pub fn flat_spatial_cube(n: usize, spacing: f64) -> (SpatialSlice, Vec<f64>) {
             for j in (i + 1)..4 {
                 let e = sorted2(tet[i], tet[j]);
                 let len = edges.len();
-                edge_index.entry(e).or_insert_with(|| { edges.push(e); len });
+                edge_index.entry(e).or_insert_with(|| {
+                    edges.push(e);
+                    len
+                });
             }
             for j in (i + 1)..4 {
                 for k in (j + 1)..4 {
                     let t = sorted3(tet[i], tet[j], tet[k]);
                     let len = triangles.len();
-                    tri_index.entry(t).or_insert_with(|| { triangles.push(t); len });
+                    tri_index.entry(t).or_insert_with(|| {
+                        triangles.push(t);
+                        len
+                    });
                 }
             }
         }
@@ -127,13 +135,29 @@ pub fn flat_spatial_cube(n: usize, spacing: f64) -> (SpatialSlice, Vec<f64>) {
         edge_lengths[ei] = dist_sq.sqrt() * spacing;
     }
 
-    (SpatialSlice { n_vertices: n_verts, tets: tet_set, edge_index, edges, tri_index, triangles }, edge_lengths)
+    (
+        SpatialSlice {
+            n_vertices: n_verts,
+            tets: tet_set,
+            edge_index,
+            edges,
+            tri_index,
+            triangles,
+        },
+        edge_lengths,
+    )
 }
 
 fn min_image(a: usize, b: usize, n: usize) -> i64 {
     let d = (b as i64) - (a as i64);
     let n = n as i64;
-    if d > n / 2 { d - n } else if d < -n / 2 { d + n } else { d }
+    if d > n / 2 {
+        d - n
+    } else if d < -n / 2 {
+        d + n
+    } else {
+        d
+    }
 }
 
 fn coords_3d(idx: usize, n: usize) -> (usize, usize, usize) {
@@ -229,11 +253,7 @@ pub fn foliated_hypercubic(n_t: usize, n_s: usize) -> FoliatedComplex {
 /// Assign flat Minkowski signed squared edge lengths to a foliated complex.
 ///
 /// Uses the vertex coordinate system to compute exact Minkowski distances.
-pub fn flat_minkowski_sq_lengths(
-    fc: &FoliatedComplex,
-    spacing: f64,
-    dt: f64,
-) -> Vec<f64> {
+pub fn flat_minkowski_sq_lengths(fc: &FoliatedComplex, spacing: f64, dt: f64) -> Vec<f64> {
     let n_t = fc.n_slices;
     let n_s = fc.n_spatial;
     let mut sq_lengths = vec![0.0; fc.complex.n_edges()];
@@ -248,8 +268,8 @@ pub fn flat_minkowski_sq_lengths(
         let delta_z = min_image(z0, z1, n_s) as f64 * spacing;
 
         // Minkowski: ds² = -dt² + dx² + dy² + dz²
-        sq_lengths[ei] = -delta_t * delta_t + delta_x * delta_x
-            + delta_y * delta_y + delta_z * delta_z;
+        sq_lengths[ei] =
+            -delta_t * delta_t + delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
     }
 
     sq_lengths
@@ -389,9 +409,21 @@ mod tests {
     fn test_edge_type_classification() {
         let fc = foliated_hypercubic(2, 2);
 
-        let n_spatial = fc.edge_types.iter().filter(|&&t| t == EdgeType::Spatial).count();
-        let n_timelike = fc.edge_types.iter().filter(|&&t| t == EdgeType::Timelike).count();
-        let n_diagonal = fc.edge_types.iter().filter(|&&t| t == EdgeType::Diagonal).count();
+        let n_spatial = fc
+            .edge_types
+            .iter()
+            .filter(|&&t| t == EdgeType::Spatial)
+            .count();
+        let n_timelike = fc
+            .edge_types
+            .iter()
+            .filter(|&&t| t == EdgeType::Timelike)
+            .count();
+        let n_diagonal = fc
+            .edge_types
+            .iter()
+            .filter(|&&t| t == EdgeType::Diagonal)
+            .count();
 
         assert!(n_spatial > 0, "no spatial edges");
         assert!(n_timelike > 0, "no timelike edges");
@@ -404,9 +436,7 @@ mod tests {
         let fc = foliated_hypercubic(2, 2);
         let sq_lengths = flat_minkowski_sq_lengths(&fc, 1.0, 0.3);
 
-        let deficits = crate::lorentzian_regge::lorentzian_deficit_angles(
-            &fc.complex, &sq_lengths,
-        );
+        let deficits = crate::lorentzian_regge::lorentzian_deficit_angles(&fc.complex, &sq_lengths);
 
         let mut max_spacelike = 0.0f64;
         let mut max_timelike = 0.0f64;
@@ -424,13 +454,12 @@ mod tests {
                 }
             }
         }
-        eprintln!("spacelike: {n_sl} (max |δ| = {max_spacelike:.6e}), timelike: {n_tl} (max |δ| = {max_timelike:.6e})");
+        eprintln!(
+            "spacelike: {n_sl} (max |δ| = {max_spacelike:.6e}), timelike: {n_tl} (max |δ| = {max_timelike:.6e})"
+        );
 
         let action = lorentzian_regge_action(&fc.complex, &sq_lengths);
-        assert!(
-            action.abs() < 1e-6,
-            "flat Minkowski action = {action}"
-        );
+        assert!(action.abs() < 1e-6, "flat Minkowski action = {action}");
     }
 
     #[test]
@@ -439,15 +468,21 @@ mod tests {
         // the foliated mesh should match flat_hypercubic behavior.
         let fc = foliated_hypercubic(2, 2);
         // Assign all-positive squared lengths (Euclidean-like, spacing=1 in all directions)
-        let sq_lengths: Vec<f64> = fc.complex.edges.iter().enumerate().map(|(_ei, e)| {
-            let (t0, x0, y0, z0) = vertex_coords_4d(e[0], fc.n_slices, fc.n_spatial);
-            let (t1, x1, y1, z1) = vertex_coords_4d(e[1], fc.n_slices, fc.n_spatial);
-            let dt = min_image(t0, t1, fc.n_slices) as f64;
-            let dx = min_image(x0, x1, fc.n_spatial) as f64;
-            let dy = min_image(y0, y1, fc.n_spatial) as f64;
-            let dz = min_image(z0, z1, fc.n_spatial) as f64;
-            dt*dt + dx*dx + dy*dy + dz*dz
-        }).collect();
+        let sq_lengths: Vec<f64> = fc
+            .complex
+            .edges
+            .iter()
+            .enumerate()
+            .map(|(_ei, e)| {
+                let (t0, x0, y0, z0) = vertex_coords_4d(e[0], fc.n_slices, fc.n_spatial);
+                let (t1, x1, y1, z1) = vertex_coords_4d(e[1], fc.n_slices, fc.n_spatial);
+                let dt = min_image(t0, t1, fc.n_slices) as f64;
+                let dx = min_image(x0, x1, fc.n_spatial) as f64;
+                let dy = min_image(y0, y1, fc.n_spatial) as f64;
+                let dz = min_image(z0, z1, fc.n_spatial) as f64;
+                dt * dt + dx * dx + dy * dy + dz * dz
+            })
+            .collect();
 
         let action = lorentzian_regge_action(&fc.complex, &sq_lengths);
         assert!(
@@ -475,7 +510,9 @@ mod tests {
             let edge_indices = fc.complex.pent_edge_indices(pi);
             let types: Vec<EdgeType> = edge_indices.iter().map(|&ei| fc.edge_types[ei]).collect();
             let has_spatial = types.iter().any(|&t| t == EdgeType::Spatial);
-            let has_time = types.iter().any(|&t| t == EdgeType::Timelike || t == EdgeType::Diagonal);
+            let has_time = types
+                .iter()
+                .any(|&t| t == EdgeType::Timelike || t == EdgeType::Diagonal);
             assert!(has_spatial || has_time, "pent {pi}: {types:?}");
         }
     }

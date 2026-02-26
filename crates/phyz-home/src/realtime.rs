@@ -1,8 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
 use crate::dom;
@@ -62,11 +62,7 @@ impl RealtimeClient {
     }
 
     /// Connect to Supabase Realtime and subscribe to `contributors` + `results` changes.
-    pub fn connect(
-        self: &Rc<Self>,
-        on_contributors: Rc<dyn Fn()>,
-        on_results: Rc<dyn Fn()>,
-    ) {
+    pub fn connect(self: &Rc<Self>, on_contributors: Rc<dyn Fn()>, on_results: Rc<dyn Fn()>) {
         *self.on_contributors_change.borrow_mut() = Some(on_contributors);
         *self.on_results_change.borrow_mut() = Some(on_results);
         self.do_connect();
@@ -83,9 +79,8 @@ impl RealtimeClient {
 
         let key = crate::supabase::anon_key();
         let project = crate::supabase::project_ref();
-        let url = format!(
-            "wss://{project}.supabase.co/realtime/v1/websocket?apikey={key}&vsn=1.0.0"
-        );
+        let url =
+            format!("wss://{project}.supabase.co/realtime/v1/websocket?apikey={key}&vsn=1.0.0");
 
         let ws = match WebSocket::new(&url) {
             Ok(ws) => ws,
@@ -262,9 +257,7 @@ impl RealtimeClient {
                     .and_then(|s| s.as_str())
                     .unwrap_or("");
                 if status == "ok" {
-                    web_sys::console::log_1(
-                        &format!("realtime: channel joined: {topic}").into(),
-                    );
+                    web_sys::console::log_1(&format!("realtime: channel joined: {topic}").into());
                     self.set_status(Status::Live);
                 } else if status == "error" {
                     let reason = msg
@@ -308,10 +301,7 @@ impl RealtimeClient {
         });
 
         let id = dom::window()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                500,
-            )
+            .set_timeout_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), 500)
             .unwrap_or(0);
         cb.forget();
         *self.debounce_id.borrow_mut() = Some(id);

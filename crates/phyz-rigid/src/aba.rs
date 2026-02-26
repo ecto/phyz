@@ -8,15 +8,13 @@
 //!
 //! Supports single-DOF (revolute, prismatic) and multi-DOF (spherical, free) joints.
 
-use phyz_math::{DVec, DMat, SpatialMat, SpatialTransform, SpatialVec, Vec3};
+use phyz_math::{DMat, DVec, SpatialMat, SpatialTransform, SpatialVec, Vec3};
 use phyz_model::{JointType, Model, State};
 
 /// Compute joint velocity contribution S * qd for any joint type.
 fn joint_velocity(joint: &phyz_model::Joint, qd: &[f64]) -> SpatialVec {
     match joint.joint_type {
-        JointType::Revolute | JointType::Hinge => {
-            SpatialVec::new(joint.axis * qd[0], Vec3::zero())
-        }
+        JointType::Revolute | JointType::Hinge => SpatialVec::new(joint.axis * qd[0], Vec3::zero()),
         JointType::Prismatic | JointType::Slide => {
             SpatialVec::new(Vec3::zero(), joint.axis * qd[0])
         }
@@ -38,10 +36,7 @@ pub fn sv_to_dvec(sv: &SpatialVec) -> DVec {
 
 /// Convert a DVec of length 6 to a SpatialVec.
 pub fn dvec_to_sv(v: &DVec) -> SpatialVec {
-    SpatialVec::new(
-        Vec3::new(v[0], v[1], v[2]),
-        Vec3::new(v[3], v[4], v[5]),
-    )
+    SpatialVec::new(Vec3::new(v[0], v[1], v[2]), Vec3::new(v[3], v[4], v[5]))
 }
 
 /// Convert a SpatialMat to a 6x6 DMat.
@@ -63,18 +58,50 @@ pub fn sm_to_dmat(m: &SpatialMat) -> DMat {
 pub fn dmat_to_sm(m: &DMat) -> SpatialMat {
     use phyz_math::Mat3;
     SpatialMat::new(
-        Mat3::new(m[(0,0)], m[(0,1)], m[(0,2)],
-                  m[(1,0)], m[(1,1)], m[(1,2)],
-                  m[(2,0)], m[(2,1)], m[(2,2)]),
-        Mat3::new(m[(0,3)], m[(0,4)], m[(0,5)],
-                  m[(1,3)], m[(1,4)], m[(1,5)],
-                  m[(2,3)], m[(2,4)], m[(2,5)]),
-        Mat3::new(m[(3,0)], m[(3,1)], m[(3,2)],
-                  m[(4,0)], m[(4,1)], m[(4,2)],
-                  m[(5,0)], m[(5,1)], m[(5,2)]),
-        Mat3::new(m[(3,3)], m[(3,4)], m[(3,5)],
-                  m[(4,3)], m[(4,4)], m[(4,5)],
-                  m[(5,3)], m[(5,4)], m[(5,5)]),
+        Mat3::new(
+            m[(0, 0)],
+            m[(0, 1)],
+            m[(0, 2)],
+            m[(1, 0)],
+            m[(1, 1)],
+            m[(1, 2)],
+            m[(2, 0)],
+            m[(2, 1)],
+            m[(2, 2)],
+        ),
+        Mat3::new(
+            m[(0, 3)],
+            m[(0, 4)],
+            m[(0, 5)],
+            m[(1, 3)],
+            m[(1, 4)],
+            m[(1, 5)],
+            m[(2, 3)],
+            m[(2, 4)],
+            m[(2, 5)],
+        ),
+        Mat3::new(
+            m[(3, 0)],
+            m[(3, 1)],
+            m[(3, 2)],
+            m[(4, 0)],
+            m[(4, 1)],
+            m[(4, 2)],
+            m[(5, 0)],
+            m[(5, 1)],
+            m[(5, 2)],
+        ),
+        Mat3::new(
+            m[(3, 3)],
+            m[(3, 4)],
+            m[(3, 5)],
+            m[(4, 3)],
+            m[(4, 4)],
+            m[(4, 5)],
+            m[(5, 3)],
+            m[(5, 4)],
+            m[(5, 5)],
+        ),
     )
 }
 
@@ -333,9 +360,15 @@ fn outer_product_6(a: &SpatialVec, b: &SpatialVec) -> SpatialMat {
 
     fn vec3_outer(a: Vec3, b: Vec3) -> Mat3 {
         Mat3::new(
-            a.x * b.x, a.x * b.y, a.x * b.z,
-            a.y * b.x, a.y * b.y, a.y * b.z,
-            a.z * b.x, a.z * b.y, a.z * b.z,
+            a.x * b.x,
+            a.x * b.y,
+            a.x * b.z,
+            a.y * b.x,
+            a.y * b.y,
+            a.y * b.z,
+            a.z * b.x,
+            a.z * b.y,
+            a.z * b.z,
         )
     }
 

@@ -27,8 +27,8 @@
 use phyz_regge::foliation::foliated_hypercubic;
 use phyz_regge::gem::{b_grav_tensor_frobenius, linearized_b_grav_tidal, vertex_spatial_coords};
 use phyz_regge::transformer::{
-    make_planar_winding, permeability_search, run_transformer, run_transformer_continuation,
-    TransformerConfig,
+    TransformerConfig, make_planar_winding, permeability_search, run_transformer,
+    run_transformer_continuation,
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -104,7 +104,10 @@ fn main() {
     for m in &result.measurements {
         eprintln!(
             "{:>12.4e} {:>14.6e} {:>14.6e} {:>12.2e}",
-            m.amplitude, m.induced_emf, m.max_b_grav, m.residual()
+            m.amplitude,
+            m.induced_emf,
+            m.max_b_grav,
+            m.residual()
         );
     }
 
@@ -112,7 +115,10 @@ fn main() {
     eprintln!("--- Coupling Analysis ---");
     eprintln!("Linear coupling:        {:.6e}", result.coupling);
     eprintln!("GEM prediction:         {:.6e}", result.gem_prediction);
-    eprintln!("Nonlinear correction:   {:.6e}", result.nonlinear_correction);
+    eprintln!(
+        "Nonlinear correction:   {:.6e}",
+        result.nonlinear_correction
+    );
 
     // Linearized GEM comparison
     if do_compare && !result.measurements.is_empty() {
@@ -195,7 +201,11 @@ fn main() {
     for m in &result.measurements {
         println!(
             "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-            m.amplitude, m.induced_emf, m.max_b_grav, m.b_grav_frobenius, m.residual()
+            m.amplitude,
+            m.induced_emf,
+            m.max_b_grav,
+            m.b_grav_frobenius,
+            m.residual()
         );
     }
 }

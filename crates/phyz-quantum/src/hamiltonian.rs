@@ -96,10 +96,7 @@ fn add_magnetic_term(
 
     for (ti, _tri) in complex.triangles.iter().enumerate() {
         let edge_indices = complex.tri_edge_indices(ti);
-        let weight = params
-            .metric_weights
-            .as_ref()
-            .map_or(1.0, |w| w[ti]);
+        let weight = params.metric_weights.as_ref().map_or(1.0, |w| w[ti]);
 
         let c = coeff * weight * 0.5; // factor of 1/2 from Re = (U + U†)/2
 
@@ -108,7 +105,9 @@ fn add_magnetic_term(
             let config = hilbert.index_to_config(i);
 
             // Forward: U_tri shifts n_e by +signs
-            if let Some(j) = apply_triangle_shift(hilbert, config, &edge_indices, &TRIANGLE_HOLONOMY_SIGNS) {
+            if let Some(j) =
+                apply_triangle_shift(hilbert, config, &edge_indices, &TRIANGLE_HOLONOMY_SIGNS)
+            {
                 h[(i, j)] += c;
                 h[(j, i)] += c;
             }
@@ -294,9 +293,6 @@ mod tests {
         let diff = &h2 - &h1;
         let mag1 = &h1 - &h_e;
         let err = (&diff - &mag1).norm();
-        assert!(
-            err < 1e-12,
-            "metric weight scaling failed: err={err}"
-        );
+        assert!(err < 1e-12, "metric weight scaling failed: err={err}");
     }
 }

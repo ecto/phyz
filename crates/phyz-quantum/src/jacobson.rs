@@ -13,8 +13,7 @@
 use crate::diag;
 use crate::ryu_takayanagi::{self, geometry_valid};
 use crate::su2_quantum::{
-    build_su2_hamiltonian, su2_entanglement_for_partition, su2_lanczos_diagonalize,
-    Su2HilbertSpace,
+    Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_for_partition, su2_lanczos_diagonalize,
 };
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
@@ -70,14 +69,17 @@ pub struct RtDiffResult {
 /// 6 pentachorons (one per omitted vertex), forming a closed 4-manifold
 /// with V=6, E=15, T=20, P=6. Every triangle is shared by exactly 3 pents.
 pub fn boundary_5simplex() -> SimplicialComplex {
-    SimplicialComplex::from_pentachorons(6, &[
-        [1, 2, 3, 4, 5],
-        [0, 2, 3, 4, 5],
-        [0, 1, 3, 4, 5],
-        [0, 1, 2, 4, 5],
-        [0, 1, 2, 3, 5],
-        [0, 1, 2, 3, 4],
-    ])
+    SimplicialComplex::from_pentachorons(
+        6,
+        &[
+            [1, 2, 3, 4, 5],
+            [0, 2, 3, 4, 5],
+            [0, 1, 3, 4, 5],
+            [0, 1, 2, 4, 5],
+            [0, 1, 2, 3, 5],
+            [0, 1, 2, 3, 4],
+        ],
+    )
 }
 
 /// Build a subdivided S⁴ triangulation at the given refinement level.
@@ -455,10 +457,7 @@ mod tests {
 
         // At least some edges should have nonzero gradient.
         let nonzero = grad.iter().filter(|&&g| g.abs() > 1e-12).count();
-        assert!(
-            nonzero > 0,
-            "expected some nonzero area gradient entries"
-        );
+        assert!(nonzero > 0, "expected some nonzero area gradient entries");
     }
 
     #[test]

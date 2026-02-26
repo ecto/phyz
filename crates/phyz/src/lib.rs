@@ -187,15 +187,11 @@ impl Simulator {
         state.body_xform = xforms;
 
         // Collect body geometries
-        let geometries: Vec<Option<phyz_model::Geometry>> = model
-            .bodies
-            .iter()
-            .map(|b| b.geometry.clone())
-            .collect();
+        let geometries: Vec<Option<phyz_model::Geometry>> =
+            model.bodies.iter().map(|b| b.geometry.clone()).collect();
 
         // Find ground contacts
-        let mut contacts =
-            phyz_contact::find_ground_contacts(state, &geometries, ground_height);
+        let mut contacts = phyz_contact::find_ground_contacts(state, &geometries, ground_height);
 
         // Find body-body contacts
         let body_contacts = phyz_contact::find_contacts(model, state, &geometries);

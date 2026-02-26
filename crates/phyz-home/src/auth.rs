@@ -102,7 +102,11 @@ fn base64url_decode(input: &str) -> Option<String> {
         if b == b'=' {
             break;
         }
-        let val = if (b as usize) < 128 { TABLE[b as usize] } else { 255 };
+        let val = if (b as usize) < 128 {
+            TABLE[b as usize]
+        } else {
+            255
+        };
         if val == 255 {
             continue;
         }

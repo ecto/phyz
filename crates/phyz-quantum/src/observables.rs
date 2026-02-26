@@ -49,11 +49,7 @@ pub fn electric_field_sq(hilbert: &U1HilbertSpace, state: &DVec) -> Vec<f64> {
 ///
 /// The Wilson loop operator Re(U_path) = (U_path + U_path†)/2 acts by
 /// shifting all edge quantum numbers along the path simultaneously.
-pub fn wilson_loop(
-    hilbert: &U1HilbertSpace,
-    state: &DVec,
-    path: &[(usize, i32)],
-) -> f64 {
+pub fn wilson_loop(hilbert: &U1HilbertSpace, state: &DVec, path: &[(usize, i32)]) -> f64 {
     let lam = hilbert.lambda as i32;
     let mut expectation = 0.0;
 
@@ -173,11 +169,7 @@ fn tree_path(
 /// Partitions edges into set A (`edges_a`) and complement B.
 /// Computes the reduced density matrix ρ_A by tracing out B,
 /// then computes the entropy.
-pub fn entanglement_entropy(
-    hilbert: &U1HilbertSpace,
-    state: &DVec,
-    edges_a: &[usize],
-) -> f64 {
+pub fn entanglement_entropy(hilbert: &U1HilbertSpace, state: &DVec, edges_a: &[usize]) -> f64 {
     entanglement_entropy_raw(&hilbert.basis, hilbert.n_edges, state, edges_a)
 }
 
@@ -214,12 +206,7 @@ pub fn entanglement_entropy_raw(
 
     let b_configs: Vec<Vec<i32>> = basis
         .iter()
-        .map(|c| {
-            (0..n_edges)
-                .filter(|e| !is_a[*e])
-                .map(|e| c[e])
-                .collect()
-        })
+        .map(|c| (0..n_edges).filter(|e| !is_a[*e]).map(|e| c[e]).collect())
         .collect();
 
     let mut b_groups: HashMap<Vec<i32>, Vec<(usize, f64)>> = HashMap::new();
@@ -388,7 +375,7 @@ pub fn entanglement_entropy_decomposed(
 mod tests {
     use super::*;
     use crate::diag;
-    use crate::hamiltonian::{build_hamiltonian, KSParams};
+    use crate::hamiltonian::{KSParams, build_hamiltonian};
 
     fn single_pentachoron() -> SimplicialComplex {
         SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]])
@@ -472,10 +459,7 @@ mod tests {
         // Partition: first 5 edges vs rest.
         let edges_a: Vec<usize> = (0..5).collect();
         let s = entanglement_entropy(&hs, gs, &edges_a);
-        assert!(
-            s < 0.1,
-            "strong coupling entropy = {s}, expected ~0"
-        );
+        assert!(s < 0.1, "strong coupling entropy = {s}, expected ~0");
     }
 
     #[test]
@@ -509,11 +493,8 @@ mod tests {
         let gs = spec.ground_state();
 
         let partition_a = vec![0usize, 1];
-        let (edges_a, _, boundary) =
-            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
-        let dec = entanglement_entropy_decomposed(
-            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
-        );
+        let (edges_a, _, boundary) = crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+        let dec = entanglement_entropy_decomposed(&hs.basis, hs.n_edges, gs, &edges_a, &boundary);
 
         let sum = dec.shannon + dec.distillable;
         assert!(
@@ -538,11 +519,8 @@ mod tests {
         let gs = spec.ground_state();
 
         let partition_a = vec![0usize, 1];
-        let (edges_a, _, boundary) =
-            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
-        let dec = entanglement_entropy_decomposed(
-            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
-        );
+        let (edges_a, _, boundary) = crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+        let dec = entanglement_entropy_decomposed(&hs.basis, hs.n_edges, gs, &edges_a, &boundary);
 
         assert!(dec.shannon < 0.1, "shannon={}, expected ~0", dec.shannon);
         assert!(
@@ -566,12 +544,9 @@ mod tests {
         let gs = spec.ground_state();
 
         let partition_a = vec![0usize, 1];
-        let (edges_a, _, boundary) =
-            crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
+        let (edges_a, _, boundary) = crate::ryu_takayanagi::classify_edges(&complex, &partition_a);
 
-        let dec = entanglement_entropy_decomposed(
-            &hs.basis, hs.n_edges, gs, &edges_a, &boundary,
-        );
+        let dec = entanglement_entropy_decomposed(&hs.basis, hs.n_edges, gs, &edges_a, &boundary);
 
         // Sector probabilities sum to 1.
         let p_sum: f64 = dec.sector_probs.iter().sum();

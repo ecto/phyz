@@ -15,9 +15,9 @@
 //!    candidate approximate symmetries
 //! 6. Score each candidate: σ (violation), overlap with known generators
 
-use crate::action::{einstein_maxwell_grad, ActionParams, Fields};
+use crate::action::{ActionParams, Fields, einstein_maxwell_grad};
 use crate::complex::SimplicialComplex;
-use crate::symmetry::{orthonormalize, project_out_span, Generator};
+use crate::symmetry::{Generator, orthonormalize, project_out_span};
 
 use phyz_math::DMat;
 use rand::rngs::StdRng;
@@ -383,7 +383,8 @@ mod tests {
         let results = search_symmetries(&complex, &background, &gauge_gens, &params, &config);
 
         // Candidates should NOT have high gauge overlap (gauge was projected out).
-        let gauge_normalized: Vec<Vec<f64>> = gauge_gens.iter().map(|g| g.normalized().pack()).collect();
+        let gauge_normalized: Vec<Vec<f64>> =
+            gauge_gens.iter().map(|g| g.normalized().pack()).collect();
 
         for candidate in results.candidates.iter().take(20) {
             let gauge_overlap_sq: f64 = gauge_normalized
@@ -482,18 +483,13 @@ mod tests {
                 })
                 .collect();
 
-            let grad = einstein_yang_mills_grad(
-                &complex,
-                &perturbed_lengths,
-                &perturbed_elements,
-                alpha,
-            );
+            let grad =
+                einstein_yang_mills_grad(&complex, &perturbed_lengths, &perturbed_elements, alpha);
 
             // Compute field-dependent gauge generators at this config.
             for v in 0..complex.n_vertices {
                 for dir in 0..3 {
-                    let gauge_dof =
-                        su2_gauge_generator(&complex, &perturbed_elements, v, dir);
+                    let gauge_dof = su2_gauge_generator(&complex, &perturbed_elements, v, dir);
                     // Full generator: zero for lengths, gauge_dof for field.
                     let dot: f64 = grad[n_edges..]
                         .iter()

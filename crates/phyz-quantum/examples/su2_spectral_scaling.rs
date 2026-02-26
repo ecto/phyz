@@ -9,8 +9,8 @@
 
 use phyz_quantum::diag;
 use phyz_quantum::su2_quantum::{
-    build_su2_hamiltonian, su2_entanglement_for_partition, su2_fundamental_loops, su2_wilson_loop,
-    Su2HilbertSpace,
+    Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_for_partition, su2_fundamental_loops,
+    su2_wilson_loop,
 };
 use phyz_regge::SimplicialComplex;
 use std::panic;
@@ -159,7 +159,14 @@ fn run_scaling_study() {
 
             let spec = if use_gpu {
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    gpu_lanczos_diagonalize_su2(hs, complex, g_sq, None, n_eigenvalues, iter_override)
+                    gpu_lanczos_diagonalize_su2(
+                        hs,
+                        complex,
+                        g_sq,
+                        None,
+                        n_eigenvalues,
+                        iter_override,
+                    )
                 }));
                 match result {
                     Ok(Ok(s)) => s,

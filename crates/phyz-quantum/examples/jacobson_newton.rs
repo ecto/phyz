@@ -14,12 +14,12 @@
 //!   cargo run -p phyz-quantum --release --example jacobson_newton
 
 use phyz_quantum::jacobson::{
-    boundary_5simplex, cut_area_gradient, entanglement_gradient_su2, project_out_conformal,
-    su2_ground_state, subdivided_s4, EquilibriumConfig,
+    EquilibriumConfig, boundary_5simplex, cut_area_gradient, entanglement_gradient_su2,
+    project_out_conformal, su2_ground_state, subdivided_s4,
 };
 use phyz_quantum::ryu_takayanagi::*;
 use phyz_quantum::su2_quantum::{
-    su2_entanglement_decomposed, su2_entanglement_for_partition, Su2HilbertSpace,
+    Su2HilbertSpace, su2_entanglement_decomposed, su2_entanglement_for_partition,
 };
 use std::time::Instant;
 
@@ -117,7 +117,11 @@ fn main() {
             .map(|p| {
                 let s = su2_entanglement_for_partition(&hs, &gs, &complex, p);
                 let (_, _, bdy) = classify_edges(&complex, p);
-                if bdy.is_empty() { 0.0 } else { s / bdy.len() as f64 }
+                if bdy.is_empty() {
+                    0.0
+                } else {
+                    s / bdy.len() as f64
+                }
             })
             .collect();
         vals.iter().sum::<f64>() / vals.len() as f64
@@ -131,12 +135,18 @@ fn main() {
     println!("# slope(S_shannon)  = {slope_sh:.6e}, R² = {r2_sh:.6}, G_N = {g_n_shannon:.6e}");
     println!("# slope(S_distill)  = {slope_dist:.6e}, R² = {r2_dist:.6}");
     println!("# intercept = {intercept:.6e}");
-    println!("# mean s_per_edge = {mean_s_per_edge:.6e}, ln(2) = {ln2:.6e}, ratio = {:.4}", mean_s_per_edge / ln2);
+    println!(
+        "# mean s_per_edge = {mean_s_per_edge:.6e}, ln(2) = {ln2:.6e}, ratio = {:.4}",
+        mean_s_per_edge / ln2
+    );
     println!();
 
     eprintln!("  G_N(total) = {g_n_abs:.4e}, R² = {r2:.4}");
     eprintln!("  G_N(shannon) = {g_n_shannon:.4e}, R² = {r2_sh:.4}");
-    eprintln!("  s/edge = {mean_s_per_edge:.4e}, ln(2) = {ln2:.4e}, ratio = {:.4}", mean_s_per_edge / ln2);
+    eprintln!(
+        "  s/edge = {mean_s_per_edge:.4e}, ln(2) = {ln2:.4e}, ratio = {:.4}",
+        mean_s_per_edge / ln2
+    );
 
     // ═══════════════════════════════════════════════════════════════════
     // Section 2: Scaling Test — G_N(λ)/λ² should be constant
@@ -252,7 +262,9 @@ fn main() {
         println!(
             "{g_sq:.6e}\t{c_slope:.6e}\t{c_r2:.6}\t{c_gn:.6e}\t{c_slope_sh:.6e}\t{c_gn_sh:.6e}\t{mean_spe:.6e}"
         );
-        eprintln!("  g²={g_sq}: G_N={c_gn:.4e}, R²={c_r2:.4}, s/edge={mean_spe:.4e} ({elapsed:.1}s)");
+        eprintln!(
+            "  g²={g_sq}: G_N={c_gn:.4e}, R²={c_r2:.4}, s/edge={mean_spe:.4e} ({elapsed:.1}s)"
+        );
     }
     println!();
 
@@ -365,9 +377,7 @@ fn main() {
         let lv_lengths = vec![1.0; n_e];
         let mean_edge_len = 1.0;
 
-        eprintln!(
-            "  Level {level}: V={n_v}, E={n_e}, dim={dim}"
-        );
+        eprintln!("  Level {level}: V={n_v}, E={n_e}, dim={dim}");
 
         let gs_lv = su2_ground_state(&hs_lv, &cmplx, &lv_lengths, g_squared);
         let solve_time = t0.elapsed().as_secs_f64();
@@ -423,7 +433,10 @@ fn main() {
     println!("# G_N (gradient RT)         = {g_n_grad:.6e}");
     println!("# Scaling: mean(G_N/λ²)     = {mean_ratio:.6e}, CV = {cv_ratio:.4}");
     println!("# Abs vs Grad consistency    = {consistency:.4}");
-    println!("# s_per_edge / ln(2)         = {:.4}", mean_s_per_edge / ln2);
+    println!(
+        "# s_per_edge / ln(2)         = {:.4}",
+        mean_s_per_edge / ln2
+    );
     println!("# ═══════════════════════════════════════════════════════════");
 
     eprintln!("\n=== Newton's constant extraction complete ===");

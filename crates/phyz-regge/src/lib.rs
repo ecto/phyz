@@ -60,7 +60,7 @@ pub mod yang_mills;
 pub use action::{ActionParams, Fields};
 pub use complex::SimplicialComplex;
 pub use gauge::{GaugeField, U1Field};
-pub use search::{search_symmetries, search_symmetries_generic, SearchConfig, SearchResults};
+pub use search::{SearchConfig, SearchResults, search_symmetries, search_symmetries_generic};
 pub use su2::Su2;
 pub use symmetry::Generator;
 pub use yang_mills::Su2Field;

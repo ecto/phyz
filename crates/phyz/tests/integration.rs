@@ -72,8 +72,7 @@ fn single_pendulum_period() {
     let length = 1.0;
     let i_pivot = mass * length * length / 3.0;
     let d = length / 2.0;
-    let expected_period =
-        2.0 * std::f64::consts::PI * (i_pivot / (mass * GRAVITY * d)).sqrt();
+    let expected_period = 2.0 * std::f64::consts::PI * (i_pivot / (mass * GRAVITY * d)).sqrt();
 
     // Simulate for 10 seconds
     let total_steps = (10.0 / dt) as usize;
@@ -172,7 +171,8 @@ fn ball_drop_with_contacts() {
     state.body_xform = xforms;
 
     // At z=2.0, sphere bottom is at 1.9 -- no contact with ground at z=0
-    let geometries: Vec<Option<Geometry>> = model.bodies.iter().map(|b| b.geometry.clone()).collect();
+    let geometries: Vec<Option<Geometry>> =
+        model.bodies.iter().map(|b| b.geometry.clone()).collect();
     let contacts = find_ground_contacts(&state, &geometries, 0.0);
     assert!(
         contacts.is_empty(),
@@ -201,11 +201,7 @@ fn ball_drop_with_contacts() {
     let forces = phyz::phyz_contact::contact_forces(&contacts, &state, &materials, None);
     // Force on body 0 should have positive z (upward push)
     let fz = forces[0].linear.z;
-    assert!(
-        fz > 0.0,
-        "contact force should push up, got fz = {:.4}",
-        fz,
-    );
+    assert!(fz > 0.0, "contact force should push up, got fz = {:.4}", fz,);
 
     // Verify ABA with external forces produces upward acceleration
     let spatial_forces = forces;
@@ -230,11 +226,7 @@ fn gradient_consistency() {
 
     // Compare dvnext_dq entries
     let diff = (&fd.dvnext_dq - &an.dvnext_dq).norm();
-    assert!(
-        diff < 1e-4,
-        "dvnext_dq mismatch: norm diff = {:.2e}",
-        diff,
-    );
+    assert!(diff < 1e-4, "dvnext_dq mismatch: norm diff = {:.2e}", diff,);
 
     // Also check other Jacobian blocks
     let diff_qq = (&fd.dqnext_dq - &an.dqnext_dq).norm();

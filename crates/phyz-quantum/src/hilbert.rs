@@ -33,8 +33,11 @@ impl U1HilbertSpace {
         let (tree_edges, free_edges) = gauss_law::spanning_tree(complex);
         let basis = gauss_law::enumerate_gauge_invariant(complex, lambda);
 
-        let index_map: HashMap<Vec<i32>, usize> =
-            basis.iter().enumerate().map(|(i, c)| (c.clone(), i)).collect();
+        let index_map: HashMap<Vec<i32>, usize> = basis
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.clone(), i))
+            .collect();
 
         Self {
             n_edges: complex.n_edges(),

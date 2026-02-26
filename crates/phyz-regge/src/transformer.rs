@@ -14,10 +14,10 @@
 //! 6. Compare to linearized GEM prediction
 
 use crate::complex::SimplicialComplex;
-use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic, FoliatedComplex};
-use crate::gem::{b_grav_tensor_frobenius, extract_gem_fields, induced_gem_emf, GemFields};
-use crate::matter::{solve_regge_with_source, MassCurrentLoop, StressEnergy};
-use crate::tent_move::{tent_edges_for_vertex, TentConfig};
+use crate::foliation::{FoliatedComplex, flat_minkowski_sq_lengths, foliated_hypercubic};
+use crate::gem::{GemFields, b_grav_tensor_frobenius, extract_gem_fields, induced_gem_emf};
+use crate::matter::{MassCurrentLoop, StressEnergy, solve_regge_with_source};
+use crate::tent_move::{TentConfig, tent_edges_for_vertex};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
@@ -125,9 +125,7 @@ pub fn make_planar_winding(
     name: &str,
 ) -> Winding {
     let n = fc.n_spatial;
-    let local = |x: usize, y: usize| -> usize {
-        (x % n) + n * (y % n) + n * n * (z % n)
-    };
+    let local = |x: usize, y: usize| -> usize { (x % n) + n * (y % n) + n * n * (z % n) };
 
     let mut vertices = Vec::new();
 
@@ -166,10 +164,7 @@ pub fn make_planar_winding(
 /// Sets up a primary mass current loop and a secondary sensing loop,
 /// evolves the geometry with the primary as a source, and measures
 /// the induced GEM fields at the secondary.
-pub fn run_transformer(
-    config: &TransformerConfig,
-    amplitudes: &[f64],
-) -> TransformerResult {
+pub fn run_transformer(config: &TransformerConfig, amplitudes: &[f64]) -> TransformerResult {
     let fc = foliated_hypercubic(config.n_time, config.n_spatial);
     let n = config.n_spatial;
 
@@ -178,14 +173,7 @@ pub fn run_transformer(
 
     // Secondary winding: loop in z=1 plane at slice 0 (different z-level)
     let z_secondary = (n / 2).min(n - 1);
-    let secondary = make_planar_winding(
-        &fc,
-        0,
-        [0, n / 2],
-        [0, n / 2],
-        z_secondary,
-        "secondary",
-    );
+    let secondary = make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], z_secondary, "secondary");
 
     // Baseline: flat Minkowski GEM fields (should be zero)
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
@@ -199,13 +187,7 @@ pub fn run_transformer(
     let measurements: Vec<TransformerMeasurement> = iter
         .map(|&amplitude| {
             run_single_amplitude(
-                &fc,
-                &flat_sq,
-                &primary,
-                &secondary,
-                &gem_flat,
-                amplitude,
-                config,
+                &fc, &flat_sq, &primary, &secondary, &gem_flat, amplitude, config,
             )
         })
         .collect();
@@ -278,14 +260,7 @@ pub fn run_transformer_continuation(
 
     let primary = make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], 0, "primary");
     let z_secondary = (n / 2).min(n - 1);
-    let secondary = make_planar_winding(
-        &fc,
-        0,
-        [0, n / 2],
-        [0, n / 2],
-        z_secondary,
-        "secondary",
-    );
+    let secondary = make_planar_winding(&fc, 0, [0, n / 2], [0, n / 2], z_secondary, "secondary");
 
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
     let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq, config.dt, config.spacing);
@@ -451,13 +426,7 @@ fn evolve_all_tents(
             if free.is_empty() {
                 continue;
             }
-            match solve_regge_with_source(
-                &fc.complex,
-                sq_lengths,
-                &free,
-                source,
-                config,
-            ) {
+            match solve_regge_with_source(&fc.complex, sq_lengths, &free, source, config) {
                 Ok(result) => {
                     max_residual = max_residual.max(result.residual);
                 }
@@ -678,13 +647,7 @@ pub fn permeability_search(
 
     // Vacuum baseline
     let vacuum_meas = run_single_amplitude(
-        &fc,
-        &flat_sq,
-        &primary,
-        &secondary,
-        &gem_flat,
-        amplitude,
-        config,
+        &fc, &flat_sq, &primary, &secondary, &gem_flat, amplitude, config,
     );
     let vacuum_coupling = vacuum_meas.induced_emf;
 
@@ -895,11 +858,7 @@ mod tests {
 
         // All vertices should be valid
         for &v in &winding.vertices {
-            assert!(
-                v < fc.complex.n_vertices,
-                "vertex {} out of range",
-                v
-            );
+            assert!(v < fc.complex.n_vertices, "vertex {} out of range", v);
         }
 
         // All vertices should be in the valid range
@@ -937,7 +896,11 @@ mod tests {
         let result = run_transformer(&config, &[0.0, 1e-6, 2e-6]);
         assert_eq!(result.measurements.len(), 3);
         // Coupling should be finite
-        assert!(result.coupling.is_finite(), "coupling = {}", result.coupling);
+        assert!(
+            result.coupling.is_finite(),
+            "coupling = {}",
+            result.coupling
+        );
     }
 
     /// Core vertex selection produces valid vertices.

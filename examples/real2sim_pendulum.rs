@@ -7,7 +7,7 @@
 //! 4. Exporting the identified model to .phyz format
 
 use phyz_format::{export_phyz, schema::PhyzSpec};
-use phyz_math::{Mat3, SpatialInertia, SpatialTransform, Vec3, GRAVITY};
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_real2sim::{
     GradientDescentOptimizer, LossWeights, Optimizer, OptimizerConfig, PhysicsParams, Trajectory,
@@ -198,9 +198,9 @@ fn main() {
 
 /// Convert model and parameters to PhyzSpec.
 fn model_to_phyz_spec(model: &phyz_model::Model, params: &PhysicsParams) -> PhyzSpec {
-    use std::collections::HashMap;
     use phyz_format::domain::{BodySpec, Domain, DomainType, JointSpec, JointTypeSpec};
     use phyz_format::schema::{ParameterSpec, ParameterType, WorldConfig};
+    use std::collections::HashMap;
 
     // Build domain config
     let mut bodies = vec![BodySpec {

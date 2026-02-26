@@ -29,8 +29,8 @@ use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::mesh::{self, MetricIntegration};
 use phyz_regge::richardson::richardson_extrapolation_with;
 use phyz_regge::symmetry::{
-    all_boost_generators, all_gauge_generators, all_rotation_generators, conformal_generator,
-    translation_generator, Generator,
+    Generator, all_boost_generators, all_gauge_generators, all_rotation_generators,
+    conformal_generator, translation_generator,
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {

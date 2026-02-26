@@ -106,8 +106,7 @@ pub fn einstein_maxwell_grad(
         gauge::maxwell_action_grad_lengths(complex, &fields.lengths, &fields.phases);
 
     // ∂S/∂θ_e = α · ∂S_M/∂θ_e
-    let grad_m_phases =
-        gauge::maxwell_action_grad_phases(complex, &fields.lengths, &fields.phases);
+    let grad_m_phases = gauge::maxwell_action_grad_phases(complex, &fields.lengths, &fields.phases);
 
     let mut grad = Vec::with_capacity(2 * n_edges);
 

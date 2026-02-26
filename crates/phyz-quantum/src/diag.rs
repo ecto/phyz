@@ -61,7 +61,12 @@ pub fn diagonalize_full(h: &DMat, n_lowest: Option<usize>) -> Spectrum {
     let eig = h.symmetric_eigen();
 
     // Sort by eigenvalue.
-    let mut indexed: Vec<(usize, f64)> = eig.eigenvalues.iter().enumerate().map(|(i, &e)| (i, e)).collect();
+    let mut indexed: Vec<(usize, f64)> = eig
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (i, e))
+        .collect();
     indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
     let n = match n_lowest {

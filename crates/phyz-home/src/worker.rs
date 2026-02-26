@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{MessageEvent, Worker};
 
 use crate::supabase::WorkParams;
@@ -56,8 +56,7 @@ impl WorkerPool {
     pub fn new(n: usize) -> Result<Self, String> {
         let idle = RefCell::new((0..n).collect());
         let results: Rc<RefCell<Vec<WorkerResponse>>> = Rc::new(RefCell::new(Vec::new()));
-        let progress: Rc<RefCell<Vec<(usize, usize)>>> =
-            Rc::new(RefCell::new(vec![(0, 0); n]));
+        let progress: Rc<RefCell<Vec<(usize, usize)>>> = Rc::new(RefCell::new(vec![(0, 0); n]));
 
         let mut workers = Vec::with_capacity(n);
         for i in 0..n {
@@ -79,9 +78,7 @@ impl WorkerPool {
                         results_ref.borrow_mut().push(resp);
                     }
                     Err(err) => {
-                        web_sys::console::warn_1(
-                            &format!("worker {i} parse error: {err}").into(),
-                        );
+                        web_sys::console::warn_1(&format!("worker {i} parse error: {err}").into());
                     }
                 }
             }) as Box<dyn FnMut(MessageEvent)>);

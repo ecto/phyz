@@ -11,10 +11,10 @@
 //!   cargo run --example quantum_gauge -p phyz-quantum --release
 
 use phyz_quantum::diag;
-use phyz_quantum::hamiltonian::{build_hamiltonian, KSParams};
+use phyz_quantum::hamiltonian::{KSParams, build_hamiltonian};
 use phyz_quantum::hilbert::U1HilbertSpace;
 use phyz_quantum::hypercubic::{
-    build_hypercubic_hamiltonian, HypercubicHilbert, HypercubicLattice,
+    HypercubicHilbert, HypercubicLattice, build_hypercubic_hamiltonian,
 };
 use phyz_quantum::observables;
 use phyz_quantum::qubit_map;
@@ -43,7 +43,10 @@ fn main() {
     );
 
     println!("# Section 1: E0(g^2) coupling sweep");
-    println!("# complex=pentachoron V=5 E=10 b1=6 lambda={lambda} dim={}", hs1.dim());
+    println!(
+        "# complex=pentachoron V=5 E=10 b1=6 lambda={lambda} dim={}",
+        hs1.dim()
+    );
     println!("g_squared\tE0\tE1\tgap\tE2\tE3\tE4");
 
     let g_sq_values: Vec<f64> = {
@@ -65,18 +68,33 @@ fn main() {
         let h = build_hamiltonian(&hs1, &pent1, &params);
         let spec = diag::diagonalize(&h, Some(5));
 
-        let e: Vec<f64> = (0..5).map(|i| {
-            if i < spec.energies.len() { spec.energies[i] } else { f64::NAN }
-        }).collect();
+        let e: Vec<f64> = (0..5)
+            .map(|i| {
+                if i < spec.energies.len() {
+                    spec.energies[i]
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect();
 
         println!(
             "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-            g_sq, e[0], e[1], e[1] - e[0], e[2], e[3], e[4]
+            g_sq,
+            e[0],
+            e[1],
+            e[1] - e[0],
+            e[2],
+            e[3],
+            e[4]
         );
     }
     println!();
 
-    eprintln!("  ✓ Coupling sweep complete ({} points)\n", g_sq_values.len());
+    eprintln!(
+        "  ✓ Coupling sweep complete ({} points)\n",
+        g_sq_values.len()
+    );
 
     // ─────────────────────────────────────────────────────────────────
     // 2. Simplicial vs hypercubic comparison
@@ -104,14 +122,19 @@ fn main() {
     );
 
     println!("# Section 2: Simplicial vs hypercubic comparison");
-    println!("# simplicial: pentachoron (tri plaquettes), hypercubic_2d: 2x2 torus (sq plaquettes)");
+    println!(
+        "# simplicial: pentachoron (tri plaquettes), hypercubic_2d: 2x2 torus (sq plaquettes)"
+    );
     println!("# hypercubic_3d: 2^3 torus (sq plaquettes)");
     println!("g_squared\tsimp_E0\tsimp_gap\thyp2d_E0\thyp2d_gap\thyp3d_E0\thyp3d_gap");
 
     let comparison_couplings = [0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0];
     for &g_sq in &comparison_couplings {
         // Simplicial
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h_s = build_hamiltonian(&hs1, &pent1, &params);
         let spec_s = diag::diagonalize(&h_s, Some(3));
 
@@ -126,9 +149,12 @@ fn main() {
         println!(
             "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
             g_sq,
-            spec_s.ground_energy(), spec_s.gap(),
-            spec_h2.ground_energy(), spec_h2.gap(),
-            spec_h3.ground_energy(), spec_h3.gap(),
+            spec_s.ground_energy(),
+            spec_s.gap(),
+            spec_h2.ground_energy(),
+            spec_h2.gap(),
+            spec_h3.ground_energy(),
+            spec_h3.gap(),
         );
     }
     println!();
@@ -203,8 +229,13 @@ fn main() {
 
             println!(
                 "{:.6e}\t{:.6e}\t{:.6e}\t{:.6e}",
-                g_sq, spec.ground_energy(),
-                if spec.energies.len() > 1 { spec.energies[1] } else { f64::NAN },
+                g_sq,
+                spec.ground_energy(),
+                if spec.energies.len() > 1 {
+                    spec.energies[1]
+                } else {
+                    f64::NAN
+                },
                 spec.gap(),
             );
         }
@@ -222,19 +253,33 @@ fn main() {
     println!("# complex\tn\tk\td\tn_stars\tn_plaquettes\tmin_star_wt\tmax_star_wt");
 
     let complexes: Vec<(&str, SimplicialComplex)> = vec![
-        ("1_pent", SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]])),
-        ("2_pent", SimplicialComplex::from_pentachorons(
-            6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]],
-        )),
-        ("3_pent", SimplicialComplex::from_pentachorons(
-            7, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 4, 6]],
-        )),
-        ("4_pent", SimplicialComplex::from_pentachorons(
-            8, &[
-                [0, 1, 2, 3, 4], [0, 1, 2, 3, 5],
-                [0, 1, 2, 4, 6], [0, 1, 3, 4, 7],
-            ],
-        )),
+        (
+            "1_pent",
+            SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]]),
+        ),
+        (
+            "2_pent",
+            SimplicialComplex::from_pentachorons(6, &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5]]),
+        ),
+        (
+            "3_pent",
+            SimplicialComplex::from_pentachorons(
+                7,
+                &[[0, 1, 2, 3, 4], [0, 1, 2, 3, 5], [0, 1, 2, 4, 6]],
+            ),
+        ),
+        (
+            "4_pent",
+            SimplicialComplex::from_pentachorons(
+                8,
+                &[
+                    [0, 1, 2, 3, 4],
+                    [0, 1, 2, 3, 5],
+                    [0, 1, 2, 4, 6],
+                    [0, 1, 3, 4, 7],
+                ],
+            ),
+        ),
     ];
 
     for (name, complex) in &complexes {
@@ -263,7 +308,8 @@ fn main() {
         3, // toric code distance = n for n×n torus
         lat_toric.n_vertices,
         lat_toric.n_plaquettes(),
-        4, 4, // uniform weight 4
+        4,
+        4, // uniform weight 4
     );
     println!();
 
@@ -289,7 +335,10 @@ fn main() {
 
     let wilson_couplings = [0.1, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0, 50.0, 100.0];
     for &g_sq in &wilson_couplings {
-        let params = KSParams { g_squared: g_sq, metric_weights: None };
+        let params = KSParams {
+            g_squared: g_sq,
+            metric_weights: None,
+        };
         let h = build_hamiltonian(&hs1, &pent1, &params);
         let spec = diag::diagonalize(&h, Some(1));
         let gs = spec.ground_state();
@@ -299,7 +348,10 @@ fn main() {
             let neg_log_w = if w > 1e-15 { -w.ln() } else { f64::INFINITY };
             println!(
                 "{:.6e}\t{li}\t{}\t{:.6e}\t{:.6e}",
-                g_sq, lp.len(), w, neg_log_w
+                g_sq,
+                lp.len(),
+                w,
+                neg_log_w
             );
         }
     }
@@ -313,7 +365,9 @@ fn main() {
     eprintln!("── Resource Estimates ──\n");
 
     println!("# Resource estimates");
-    println!("# complex\tlambda\tn_edges\tb1\tqubits_per_edge\ttotal_qubits\tgi_qubits\thilbert_dim\ttrotter_gates");
+    println!(
+        "# complex\tlambda\tn_edges\tb1\tqubits_per_edge\ttotal_qubits\tgi_qubits\thilbert_dim\ttrotter_gates"
+    );
 
     for (name, complex) in &complexes {
         let b1 = complex.n_edges() - complex.n_vertices + 1;
@@ -326,8 +380,11 @@ fn main() {
                 let est = qubit_map::resource_estimate(complex, lam, 0);
                 println!(
                     "{name}\t{lam}\t{}\t{}\t{}\t{}\t{}\t(skipped)\t{}",
-                    est.n_edges, est.b1, est.qubits_per_edge,
-                    est.total_qubits, est.gauge_invariant_qubits,
+                    est.n_edges,
+                    est.b1,
+                    est.qubits_per_edge,
+                    est.total_qubits,
+                    est.gauge_invariant_qubits,
                     est.trotter_gates_per_step,
                 );
                 continue;
@@ -336,9 +393,13 @@ fn main() {
             let est = qubit_map::resource_estimate(complex, lam, hs.dim());
             println!(
                 "{name}\t{lam}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                est.n_edges, est.b1, est.qubits_per_edge,
-                est.total_qubits, est.gauge_invariant_qubits,
-                est.hilbert_dim, est.trotter_gates_per_step,
+                est.n_edges,
+                est.b1,
+                est.qubits_per_edge,
+                est.total_qubits,
+                est.gauge_invariant_qubits,
+                est.hilbert_dim,
+                est.trotter_gates_per_step,
             );
         }
     }

@@ -33,13 +33,7 @@ impl DefragRenderer {
     /// - `submitted`: total result rows submitted across all contributors
     /// - `consensus`: work units with verified consensus (status='complete')
     /// - `partial`: work units with results but no consensus yet
-    pub fn render(
-        &mut self,
-        total: usize,
-        submitted: usize,
-        consensus: usize,
-        partial: usize,
-    ) {
+    pub fn render(&mut self, total: usize, submitted: usize, consensus: usize, partial: usize) {
         if total == 0 {
             return;
         }
@@ -86,8 +80,8 @@ impl DefragRenderer {
         // Block colors (RGB)
         let green: [u8; 3] = [0x33, 0xbb, 0x55]; // verified consensus
         let amber: [u8; 3] = [0xbb, 0x99, 0x33]; // has results, unverified
-        let blue: [u8; 3] = [0x33, 0x66, 0x99];  // submitted but unverified
-        let dark: [u8; 3] = [0x16, 0x16, 0x20];   // no data
+        let blue: [u8; 3] = [0x33, 0x66, 0x99]; // submitted but unverified
+        let dark: [u8; 3] = [0x16, 0x16, 0x20]; // no data
 
         let mut buf = vec![0u8; n_cells * 4];
         for i in 0..n_cells {
@@ -108,11 +102,9 @@ impl DefragRenderer {
             buf[offset + 3] = 255;
         }
 
-        if let Ok(data) = ImageData::new_with_u8_clamped_array_and_sh(
-            wasm_bindgen::Clamped(&buf),
-            cols,
-            rows,
-        ) {
+        if let Ok(data) =
+            ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&buf), cols, rows)
+        {
             self.ctx.put_image_data(&data, 0.0, 0.0).ok();
         }
 

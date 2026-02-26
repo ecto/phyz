@@ -81,13 +81,12 @@ impl GpuBatchSimulator {
             ..Default::default()
         });
 
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            }))
-            .ok_or("Failed to find GPU adapter")?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .ok_or("Failed to find GPU adapter")?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -199,21 +198,20 @@ impl GpuBatchSimulator {
             cache: None,
         });
 
-        let integrate_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("integrate_pipeline"),
-                layout: Some(
-                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some("integrate_pl"),
-                        bind_group_layouts: &[&integrate_bind_group_layout],
-                        push_constant_ranges: &[],
-                    }),
-                ),
-                module: &integrate_module,
-                entry_point: Some("main"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+        let integrate_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("integrate_pipeline"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("integrate_pl"),
+                    bind_group_layouts: &[&integrate_bind_group_layout],
+                    push_constant_ranges: &[],
+                }),
+            ),
+            module: &integrate_module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
 
         // Create bind groups
         let aba_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -494,7 +492,7 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phyz_math::{Mat3, SpatialInertia, SpatialTransform, Vec3, GRAVITY};
+    use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
     use phyz_model::ModelBuilder;
     use phyz_rigid::aba;
 

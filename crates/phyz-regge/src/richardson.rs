@@ -7,8 +7,8 @@
 
 use crate::action::{ActionParams, Fields};
 use crate::complex::SimplicialComplex;
-use crate::search::{search_symmetries, SearchConfig};
-use crate::symmetry::{orthonormalize, Generator};
+use crate::search::{SearchConfig, search_symmetries};
+use crate::symmetry::{Generator, orthonormalize};
 
 /// Data from a single resolution level.
 #[derive(Debug, Clone)]
@@ -48,10 +48,31 @@ impl RichardsonResults {
     pub fn report(&self) -> String {
         let mut s = String::new();
         s.push_str("=== Richardson Extrapolation ===\n");
-        s.push_str(&format!("Resolutions: {:?}\n", self.resolutions.iter().map(|r| r.n).collect::<Vec<_>>()));
-        s.push_str(&format!("Spacings h:  {:?}\n", self.resolutions.iter().map(|r| format!("{:.4}", r.h)).collect::<Vec<_>>()));
-        s.push_str(&format!("Spectrum lengths: {:?}\n", self.resolutions.iter().map(|r| r.violations.len()).collect::<Vec<_>>()));
-        s.push_str(&format!("Elapsed (s): {:?}\n\n", self.resolutions.iter().map(|r| format!("{:.1}", r.elapsed_secs)).collect::<Vec<_>>()));
+        s.push_str(&format!(
+            "Resolutions: {:?}\n",
+            self.resolutions.iter().map(|r| r.n).collect::<Vec<_>>()
+        ));
+        s.push_str(&format!(
+            "Spacings h:  {:?}\n",
+            self.resolutions
+                .iter()
+                .map(|r| format!("{:.4}", r.h))
+                .collect::<Vec<_>>()
+        ));
+        s.push_str(&format!(
+            "Spectrum lengths: {:?}\n",
+            self.resolutions
+                .iter()
+                .map(|r| r.violations.len())
+                .collect::<Vec<_>>()
+        ));
+        s.push_str(&format!(
+            "Elapsed (s): {:?}\n\n",
+            self.resolutions
+                .iter()
+                .map(|r| format!("{:.1}", r.elapsed_secs))
+                .collect::<Vec<_>>()
+        ));
 
         let n_extrap = self.extrapolated.len();
         if n_extrap == 0 {
@@ -83,9 +104,15 @@ impl RichardsonResults {
                     s.push_str(&format!("{:>12} ", "---"));
                 }
             }
-            s.push_str(&format!("{:>12.2e} {:>8.1}", self.extrapolated[k], self.convergence_orders[k]));
+            s.push_str(&format!(
+                "{:>12.2e} {:>8.1}",
+                self.extrapolated[k], self.convergence_orders[k]
+            ));
             if has_fit_quality && k < self.fit_residuals.len() {
-                s.push_str(&format!("{:>12.2e} {:>8.4}", self.fit_residuals[k], self.fit_r_squared[k]));
+                s.push_str(&format!(
+                    "{:>12.2e} {:>8.4}",
+                    self.fit_residuals[k], self.fit_r_squared[k]
+                ));
             }
             s.push('\n');
         }
@@ -123,7 +150,15 @@ pub fn richardson_extrapolation(
     params: &ActionParams,
     base_seed: u64,
 ) -> RichardsonResults {
-    richardson_extrapolation_with(ns, spacing, background_builder, known_builder, params, base_seed, None)
+    richardson_extrapolation_with(
+        ns,
+        spacing,
+        background_builder,
+        known_builder,
+        params,
+        base_seed,
+        None,
+    )
 }
 
 /// Like `richardson_extrapolation` with an optional sample cap.
@@ -155,9 +190,7 @@ pub fn richardson_extrapolation_with(
         // Auto-scale samples: at least 500, at least 2× (DOF - known), capped.
         let n_samples = 500.max(2 * n_dof.saturating_sub(n_known)).min(sample_cap);
 
-        eprintln!(
-            "Richardson n={n}: {n_dof} DOF, {n_known} known, {n_samples} samples...",
-        );
+        eprintln!("Richardson n={n}: {n_dof} DOF, {n_known} known, {n_samples} samples...",);
 
         let config = SearchConfig {
             n_samples,
@@ -189,7 +222,11 @@ pub fn richardson_extrapolation_with(
     }
 
     // Extrapolate: for each spectral index k, fit σ_k(h) = a + b·h^p.
-    let min_len = resolutions.iter().map(|r| r.violations.len()).min().unwrap_or(0);
+    let min_len = resolutions
+        .iter()
+        .map(|r| r.violations.len())
+        .min()
+        .unwrap_or(0);
 
     let mut extrapolated = Vec::with_capacity(min_len);
     let mut convergence_orders = Vec::with_capacity(min_len);
@@ -197,10 +234,7 @@ pub fn richardson_extrapolation_with(
     let mut fit_r_squared = Vec::with_capacity(min_len);
 
     for k in 0..min_len {
-        let points: Vec<(f64, f64)> = resolutions
-            .iter()
-            .map(|r| (r.h, r.violations[k]))
-            .collect();
+        let points: Vec<(f64, f64)> = resolutions.iter().map(|r| (r.h, r.violations[k])).collect();
 
         if points.len() >= 3 {
             let (a, p, residual, r_sq) = fit_three_point(&points);
@@ -280,7 +314,11 @@ fn fit_three_point(points: &[(f64, f64)]) -> (f64, f64, f64, f64) {
     }
 
     let residual = (ss_res / sum_1).sqrt();
-    let r_squared = if ss_tot > 1e-30 { 1.0 - ss_res / ss_tot } else { 1.0 };
+    let r_squared = if ss_tot > 1e-30 {
+        1.0 - ss_res / ss_tot
+    } else {
+        1.0
+    };
 
     (a, p, residual, r_squared)
 }
@@ -299,7 +337,11 @@ fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
     let ratio_at = |p: f64| -> f64 {
         let num = h0.powf(p) - h1.powf(p);
         let den = h1.powf(p) - h2.powf(p);
-        if den.abs() < 1e-30 { f64::MAX } else { num / den }
+        if den.abs() < 1e-30 {
+            f64::MAX
+        } else {
+            num / den
+        }
     };
 
     let mut lo = 0.5_f64;
@@ -339,21 +381,9 @@ mod tests {
 
         let (a, p, residual, r_sq) = fit_three_point(&points);
 
-        assert!(
-            (a - 0.001).abs() < 1e-4,
-            "expected a ≈ 0.001, got {a}"
-        );
-        assert!(
-            (p - 2.0).abs() < 0.5,
-            "expected p ≈ 2.0, got {p}"
-        );
-        assert!(
-            residual < 1e-4,
-            "expected small residual, got {residual}"
-        );
-        assert!(
-            r_sq > 0.99,
-            "expected R² ≈ 1.0, got {r_sq}"
-        );
+        assert!((a - 0.001).abs() < 1e-4, "expected a ≈ 0.001, got {a}");
+        assert!((p - 2.0).abs() < 0.5, "expected p ≈ 2.0, got {p}");
+        assert!(residual < 1e-4, "expected small residual, got {residual}");
+        assert!(r_sq > 0.99, "expected R² ≈ 1.0, got {r_sq}");
     }
 }

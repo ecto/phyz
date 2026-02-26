@@ -21,7 +21,7 @@ use phyz_regge::symmetry::{
     all_boost_generators, all_gauge_generators, all_rotation_generators, conformal_generator,
     translation_generator,
 };
-use phyz_regge::{search_symmetries, ActionParams, Fields, SearchConfig};
+use phyz_regge::{ActionParams, Fields, SearchConfig, search_symmetries};
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
     env::var(key)
@@ -88,7 +88,11 @@ fn main() {
 
     println!(
         "Known generators: {} gauge + 4 translation + {} rotation + {} boost + 1 conformal = {}  ({:.1?})",
-        n_gauge, n_rot, n_boost, known.len(), gen_time,
+        n_gauge,
+        n_rot,
+        n_boost,
+        known.len(),
+        gen_time,
     );
     println!();
 
@@ -97,7 +101,11 @@ fn main() {
     if n_samples < dof.saturating_sub(n_known) {
         eprintln!(
             "WARNING: n_samples ({}) < DOF - n_known ({} - {} = {}). Consider increasing DS_SAMPLES to at least {}.",
-            n_samples, dof, n_known, dof.saturating_sub(n_known), 2 * dof.saturating_sub(n_known),
+            n_samples,
+            dof,
+            n_known,
+            dof.saturating_sub(n_known),
+            2 * dof.saturating_sub(n_known),
         );
         eprintln!();
     }

@@ -47,7 +47,11 @@ fn tick_label(v: f32, step: f32) -> String {
 /// Detect if the user prefers light color scheme.
 fn is_light_mode() -> bool {
     web_sys::window()
-        .and_then(|w| w.match_media("(prefers-color-scheme: light)").ok().flatten())
+        .and_then(|w| {
+            w.match_media("(prefers-color-scheme: light)")
+                .ok()
+                .flatten()
+        })
         .map(|m| m.matches())
         .unwrap_or(false)
 }
@@ -55,26 +59,32 @@ fn is_light_mode() -> bool {
 /// A data point in the 3D parameter space.
 #[derive(Clone, Debug)]
 pub struct DataPoint {
-    pub log_g2: f32,   // X: log10(g²)
-    pub s_ee: f32,     // Y: entanglement entropy
-    pub a_cut: f32,    // Z: cut area
-    pub age: f32,      // for animation (0 = new, grows each frame)
+    pub log_g2: f32,           // X: log10(g²)
+    pub s_ee: f32,             // Y: entanglement entropy
+    pub a_cut: f32,            // Z: cut area
+    pub age: f32,              // for animation (0 = new, grows each frame)
     pub label: Option<String>, // floating annotation (set for fresh compute results)
 }
 
 /// Track data bounds for auto-scaling.
 struct Bounds {
-    x_min: f32, x_max: f32,
-    y_min: f32, y_max: f32,
-    z_min: f32, z_max: f32,
+    x_min: f32,
+    x_max: f32,
+    y_min: f32,
+    y_max: f32,
+    z_min: f32,
+    z_max: f32,
 }
 
 impl Default for Bounds {
     fn default() -> Self {
         Self {
-            x_min: f32::INFINITY, x_max: f32::NEG_INFINITY,
-            y_min: f32::INFINITY, y_max: f32::NEG_INFINITY,
-            z_min: f32::INFINITY, z_max: f32::NEG_INFINITY,
+            x_min: f32::INFINITY,
+            x_max: f32::NEG_INFINITY,
+            y_min: f32::INFINITY,
+            y_max: f32::NEG_INFINITY,
+            z_min: f32::INFINITY,
+            z_max: f32::NEG_INFINITY,
         }
     }
 }
@@ -207,9 +217,7 @@ impl Renderer {
         // Scale context so drawing ops use CSS pixels
         ctx.scale(dpr, dpr).ok();
 
-        web_sys::console::log_1(
-            &format!("canvas2d renderer: {}x{} @{dpr}x", width, height).into(),
-        );
+        web_sys::console::log_1(&format!("canvas2d renderer: {}x{} @{dpr}x", width, height).into());
 
         Ok(Renderer {
             ctx,
@@ -309,7 +317,10 @@ impl Renderer {
         // Sort back-to-front
         let mut draw_order: Vec<usize> = (0..projected.len()).collect();
         draw_order.sort_by(|&a, &b| {
-            projected[b].3.partial_cmp(&projected[a].3).unwrap_or(std::cmp::Ordering::Equal)
+            projected[b]
+                .3
+                .partial_cmp(&projected[a].3)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Draw connection lines between nearby points (constellation effect)
@@ -328,7 +339,11 @@ impl Renderer {
             }
 
             let t = self.bounds.t_color(p.a_cut);
-            let (cr, cg, cb) = if light { retro_color_light(t) } else { retro_color(t) };
+            let (cr, cg, cb) = if light {
+                retro_color_light(t)
+            } else {
+                retro_color(t)
+            };
 
             // Depth cueing: farther points are dimmer
             let depth = (0.4 + 0.6 * (1.0 - (z - 3.0).max(0.0) / 6.0)).clamp(0.4, 1.0);
@@ -341,12 +356,19 @@ impl Renderer {
                 let ring_t = p.age / 1.5;
                 let ring_radius = size * (1.5 + ring_t * 8.0);
                 let ring_alpha = 0.3 * (1.0 - ring_t) * depth;
-                self.ctx.set_stroke_style_str(
-                    &format!("rgba({cr},{cg},{cb},{ring_alpha:.2})"),
-                );
+                self.ctx
+                    .set_stroke_style_str(&format!("rgba({cr},{cg},{cb},{ring_alpha:.2})"));
                 self.ctx.set_line_width(1.0);
                 self.ctx.begin_path();
-                self.ctx.arc(sx as f64, sy as f64, ring_radius as f64, 0.0, std::f64::consts::TAU).ok();
+                self.ctx
+                    .arc(
+                        sx as f64,
+                        sy as f64,
+                        ring_radius as f64,
+                        0.0,
+                        std::f64::consts::TAU,
+                    )
+                    .ok();
                 self.ctx.stroke();
             }
 
@@ -355,30 +377,43 @@ impl Renderer {
                 let ring_t = (p.age - 0.3) / 1.7;
                 let ring_radius = size * (1.0 + ring_t * 6.0);
                 let ring_alpha = 0.15 * (1.0 - ring_t) * depth;
-                self.ctx.set_stroke_style_str(
-                    &format!("rgba({cr},{cg},{cb},{ring_alpha:.2})"),
-                );
+                self.ctx
+                    .set_stroke_style_str(&format!("rgba({cr},{cg},{cb},{ring_alpha:.2})"));
                 self.ctx.set_line_width(0.5);
                 self.ctx.begin_path();
-                self.ctx.arc(sx as f64, sy as f64, ring_radius as f64, 0.0, std::f64::consts::TAU).ok();
+                self.ctx
+                    .arc(
+                        sx as f64,
+                        sy as f64,
+                        ring_radius as f64,
+                        0.0,
+                        std::f64::consts::TAU,
+                    )
+                    .ok();
                 self.ctx.stroke();
             }
 
             // Solid dot
-            self.ctx.set_fill_style_str(
-                &format!("rgba({cr},{cg},{cb},{alpha:.2})"),
-            );
+            self.ctx
+                .set_fill_style_str(&format!("rgba({cr},{cg},{cb},{alpha:.2})"));
             self.ctx.begin_path();
-            self.ctx.arc(sx as f64, sy as f64, size as f64, 0.0, std::f64::consts::TAU).ok();
+            self.ctx
+                .arc(
+                    sx as f64,
+                    sy as f64,
+                    size as f64,
+                    0.0,
+                    std::f64::consts::TAU,
+                )
+                .ok();
             self.ctx.fill();
 
             // Crosshair on very fresh points (< 0.5s)
             if p.age < 0.5 {
                 let ch_alpha = (1.0 - p.age / 0.5) * 0.6 * depth;
                 let ch_size = size * 4.0;
-                self.ctx.set_stroke_style_str(
-                    &format!("rgba({cr},{cg},{cb},{ch_alpha:.2})"),
-                );
+                self.ctx
+                    .set_stroke_style_str(&format!("rgba({cr},{cg},{cb},{ch_alpha:.2})"));
                 self.ctx.set_line_width(1.0);
                 self.ctx.begin_path();
                 self.ctx.move_to((sx - ch_size) as f64, sy as f64);
@@ -444,7 +479,9 @@ impl Renderer {
 
             let fade = 1.0 - (p.age / 3.0);
             let fade = fade * fade; // ease-out
-            if fade < 0.01 { continue; }
+            if fade < 0.01 {
+                continue;
+            }
 
             // Offset: label floats up and to the right, drifts upward with age
             let drift_y = -p.age * 4.0; // drift up over time
@@ -454,9 +491,8 @@ impl Renderer {
             let ly = sy + offset_y;
 
             // Leader line from point to label
-            self.ctx.set_stroke_style_str(
-                &format!("{leader_color}{:.2})", fade * 0.4),
-            );
+            self.ctx
+                .set_stroke_style_str(&format!("{leader_color}{:.2})", fade * 0.4));
             self.ctx.set_line_width(0.5);
             self.ctx.begin_path();
             self.ctx.move_to(sx as f64, sy as f64);
@@ -469,9 +505,8 @@ impl Renderer {
                 let line_y = ly + li as f32 * 12.0;
 
                 // Text
-                self.ctx.set_fill_style_str(
-                    &format!("{label_color}{:.2})", fade * 0.8),
-                );
+                self.ctx
+                    .set_fill_style_str(&format!("{label_color}{:.2})", fade * 0.8));
                 self.ctx.fill_text(line, lx as f64, line_y as f64).ok();
             }
         }
@@ -493,11 +528,15 @@ impl Renderer {
 
         for i in (0..projected.len()).step_by(step) {
             let (_, x1, y1, z1) = projected[i];
-            if z1 < 0.1 { continue; }
+            if z1 < 0.1 {
+                continue;
+            }
 
             for j in (i + 1..projected.len()).step_by(step) {
                 let (_, x2, y2, z2) = projected[j];
-                if z2 < 0.1 { continue; }
+                if z2 < 0.1 {
+                    continue;
+                }
 
                 let dx = x2 - x1;
                 let dy = y2 - y1;
@@ -505,13 +544,13 @@ impl Renderer {
 
                 if dist_sq < threshold_sq && dist_sq > 100.0 {
                     let proximity = 1.0 - (dist_sq / threshold_sq).sqrt();
-                    let depth = (0.3 + 0.7 * (1.0 - ((z1 + z2) * 0.5 - 3.0).max(0.0) / 6.0)).clamp(0.2, 1.0);
+                    let depth = (0.3 + 0.7 * (1.0 - ((z1 + z2) * 0.5 - 3.0).max(0.0) / 6.0))
+                        .clamp(0.2, 1.0);
                     let alpha = proximity * 0.15 * depth;
 
                     let (cr, cg, cb) = base_color;
-                    self.ctx.set_stroke_style_str(
-                        &format!("rgba({cr},{cg},{cb},{alpha:.3})"),
-                    );
+                    self.ctx
+                        .set_stroke_style_str(&format!("rgba({cr},{cg},{cb},{alpha:.3})"));
                     self.ctx.set_line_width(0.5);
                     self.ctx.begin_path();
                     self.ctx.move_to(x1 as f64, y1 as f64);
@@ -550,7 +589,11 @@ impl Renderer {
             self.ctx.stroke();
         }
 
-        let grid_color = if light { "rgba(160,160,150,0.5)" } else { "rgba(55,55,75,0.7)" };
+        let grid_color = if light {
+            "rgba(160,160,150,0.5)"
+        } else {
+            "rgba(55,55,75,0.7)"
+        };
         self.ctx.set_stroke_style_str(grid_color);
         self.ctx.set_line_width(0.5);
         let n = 8;
@@ -959,8 +1002,7 @@ impl Renderer {
         self.ctx.set_line_width(0.5);
         self.ctx.begin_path();
         self.ctx.move_to(sx as f64, sy as f64);
-        self.ctx
-            .line_to(tx as f64, (ty + box_h / 2.0) as f64);
+        self.ctx.line_to(tx as f64, (ty + box_h / 2.0) as f64);
         self.ctx.stroke();
 
         // Text
@@ -974,18 +1016,24 @@ impl Renderer {
         self.ctx.set_text_baseline("top");
         for (i, line) in lines.iter().enumerate() {
             let ly = ty + pad + i as f32 * line_h;
-            self.ctx
-                .fill_text(line, (tx + pad) as f64, ly as f64)
-                .ok();
+            self.ctx.fill_text(line, (tx + pad) as f64, ly as f64).ok();
         }
         self.ctx.set_text_baseline("alphabetic");
     }
 
     fn draw_labels(&self, w: f32, h: f32, light: bool) {
         let (lx, ly, lz) = if light {
-            ("rgba(180,70,70,0.8)", "rgba(50,150,50,0.8)", "rgba(70,70,180,0.8)")
+            (
+                "rgba(180,70,70,0.8)",
+                "rgba(50,150,50,0.8)",
+                "rgba(70,70,180,0.8)",
+            )
         } else {
-            ("rgba(210,130,130,0.8)", "rgba(130,210,130,0.8)", "rgba(130,130,210,0.8)")
+            (
+                "rgba(210,130,130,0.8)",
+                "rgba(130,210,130,0.8)",
+                "rgba(130,130,210,0.8)",
+            )
         };
 
         let sub_color = if light {
@@ -998,7 +1046,9 @@ impl Renderer {
         self.ctx.set_font("11px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(lx);
         let (x, y, _) = self.camera.project([2.3, 0.0, 0.0], w, h);
-        self.ctx.fill_text("log(g\u{00B2})", x as f64, y as f64).ok();
+        self.ctx
+            .fill_text("log(g\u{00B2})", x as f64, y as f64)
+            .ok();
         self.ctx.set_font("8px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(sub_color);
         self.ctx
@@ -1083,11 +1133,23 @@ impl Renderer {
         // R² quality indicator — colored bar along top of box
         let bar_w = (box_w - 2.0) * r2.clamp(0.0, 1.0) as f32;
         let bar_color = if r2 > 0.9 {
-            if light { "rgba(40,140,60,0.5)" } else { "rgba(80,220,100,0.4)" }
+            if light {
+                "rgba(40,140,60,0.5)"
+            } else {
+                "rgba(80,220,100,0.4)"
+            }
         } else if r2 > 0.7 {
-            if light { "rgba(160,140,30,0.5)" } else { "rgba(204,170,51,0.4)" }
+            if light {
+                "rgba(160,140,30,0.5)"
+            } else {
+                "rgba(204,170,51,0.4)"
+            }
         } else {
-            if light { "rgba(180,70,70,0.5)" } else { "rgba(220,90,90,0.4)" }
+            if light {
+                "rgba(180,70,70,0.5)"
+            } else {
+                "rgba(220,90,90,0.4)"
+            }
         };
         self.ctx.set_fill_style_str(bar_color);
         self.ctx
@@ -1133,9 +1195,7 @@ impl Renderer {
                 self.ctx.set_font("8px 'IBM Plex Mono', monospace");
                 self.ctx.set_fill_style_str(text_color);
             }
-            self.ctx
-                .fill_text(line, (bx + pad) as f64, ly as f64)
-                .ok();
+            self.ctx.fill_text(line, (bx + pad) as f64, ly as f64).ok();
         }
 
         self.ctx.set_text_baseline("alphabetic");
@@ -1156,7 +1216,9 @@ impl Renderer {
         self.ctx.set_fill_style_str(title_color);
         self.ctx.set_text_align("left");
         self.ctx.set_text_baseline("top");
-        self.ctx.fill_text("Does gravity emerge from entanglement?", x, y).ok();
+        self.ctx
+            .fill_text("Does gravity emerge from entanglement?", x, y)
+            .ok();
 
         // Thin rule
         y += 20.0;
@@ -1190,26 +1252,27 @@ impl Renderer {
         // Line 1
         self.ctx.set_font("9px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(body_color);
-        self.ctx.fill_text(
-            "SU(2) lattice gauge theory on a triangulated 4-sphere.",
-            x, y,
-        ).ok();
+        self.ctx
+            .fill_text(
+                "SU(2) lattice gauge theory on a triangulated 4-sphere.",
+                x,
+                y,
+            )
+            .ok();
 
         // Line 2
         y += line_h;
         self.ctx.set_fill_style_str(body_color);
-        self.ctx.fill_text(
-            "Each point: one partition of the ground state.",
-            x, y,
-        ).ok();
+        self.ctx
+            .fill_text("Each point: one partition of the ground state.", x, y)
+            .ok();
 
         // Line 3 — the key claim, slightly brighter
         y += line_h + 4.0;
         self.ctx.set_fill_style_str(em_color);
-        self.ctx.fill_text(
-            "If the Ryu-Takayanagi conjecture holds:",
-            x, y,
-        ).ok();
+        self.ctx
+            .fill_text("If the Ryu-Takayanagi conjecture holds:", x, y)
+            .ok();
 
         // The formula — larger, prominent
         y += line_h + 2.0;
@@ -1220,26 +1283,21 @@ impl Renderer {
         };
         self.ctx.set_font("12px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(formula_color);
-        self.ctx.fill_text(
-            "S_EE  =  A_cut / 4G_N",
-            x + 8.0, y,
-        ).ok();
+        self.ctx.fill_text("S_EE  =  A_cut / 4G_N", x + 8.0, y).ok();
 
         // Closing line
         y += line_h + 6.0;
         self.ctx.set_font("9px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(body_color);
-        self.ctx.fill_text(
-            "Points should collapse onto a tilted plane.",
-            x, y,
-        ).ok();
+        self.ctx
+            .fill_text("Points should collapse onto a tilted plane.", x, y)
+            .ok();
 
         y += line_h;
         self.ctx.set_fill_style_str(body_color);
-        self.ctx.fill_text(
-            "The slope gives Newton\u{2019}s constant.",
-            x, y,
-        ).ok();
+        self.ctx
+            .fill_text("The slope gives Newton\u{2019}s constant.", x, y)
+            .ok();
 
         self.ctx.set_text_baseline("alphabetic");
     }

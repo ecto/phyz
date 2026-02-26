@@ -1,9 +1,9 @@
 //! Probabilistic state with uncertain positions, velocities, and parameters.
 
 use crate::Distribution;
-use rand_distr::{Distribution as RandDist, Normal};
 use phyz_math::DVec;
 use phyz_model::Model;
+use rand_distr::{Distribution as RandDist, Normal};
 
 /// Probabilistic state with distribution over q, v, and physical parameters.
 #[derive(Debug, Clone)]

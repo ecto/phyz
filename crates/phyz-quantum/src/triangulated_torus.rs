@@ -69,11 +69,11 @@ impl TriangulatedTorus {
                 let v01 = vertex(i, j + 1);
 
                 // Edges of the square + diagonal
-                let e_bot = get_edge(v00, v10);   // bottom: (i,j)→(i+1,j)
+                let e_bot = get_edge(v00, v10); // bottom: (i,j)→(i+1,j)
                 let e_right = get_edge(v10, v11); // right: (i+1,j)→(i+1,j+1)
-                let e_diag = get_edge(v00, v11);  // diagonal: (i,j)→(i+1,j+1)
-                let e_top = get_edge(v01, v11);   // top: (i,j+1)→(i+1,j+1)
-                let e_left = get_edge(v00, v01);  // left: (i,j)→(i,j+1)
+                let e_diag = get_edge(v00, v11); // diagonal: (i,j)→(i+1,j+1)
+                let e_top = get_edge(v01, v11); // top: (i,j+1)→(i+1,j+1)
+                let e_left = get_edge(v00, v01); // left: (i,j)→(i,j+1)
 
                 // Lower triangle: v00 → v10 → v11
                 // Holonomy: +e_bot, +e_right, -e_diag
@@ -81,10 +81,7 @@ impl TriangulatedTorus {
                 let s_bot = if v00 < v10 { 1 } else { -1 };
                 let s_right = if v10 < v11 { 1 } else { -1 };
                 let s_diag_lower = if v00 < v11 { -1 } else { 1 }; // reverse direction
-                plaquettes.push((
-                    [e_bot, e_right, e_diag],
-                    [s_bot, s_right, s_diag_lower],
-                ));
+                plaquettes.push(([e_bot, e_right, e_diag], [s_bot, s_right, s_diag_lower]));
 
                 // Upper triangle: v00 → v11 → v01
                 // Holonomy: +e_diag, +e_top(reversed), -e_left
@@ -238,8 +235,11 @@ impl TriangulatedTorusHilbert {
             }
         }
 
-        let index_map: HashMap<Vec<i32>, usize> =
-            basis.iter().enumerate().map(|(i, c)| (c.clone(), i)).collect();
+        let index_map: HashMap<Vec<i32>, usize> = basis
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.clone(), i))
+            .collect();
 
         Self {
             n_edges,
@@ -351,7 +351,11 @@ mod tests {
         let h = build_triangulated_torus_hamiltonian(&hs, &t, 1e6);
         let spec = diag::diagonalize(&h, Some(1));
 
-        assert!(spec.ground_energy().abs() < 1e-2, "E₀ = {}", spec.ground_energy());
+        assert!(
+            spec.ground_energy().abs() < 1e-2,
+            "E₀ = {}",
+            spec.ground_energy()
+        );
     }
 
     #[test]

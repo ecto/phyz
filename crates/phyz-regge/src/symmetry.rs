@@ -424,15 +424,18 @@ pub fn apply_discrete_symmetry(
             apply_vertex_permutation(complex, fields, &vertex_map)
         }
         DiscreteSymmetry::CP(axis) => {
-            let p_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
+            let p_result =
+                apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
             apply_discrete_symmetry(complex, &p_result, DiscreteSymmetry::ChargeConjugation, n)
         }
         DiscreteSymmetry::CT => {
-            let t_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::TimeReversal, n);
+            let t_result =
+                apply_discrete_symmetry(complex, fields, DiscreteSymmetry::TimeReversal, n);
             apply_discrete_symmetry(complex, &t_result, DiscreteSymmetry::ChargeConjugation, n)
         }
         DiscreteSymmetry::PT(axis) => {
-            let p_result = apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
+            let p_result =
+                apply_discrete_symmetry(complex, fields, DiscreteSymmetry::Parity(axis), n);
             apply_discrete_symmetry(complex, &p_result, DiscreteSymmetry::TimeReversal, n)
         }
         DiscreteSymmetry::CPT(axis) => {
@@ -484,7 +487,7 @@ pub fn check_all_discrete_symmetries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{einstein_maxwell_grad, noether_current, ActionParams};
+    use crate::action::{ActionParams, einstein_maxwell_grad, noether_current};
     use crate::mesh;
 
     #[test]
@@ -573,10 +576,7 @@ mod tests {
             for (j, gj) in ortho.iter().enumerate() {
                 if i != j {
                     let d = gi.dot(gj);
-                    assert!(
-                        d.abs() < 1e-10,
-                        "generators {i},{j} dot = {d} (expected 0)"
-                    );
+                    assert!(d.abs() < 1e-10, "generators {i},{j} dot = {d} (expected 0)");
                 }
             }
         }
@@ -588,7 +588,11 @@ mod tests {
             let mut residual = packed.clone();
             for ob in &ortho {
                 let ob_packed = ob.pack();
-                let dot: f64 = residual.iter().zip(ob_packed.iter()).map(|(a, b)| a * b).sum();
+                let dot: f64 = residual
+                    .iter()
+                    .zip(ob_packed.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
                 for (ri, bi) in residual.iter_mut().zip(ob_packed.iter()) {
                     *ri -= dot * bi;
                 }
@@ -643,10 +647,7 @@ mod tests {
             let g = gauge_generator(&complex, v);
             let packed = g.pack();
             let dot: f64 = grad.iter().zip(packed.iter()).map(|(a, b)| a * b).sum();
-            assert!(
-                dot.abs() < 1e-10,
-                "∇S · G_gauge(v{v}) = {dot} (expected 0)"
-            );
+            assert!(dot.abs() < 1e-10, "∇S · G_gauge(v{v}) = {dot} (expected 0)");
         }
     }
 
@@ -663,11 +664,7 @@ mod tests {
             let g = rotation_generator(&complex, &fields, a1, a2, n);
 
             // All δl should be zero on flat space.
-            let max_dl: f64 = g
-                .delta_lengths
-                .iter()
-                .map(|x| x.abs())
-                .fold(0.0, f64::max);
+            let max_dl: f64 = g.delta_lengths.iter().map(|x| x.abs()).fold(0.0, f64::max);
             assert!(
                 max_dl < 1e-12,
                 "rotation ({a1},{a2}) on flat space: max δl = {max_dl} (expected 0)"
@@ -735,11 +732,7 @@ mod tests {
 
         let params = ActionParams::default();
         for g in &boosts {
-            let max_dl: f64 = g
-                .delta_lengths
-                .iter()
-                .map(|x| x.abs())
-                .fold(0.0, f64::max);
+            let max_dl: f64 = g.delta_lengths.iter().map(|x| x.abs()).fold(0.0, f64::max);
             assert!(
                 max_dl < 1e-12,
                 "{} on flat space: max δl = {max_dl} (expected 0)",
@@ -804,7 +797,13 @@ mod tests {
         let fields = Fields::new(lengths, phases);
         let params = ActionParams::default();
 
-        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        let v = check_discrete_symmetry(
+            &complex,
+            &fields,
+            DiscreteSymmetry::ChargeConjugation,
+            n,
+            &params,
+        );
         assert!(v < 1e-12, "C violation on flat = {v}");
     }
 
@@ -816,7 +815,13 @@ mod tests {
         let fields = Fields::new(lengths, phases);
         let params = ActionParams::default();
 
-        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::TimeReversal, n, &params);
+        let v = check_discrete_symmetry(
+            &complex,
+            &fields,
+            DiscreteSymmetry::TimeReversal,
+            n,
+            &params,
+        );
         assert!(v < 1e-10, "T violation on flat = {v}");
     }
 
@@ -829,7 +834,13 @@ mod tests {
         let params = ActionParams::default();
 
         for axis in 1..=3 {
-            let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::Parity(axis), n, &params);
+            let v = check_discrete_symmetry(
+                &complex,
+                &fields,
+                DiscreteSymmetry::Parity(axis),
+                n,
+                &params,
+            );
             assert!(v < 1e-10, "P{axis} violation on flat = {v}");
         }
     }
@@ -843,7 +854,13 @@ mod tests {
         let fields = Fields::new(lengths, phases);
         let params = ActionParams::default();
 
-        let v = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        let v = check_discrete_symmetry(
+            &complex,
+            &fields,
+            DiscreteSymmetry::ChargeConjugation,
+            n,
+            &params,
+        );
         assert!(v < 1e-12, "C violation on RN = {v}");
     }
 
@@ -868,10 +885,28 @@ mod tests {
         let fields = Fields::new(lengths, phases);
         let params = ActionParams::default();
 
-        let v_t = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::TimeReversal, n, &params);
-        let v_c = check_discrete_symmetry(&complex, &fields, DiscreteSymmetry::ChargeConjugation, n, &params);
+        let v_t = check_discrete_symmetry(
+            &complex,
+            &fields,
+            DiscreteSymmetry::TimeReversal,
+            n,
+            &params,
+        );
+        let v_c = check_discrete_symmetry(
+            &complex,
+            &fields,
+            DiscreteSymmetry::ChargeConjugation,
+            n,
+            &params,
+        );
         // C is still exact (zero gauge field), T is broken.
-        assert!(v_c < 1e-12, "C should be exact on Kerr with zero gauge field");
-        assert!(v_t > v_c, "T should be more broken than C on Kerr: T={v_t}, C={v_c}");
+        assert!(
+            v_c < 1e-12,
+            "C should be exact on Kerr with zero gauge field"
+        );
+        assert!(
+            v_t > v_c,
+            "T should be more broken than C on Kerr: T={v_t}, C={v_c}"
+        );
     }
 }

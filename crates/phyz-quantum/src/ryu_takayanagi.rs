@@ -77,10 +77,7 @@ pub fn classify_edges(
 }
 
 /// Topological area of cut: number of boundary edges.
-pub fn cut_area_topological(
-    complex: &SimplicialComplex,
-    partition_a: &[usize],
-) -> usize {
+pub fn cut_area_topological(complex: &SimplicialComplex, partition_a: &[usize]) -> usize {
     let (_, _, boundary) = classify_edges(complex, partition_a);
     boundary.len()
 }
@@ -209,10 +206,7 @@ pub fn mutual_information(
 ///
 /// At mass=0 all edges are length 1.0 (flat). At mass>0 edges far from
 /// the center are longer (simulating the metric redshift).
-pub fn schwarzschild_edge_lengths(
-    complex: &SimplicialComplex,
-    mass: f64,
-) -> Vec<f64> {
+pub fn schwarzschild_edge_lengths(complex: &SimplicialComplex, mass: f64) -> Vec<f64> {
     // BFS from vertex 0 to compute graph distances.
     let n = complex.n_vertices;
     let mut dist = vec![usize::MAX; n];
@@ -427,7 +421,7 @@ fn deterministic_hash(seed: u64, index: u64) -> f64 {
 mod tests {
     use super::*;
     use crate::diag;
-    use crate::hamiltonian::{build_hamiltonian, KSParams};
+    use crate::hamiltonian::{KSParams, build_hamiltonian};
 
     fn single_pentachoron() -> SimplicialComplex {
         SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]])
@@ -473,10 +467,7 @@ mod tests {
         let complex = single_pentachoron();
         let partition_a = vec![0, 1];
         let (_, _, boundary) = classify_edges(&complex, &partition_a);
-        assert_eq!(
-            cut_area_topological(&complex, &partition_a),
-            boundary.len()
-        );
+        assert_eq!(cut_area_topological(&complex, &partition_a), boundary.len());
     }
 
     #[test]
@@ -614,7 +605,10 @@ mod tests {
         let s_alg = entanglement_for_partition(&hs, gs, &complex, &part);
         let s_ext = entanglement_for_partition_extended(&hs, gs, &complex, &part);
         assert!(s_alg < 1e-10, "algebraic should be ~0 for single vertex");
-        assert!(s_ext > 0.1, "extended should be nonzero for single vertex, got {s_ext}");
+        assert!(
+            s_ext > 0.1,
+            "extended should be nonzero for single vertex, got {s_ext}"
+        );
     }
 
     #[test]
@@ -631,11 +625,7 @@ mod tests {
 
         for part in vertex_bipartitions(5) {
             let mi = mutual_information(&hs, gs, &complex, &part);
-            assert!(
-                mi >= -1e-10,
-                "partition {:?}: MI = {mi} < 0",
-                part
-            );
+            assert!(mi >= -1e-10, "partition {:?}: MI = {mi} < 0", part);
         }
     }
 
@@ -679,10 +669,7 @@ mod tests {
         let complex = two_pentachorons();
         let lengths = de_sitter_edge_lengths(&complex, 0.0);
         for &l in &lengths {
-            assert!(
-                (l - 1.0).abs() < 1e-12,
-                "expected flat at H=0, got {l}"
-            );
+            assert!((l - 1.0).abs() < 1e-12, "expected flat at H=0, got {l}");
         }
     }
 
@@ -690,7 +677,10 @@ mod tests {
     fn test_de_sitter_valid_geometry() {
         let complex = two_pentachorons();
         let lengths = de_sitter_edge_lengths(&complex, 0.5);
-        assert!(geometry_valid(&complex, &lengths), "de Sitter H=0.5 invalid");
+        assert!(
+            geometry_valid(&complex, &lengths),
+            "de Sitter H=0.5 invalid"
+        );
     }
 
     #[test]
@@ -698,10 +688,7 @@ mod tests {
         let complex = two_pentachorons();
         let lengths = perturbed_edge_lengths(&complex, 0.0, 42);
         for &l in &lengths {
-            assert!(
-                (l - 1.0).abs() < 1e-12,
-                "expected flat at eps=0, got {l}"
-            );
+            assert!((l - 1.0).abs() < 1e-12, "expected flat at eps=0, got {l}");
         }
     }
 
@@ -717,7 +704,10 @@ mod tests {
     fn test_perturbed_valid_geometry() {
         let complex = two_pentachorons();
         let lengths = perturbed_edge_lengths(&complex, 0.1, 42);
-        assert!(geometry_valid(&complex, &lengths), "perturbed eps=0.1 invalid");
+        assert!(
+            geometry_valid(&complex, &lengths),
+            "perturbed eps=0.1 invalid"
+        );
     }
 
     #[test]
@@ -759,10 +749,7 @@ mod tests {
         let complex = two_pentachorons();
         let lengths = conformal_edge_lengths(&complex, 0.0);
         for &l in &lengths {
-            assert!(
-                (l - 1.0).abs() < 1e-12,
-                "expected flat at alpha=0, got {l}"
-            );
+            assert!((l - 1.0).abs() < 1e-12, "expected flat at alpha=0, got {l}");
         }
     }
 
@@ -770,14 +757,20 @@ mod tests {
     fn test_conformal_valid_geometry() {
         let complex = two_pentachorons();
         let lengths = conformal_edge_lengths(&complex, 0.3);
-        assert!(geometry_valid(&complex, &lengths), "conformal alpha=0.3 invalid");
+        assert!(
+            geometry_valid(&complex, &lengths),
+            "conformal alpha=0.3 invalid"
+        );
     }
 
     #[test]
     fn test_geometry_valid_flat() {
         let complex = two_pentachorons();
         let flat = vec![1.0; complex.n_edges()];
-        assert!(geometry_valid(&complex, &flat), "flat geometry should be valid");
+        assert!(
+            geometry_valid(&complex, &flat),
+            "flat geometry should be valid"
+        );
     }
 
     #[test]
@@ -786,6 +779,9 @@ mod tests {
         // Make one edge very long → degenerate triangle
         let mut lengths = vec![1.0; complex.n_edges()];
         lengths[0] = 100.0;
-        assert!(!geometry_valid(&complex, &lengths), "degenerate geometry should be invalid");
+        assert!(
+            !geometry_valid(&complex, &lengths),
+            "degenerate geometry should be invalid"
+        );
     }
 }

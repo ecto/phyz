@@ -17,7 +17,7 @@
 use phyz_regge::foliation::foliated_hypercubic;
 use phyz_regge::gem::{b_grav_tensor_frobenius, linearized_b_grav_tidal, vertex_spatial_coords};
 use phyz_regge::transformer::{
-    make_planar_winding, run_transformer_continuation, ResidualStats, TransformerConfig,
+    ResidualStats, TransformerConfig, make_planar_winding, run_transformer_continuation,
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -40,7 +40,11 @@ fn estimate_order(h0: f64, s0: f64, h1: f64, s1: f64, h2: f64, s2: f64) -> f64 {
     let ratio_at = |p: f64| -> f64 {
         let num = h0.powf(p) - h1.powf(p);
         let den = h1.powf(p) - h2.powf(p);
-        if den.abs() < 1e-30 { f64::MAX } else { num / den }
+        if den.abs() < 1e-30 {
+            f64::MAX
+        } else {
+            num / den
+        }
     };
 
     let (mut lo, mut hi) = (0.5_f64, 6.0_f64);
@@ -226,7 +230,9 @@ fn main() {
     }
 
     // TSV to stdout
-    println!("N\th\tdt\tB_regge\tB_linear\tratio\tmax_res\tmean_res\tmedian_res\tp90_res\tn_bad\tn_total\ttime_s");
+    println!(
+        "N\th\tdt\tB_regge\tB_linear\tratio\tmax_res\tmean_res\tmedian_res\tp90_res\tn_bad\tn_total\ttime_s"
+    );
     for d in &data {
         let rs = &d.residual_stats;
         println!(

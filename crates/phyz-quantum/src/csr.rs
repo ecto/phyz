@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_csr_su2_matvec_matches_dense() {
-        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+        use crate::su2_quantum::{Su2HilbertSpace, build_su2_hamiltonian};
 
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_csr_su2_with_metric_weights() {
-        use crate::su2_quantum::{build_su2_hamiltonian, Su2HilbertSpace};
+        use crate::su2_quantum::{Su2HilbertSpace, build_su2_hamiltonian};
 
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);

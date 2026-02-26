@@ -3,8 +3,8 @@
 //! Handles allocation and synchronization of GPU buffers for batch simulation.
 
 use bytemuck::{Pod, Zeroable};
-use std::sync::Arc;
 use phyz_model::{Model, State};
+use std::sync::Arc;
 
 /// GPU-backed batch simulation state.
 ///

@@ -34,7 +34,7 @@ pub type SpatialInertia = tang::SpatialInertia<f64>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Vec3, Mat3};
+    use crate::{Mat3, Vec3};
 
     const EPS: f64 = 1e-10;
 
@@ -68,10 +68,7 @@ mod tests {
 
     #[test]
     fn test_transform_inverse_roundtrip() {
-        let xf = SpatialTransform::new(
-            Mat3::rotation_z(0.5),
-            Vec3::new(1.0, 2.0, 3.0),
-        );
+        let xf = SpatialTransform::new(Mat3::rotation_z(0.5), Vec3::new(1.0, 2.0, 3.0));
         let v = SpatialVec::new(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
 
         let forward = xf.apply_motion(&v);
@@ -110,15 +107,14 @@ mod tests {
 #[cfg(test)]
 mod prop_tests {
     use super::*;
-    use crate::{Vec3, Mat3};
     use crate::quaternion::Quat;
+    use crate::{Mat3, Vec3};
     use proptest::prelude::*;
 
     const EPS: f64 = 1e-9;
 
     fn arb_pos() -> impl Strategy<Value = Vec3> {
-        (-10.0..10.0_f64, -10.0..10.0_f64, -10.0..10.0_f64)
-            .prop_map(|(x, y, z)| Vec3::new(x, y, z))
+        (-10.0..10.0_f64, -10.0..10.0_f64, -10.0..10.0_f64).prop_map(|(x, y, z)| Vec3::new(x, y, z))
     }
 
     fn arb_angle() -> impl Strategy<Value = f64> {

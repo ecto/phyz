@@ -73,11 +73,7 @@ fn symmetric_index(p: usize, q: usize) -> usize {
 ///
 /// The bivector B^{ab} = (v1 - v0)^a ∧ (v2 - v0)^b is a 4×4 antisymmetric tensor.
 /// We return the 6 independent components in the canonical order.
-fn triangle_bivector_from_coords(
-    v0: [f64; 4],
-    v1: [f64; 4],
-    v2: [f64; 4],
-) -> [f64; 6] {
+fn triangle_bivector_from_coords(v0: [f64; 4], v1: [f64; 4], v2: [f64; 4]) -> [f64; 6] {
     let e1: [f64; 4] = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2], v1[3] - v0[3]];
     let e2: [f64; 4] = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2], v2[3] - v0[3]];
 
@@ -150,8 +146,12 @@ pub fn extract_riemann_at_vertex(
         // This makes the equation δ/A = R_{pq} n^p n^q scale correctly.
         let inv_2a = 0.5 / abs_a;
         let nv = [
-            bv[0] * inv_2a, bv[1] * inv_2a, bv[2] * inv_2a,
-            bv[3] * inv_2a, bv[4] * inv_2a, bv[5] * inv_2a,
+            bv[0] * inv_2a,
+            bv[1] * inv_2a,
+            bv[2] * inv_2a,
+            bv[3] * inv_2a,
+            bv[4] * inv_2a,
+            bv[5] * inv_2a,
         ];
 
         // Fill the row of A: for each pair (p,q) with p <= q
@@ -169,9 +169,9 @@ pub fn extract_riemann_at_vertex(
     let b_dvec = phyz_math::DVec::from_slice(&b_vec);
 
     let svd = a_mat_dmat.svd(true, true);
-    let solution = svd.solve(&b_dvec, 1e-10).unwrap_or_else(|_| {
-        phyz_math::DVec::zeros(n_comps)
-    });
+    let solution = svd
+        .solve(&b_dvec, 1e-10)
+        .unwrap_or_else(|_| phyz_math::DVec::zeros(n_comps));
 
     // Pack into Riemann20 (first 20 of the 21 symmetric components)
     let mut riemann = [0.0; 20];
@@ -270,8 +270,7 @@ pub fn extract_gem_fields(
     let mut b_grav = vec![[[0.0; 3]; 3]; n_v];
 
     for v in 0..n_v {
-        let riemann =
-            extract_riemann_at_vertex(complex, fc, sq_lengths, &deficits, v, dt, spacing);
+        let riemann = extract_riemann_at_vertex(complex, fc, sq_lengths, &deficits, v, dt, spacing);
         let (eg, bg) = riemann_to_gem(&riemann);
         e_grav[v] = eg;
         b_grav[v] = bg;
@@ -283,10 +282,7 @@ pub fn extract_gem_fields(
 /// Compute the gravitomagnetic flux through a surface defined by triangles.
 ///
 /// Φ_B = Σ_t B_g · n_t · A_t
-pub fn gravitomagnetic_flux(
-    gem: &GemFields,
-    surface_tris: &[(usize, [f64; 3])],
-) -> f64 {
+pub fn gravitomagnetic_flux(gem: &GemFields, surface_tris: &[(usize, [f64; 3])]) -> f64 {
     let mut flux = 0.0;
     for &(vi, normal) in surface_tris {
         // B_g · n gives the gravitomagnetic flux density
@@ -529,11 +525,7 @@ pub struct GemComparisonPoint {
 ///
 /// The coordinate convention follows `vertex_coords` but returns only
 /// the spatial part (x, y, z) scaled by the spacing.
-pub fn vertex_spatial_coords(
-    v: usize,
-    fc: &FoliatedComplex,
-    spacing: f64,
-) -> [f64; 3] {
+pub fn vertex_spatial_coords(v: usize, fc: &FoliatedComplex, spacing: f64) -> [f64; 3] {
     let local = fc.vertex_local(v);
     let n = fc.n_spatial;
     let x = (local % n) as f64 * spacing;
@@ -546,13 +538,15 @@ pub fn vertex_spatial_coords(
 
 fn tri_area_sq(complex: &SimplicialComplex, ti: usize, sq_lengths: &[f64]) -> f64 {
     let t = &complex.triangles[ti];
-    let sorted2 = |a: usize, b: usize| -> [usize; 2] {
-        if a < b { [a, b] } else { [b, a] }
-    };
+    let sorted2 = |a: usize, b: usize| -> [usize; 2] { if a < b { [a, b] } else { [b, a] } };
     let e01 = complex.edge_index[&sorted2(t[0], t[1])];
     let e02 = complex.edge_index[&sorted2(t[0], t[2])];
     let e12 = complex.edge_index[&sorted2(t[1], t[2])];
-    crate::lorentzian::triangle_area_sq_lorentzian(sq_lengths[e01], sq_lengths[e02], sq_lengths[e12])
+    crate::lorentzian::triangle_area_sq_lorentzian(
+        sq_lengths[e01],
+        sq_lengths[e02],
+        sq_lengths[e12],
+    )
 }
 
 fn vertex_coords(
@@ -691,10 +685,16 @@ mod tests {
         let fp2 = [center[0], center[1], r2];
 
         let norm1 = b_grav_tensor_frobenius(&linearized_b_grav_tidal(
-            &loop_coords, mass_rate, fp1, fd_eps,
+            &loop_coords,
+            mass_rate,
+            fp1,
+            fd_eps,
         ));
         let norm2 = b_grav_tensor_frobenius(&linearized_b_grav_tidal(
-            &loop_coords, mass_rate, fp2, fd_eps,
+            &loop_coords,
+            mass_rate,
+            fp2,
+            fd_eps,
         ));
 
         // Tidal tensor ~ 1/r^4, so norm1/norm2 ≈ (r2/r1)^4 = 2^4 = 16

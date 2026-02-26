@@ -12,8 +12,10 @@
 
 use crate::complex::SimplicialComplex;
 use crate::su2::Su2;
-use crate::symmetry::{orthonormalize, project_out_span, Generator};
-use crate::yang_mills::{all_su2_gauge_generators, einstein_yang_mills_action, einstein_yang_mills_grad};
+use crate::symmetry::{Generator, orthonormalize, project_out_span};
+use crate::yang_mills::{
+    all_su2_gauge_generators, einstein_yang_mills_action, einstein_yang_mills_grad,
+};
 
 /// Solver configuration.
 #[derive(Debug, Clone)]
@@ -112,7 +114,11 @@ fn apply_update(
 /// Projects out both gauge flat directions (field-dependent for SU(2)) and
 /// the conformal mode (global length scaling) which is unbounded below in
 /// the Regge action.
-fn rebuild_flat_basis(complex: &SimplicialComplex, lengths: &[f64], elements: &[Su2]) -> Vec<Generator> {
+fn rebuild_flat_basis(
+    complex: &SimplicialComplex,
+    lengths: &[f64],
+    elements: &[Su2],
+) -> Vec<Generator> {
     let mut gens = all_su2_gauge_generators(complex, elements);
     // Add conformal mode (pure length scaling, no field component).
     gens.push(crate::yang_mills::su2_conformal_generator(complex, lengths));
@@ -287,13 +293,8 @@ mod tests {
             grad_tol: 1e-12,
             ..SolverConfig::default()
         };
-        let result = minimize_einstein_yang_mills(
-            &complex,
-            &perturbed_lengths,
-            &elements,
-            alpha,
-            &config,
-        );
+        let result =
+            minimize_einstein_yang_mills(&complex, &perturbed_lengths, &elements, alpha, &config);
 
         assert!(
             result.action <= initial_action + 1e-15,
@@ -328,8 +329,12 @@ mod tests {
             })
             .collect();
 
-        let initial_action =
-            crate::yang_mills::einstein_yang_mills_action(&complex, &perturbed_lengths, &elements, 1.0);
+        let initial_action = crate::yang_mills::einstein_yang_mills_action(
+            &complex,
+            &perturbed_lengths,
+            &elements,
+            1.0,
+        );
 
         let config = SolverConfig {
             max_iter: 500,

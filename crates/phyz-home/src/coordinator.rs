@@ -324,12 +324,9 @@ impl Coordinator {
                         web_sys::console::log_1(&"no more work — complete".into());
                     } else {
                         // Check if we were stopped/drained while fetching
-                        let is_fetching =
-                            matches!(*state.borrow(), RoundState::Fetching);
+                        let is_fetching = matches!(*state.borrow(), RoundState::Fetching);
                         if is_fetching {
-                            web_sys::console::log_1(
-                                &format!("fetched {count} work units").into(),
-                            );
+                            web_sys::console::log_1(&format!("fetched {count} work units").into());
                             // We'll set up Computing state — queue goes into round_queue
                             // but we can't access round_queue from here (not Send).
                             // Instead, stash units in a temporary state variant.
@@ -410,9 +407,7 @@ impl Coordinator {
 
             // Track dispatched units
             for u in &batch_units {
-                self.dispatched
-                    .borrow_mut()
-                    .insert(u.id.clone(), u.clone());
+                self.dispatched.borrow_mut().insert(u.id.clone(), u.clone());
             }
 
             if let Some(worker_idx) = self.pool.dispatch_batch(&items) {
@@ -454,16 +449,12 @@ impl Coordinator {
 
     fn tick_draining(&self) {
         // When all workers are idle and dispatched is empty, submit and complete
-        if self.pool.available() == self.pool.pool_size()
-            && self.dispatched.borrow().is_empty()
-        {
-            let results = match std::mem::replace(
-                &mut *self.state.borrow_mut(),
-                RoundState::Complete,
-            ) {
-                RoundState::Draining { results } => results,
-                _ => Vec::new(),
-            };
+        if self.pool.available() == self.pool.pool_size() && self.dispatched.borrow().is_empty() {
+            let results =
+                match std::mem::replace(&mut *self.state.borrow_mut(), RoundState::Complete) {
+                    RoundState::Draining { results } => results,
+                    _ => Vec::new(),
+                };
             if !results.is_empty() {
                 let client = self.client.clone();
                 let count = self.completed_count.clone();
@@ -480,9 +471,7 @@ impl Coordinator {
                             );
                         }
                         Err(e) => {
-                            web_sys::console::warn_1(
-                                &format!("drain submit: {e}").into(),
-                            );
+                            web_sys::console::warn_1(&format!("drain submit: {e}").into());
                         }
                     }
                 });
@@ -508,9 +497,7 @@ impl Coordinator {
                     *count.borrow_mut() += n as u32;
                     *rounds.borrow_mut() += 1;
                     *vis_pts.borrow_mut() = pts_now;
-                    web_sys::console::log_1(
-                        &format!("submitted {n}/{round_total} results").into(),
-                    );
+                    web_sys::console::log_1(&format!("submitted {n}/{round_total} results").into());
                     *state.borrow_mut() = RoundState::Idle;
                 }
                 Err(e) => {
@@ -554,9 +541,7 @@ impl Coordinator {
                 } else {
                     i as f64
                 };
-                self.renderer
-                    .borrow_mut()
-                    .add_point(log_g2, s_ee, a_cut);
+                self.renderer.borrow_mut().add_point(log_g2, s_ee, a_cut);
 
                 cache_batch.push(crate::cache::CachedPoint {
                     log_g2,

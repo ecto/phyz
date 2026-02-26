@@ -32,15 +32,15 @@
 use std::env;
 use std::time::Instant;
 
+use phyz_regge::SimplicialComplex;
 use phyz_regge::mesh;
-use phyz_regge::search::{search_symmetries_generic, SearchConfig};
-use phyz_regge::solver::{minimize_einstein_yang_mills, SolverConfig};
+use phyz_regge::search::{SearchConfig, search_symmetries_generic};
+use phyz_regge::solver::{SolverConfig, minimize_einstein_yang_mills};
 use phyz_regge::su2::Su2;
 use phyz_regge::yang_mills::{
-    all_su2_gauge_generators, su2_conformal_generator,
-    su2_rotation_generator, su2_translation_generator,
+    all_su2_gauge_generators, su2_conformal_generator, su2_rotation_generator,
+    su2_translation_generator,
 };
-use phyz_regge::SimplicialComplex;
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -112,17 +112,23 @@ fn build_known_generators(
 
     // Translations (4 axes).
     for axis in 0..4 {
-        known.push(su2_translation_generator(complex, lengths, elements, axis, n));
+        known.push(su2_translation_generator(
+            complex, lengths, elements, axis, n,
+        ));
     }
 
     // Spatial rotations (xy, xz, yz).
     for (a1, a2) in [(1, 2), (1, 3), (2, 3)] {
-        known.push(su2_rotation_generator(complex, lengths, elements, a1, a2, n));
+        known.push(su2_rotation_generator(
+            complex, lengths, elements, a1, a2, n,
+        ));
     }
 
     // Boosts (time-space rotations).
     for axis in 1..=3 {
-        known.push(su2_rotation_generator(complex, lengths, elements, 0, axis, n));
+        known.push(su2_rotation_generator(
+            complex, lengths, elements, 0, axis, n,
+        ));
     }
 
     // Conformal.
@@ -163,9 +169,7 @@ fn main() {
         "kerr" => println!("  M={mass}, a={spin}, r_min={r_min}"),
         _ => {}
     }
-    println!(
-        "  alpha: {alpha_min:.2e} to {alpha_max:.2e} ({alpha_n} values, log-spaced)"
-    );
+    println!("  alpha: {alpha_min:.2e} to {alpha_max:.2e} ({alpha_n} values, log-spaced)");
     println!("  solver: max_iter={max_iter}, samples={n_samples}, seed={seed}");
     println!();
 
@@ -260,35 +264,30 @@ fn main() {
         let pert_scale = search_config.perturbation_scale;
         let complex_ref = &complex;
 
-        let search_results = search_symmetries_generic(
-            dim,
-            &known,
-            &search_config,
-            |rng| {
-                let perturbed_lengths: Vec<f64> = sol_lengths
-                    .iter()
-                    .map(|&l| l * (1.0 + pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0)))
-                    .collect();
-                let perturbed_elements: Vec<Su2> = sol_elements
-                    .iter()
-                    .map(|u| {
-                        let delta = [
-                            pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                            pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                            pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
-                        ];
-                        Su2::exp(&delta).mul(u)
-                    })
-                    .collect();
+        let search_results = search_symmetries_generic(dim, &known, &search_config, |rng| {
+            let perturbed_lengths: Vec<f64> = sol_lengths
+                .iter()
+                .map(|&l| l * (1.0 + pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0)))
+                .collect();
+            let perturbed_elements: Vec<Su2> = sol_elements
+                .iter()
+                .map(|u| {
+                    let delta = [
+                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                        pert_scale * (2.0 * rng.r#gen::<f64>() - 1.0),
+                    ];
+                    Su2::exp(&delta).mul(u)
+                })
+                .collect();
 
-                phyz_regge::yang_mills::einstein_yang_mills_grad(
-                    complex_ref,
-                    &perturbed_lengths,
-                    &perturbed_elements,
-                    alpha,
-                )
-            },
-        );
+            phyz_regge::yang_mills::einstein_yang_mills_grad(
+                complex_ref,
+                &perturbed_lengths,
+                &perturbed_elements,
+                alpha,
+            )
+        });
 
         // 4. Analyze results.
         let n_exact = search_results
@@ -341,8 +340,7 @@ fn main() {
         }
 
         // Gap ratio drop.
-        if prev.gap_ratio > 0.0 && curr.gap_ratio > 0.0 && prev.gap_ratio / curr.gap_ratio > 10.0
-        {
+        if prev.gap_ratio > 0.0 && curr.gap_ratio > 0.0 && prev.gap_ratio / curr.gap_ratio > 10.0 {
             transitions.push(format!(
                 "  alpha={:.2e}: gap ratio {:.2e} -> {:.2e} (10x drop)",
                 curr._alpha, prev.gap_ratio, curr.gap_ratio,

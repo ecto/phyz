@@ -40,7 +40,11 @@ impl HypercubicLattice {
         for v in 0..n_vertices {
             for axis in 0..dim {
                 let neighbor = shift_vertex(v, axis, 1, n, dim);
-                let (a, b) = if v < neighbor { (v, neighbor) } else { (neighbor, v) };
+                let (a, b) = if v < neighbor {
+                    (v, neighbor)
+                } else {
+                    (neighbor, v)
+                };
                 let len = edges.len();
                 edge_map.entry((a, b)).or_insert_with(|| {
                     edges.push((a, b, axis));
@@ -139,7 +143,7 @@ impl HypercubicHilbert {
         let mut adj: Vec<Vec<(usize, i32)>> = vec![Vec::new(); n_v];
         for (ei, &(a, b, _)) in lattice.edges.iter().enumerate() {
             adj[a].push((ei, -1)); // a is lower
-            adj[b].push((ei, 1));  // b is higher
+            adj[b].push((ei, 1)); // b is higher
         }
 
         // BFS spanning tree.
@@ -191,7 +195,9 @@ impl HypercubicHilbert {
                 }
             }
             let Some(ei) = found else { continue };
-            if solved[ei] { continue; }
+            if solved[ei] {
+                continue;
+            }
             solved[ei] = true;
             solve_order.push((v, ei));
             let (a, b, _) = lattice.edges[ei];
@@ -239,8 +245,11 @@ impl HypercubicHilbert {
             }
         }
 
-        let index_map: HashMap<Vec<i32>, usize> =
-            basis.iter().enumerate().map(|(i, c)| (c.clone(), i)).collect();
+        let index_map: HashMap<Vec<i32>, usize> = basis
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.clone(), i))
+            .collect();
 
         Self {
             n_edges,
@@ -376,7 +385,11 @@ mod tests {
         let h = build_hypercubic_hamiltonian(&hs, &lat, 1e6);
         let spec = diag::diagonalize(&h, Some(1));
 
-        assert!(spec.ground_energy().abs() < 1e-2, "E₀ = {}", spec.ground_energy());
+        assert!(
+            spec.ground_energy().abs() < 1e-2,
+            "E₀ = {}",
+            spec.ground_energy()
+        );
     }
 
     #[test]
@@ -390,8 +403,7 @@ mod tests {
 
     #[test]
     fn test_comparison_runs() {
-        let complex =
-            phyz_regge::SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]]);
+        let complex = phyz_regge::SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]]);
         let (s_simp, s_hyp) = compare_spectra(&complex, 1, 1.0, 5);
         assert!(s_simp.energies.len() >= 3);
         assert!(s_hyp.energies.len() >= 3);

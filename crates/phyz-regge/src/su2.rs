@@ -18,12 +18,16 @@ pub struct Su2 {
 impl Su2 {
     /// Identity element.
     pub fn identity() -> Self {
-        Self { q: [1.0, 0.0, 0.0, 0.0] }
+        Self {
+            q: [1.0, 0.0, 0.0, 0.0],
+        }
     }
 
     /// Construct from components.
     pub fn new(q0: f64, q1: f64, q2: f64, q3: f64) -> Self {
-        Self { q: [q0, q1, q2, q3] }
+        Self {
+            q: [q0, q1, q2, q3],
+        }
     }
 
     /// Quaternion norm squared.
@@ -98,7 +102,8 @@ impl Su2 {
     ///
     /// Returns [θ1, θ2, θ3] such that self = exp(θ).
     pub fn log(&self) -> [f64; 3] {
-        let sin_half = (self.q[1] * self.q[1] + self.q[2] * self.q[2] + self.q[3] * self.q[3]).sqrt();
+        let sin_half =
+            (self.q[1] * self.q[1] + self.q[2] * self.q[2] + self.q[3] * self.q[3]).sqrt();
 
         if sin_half < 1e-15 {
             // Near identity: θ ≈ 2·(q1, q2, q3).
