@@ -135,9 +135,34 @@ fn clear_hash() {
     }
 }
 
-/// Load existing session from localStorage.
+/// Load existing session from localStorage, clearing it if the JWT is expired.
 pub fn load_session() -> Option<AuthSession> {
-    crate::cache::load_session()
+    let session = crate::cache::load_session()?;
+    if is_jwt_expired(&session.access_token) {
+        web_sys::console::log_1(&"auth: session expired, clearing".into());
+        crate::cache::clear_session();
+        return None;
+    }
+    Some(session)
+}
+
+/// Check if a JWT's `exp` claim is in the past.
+fn is_jwt_expired(jwt: &str) -> bool {
+    let parts: Vec<&str> = jwt.split('.').collect();
+    if parts.len() != 3 {
+        return true;
+    }
+    let Some(payload) = base64url_decode(parts[1]) else {
+        return true;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload) else {
+        return true;
+    };
+    let Some(exp) = json.get("exp").and_then(|v| v.as_f64()) else {
+        return true;
+    };
+    let now = js_sys::Date::now() / 1000.0;
+    now >= exp
 }
 
 /// Sign out: clear session from localStorage.

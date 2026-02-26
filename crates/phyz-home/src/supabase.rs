@@ -110,16 +110,15 @@ impl SupabaseClient {
         Ok(headers)
     }
 
-    /// Fetch pending work units (up to `limit`), prioritizing L1 over L0.
-    /// Phase 1 only (levels 0-1); L3 is too heavy for casual browsers.
+    /// Fetch pending work units (up to `limit`) in random order, prioritizing L1 over L0.
+    /// Uses a server-side RPC function so different volunteers get different subsets.
     pub async fn fetch_pending_work(&self, limit: usize) -> Result<Vec<WorkUnit>, String> {
         let url = format!(
-            "{}?status=eq.pending&limit={}&select=*&params->>level=lt.3&order=params->>level.desc",
-            self.api_url("work_units"),
-            limit,
+            "{}/rest/v1/rpc/fetch_pending_work",
+            self.url,
         );
-
-        let resp = self.get(&url).await?;
+        let body = serde_json::json!({ "p_limit": limit }).to_string();
+        let resp = self.post(&url, &body).await?;
         let text = self.text(resp).await?;
         serde_json::from_str(&text).map_err(|e| format!("parse error: {e}"))
     }
@@ -188,7 +187,7 @@ impl SupabaseClient {
 
     /// Get total contributor count.
     pub async fn contributor_count(&self) -> Result<usize, String> {
-        let url = format!("{}?select=id", self.api_url("contributors"));
+        let url = format!("{}?select=id&total_units=gt.0", self.api_url("contributors"));
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
         headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
         headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
@@ -199,6 +198,36 @@ impl SupabaseClient {
         opts.set_mode(RequestMode::Cors);
 
         let request = Request::new_with_str_and_init(&url, &opts).map_err(|e| format!("{e:?}"))?;
+        let resp = self.do_fetch(request).await?;
+
+        let headers = resp.headers();
+        if let Ok(Some(range)) = headers.get("content-range") {
+            if let Some(n) = range.split('/').nth(1) {
+                return n.parse().map_err(|e| format!("parse count: {e}"));
+            }
+        }
+        Ok(0)
+    }
+
+    /// Fetch experiment-wide progress: (completed, total) work unit counts.
+    pub async fn experiment_progress(&self) -> Result<(usize, usize), String> {
+        let total = self.count_rows(&format!("{}?select=id", self.api_url("work_units"))).await?;
+        let done = self.count_rows(&format!("{}?select=id&status=eq.complete", self.api_url("work_units"))).await?;
+        Ok((done, total))
+    }
+
+    /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.
+    async fn count_rows(&self, url: &str) -> Result<usize, String> {
+        let headers = self.headers().map_err(|e| format!("{e:?}"))?;
+        headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
+        headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
+
+        let opts = RequestInit::new();
+        opts.set_method("GET");
+        opts.set_headers(&headers.into());
+        opts.set_mode(RequestMode::Cors);
+
+        let request = Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
         let resp = self.do_fetch(request).await?;
 
         let headers = resp.headers();

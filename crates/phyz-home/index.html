@@ -278,6 +278,7 @@
       align-items: center;
       gap: 5px;
     }
+    .lb-status-spacer { flex: 1; }
     .rt-dot {
       width: 6px; height: 6px;
       border-radius: 50%;
@@ -378,10 +379,16 @@
     }
     .splash-formula {
       color: var(--amber); font-size: 20px;
-      margin-bottom: 24px;
+      margin-bottom: 8px;
       letter-spacing: 0.02em;
       text-shadow: 0 0 24px rgba(204, 170, 51, 0.2);
     }
+    .splash-gn {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 20px;
+    }
+    .splash-gn .stat-label { font-size: 11px; }
     .splash-steps {
       text-align: left;
       margin-bottom: 20px;
@@ -565,18 +572,25 @@
       100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
     }
 
-    /* ─── Mute button ─── */
-    #mute-btn {
+    /* ─── Icon buttons (topbar) ─── */
+    .icon-btn {
+      width: 26px; height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
       color: var(--dim);
+      background: transparent;
+      border: 1px solid var(--border);
+      font-family: var(--mono);
       font-size: 14px;
       line-height: 1;
-      user-select: none;
+      text-decoration: none;
+      flex-shrink: 0;
     }
-    #mute-btn:hover { color: var(--text); }
+    .icon-btn:hover { color: var(--text); border-color: var(--dim); }
+    #mute-btn { user-select: none; }
     #mute-btn.muted { opacity: 0.3; }
-    #gh-link { color: var(--dim); line-height: 1; display: inline-flex; }
-    #gh-link:hover { color: var(--text); }
 
     /* New entry flash */
     @keyframes entry-flash {
@@ -639,23 +653,20 @@
   <div id="topbar">
     <span class="title">phyz<span class="title-dim">@home</span></span>
     <span class="sep"></span>
-    <span class="stat-result" title="Newton's gravitational constant — slope of S_EE vs A_cut regression">
-      <span class="stat-label">G_N</span>
-      <span class="stat-hero" id="gn">&mdash;</span>
-    </span>
-    <span class="sep"></span>
-    <span title="Total data points submitted across all contributors">
-      <span class="stat-value" id="n-points">0</span>
-      <span class="stat-label"> points submitted</span>
-    </span>
-    <span class="sep"></span>
-    <span title="R² — goodness of fit for S_EE = (1/4G_N) × A_cut linear regression">
+    <span title="How well entropy scales with area — 1.0 = gravity emerges from entanglement">
       <span class="stat-label">R² </span>
-      <span class="stat-value" id="r2">&mdash;</span>
+      <span class="stat-hero" id="r2">&mdash;</span>
     </span>
     <div id="convergence-wrap" title="Convergence toward R² = 1.0 — click for details">
       <div id="convergence"><div id="convergence-fill"></div></div>
     </div>
+    <span class="sep"></span>
+    <span title="Experiment progress — completed / total work units">
+      <span class="stat-hero" id="exp-done">0</span><span class="stat-label"> / </span><span class="stat-value" id="exp-total">&mdash;</span>
+      <span class="stat-label"> units</span>
+    </span>
+    <!-- G_N computed by Rust but not displayed in top bar -->
+    <span id="gn" class="hidden">&mdash;</span>
     <span id="auth-anon">
       <button id="sign-in-btn" class="auth-btn">sign in</button>
     </span>
@@ -664,9 +675,10 @@
       <span class="stat-label" id="user-points" title="Your total contributed work units"></span>
       <button id="sign-out-btn" class="auth-btn dim">sign out</button>
     </span>
-    <span id="mute-btn" title="toggle sound">&#9834;</span>
-    <a href="https://github.com/ecto/phyz" target="_blank" rel="noopener" id="gh-link" title="GitHub">
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    <button id="info-btn" class="icon-btn" title="about phyz@home">?</button>
+    <button id="mute-btn" class="icon-btn" title="toggle sound">&#9834;</button>
+    <a href="https://github.com/ecto/phyz" target="_blank" rel="noopener" class="icon-btn" id="gh-link" title="GitHub">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
     </a>
   </div>
 
@@ -704,13 +716,16 @@
       <div class="splash-title">phyz<span class="dim">@home</span></div>
       <div class="splash-sub">distributed quantum gravity</div>
       <div class="splash-formula">S<sub>EE</sub> = (1/4 G<sub>N</sub>) &times; A<sub>cut</sub></div>
+      <div class="splash-gn" title="Emergent Newton's constant in lattice units — stabilizes as R² → 1.0">
+        G<sub>N</sub> = <span id="gn-splash">&mdash;</span> <span class="stat-label">(lattice units)</span>
+      </div>
       <div class="splash-steps">
         <div class="step"><span class="step-n">1</span><span>A Regge lattice (triangulated 4-sphere) defines discrete spacetime.</span></div>
         <div class="step"><span class="step-n">2</span><span>Your browser solves an SU(2) gauge field eigenvalue problem on it.</span></div>
         <div class="step"><span class="step-n">3</span><span>The lattice is bisected; entropy S<sub>EE</sub> and cut area A<sub>cut</sub> are measured.</span></div>
         <div class="step"><span class="step-n">4</span><span>If S<sub>EE</sub> &prop; A<sub>cut</sub>, the slope yields Newton&rsquo;s constant G<sub>N</sub>.</span></div>
       </div>
-      <div class="splash-meta">~13,300 eigensolves across 2 phases</div>
+      <div class="splash-meta">distributed eigensolves — results submitted in rounds</div>
       <button id="splash-cta">start computing &rarr;</button>
       <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
         learn more &rarr;
@@ -753,6 +768,8 @@
     <div id="lb-status">
       <span id="rt-dot" class="rt-dot connecting"></span>
       <span id="rt-status">connecting&hellip;</span>
+      <span class="lb-status-spacer"></span>
+      <span id="n-contributors">0</span> contributors
     </div>
   </div>
 </body>

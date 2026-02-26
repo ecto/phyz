@@ -119,7 +119,7 @@ pub async fn run() {
         }
     }
 
-    // Get contributor count
+    // Get contributor count (shown in leaderboard panel status)
     if let Ok(count) = client.contributor_count().await {
         dom::set_text("n-contributors", &count.to_string());
     }
@@ -383,23 +383,6 @@ pub async fn run() {
         toggle_cb.forget();
     }
 
-    // Wire topbar leaderboard icon to toggle panel
-    {
-        let collapsed = lb_collapsed.clone();
-        let lb_btn_cb = Closure::wrap(Box::new(move || {
-            let new_val = !collapsed.get();
-            collapsed.set(new_val);
-            if new_val {
-                dom::set_class("lb-panel", "collapsed");
-            } else {
-                dom::set_class("lb-panel", "");
-            }
-        }) as Box<dyn FnMut()>);
-        dom::get_el("lb-btn")
-            .set_onclick(Some(lb_btn_cb.as_ref().unchecked_ref()));
-        lb_btn_cb.forget();
-    }
-
     // Initialize worker pool (Rc, not Rc<RefCell> — pool uses interior mutability)
     let pool_size = WorkerPool::recommended_size();
     let pool = match WorkerPool::new(pool_size) {
@@ -514,6 +497,14 @@ pub async fn run() {
     dom::get_el("convergence-wrap")
         .set_onclick(Some(info_cb.as_ref().unchecked_ref()));
     info_cb.forget();
+
+    // Wire up ? button — opens splash modal
+    let info_btn_cb = Closure::wrap(Box::new(move || {
+        dom::set_class("splash-backdrop", "");
+    }) as Box<dyn FnMut()>);
+    dom::get_el("info-btn")
+        .set_onclick(Some(info_btn_cb.as_ref().unchecked_ref()));
+    info_btn_cb.forget();
 
     // Wire up × close button — hides splash modal
     let close_cb = Closure::wrap(Box::new(move || {
@@ -766,7 +757,9 @@ fn start_render_loop(
             dom::set_text("my-count", &format!("{}", a.completed.as_int()));
             dom::set_text("user-points", &format!("({})", a.completed.as_int()));
             if a.gn.target != 0.0 {
-                dom::set_text("gn", &format!("{:.1}", a.gn.current));
+                let gn_str = format!("{:.1}", a.gn.current);
+                dom::set_text("gn", &gn_str);
+                dom::set_text("gn-splash", &gn_str);
             }
             if a.r2.target != 0.0 {
                 dom::set_text("r2", &format!("{:.3}", a.r2.current));
@@ -837,12 +830,11 @@ fn start_render_loop(
         }
 
         if count % 60 == 0 {
-            let n_points = r.borrow().points.len();
-
             let mut a = an.borrow_mut();
-            a.points.set(n_points as f64);
 
             if let Some(ref c) = coord {
+                // Points count — only updates on round submission
+                a.points.set(c.visible_points() as f64);
                 // User's personal points: server total + session completions
                 let my_units = (base_units.get() as u32 + c.completed_count()) as usize;
                 a.completed.set(my_units as f64);
@@ -885,7 +877,7 @@ fn start_render_loop(
                 *lc.borrow_mut() = session_count;
 
                 // Compute G_N from all data + update convergence bar
-                if n_points >= 10 {
+                if r.borrow().points.len() >= 10 {
                     let (slope, r2) = linear_regression(&r.borrow().points);
                     let pct = (r2 * 100.0).min(100.0);
                     dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
@@ -912,6 +904,9 @@ fn start_render_loop(
                     a.rate.set(0.0);
                     a.rate.snap();
                 }
+            } else {
+                // No coordinator (demo/no-worker mode) — use renderer directly
+                a.points.set(r.borrow().points.len() as f64);
             }
         }
 
@@ -1042,7 +1037,9 @@ fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
     dom::set_text("r2", &format!("{r2:.3} (demo)"));
     if slope > 0.0 {
         let g_n = 1.0 / (4.0 * slope);
-        dom::set_text("gn", &format!("{g_n:.0}"));
+        let gn_str = format!("{g_n:.0}");
+        dom::set_text("gn", &gn_str);
+        dom::set_text("gn-splash", &gn_str);
     }
 }
 

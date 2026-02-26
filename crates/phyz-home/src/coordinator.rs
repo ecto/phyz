@@ -56,6 +56,12 @@ pub struct Coordinator {
     effort: Rc<RefCell<u32>>,
     /// Number of rounds successfully submitted (for celebration triggers).
     rounds_completed: Rc<RefCell<u32>>,
+    /// Worker batch sizes: worker_idx → items dispatched in current batch.
+    batch_sizes: RefCell<HashMap<usize, usize>>,
+    /// Work units from completed worker batches (for round progress display).
+    round_computed: RefCell<usize>,
+    /// Points count shown in UI — only updates on round submission.
+    visible_points: Rc<RefCell<usize>>,
 }
 
 impl Coordinator {
@@ -66,6 +72,7 @@ impl Coordinator {
         renderer: Rc<RefCell<Renderer>>,
     ) -> Self {
         let n = pool.pool_size();
+        let initial_points = renderer.borrow().points.len();
         Coordinator {
             client,
             pool,
@@ -81,6 +88,9 @@ impl Coordinator {
             unit_worker: RefCell::new(HashMap::new()),
             effort: Rc::new(RefCell::new(50)),
             rounds_completed: Rc::new(RefCell::new(0)),
+            batch_sizes: RefCell::new(HashMap::new()),
+            round_computed: RefCell::new(0),
+            visible_points: Rc::new(RefCell::new(initial_points)),
         }
     }
 
@@ -94,6 +104,11 @@ impl Coordinator {
 
     pub fn completed_count(&self) -> u32 {
         *self.completed_count.borrow()
+    }
+
+    /// Points count for display — only updates on round submission.
+    pub fn visible_points(&self) -> usize {
+        *self.visible_points.borrow()
     }
 
     /// Number of rounds successfully submitted.
@@ -144,12 +159,12 @@ impl Coordinator {
     }
 
     /// (computed, round_total) for round progress display.
+    /// Only counts work units from fully-completed worker batches.
     pub fn round_progress(&self) -> (usize, usize) {
         match &*self.state.borrow() {
-            RoundState::Computing {
-                round_total,
-                results,
-            } => (results.len(), *round_total),
+            RoundState::Computing { round_total, .. } => {
+                (*self.round_computed.borrow(), *round_total)
+            }
             RoundState::Submitting { round_total } => (*round_total, *round_total),
             _ => (0, 0),
         }
@@ -197,6 +212,28 @@ impl Coordinator {
             self.handle_result(resp);
         }
 
+        // Credit completed worker batches to round_computed
+        {
+            let progress = self.pool.worker_progress();
+            let mut bs = self.batch_sizes.borrow_mut();
+            let mut rc = self.round_computed.borrow_mut();
+            // A worker with progress (0,0) is idle — if it had a batch, it's done
+            bs.retain(|&idx, &mut size| {
+                let (done, total) = progress.get(idx).copied().unwrap_or((0, 0));
+                if total == 0 {
+                    // Worker is idle — batch finished
+                    *rc += size;
+                    false
+                } else if done >= total {
+                    // About to become idle (drain_results will mark it next tick)
+                    // Don't credit yet — wait until actually idle
+                    true
+                } else {
+                    true
+                }
+            });
+        }
+
         // State machine transitions
         let current_state = {
             // Brief borrow to determine what to do
@@ -236,13 +273,22 @@ impl Coordinator {
 
     fn start_fetch(&self) {
         *self.state.borrow_mut() = RoundState::Fetching;
+        *self.round_computed.borrow_mut() = 0;
+        self.batch_sizes.borrow_mut().clear();
 
         let client = self.client.clone();
         let state = self.state.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
             match client.fetch_pending_work(ROUND_SIZE).await {
-                Ok(units) => {
+                Ok(mut units) => {
+                    // Shuffle so different volunteers naturally spread across
+                    // the parameter space instead of all computing the same
+                    // units in insertion order.
+                    for i in (1..units.len()).rev() {
+                        let j = (js_sys::Math::random() * (i + 1) as f64) as usize;
+                        units.swap(i, j);
+                    }
                     let count = units.len();
                     if count == 0 {
                         *state.borrow_mut() = RoundState::Complete;
@@ -342,6 +388,9 @@ impl Coordinator {
 
             if let Some(worker_idx) = self.pool.dispatch_batch(&items) {
                 self.worker_labels.borrow_mut()[worker_idx] = label;
+                self.batch_sizes
+                    .borrow_mut()
+                    .insert(worker_idx, batch_units.len());
                 let mut uw = self.unit_worker.borrow_mut();
                 for u in &batch_units {
                     uw.insert(u.id.clone(), worker_idx);
@@ -389,11 +438,14 @@ impl Coordinator {
             if !results.is_empty() {
                 let client = self.client.clone();
                 let count = self.completed_count.clone();
+                let vis_pts = self.visible_points.clone();
                 let n = results.len();
+                let pts_now = self.renderer.borrow().points.len();
                 wasm_bindgen_futures::spawn_local(async move {
                     match client.submit_results_batch(&results).await {
                         Ok(()) => {
                             *count.borrow_mut() += n as u32;
+                            *vis_pts.borrow_mut() = pts_now;
                             web_sys::console::log_1(
                                 &format!("drain: submitted {n} results").into(),
                             );
@@ -416,13 +468,17 @@ impl Coordinator {
         let state = self.state.clone();
         let count = self.completed_count.clone();
         let rounds = self.rounds_completed.clone();
+        let vis_pts = self.visible_points.clone();
         let n = results.len();
+        // Snapshot renderer point count now (all results already added)
+        let pts_now = self.renderer.borrow().points.len();
 
         wasm_bindgen_futures::spawn_local(async move {
             match client.submit_results_batch(&results).await {
                 Ok(()) => {
                     *count.borrow_mut() += n as u32;
                     *rounds.borrow_mut() += 1;
+                    *vis_pts.borrow_mut() = pts_now;
                     web_sys::console::log_1(
                         &format!("submitted {n}/{round_total} results").into(),
                     );
