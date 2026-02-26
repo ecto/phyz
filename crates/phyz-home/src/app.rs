@@ -124,6 +124,9 @@ pub async fn run() {
         dom::set_text("n-contributors", &count.to_string());
     }
 
+    // Server-side unit count (persisted across sessions)
+    let base_units: Rc<Cell<i64>> = Rc::new(Cell::new(0));
+
     // Auth UI setup
     {
         let sess = session.borrow();
@@ -139,6 +142,7 @@ pub async fn run() {
             // Fetch server stats to check if display_name is set
             let display_name = match client.fetch_my_stats(&contributor_id).await {
                 Ok(stats) => {
+                    base_units.set(stats.total_units);
                     dom::set_text("my-count", &stats.total_units.to_string());
                     dom::set_text("user-points", &format!("({})", stats.total_units));
                     stats.display_name
@@ -357,7 +361,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)));
+            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)));
             return;
         }
     };
@@ -501,7 +505,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), muted);
+    start_render_loop(renderer, Some(coordinator), muted, base_units);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -629,6 +633,7 @@ fn start_render_loop(
     renderer: Rc<RefCell<Renderer>>,
     coordinator: Option<Rc<Coordinator>>,
     muted: Rc<Cell<bool>>,
+    base_units: Rc<Cell<i64>>,
 ) {
     let r = renderer;
     let coord = coordinator;
@@ -739,7 +744,7 @@ fn start_render_loop(
             a.points.set(n_points as f64);
 
             if let Some(ref c) = coord {
-                let completed = c.completed_count() as usize;
+                let completed = (base_units.get() as u32 + c.completed_count()) as usize;
                 a.completed.set(completed as f64);
 
                 // Phase-aware progress
