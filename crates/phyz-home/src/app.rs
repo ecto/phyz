@@ -521,7 +521,9 @@ fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
     let mousedown = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
         *d1.borrow_mut() = true;
         *lp1.borrow_mut() = (e.client_x() as f32, e.client_y() as f32);
-        r1.borrow_mut().camera.user_dragging = true;
+        let mut r = r1.borrow_mut();
+        r.camera.user_dragging = true;
+        r.clear_hover();
     }) as Box<dyn FnMut(web_sys::MouseEvent)>);
     canvas_el
         .add_event_listener_with_callback("mousedown", mousedown.as_ref().unchecked_ref())
@@ -543,19 +545,33 @@ fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
     let lp3 = last_pos.clone();
     let r3 = r.clone();
     let mousemove = Closure::wrap(Box::new(move |e: web_sys::MouseEvent| {
-        if !*d3.borrow() {
-            return;
+        let mx = e.client_x() as f32;
+        let my = e.client_y() as f32;
+        if *d3.borrow() {
+            let (lx, ly) = *lp3.borrow();
+            let dx = mx - lx;
+            let dy = my - ly;
+            *lp3.borrow_mut() = (mx, my);
+            r3.borrow_mut().camera.rotate(dx, dy);
+        } else {
+            // Update hover position for tooltip
+            r3.borrow_mut().set_hover(mx, my);
         }
-        let (lx, ly) = *lp3.borrow();
-        let dx = e.client_x() as f32 - lx;
-        let dy = e.client_y() as f32 - ly;
-        *lp3.borrow_mut() = (e.client_x() as f32, e.client_y() as f32);
-        r3.borrow_mut().camera.rotate(dx, dy);
     }) as Box<dyn FnMut(web_sys::MouseEvent)>);
     canvas_el
         .add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref())
         .ok();
     mousemove.forget();
+
+    // Clear hover on mouse leave
+    let r_leave = r.clone();
+    let mouseleave = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
+        r_leave.borrow_mut().clear_hover();
+    }) as Box<dyn FnMut(web_sys::MouseEvent)>);
+    canvas_el
+        .add_event_listener_with_callback("mouseleave", mouseleave.as_ref().unchecked_ref())
+        .ok();
+    mouseleave.forget();
 
     let r4 = r.clone();
     let wheel = Closure::wrap(Box::new(move |e: web_sys::WheelEvent| {

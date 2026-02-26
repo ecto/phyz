@@ -566,6 +566,400 @@ impl Renderer {
         }
     }
 
+    /// Draw numeric tick marks along each axis.
+    fn draw_ticks(&self, w: f32, h: f32, light: bool) {
+        if self.points.is_empty() {
+            return;
+        }
+
+        let tick_color = if light {
+            "rgba(120,120,115,0.6)"
+        } else {
+            "rgba(90,90,110,0.5)"
+        };
+        self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(tick_color);
+        self.ctx.set_stroke_style_str(tick_color);
+        self.ctx.set_line_width(0.5);
+
+        let tick_len = 0.12f32;
+
+        // X axis ticks (log_g2)
+        let (x_ticks, x_step) = nice_ticks(self.bounds.x_min, self.bounds.x_max, 4);
+        self.ctx.set_text_align("center");
+        self.ctx.set_text_baseline("top");
+        for &v in &x_ticks {
+            let n = Bounds::map(v, self.bounds.x_min, self.bounds.x_max);
+            let (px, py, _) = self.camera.project([n, 0.0, 0.0], w, h);
+            let (tx, ty, _) = self.camera.project([n, -tick_len, 0.0], w, h);
+            self.ctx.begin_path();
+            self.ctx.move_to(px as f64, py as f64);
+            self.ctx.line_to(tx as f64, ty as f64);
+            self.ctx.stroke();
+            self.ctx
+                .fill_text(&tick_label(v, x_step), tx as f64, (ty + 2.0) as f64)
+                .ok();
+        }
+
+        // Y axis ticks (S_EE)
+        let (y_ticks, y_step) = nice_ticks(self.bounds.y_min, self.bounds.y_max, 4);
+        self.ctx.set_text_align("right");
+        self.ctx.set_text_baseline("middle");
+        for &v in &y_ticks {
+            let n = Bounds::map(v, self.bounds.y_min, self.bounds.y_max);
+            let (px, py, _) = self.camera.project([0.0, n, 0.0], w, h);
+            let (tx, ty, _) = self.camera.project([-tick_len, n, 0.0], w, h);
+            self.ctx.begin_path();
+            self.ctx.move_to(px as f64, py as f64);
+            self.ctx.line_to(tx as f64, ty as f64);
+            self.ctx.stroke();
+            self.ctx
+                .fill_text(&tick_label(v, y_step), (tx - 3.0) as f64, ty as f64)
+                .ok();
+        }
+
+        // Z axis ticks (A_cut)
+        let (z_ticks, z_step) = nice_ticks(self.bounds.z_min, self.bounds.z_max, 4);
+        self.ctx.set_text_align("right");
+        self.ctx.set_text_baseline("middle");
+        for &v in &z_ticks {
+            let n = Bounds::map(v, self.bounds.z_min, self.bounds.z_max);
+            let (px, py, _) = self.camera.project([0.0, 0.0, n], w, h);
+            let (tx, ty, _) = self.camera.project([-tick_len, 0.0, n], w, h);
+            self.ctx.begin_path();
+            self.ctx.move_to(px as f64, py as f64);
+            self.ctx.line_to(tx as f64, ty as f64);
+            self.ctx.stroke();
+            self.ctx
+                .fill_text(&tick_label(v, z_step), (tx - 3.0) as f64, ty as f64)
+                .ok();
+        }
+
+        self.ctx.set_text_align("left");
+        self.ctx.set_text_baseline("alphabetic");
+    }
+
+    /// Draw the S_EE = slope * A_cut best-fit regression line in 3D.
+    fn draw_regression_line(&self, w: f32, h: f32, light: bool) {
+        if self.points.len() < 10 {
+            return;
+        }
+
+        let (slope, intercept, _r2) = self.compute_regression();
+        if slope.abs() < 1e-15 {
+            return;
+        }
+
+        // Draw line across the A_cut range at the mean log_g2
+        let mean_x: f32 =
+            self.points.iter().map(|p| p.log_g2).sum::<f32>() / self.points.len() as f32;
+        let norm_x = Bounds::map(mean_x, self.bounds.x_min, self.bounds.x_max);
+
+        let segments = 24;
+        let color = if light {
+            "rgba(180,150,40,0.5)"
+        } else {
+            "rgba(204,170,51,0.4)"
+        };
+        self.ctx.set_stroke_style_str(color);
+        self.ctx.set_line_width(1.5);
+
+        // Dashed line
+        let dash = js_sys::Array::new();
+        dash.push(&6.0.into());
+        dash.push(&4.0.into());
+        self.ctx.set_line_dash(&dash).ok();
+
+        self.ctx.begin_path();
+        let mut started = false;
+        for i in 0..=segments {
+            let t = i as f32 / segments as f32;
+            let a_cut = self.bounds.z_min + t * (self.bounds.z_max - self.bounds.z_min);
+            let s_ee = (slope * a_cut as f64 + intercept) as f32;
+
+            if s_ee < self.bounds.y_min || s_ee > self.bounds.y_max {
+                continue;
+            }
+
+            let norm_y = Bounds::map(s_ee, self.bounds.y_min, self.bounds.y_max);
+            let norm_z = Bounds::map(a_cut, self.bounds.z_min, self.bounds.z_max);
+            let (sx, sy, z) = self.camera.project([norm_x, norm_y, norm_z], w, h);
+            if z < 0.1 {
+                continue;
+            }
+
+            if !started {
+                self.ctx.move_to(sx as f64, sy as f64);
+                started = true;
+            } else {
+                self.ctx.line_to(sx as f64, sy as f64);
+            }
+        }
+        self.ctx.stroke();
+        self.ctx.set_line_dash(&js_sys::Array::new()).ok();
+
+        // Draw equation label near the midpoint
+        let mid_a = (self.bounds.z_min + self.bounds.z_max) / 2.0;
+        let mid_s = (slope * mid_a as f64 + intercept) as f32;
+        if mid_s >= self.bounds.y_min && mid_s <= self.bounds.y_max {
+            let norm_y = Bounds::map(mid_s, self.bounds.y_min, self.bounds.y_max);
+            let norm_z = Bounds::map(mid_a, self.bounds.z_min, self.bounds.z_max);
+            let (sx, sy, z) = self.camera.project([norm_x, norm_y, norm_z], w, h);
+            if z > 0.1 {
+                let g_n = 1.0 / (4.0 * slope);
+                let label = format!("S = A/{:.0}", 4.0 * g_n);
+                let label_color = if light {
+                    "rgba(140,120,30,0.7)"
+                } else {
+                    "rgba(204,170,51,0.7)"
+                };
+                self.ctx.set_font("10px 'IBM Plex Mono', monospace");
+                self.ctx.set_fill_style_str(label_color);
+                self.ctx
+                    .fill_text(&label, (sx + 10.0) as f64, (sy - 6.0) as f64)
+                    .ok();
+            }
+        }
+    }
+
+    /// Linear regression: S_EE = slope * A_cut + intercept. Returns (slope, intercept, R²).
+    fn compute_regression(&self) -> (f64, f64, f64) {
+        if self.points.len() < 2 {
+            return (0.0, 0.0, 0.0);
+        }
+        let n = self.points.len() as f64;
+        let sum_x: f64 = self.points.iter().map(|p| p.a_cut as f64).sum();
+        let sum_y: f64 = self.points.iter().map(|p| p.s_ee as f64).sum();
+        let sum_xy: f64 = self
+            .points
+            .iter()
+            .map(|p| p.a_cut as f64 * p.s_ee as f64)
+            .sum();
+        let sum_xx: f64 = self.points.iter().map(|p| (p.a_cut as f64).powi(2)).sum();
+        let sum_yy: f64 = self.points.iter().map(|p| (p.s_ee as f64).powi(2)).sum();
+
+        let denom = n * sum_xx - sum_x * sum_x;
+        if denom.abs() < 1e-20 {
+            return (0.0, 0.0, 0.0);
+        }
+        let slope = (n * sum_xy - sum_x * sum_y) / denom;
+        let intercept = (sum_y - slope * sum_x) / n;
+
+        let num_r = n * sum_xy - sum_x * sum_y;
+        let den_r = ((n * sum_xx - sum_x * sum_x) * (n * sum_yy - sum_y * sum_y)).sqrt();
+        let r2 = if den_r.abs() < 1e-20 {
+            0.0
+        } else {
+            (num_r / den_r).powi(2)
+        };
+
+        (slope, intercept, r2)
+    }
+
+    /// Draw a vertical color legend showing the A_cut color mapping.
+    fn draw_color_legend(&self, w: f32, h: f32, light: bool) {
+        if self.points.is_empty() {
+            return;
+        }
+
+        let bar_x = w - 34.0;
+        let bar_top = h * 0.35;
+        let bar_height = 80.0;
+        let bar_width = 6.0;
+        let segments = 20;
+
+        // Gradient bar
+        for i in 0..segments {
+            let t0 = i as f32 / segments as f32;
+            let t1 = (i + 1) as f32 / segments as f32;
+            let (r, g, b) = if light {
+                retro_color_light(1.0 - t0)
+            } else {
+                retro_color(1.0 - t0)
+            };
+            self.ctx
+                .set_fill_style_str(&format!("rgba({r},{g},{b},0.7)"));
+            let y0 = bar_top + t0 * bar_height;
+            let seg_h = (t1 - t0) * bar_height;
+            self.ctx.fill_rect(
+                bar_x as f64,
+                y0 as f64,
+                bar_width as f64,
+                seg_h as f64 + 0.5,
+            );
+        }
+
+        let label_color = if light {
+            "rgba(100,100,95,0.7)"
+        } else {
+            "rgba(140,140,160,0.6)"
+        };
+        self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(label_color);
+        self.ctx.set_text_align("right");
+        self.ctx.set_text_baseline("middle");
+
+        self.ctx
+            .fill_text(
+                &format!("{:.1}", self.bounds.z_max),
+                (bar_x - 3.0) as f64,
+                bar_top as f64,
+            )
+            .ok();
+        self.ctx
+            .fill_text(
+                &format!("{:.1}", self.bounds.z_min),
+                (bar_x - 3.0) as f64,
+                (bar_top + bar_height) as f64,
+            )
+            .ok();
+
+        // Title above bar
+        self.ctx.set_text_align("center");
+        self.ctx.set_text_baseline("bottom");
+        self.ctx
+            .fill_text(
+                "A\u{2202}",
+                (bar_x + bar_width / 2.0) as f64,
+                (bar_top - 4.0) as f64,
+            )
+            .ok();
+
+        self.ctx.set_text_align("left");
+        self.ctx.set_text_baseline("alphabetic");
+    }
+
+    /// Draw tooltip for the nearest point under the mouse cursor.
+    fn draw_hover_tooltip(
+        &self,
+        projected: &[(usize, f32, f32, f32)],
+        w: f32,
+        h: f32,
+        light: bool,
+    ) {
+        let Some((mx, my)) = self.hover_pos else {
+            return;
+        };
+        if projected.is_empty() {
+            return;
+        }
+
+        // Find nearest projected point
+        let mut best_idx = 0;
+        let mut best_dist_sq = f32::INFINITY;
+        for (i, &(_, sx, sy, z)) in projected.iter().enumerate() {
+            if z < 0.1 {
+                continue;
+            }
+            let dx = sx - mx;
+            let dy = sy - my;
+            let d = dx * dx + dy * dy;
+            if d < best_dist_sq {
+                best_dist_sq = d;
+                best_idx = i;
+            }
+        }
+
+        // Only show if within ~30px
+        if best_dist_sq > 900.0 {
+            return;
+        }
+
+        let (pi, sx, sy, _z) = projected[best_idx];
+        let p = &self.points[pi];
+
+        // Highlight ring
+        let t = self.bounds.t_color(p.a_cut);
+        let (cr, cg, cb) = if light {
+            retro_color_light(t)
+        } else {
+            retro_color(t)
+        };
+        self.ctx
+            .set_stroke_style_str(&format!("rgba({cr},{cg},{cb},0.8)"));
+        self.ctx.set_line_width(1.5);
+        self.ctx.begin_path();
+        self.ctx
+            .arc(sx as f64, sy as f64, 8.0, 0.0, std::f64::consts::TAU)
+            .ok();
+        self.ctx.stroke();
+
+        // Tooltip content
+        let lines = [
+            format!("log(g\u{00B2}) {:.2}", p.log_g2),
+            format!("S_EE    {:.4}", p.s_ee),
+            format!("A_cut   {:.2}", p.a_cut),
+        ];
+
+        let line_h = 13.0f32;
+        let pad = 5.0f32;
+        let box_w = 120.0f32;
+        let box_h = lines.len() as f32 * line_h + pad * 2.0;
+
+        // Position tooltip, keeping it on screen
+        let mut tx = sx + 14.0;
+        let mut ty = sy - box_h / 2.0;
+        if tx + box_w > w - 8.0 {
+            tx = sx - 14.0 - box_w;
+        }
+        if ty < 40.0 {
+            ty = 40.0;
+        }
+        if ty + box_h > h - 60.0 {
+            ty = h - 60.0 - box_h;
+        }
+
+        // Background
+        let bg_color = if light {
+            "rgba(234,234,230,0.92)"
+        } else {
+            "rgba(16,16,24,0.92)"
+        };
+        let border_color = if light {
+            "rgba(200,200,192,0.8)"
+        } else {
+            "rgba(60,60,80,0.6)"
+        };
+        self.ctx.set_fill_style_str(bg_color);
+        self.ctx
+            .fill_rect(tx as f64, ty as f64, box_w as f64, box_h as f64);
+        self.ctx.set_stroke_style_str(border_color);
+        self.ctx.set_line_width(0.5);
+        self.ctx
+            .stroke_rect(tx as f64, ty as f64, box_w as f64, box_h as f64);
+
+        // Leader line from point to tooltip
+        let leader = if light {
+            "rgba(120,120,115,0.4)"
+        } else {
+            "rgba(90,90,110,0.3)"
+        };
+        self.ctx.set_stroke_style_str(leader);
+        self.ctx.set_line_width(0.5);
+        self.ctx.begin_path();
+        self.ctx.move_to(sx as f64, sy as f64);
+        self.ctx
+            .line_to(tx as f64, (ty + box_h / 2.0) as f64);
+        self.ctx.stroke();
+
+        // Text
+        let text_color = if light {
+            "rgba(40,40,36,0.9)"
+        } else {
+            "rgba(200,200,220,0.9)"
+        };
+        self.ctx.set_font("9px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(text_color);
+        self.ctx.set_text_baseline("top");
+        for (i, line) in lines.iter().enumerate() {
+            let ly = ty + pad + i as f32 * line_h;
+            self.ctx
+                .fill_text(line, (tx + pad) as f64, ly as f64)
+                .ok();
+        }
+        self.ctx.set_text_baseline("alphabetic");
+    }
+
     fn draw_labels(&self, w: f32, h: f32, light: bool) {
         self.ctx.set_font("11px 'IBM Plex Mono', monospace");
 
