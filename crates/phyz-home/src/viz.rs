@@ -394,7 +394,7 @@ impl Renderer {
         // Floating annotations on recent points (drawn on top of everything)
         self.draw_annotations(&projected, &draw_order, light);
 
-        // Axis labels
+        // Axis labels (with subtitles)
         self.draw_labels(w, h, light);
 
         // Hover tooltip (on top of everything)
@@ -402,6 +402,12 @@ impl Renderer {
 
         // Color legend (screen-space overlay)
         self.draw_color_legend(w, h, light);
+
+        // Stats HUD (screen-space overlay)
+        self.draw_stats_hud(w, h, light);
+
+        // Explainer (top-left)
+        self.draw_explainer(w, h, light);
     }
 
     /// Draw floating text annotations near fresh labeled points.
@@ -707,16 +713,31 @@ impl Renderer {
             let (sx, sy, z) = self.camera.project([norm_x, norm_y, norm_z], w, h);
             if z > 0.1 {
                 let g_n = 1.0 / (4.0 * slope);
-                let label = format!("S = A/{:.0}", 4.0 * g_n);
+                let label = format!("S = A / {:.0}", 4.0 * g_n);
                 let label_color = if light {
                     "rgba(140,120,30,0.7)"
                 } else {
                     "rgba(204,170,51,0.7)"
                 };
+                let sub_color = if light {
+                    "rgba(140,120,30,0.45)"
+                } else {
+                    "rgba(204,170,51,0.35)"
+                };
                 self.ctx.set_font("10px 'IBM Plex Mono', monospace");
                 self.ctx.set_fill_style_str(label_color);
                 self.ctx
                     .fill_text(&label, (sx + 10.0) as f64, (sy - 6.0) as f64)
+                    .ok();
+                // Subtitle: "best fit" hint
+                self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+                self.ctx.set_fill_style_str(sub_color);
+                self.ctx
+                    .fill_text(
+                        &format!("G_N \u{2248} {:.2}", g_n),
+                        (sx + 10.0) as f64,
+                        (sy + 7.0) as f64,
+                    )
                     .ok();
             }
         }
@@ -961,25 +982,266 @@ impl Renderer {
     }
 
     fn draw_labels(&self, w: f32, h: f32, light: bool) {
-        self.ctx.set_font("11px 'IBM Plex Mono', monospace");
-
         let (lx, ly, lz) = if light {
             ("rgba(180,70,70,0.8)", "rgba(50,150,50,0.8)", "rgba(70,70,180,0.8)")
         } else {
             ("rgba(210,130,130,0.8)", "rgba(130,210,130,0.8)", "rgba(130,130,210,0.8)")
         };
 
+        let sub_color = if light {
+            "rgba(120,120,115,0.5)"
+        } else {
+            "rgba(120,120,140,0.4)"
+        };
+
+        // X axis: log(g²)
+        self.ctx.set_font("11px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(lx);
         let (x, y, _) = self.camera.project([2.3, 0.0, 0.0], w, h);
-        self.ctx.fill_text("log(g²)", x as f64, y as f64).ok();
+        self.ctx.fill_text("log(g\u{00B2})", x as f64, y as f64).ok();
+        self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(sub_color);
+        self.ctx
+            .fill_text("coupling", x as f64, (y + 12.0) as f64)
+            .ok();
 
+        // Y axis: S_EE
+        self.ctx.set_font("11px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(ly);
         let (x, y, _) = self.camera.project([0.0, 2.3, 0.0], w, h);
         self.ctx.fill_text("S_EE", x as f64, y as f64).ok();
+        self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(sub_color);
+        self.ctx
+            .fill_text("entanglement entropy", x as f64, (y + 12.0) as f64)
+            .ok();
 
+        // Z axis: A_∂
+        self.ctx.set_font("11px 'IBM Plex Mono', monospace");
         self.ctx.set_fill_style_str(lz);
         let (x, y, _) = self.camera.project([0.0, 0.0, 2.3], w, h);
         self.ctx.fill_text("A_\u{2202}", x as f64, y as f64).ok();
+        self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(sub_color);
+        self.ctx
+            .fill_text("cut area", x as f64, (y + 12.0) as f64)
+            .ok();
+    }
+
+    /// Draw a HUD panel with regression stats and physics interpretation.
+    fn draw_stats_hud(&self, w: f32, h: f32, light: bool) {
+        if self.points.len() < 10 {
+            return;
+        }
+
+        let (slope, intercept, r2) = self.compute_regression();
+        if slope.abs() < 1e-15 {
+            return;
+        }
+
+        let g_n = 1.0 / (4.0 * slope);
+        let n = self.points.len();
+
+        // Build lines
+        let lines = [
+            ("Ryu-Takayanagi fit", true),
+            (&format!("S_EE = A / {:.1}", 4.0 * g_n), false),
+            ("", false),
+            (&format!("slope     {:.6}", slope), false),
+            (&format!("intercept {:.4}", intercept), false),
+            (&format!("R\u{00B2}        {:.4}", r2), false),
+            (&format!("G_N       {:.2}", g_n), false),
+            (&format!("n         {}", n), false),
+        ];
+
+        let line_h = 13.0f32;
+        let pad = 8.0f32;
+        let box_w = 160.0f32;
+        let box_h = lines.len() as f32 * line_h + pad * 2.0;
+        let bx = 12.0f32;
+        let by = h - box_h - 12.0;
+
+        // Background
+        let bg = if light {
+            "rgba(244,244,240,0.75)"
+        } else {
+            "rgba(10,10,18,0.75)"
+        };
+        let border = if light {
+            "rgba(200,200,192,0.4)"
+        } else {
+            "rgba(50,50,70,0.4)"
+        };
+        self.ctx.set_fill_style_str(bg);
+        self.ctx
+            .fill_rect(bx as f64, by as f64, box_w as f64, box_h as f64);
+        self.ctx.set_stroke_style_str(border);
+        self.ctx.set_line_width(0.5);
+        self.ctx
+            .stroke_rect(bx as f64, by as f64, box_w as f64, box_h as f64);
+
+        // R² quality indicator — colored bar along top of box
+        let bar_w = (box_w - 2.0) * r2.clamp(0.0, 1.0) as f32;
+        let bar_color = if r2 > 0.9 {
+            if light { "rgba(40,140,60,0.5)" } else { "rgba(80,220,100,0.4)" }
+        } else if r2 > 0.7 {
+            if light { "rgba(160,140,30,0.5)" } else { "rgba(204,170,51,0.4)" }
+        } else {
+            if light { "rgba(180,70,70,0.5)" } else { "rgba(220,90,90,0.4)" }
+        };
+        self.ctx.set_fill_style_str(bar_color);
+        self.ctx
+            .fill_rect((bx + 1.0) as f64, by as f64, bar_w as f64, 2.0);
+
+        let text_color = if light {
+            "rgba(50,50,46,0.8)"
+        } else {
+            "rgba(180,180,200,0.7)"
+        };
+        let header_color = if light {
+            "rgba(50,50,46,0.9)"
+        } else {
+            "rgba(200,200,220,0.85)"
+        };
+        let dim_color = if light {
+            "rgba(120,120,115,0.5)"
+        } else {
+            "rgba(100,100,120,0.45)"
+        };
+
+        self.ctx.set_text_baseline("top");
+        self.ctx.set_text_align("left");
+
+        for (i, (line, is_header)) in lines.iter().enumerate() {
+            let ly = by + pad + i as f32 * line_h;
+            if line.is_empty() {
+                // Separator line
+                self.ctx.set_stroke_style_str(dim_color);
+                self.ctx.set_line_width(0.5);
+                self.ctx.begin_path();
+                self.ctx
+                    .move_to((bx + pad) as f64, (ly + line_h * 0.5) as f64);
+                self.ctx
+                    .line_to((bx + box_w - pad) as f64, (ly + line_h * 0.5) as f64);
+                self.ctx.stroke();
+                continue;
+            }
+            if *is_header {
+                self.ctx.set_font("9px 'IBM Plex Mono', monospace");
+                self.ctx.set_fill_style_str(header_color);
+            } else {
+                self.ctx.set_font("8px 'IBM Plex Mono', monospace");
+                self.ctx.set_fill_style_str(text_color);
+            }
+            self.ctx
+                .fill_text(line, (bx + pad) as f64, ly as f64)
+                .ok();
+        }
+
+        self.ctx.set_text_baseline("alphabetic");
+    }
+
+    /// Draw typographic explainer in the top-left corner.
+    fn draw_explainer(&self, _w: f32, _h: f32, light: bool) {
+        let x = 20.0f64;
+        let mut y = 56.0f64;
+
+        // Title — large, high contrast
+        let title_color = if light {
+            "rgba(30,30,28,0.85)"
+        } else {
+            "rgba(220,220,230,0.8)"
+        };
+        self.ctx.set_font("13px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(title_color);
+        self.ctx.set_text_align("left");
+        self.ctx.set_text_baseline("top");
+        self.ctx.fill_text("Does gravity emerge from entanglement?", x, y).ok();
+
+        // Thin rule
+        y += 20.0;
+        let rule_color = if light {
+            "rgba(100,100,95,0.25)"
+        } else {
+            "rgba(120,120,140,0.2)"
+        };
+        self.ctx.set_stroke_style_str(rule_color);
+        self.ctx.set_line_width(0.5);
+        self.ctx.begin_path();
+        self.ctx.move_to(x, y);
+        self.ctx.line_to(x + 280.0, y);
+        self.ctx.stroke();
+
+        // Body lines — smaller, dimmer, generous spacing
+        let body_color = if light {
+            "rgba(70,70,65,0.6)"
+        } else {
+            "rgba(160,160,175,0.5)"
+        };
+        let em_color = if light {
+            "rgba(50,50,46,0.75)"
+        } else {
+            "rgba(190,190,205,0.65)"
+        };
+
+        y += 8.0;
+        let line_h = 15.0f64;
+
+        // Line 1
+        self.ctx.set_font("9px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(body_color);
+        self.ctx.fill_text(
+            "SU(2) lattice gauge theory on a triangulated 4-sphere.",
+            x, y,
+        ).ok();
+
+        // Line 2
+        y += line_h;
+        self.ctx.set_fill_style_str(body_color);
+        self.ctx.fill_text(
+            "Each point: one partition of the ground state.",
+            x, y,
+        ).ok();
+
+        // Line 3 — the key claim, slightly brighter
+        y += line_h + 4.0;
+        self.ctx.set_fill_style_str(em_color);
+        self.ctx.fill_text(
+            "If the Ryu-Takayanagi conjecture holds:",
+            x, y,
+        ).ok();
+
+        // The formula — larger, prominent
+        y += line_h + 2.0;
+        let formula_color = if light {
+            "rgba(140,120,30,0.8)"
+        } else {
+            "rgba(204,170,51,0.75)"
+        };
+        self.ctx.set_font("12px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(formula_color);
+        self.ctx.fill_text(
+            "S_EE  =  A_cut / 4G_N",
+            x + 8.0, y,
+        ).ok();
+
+        // Closing line
+        y += line_h + 6.0;
+        self.ctx.set_font("9px 'IBM Plex Mono', monospace");
+        self.ctx.set_fill_style_str(body_color);
+        self.ctx.fill_text(
+            "Points should collapse onto a tilted plane.",
+            x, y,
+        ).ok();
+
+        y += line_h;
+        self.ctx.set_fill_style_str(body_color);
+        self.ctx.fill_text(
+            "The slope gives Newton\u{2019}s constant.",
+            x, y,
+        ).ok();
+
+        self.ctx.set_text_baseline("alphabetic");
     }
 }
 
