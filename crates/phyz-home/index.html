@@ -309,76 +309,132 @@
     #effort-val { color: var(--text); font-size: 10px; }
     #effort-workers { color: var(--dim); font-size: 10px; }
 
+    /* ─── Splash animations ─── */
+    @keyframes splash-backdrop-in {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes splash-card-in {
+      from { opacity: 0; transform: scale(0.96) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    @keyframes card-glow {
+      0%, 100% { box-shadow: 0 0 0 1px rgba(68,204,102,0.08), 0 8px 40px rgba(0,0,0,0.5), 0 0 60px rgba(68,204,102,0.03); }
+      50% { box-shadow: 0 0 0 1px rgba(68,204,102,0.18), 0 8px 40px rgba(0,0,0,0.5), 0 0 80px rgba(68,204,102,0.08); }
+    }
+    @keyframes shimmer {
+      0% { background-position: 200% center; }
+      100% { background-position: -200% center; }
+    }
+
     /* ─── Splash modal ─── */
     #splash-backdrop {
       position: fixed; inset: 0; z-index: 50;
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
-      background: rgba(0,0,0,0.55);
+      background: rgba(0,0,0,0.25);
       display: flex; align-items: center; justify-content: center;
+      animation: splash-backdrop-in 0.3s ease-out;
     }
     #splash-backdrop.hidden { display: none; }
 
     #splash-card {
       position: relative;
-      max-width: 440px; width: 90%;
-      padding: 32px 36px;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+      max-width: 480px; width: 90%;
+      padding: 44px 48px 36px;
+      background: rgba(12, 12, 20, 0.72);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(68, 204, 102, 0.1);
+      border-radius: 12px;
       text-align: center;
+      animation: splash-card-in 0.5s ease-out 0.1s both, card-glow 6s ease-in-out 1s infinite;
+      box-shadow: 0 0 0 1px rgba(68,204,102,0.08), 0 8px 40px rgba(0,0,0,0.5), 0 0 60px rgba(68,204,102,0.03);
+    }
+    /* Glass top-edge reflection */
+    #splash-card::after {
+      content: '';
+      position: absolute;
+      top: 0; left: 15%; right: 15%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+      pointer-events: none;
     }
     #splash-close {
-      position: absolute; top: 10px; right: 14px;
+      position: absolute; top: 14px; right: 18px;
       cursor: pointer; color: var(--dim); font-size: 18px;
+      opacity: 0.6; transition: opacity 0.15s;
     }
-    #splash-close:hover { color: var(--text); }
+    #splash-close:hover { opacity: 1; color: var(--text); }
     .splash-title {
-      font-weight: 600; font-size: 24px;
-      color: var(--bright); letter-spacing: -0.03em;
-      margin-bottom: 2px;
+      font-weight: 600; font-size: 28px;
+      color: var(--bright); letter-spacing: -0.04em;
+      margin-bottom: 4px;
+      text-shadow: 0 0 30px rgba(68, 204, 102, 0.2);
     }
     .splash-title .dim { color: var(--dim); font-weight: 400; }
     .splash-sub {
       font-style: italic; color: var(--dim);
-      margin: 2px 0 16px;
+      margin: 2px 0 20px;
+      font-size: 13px;
     }
     .splash-formula {
-      color: var(--amber); font-size: 17px;
-      margin-bottom: 20px;
+      color: var(--amber); font-size: 20px;
+      margin-bottom: 24px;
+      letter-spacing: 0.02em;
+      text-shadow: 0 0 24px rgba(204, 170, 51, 0.2);
     }
     .splash-steps {
-      text-align: left; font-size: 12px;
-      line-height: 1.8; color: var(--dim);
-      margin-bottom: 16px;
+      text-align: left;
+      margin-bottom: 20px;
+    }
+    .step {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--dim);
+      padding: 3px 0;
+    }
+    .step-n {
+      color: var(--green);
+      font-weight: 600;
+      font-size: 11px;
+      flex-shrink: 0;
+      opacity: 0.7;
     }
     .splash-meta {
-      font-size: 11px; color: var(--dim);
-      margin-bottom: 8px;
+      font-size: 10px; color: var(--dim);
+      opacity: 0.7;
+      letter-spacing: 0.02em;
     }
     #splash-cta {
       display: block; width: 100%;
-      margin-top: 20px; padding: 12px;
+      margin-top: 24px; padding: 14px;
       font-family: var(--mono);
       font-size: 15px; font-weight: 600;
-      border: 1px solid var(--green);
-      border-radius: 4px;
-      background: var(--green); color: var(--panel);
+      border: none;
+      border-radius: 6px;
+      background: linear-gradient(105deg, var(--green) 0%, var(--green) 40%, #5aea7e 50%, var(--green) 60%, var(--green) 100%);
+      background-size: 250% 100%;
+      color: var(--panel);
       cursor: pointer;
-      box-shadow: 0 2px 8px rgba(68, 204, 102, 0.25);
-      transition: opacity 0.15s, box-shadow 0.15s;
+      box-shadow: 0 4px 16px rgba(68, 204, 102, 0.3);
+      transition: box-shadow 0.2s, transform 0.1s;
+      animation: shimmer 4s ease-in-out 2s infinite;
     }
     #splash-cta:hover {
-      opacity: 0.9;
-      box-shadow: 0 2px 12px rgba(68, 204, 102, 0.4);
+      box-shadow: 0 4px 24px rgba(68, 204, 102, 0.5);
+      transform: translateY(-1px);
     }
+    #splash-cta:active { transform: translateY(0); }
     #learn-more {
-      display: inline-block; margin-top: 14px;
-      font-size: 12px;
+      display: inline-block; margin-top: 16px;
+      font-size: 11px;
       color: var(--green);
       text-decoration: none;
-      border-bottom: 1px solid var(--green-d);
+      border-bottom: 1px solid rgba(68, 204, 102, 0.3);
       padding-bottom: 1px;
+      transition: color 0.2s, border-color 0.2s;
     }
     #learn-more:hover {
       color: var(--bright);
@@ -386,7 +442,22 @@
     }
 
     @media (prefers-color-scheme: light) {
-      #splash-backdrop { background: rgba(200,200,200,0.5); }
+      #splash-backdrop { background: rgba(200,200,200,0.25); }
+      #splash-card {
+        background: rgba(234, 234, 230, 0.75);
+        border-color: rgba(26, 138, 68, 0.15);
+        box-shadow: 0 0 0 1px rgba(26,138,68,0.1), 0 8px 40px rgba(0,0,0,0.12), 0 0 60px rgba(26,138,68,0.04);
+      }
+      #splash-card::after {
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+      }
+      @keyframes card-glow {
+        0%, 100% { box-shadow: 0 0 0 1px rgba(26,138,68,0.1), 0 8px 40px rgba(0,0,0,0.12), 0 0 60px rgba(26,138,68,0.04); }
+        50% { box-shadow: 0 0 0 1px rgba(26,138,68,0.2), 0 8px 40px rgba(0,0,0,0.12), 0 0 80px rgba(26,138,68,0.08); }
+      }
+      .splash-title { text-shadow: none; }
+      .splash-formula { text-shadow: none; }
+      #learn-more { border-bottom-color: rgba(26, 138, 68, 0.3); }
     }
 
     /* ─── Worker lanes ─── */
@@ -504,6 +575,8 @@
     }
     #mute-btn:hover { color: var(--text); }
     #mute-btn.muted { opacity: 0.3; }
+    #gh-link { color: var(--dim); line-height: 1; display: inline-flex; }
+    #gh-link:hover { color: var(--text); }
 
     /* New entry flash */
     @keyframes entry-flash {
@@ -534,7 +607,7 @@
       .wk-result { display: none; }
       #effort { width: 40px; }
 
-      #splash-card { padding: 24px 20px; }
+      #splash-card { padding: 32px 24px 28px; }
 
       /* Leaderboard panel: horizontal bar above bottombar on mobile */
       #lb-panel {
@@ -571,9 +644,9 @@
       <span class="stat-hero" id="gn">&mdash;</span>
     </span>
     <span class="sep"></span>
-    <span title="Total data points collected across all contributors">
+    <span title="Total data points submitted across all contributors">
       <span class="stat-value" id="n-points">0</span>
-      <span class="stat-label"> points</span>
+      <span class="stat-label"> points submitted</span>
     </span>
     <span class="sep"></span>
     <span title="R² — goodness of fit for S_EE = (1/4G_N) × A_cut linear regression">
@@ -583,9 +656,7 @@
     <div id="convergence-wrap" title="Convergence toward R² = 1.0 — click for details">
       <div id="convergence"><div id="convergence-fill"></div></div>
     </div>
-    <span id="auth-anon" title="Number of browsers currently contributing">
-      <span id="n-contributors">1</span>
-      <span class="stat-label"> contributors</span>
+    <span id="auth-anon">
       <button id="sign-in-btn" class="auth-btn">sign in</button>
     </span>
     <span id="auth-user" class="hidden">
@@ -593,8 +664,10 @@
       <span class="stat-label" id="user-points" title="Your total contributed work units"></span>
       <button id="sign-out-btn" class="auth-btn dim">sign out</button>
     </span>
-    <span id="lb-btn" title="leaderboard">&#9819;</span>
     <span id="mute-btn" title="toggle sound">&#9834;</span>
+    <a href="https://github.com/ecto/phyz" target="_blank" rel="noopener" id="gh-link" title="GitHub">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
   </div>
 
   <!-- Bottom bar (current work + workers) -->
@@ -632,12 +705,12 @@
       <div class="splash-sub">distributed quantum gravity</div>
       <div class="splash-formula">S<sub>EE</sub> = (1/4 G<sub>N</sub>) &times; A<sub>cut</sub></div>
       <div class="splash-steps">
-        1. A Regge lattice (triangulated 4-sphere) defines discrete spacetime.<br>
-        2. Your browser solves an SU(2) gauge field eigenvalue problem on this lattice.<br>
-        3. The lattice is bisected; entanglement entropy S<sub>EE</sub> and cut area A<sub>cut</sub> are measured.<br>
-        4. If S<sub>EE</sub> scales linearly with A<sub>cut</sub>, the slope yields Newton's constant G<sub>N</sub>.
+        <div class="step"><span class="step-n">1</span><span>A Regge lattice (triangulated 4-sphere) defines discrete spacetime.</span></div>
+        <div class="step"><span class="step-n">2</span><span>Your browser solves an SU(2) gauge field eigenvalue problem on it.</span></div>
+        <div class="step"><span class="step-n">3</span><span>The lattice is bisected; entropy S<sub>EE</sub> and cut area A<sub>cut</sub> are measured.</span></div>
+        <div class="step"><span class="step-n">4</span><span>If S<sub>EE</sub> &prop; A<sub>cut</sub>, the slope yields Newton&rsquo;s constant G<sub>N</sub>.</span></div>
       </div>
-      <div class="splash-meta">distributed eigensolves — results submitted in rounds</div>
+      <div class="splash-meta">~13,300 eigensolves across 2 phases</div>
       <button id="splash-cta">start computing &rarr;</button>
       <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
         learn more &rarr;
