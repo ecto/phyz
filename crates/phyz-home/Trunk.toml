@@ -1,6 +1,7 @@
 [build]
 target = "index.html"
 dist = "dist"
+no_autoreload = true
 
 [watch]
 watch = ["src", "index.html", "input.css"]
