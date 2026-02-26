@@ -140,6 +140,7 @@ pub async fn run() {
             let display_name = match client.fetch_my_stats(&contributor_id).await {
                 Ok(stats) => {
                     dom::set_text("my-count", &stats.total_units.to_string());
+                    dom::set_text("user-points", &format!("({})", stats.total_units));
                     stats.display_name
                 }
                 Err(_) => None,
@@ -636,6 +637,7 @@ fn start_render_loop(
     let last_rate_time = Rc::new(RefCell::new(0.0f64));
     let completion_handled = Rc::new(RefCell::new(false));
     let last_phase = Rc::new(Cell::new(0u32));
+    let anim = Rc::new(RefCell::new(AnimState::new()));
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -644,6 +646,7 @@ fn start_render_loop(
     let lc = last_count.clone();
     let lrt = last_rate_time.clone();
     let ch = completion_handled.clone();
+    let an = anim.clone();
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         // Render
         r.borrow_mut().render();
@@ -651,6 +654,23 @@ fn start_render_loop(
         // Tick coordinator (processes results, dispatches work)
         if let Some(ref c) = coord {
             c.tick();
+        }
+
+        // Animate numbers every frame
+        {
+            let mut a = an.borrow_mut();
+            a.tick();
+            dom::set_text("n-points", &format!("{}", a.points.as_int()));
+            dom::set_text("progress-num", &format!("{}", a.progress.as_int()));
+            dom::set_text("my-rate", &format!("{:.1}", a.rate.current));
+            dom::set_text("my-count", &format!("{}", a.completed.as_int()));
+            dom::set_text("user-points", &format!("({})", a.completed.as_int()));
+            if a.gn.target != 0.0 {
+                dom::set_text("gn", &format!("{:.1}", a.gn.current));
+            }
+            if a.r2.target != 0.0 {
+                dom::set_text("r2", &format!("{:.3}", a.r2.current));
+            }
         }
 
         // Update stats periodically (~1s)
@@ -714,11 +734,13 @@ fn start_render_loop(
             const GRAND_TOTAL: usize = 13300;
 
             let n_points = r.borrow().points.len();
-            dom::set_text("n-points", &n_points.to_string());
+
+            let mut a = an.borrow_mut();
+            a.points.set(n_points as f64);
 
             if let Some(ref c) = coord {
                 let completed = c.completed_count() as usize;
-                dom::set_text("my-count", &completed.to_string());
+                a.completed.set(completed as f64);
 
                 // Phase-aware progress
                 let (phase, phase_done, phase_total) = if completed < PHASE1_TOTAL {
@@ -728,7 +750,7 @@ fn start_render_loop(
                 };
                 let pct = phase_done as f64 / phase_total as f64 * 100.0;
                 dom::set_style("progress-fill", &format!("width:{pct:.1}%"));
-                dom::set_text("progress-num", &phase_done.to_string());
+                a.progress.set(phase_done as f64);
                 dom::set_text("progress-total", &phase_total.to_string());
                 dom::set_text("progress-phase", &phase.to_string());
 
@@ -756,7 +778,7 @@ fn start_render_loop(
                     let dt = (now - prev_time) / 1000.0;
                     if dt > 0.0 {
                         let rate = (completed as u32 - prev_count) as f64 / dt;
-                        dom::set_text("my-rate", &format!("{rate:.1}"));
+                        a.rate.set(rate);
                     }
                 }
                 *lrt.borrow_mut() = now;
@@ -767,11 +789,17 @@ fn start_render_loop(
                     let (slope, r2) = linear_regression(&r.borrow().points);
                     let pct = (r2 * 100.0).min(100.0);
                     dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
-                    dom::set_text("r2", &format!("{r2:.3}"));
+                    a.r2.set(r2);
                     if slope > 0.0 {
                         let g_n = 1.0 / (4.0 * slope);
-                        dom::set_text("gn", &format!("{g_n:.1}"));
+                        a.gn.set(g_n);
                     }
+                }
+
+                // Snap on first update to avoid animating from 0 on page load
+                if !a.initialized {
+                    a.snap_all();
+                    a.initialized = true;
                 }
 
                 // Detect experiment completion
@@ -781,7 +809,8 @@ fn start_render_loop(
                     dom::set_text("toggle", "\u{2713}");
                     dom::set_class("toggle", "complete");
                     dom::set_class("activity-dot", "indicator done");
-                    dom::set_text("my-rate", "0.0");
+                    a.rate.set(0.0);
+                    a.rate.snap();
                 }
             }
         }
@@ -952,6 +981,82 @@ fn render_leaderboard(entries: &[crate::supabase::LeaderboardEntry], my_id: Opti
         ));
     }
     dom::set_inner_html("leaderboard", &html);
+}
+
+/// Smoothly animated numeric display value.
+struct Anim {
+    current: f64,
+    target: f64,
+}
+
+impl Anim {
+    fn new() -> Self {
+        Anim { current: 0.0, target: 0.0 }
+    }
+
+    fn set(&mut self, target: f64) {
+        self.target = target;
+    }
+
+    /// Snap current to target (skip animation).
+    fn snap(&mut self) {
+        self.current = self.target;
+    }
+
+    /// Lerp toward target. Call once per frame. `snap` controls integer rounding threshold.
+    fn tick(&mut self, snap_dist: f64) {
+        self.current += (self.target - self.current) * 0.12;
+        if (self.current - self.target).abs() < snap_dist {
+            self.current = self.target;
+        }
+    }
+
+    fn as_int(&self) -> usize {
+        self.current as usize
+    }
+}
+
+/// All animated counters for the UI.
+struct AnimState {
+    points: Anim,
+    completed: Anim,
+    progress: Anim,
+    rate: Anim,
+    gn: Anim,
+    r2: Anim,
+    initialized: bool,
+}
+
+impl AnimState {
+    fn new() -> Self {
+        AnimState {
+            points: Anim::new(),
+            completed: Anim::new(),
+            progress: Anim::new(),
+            rate: Anim::new(),
+            gn: Anim::new(),
+            r2: Anim::new(),
+            initialized: false,
+        }
+    }
+
+    fn tick(&mut self) {
+        self.points.tick(0.5);
+        self.completed.tick(0.5);
+        self.progress.tick(0.5);
+        self.rate.tick(0.01);
+        self.gn.tick(0.01);
+        self.r2.tick(0.0001);
+    }
+
+    fn snap_all(&mut self) {
+        self.points.snap();
+        self.completed.snap();
+        self.progress.snap();
+        self.rate.snap();
+        self.gn.snap();
+        self.r2.snap();
+    }
 }
 
 /// Linear regression: S_EE = slope * A_cut + intercept. Returns (slope, R²).
