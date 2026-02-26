@@ -678,14 +678,15 @@ fn start_render_loop(
                         let frac = format!("{}/{}", slot.done, slot.total);
                         let result_html = slot.last_result.as_deref().unwrap_or("");
                         html.push_str(&format!(
-                            "<div class=\"wk\">\
+                            "<div class=\"wk\" title=\"Worker {i} — computing eigenvalues for this parameter set\">\
                              <span class=\"wk-idx\">w{i}</span>\
-                             <span class=\"wk-params\">{}</span>\
-                             <span class=\"wk-bar\"><span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
+                             <span class=\"wk-params\" title=\"Level, coupling g², perturbation direction\">{}</span>\
+                             <span class=\"wk-bar\" title=\"Batch progress: {}/{}\">\
+                             <span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
                              <span class=\"wk-frac\">{frac}</span>\
-                             <span class=\"wk-result\">{result_html}</span>\
+                             <span class=\"wk-result\" title=\"Last result: ground-state energy, partition count, wall time\">{result_html}</span>\
                              </div>",
-                            slot.label,
+                            slot.label, slot.done, slot.total,
                         ));
                     } else {
                         n_idle += 1;
