@@ -17,20 +17,25 @@ pub struct WorkUnit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkParams {
-    pub triangulation: String,
-    pub edge_lengths: Vec<f64>,
-    pub g_squared: f64,
-    pub partition: Vec<usize>,
+    pub level: u32,
+    pub coupling_g2: f64,
+    pub geometry_seed: u64,
+    pub perturbation: Perturbation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum Perturbation {
+    #[serde(rename = "base")]
+    Base,
+    #[serde(rename = "edge")]
+    Edge { index: usize, direction: f64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultPayload {
-    pub s_ee: f64,
-    pub s_shannon: f64,
-    pub s_distillable: f64,
-    pub a_cut: f64,
-    pub n_boundary: usize,
-    pub energy: f64,
+    pub ground_state_energy: f64,
+    pub entropy_per_partition: Vec<f64>,
     pub walltime_ms: f64,
 }
 

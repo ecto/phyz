@@ -541,7 +541,7 @@ impl MjcfLoader {
                     };
 
                     // Create joint transform (joint may have its own pos offset)
-                    let joint_offset = SpatialTransform::translation(joint_elem.pos);
+                    let joint_offset = SpatialTransform::from_translation(joint_elem.pos);
                     let parent_to_joint = parent_to_body.compose(&joint_offset);
 
                     // Create joint based on type
@@ -774,8 +774,8 @@ mod tests {
         assert_eq!(model.nv, 14);
 
         // Gravity
-        assert!((model.gravity[0] - 0.0).abs() < 1e-10);
-        assert!((model.gravity[1] - 0.0).abs() < 1e-10);
-        assert!((model.gravity[2] - (-9.81)).abs() < 1e-10);
+        assert!((model.gravity.x - 0.0).abs() < 1e-10);
+        assert!((model.gravity.y - 0.0).abs() < 1e-10);
+        assert!((model.gravity.z - (-9.81)).abs() < 1e-10);
     }
 }

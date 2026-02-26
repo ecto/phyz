@@ -80,13 +80,14 @@ impl NeighborList {
 
 /// Apply minimum image convention for periodic boundaries.
 pub fn minimum_image(mut dr: Vec3, box_size: Vec3) -> Vec3 {
-    for d in 0..3 {
-        if dr[d] > 0.5 * box_size[d] {
-            dr[d] -= box_size[d];
-        } else if dr[d] < -0.5 * box_size[d] {
-            dr[d] += box_size[d];
-        }
+    fn wrap(val: f64, size: f64) -> f64 {
+        if val > 0.5 * size { val - size }
+        else if val < -0.5 * size { val + size }
+        else { val }
     }
+    dr.x = wrap(dr.x, box_size.x);
+    dr.y = wrap(dr.y, box_size.y);
+    dr.z = wrap(dr.z, box_size.z);
     dr
 }
 

@@ -12,7 +12,10 @@
 
 use crate::diag;
 use crate::ryu_takayanagi::{self, geometry_valid};
-use crate::su2_quantum::{build_su2_hamiltonian, su2_entanglement_for_partition, Su2HilbertSpace};
+use crate::su2_quantum::{
+    build_su2_hamiltonian, su2_entanglement_for_partition, su2_lanczos_diagonalize,
+    Su2HilbertSpace,
+};
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::gauge::metric_weights;
 use phyz_regge::geometry::triangle_area_grad_lsq;
@@ -77,6 +80,69 @@ pub fn boundary_5simplex() -> SimplicialComplex {
     ])
 }
 
+/// Build a subdivided S⁴ triangulation at the given refinement level.
+///
+/// Stellar subdivision: replace one pentachoron with 5 by adding a vertex at
+/// its center. Each level adds +1V, +5E, +4P.
+///
+/// | Level | V | E | b₁ = E-V+1 | dim = 2^b₁ |
+/// |-------|---|---|-------------|------------|
+/// | 0     | 6 | 15| 10          | 1,024      |
+/// | 1     | 7 | 20| 14          | 16,384     |
+/// | 2     | 8 | 25| 18          | 262,144    |
+pub fn subdivided_s4(level: usize) -> SimplicialComplex {
+    // Start with ∂Δ⁵ pentachorons.
+    let mut pents: Vec<[usize; 5]> = vec![
+        [1, 2, 3, 4, 5],
+        [0, 2, 3, 4, 5],
+        [0, 1, 3, 4, 5],
+        [0, 1, 2, 4, 5],
+        [0, 1, 2, 3, 5],
+        [0, 1, 2, 3, 4],
+    ];
+    let mut n_vertices = 6;
+
+    // Pentachorons to subdivide at each level (by sorted vertex set).
+    let targets: &[[usize; 5]] = &[
+        [0, 1, 2, 3, 4], // level 1: subdivide with vertex 6
+        [0, 2, 3, 4, 5], // level 2: subdivide with vertex 7
+        [0, 1, 3, 4, 5], // level 3: subdivide with vertex 8
+    ];
+
+    for lv in 0..level.min(targets.len()) {
+        let target = targets[lv];
+        let new_vertex = n_vertices;
+        n_vertices += 1;
+
+        // Find and remove the target pentachoron.
+        let pos = pents.iter().position(|p| {
+            let mut s = *p;
+            s.sort_unstable();
+            s == target
+        });
+        if let Some(idx) = pos {
+            pents.remove(idx);
+        }
+
+        // Add 5 new pentachorons: one per facet of the original.
+        // Each replaces one vertex of the original with new_vertex.
+        for skip in 0..5 {
+            let mut new_pent = [0usize; 5];
+            new_pent[0] = new_vertex;
+            let mut idx = 1;
+            for (k, &v) in target.iter().enumerate() {
+                if k != skip {
+                    new_pent[idx] = v;
+                    idx += 1;
+                }
+            }
+            pents.push(new_pent);
+        }
+    }
+
+    SimplicialComplex::from_pentachorons(n_vertices, &pents)
+}
+
 /// Project out the conformal mode (uniform component) from a gradient vector.
 ///
 /// Returns (projected_gradient, conformal_component) where the conformal
@@ -88,25 +154,66 @@ pub fn project_out_conformal(grad: &[f64]) -> (Vec<f64>, f64) {
     (projected, mean * n.sqrt())
 }
 
-/// Compute SU(2) ground-state entanglement entropy for given geometry.
-fn su2_ground_state_entropy(
+/// Dimension threshold above which we use Lanczos instead of dense diag.
+const LANCZOS_THRESHOLD: usize = 8192;
+
+/// Compute the SU(2) ground state for a given geometry.
+///
+/// Builds metric weights, constructs the Hamiltonian, and diagonalizes
+/// (dense or Lanczos depending on dimension). Returns the ground state vector.
+///
+/// Use this to avoid redundant solves when computing entropy for multiple partitions.
+pub fn su2_ground_state(
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    lengths: &[f64],
+    g_squared: f64,
+) -> phyz_math::DVec {
+    su2_ground_state_with_energy(hilbert, complex, lengths, g_squared).0
+}
+
+/// Compute the SU(2) ground state and its energy for a given geometry.
+///
+/// Like [`su2_ground_state`] but also returns the ground-state energy E₀.
+pub fn su2_ground_state_with_energy(
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    lengths: &[f64],
+    g_squared: f64,
+) -> (phyz_math::DVec, f64) {
+    let mw = metric_weights(complex, lengths);
+    let spec = if hilbert.dim() > LANCZOS_THRESHOLD {
+        su2_lanczos_diagonalize(hilbert, complex, g_squared, Some(&mw), 1, None)
+    } else {
+        let h = build_su2_hamiltonian(hilbert, complex, g_squared, Some(&mw));
+        diag::diagonalize(&h, Some(1))
+    };
+    (spec.states[0].clone(), spec.energies[0])
+}
+
+/// Compute SU(2) ground-state entropy reusing a pre-built Hilbert space.
+///
+/// Avoids rebuilding the Hilbert space for each FD perturbation (the basis
+/// doesn't change when only metric_weights change).
+fn su2_ground_state_entropy_with_hs(
+    hilbert: &Su2HilbertSpace,
     complex: &SimplicialComplex,
     lengths: &[f64],
     partition_a: &[usize],
     g_squared: f64,
 ) -> f64 {
-    let hs = Su2HilbertSpace::new(complex);
-    let mw = metric_weights(complex, lengths);
-    let h = build_su2_hamiltonian(&hs, complex, g_squared, Some(&mw));
-    let spec = diag::diagonalize(&h, Some(1));
-    let gs = spec.ground_state();
-    su2_entanglement_for_partition(&hs, gs, complex, partition_a)
+    let gs = su2_ground_state(hilbert, complex, lengths, g_squared);
+    su2_entanglement_for_partition(hilbert, &gs, complex, partition_a)
 }
 
 /// ∂S_EE/∂l_e via central finite differences for SU(2) j=1/2.
 ///
 /// For each edge: perturb l_e ± eps, rebuild metric_weights, rebuild H,
 /// rediagonalize, compute S_EE. Returns n_edges-length gradient.
+///
+/// Builds the Hilbert space once and reuses it across perturbations (the
+/// gauge-invariant basis depends only on topology, not metric).
+/// Automatically uses Lanczos when dim > 8192.
 pub fn entanglement_gradient_su2(
     complex: &SimplicialComplex,
     lengths: &[f64],
@@ -115,6 +222,7 @@ pub fn entanglement_gradient_su2(
 ) -> Vec<f64> {
     let n_edges = complex.n_edges();
     let eps = config.fd_eps;
+    let hs = Su2HilbertSpace::new(complex);
     let mut grad = vec![0.0; n_edges];
 
     for ei in 0..n_edges {
@@ -128,8 +236,10 @@ pub fn entanglement_gradient_su2(
             continue;
         }
 
-        let s_plus = su2_ground_state_entropy(complex, &l_plus, partition_a, config.g_squared);
-        let s_minus = su2_ground_state_entropy(complex, &l_minus, partition_a, config.g_squared);
+        let s_plus =
+            su2_ground_state_entropy_with_hs(&hs, complex, &l_plus, partition_a, config.g_squared);
+        let s_minus =
+            su2_ground_state_entropy_with_hs(&hs, complex, &l_minus, partition_a, config.g_squared);
         grad[ei] = (s_plus - s_minus) / (2.0 * eps);
     }
 
@@ -417,5 +527,60 @@ mod tests {
             "projected residual too large: max|resid|={max_resid:.4e}, |conformal|={:.4e}, ratio={ratio:.4e}",
             conformal.abs()
         );
+    }
+
+    #[test]
+    fn test_subdivided_s4_level0() {
+        let complex = subdivided_s4(0);
+        assert_eq!(complex.n_vertices, 6);
+        assert_eq!(complex.n_edges(), 15);
+        assert_eq!(complex.n_pents(), 6);
+        let b1 = complex.n_edges() - complex.n_vertices + 1;
+        assert_eq!(b1, 10);
+    }
+
+    #[test]
+    fn test_subdivided_s4_level1() {
+        let complex = subdivided_s4(1);
+        assert_eq!(complex.n_vertices, 7);
+        assert_eq!(complex.n_edges(), 20);
+        assert_eq!(complex.n_pents(), 10); // 6 - 1 + 5 = 10
+        let b1 = complex.n_edges() - complex.n_vertices + 1;
+        assert_eq!(b1, 14);
+    }
+
+    #[test]
+    fn test_subdivided_s4_level2() {
+        let complex = subdivided_s4(2);
+        assert_eq!(complex.n_vertices, 8);
+        assert_eq!(complex.n_edges(), 25);
+        assert_eq!(complex.n_pents(), 14); // 10 - 1 + 5 = 14
+        let b1 = complex.n_edges() - complex.n_vertices + 1;
+        assert_eq!(b1, 18);
+    }
+
+    #[test]
+    fn test_subdivided_s4_level3() {
+        let complex = subdivided_s4(3);
+        assert_eq!(complex.n_vertices, 9);
+        assert_eq!(complex.n_edges(), 30);
+        assert_eq!(complex.n_pents(), 18);
+        let b1 = complex.n_edges() - complex.n_vertices + 1;
+        assert_eq!(b1, 22);
+    }
+
+    #[test]
+    fn test_subdivided_s4_closed_manifold() {
+        // Every triangle should be shared by ≥2 pentachorons (closed manifold).
+        for level in 0..=3 {
+            let complex = subdivided_s4(level);
+            for (ti, adj) in complex.tri_pent_opposite.iter().enumerate() {
+                assert!(
+                    adj.len() >= 2,
+                    "level {level}: triangle {ti} has {} adjacent pents, expected ≥2",
+                    adj.len()
+                );
+            }
+        }
     }
 }

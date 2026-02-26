@@ -51,7 +51,7 @@ fn make_double_pendulum(dt: f64) -> Model {
         .add_revolute_body(
             "link2",
             0,
-            SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)),
+            SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)),
             inertia,
         )
         .build()
@@ -200,7 +200,7 @@ fn ball_drop_with_contacts() {
     let materials = vec![material.clone()];
     let forces = phyz::phyz_contact::contact_forces(&contacts, &state, &materials, None);
     // Force on body 0 should have positive z (upward push)
-    let fz = forces[0].linear().z;
+    let fz = forces[0].linear.z;
     assert!(
         fz > 0.0,
         "contact force should push up, got fz = {:.4}",

@@ -1,0 +1,49 @@
+Perfect! The example runs successfully and demonstrates the probabilistic simulation with parameter uncertainty. 
+
+## Summary
+
+I have successfully implemented **Phase 16: Probabilistic Simulation** for the tau physics engine. Here's what was created:
+
+### New Crate: `tau-prob`
+Located in `crates/tau-prob/`, this crate provides:
+
+1. **`distribution.rs`** - Distribution representation using weighted particle ensembles:
+   - Uniform and weighted distributions
+   - Weighted mean and covariance computation
+   - Effective sample size calculation
+   - Systematic resampling for particle filters
+
+2. **`state.rs`** - Probabilistic state with uncertain parameters:
+   - `ProbabilisticState` wrapping distributions over q, v, and physical parameters
+   - Methods to create uniform or perturbed samples
+   - Parameter sampling with custom distributions
+   - Mean and standard deviation computation
+
+3. **`ensemble.rs`** - Ensemble simulation and uncertainty propagation:
+   - `EnsembleSolver` trait for stepping simulations
+   - `ensemble_step` and `ensemble_step_with_params` for batch simulation
+   - `trajectory_uncertainty` for computing mean ± std over time
+   - Tests validating ensemble dynamics
+
+4. **`svgd.rs`** - Stein Variational Gradient Descent for parameter inference:
+   - RBF kernel with median bandwidth heuristic
+   - SVGD update steps for particle optimization
+   - Inference functions for parameter estimation from observations
+   - Tests validating kernel functions and SVGD convergence
+
+### Example: `ensemble_pendulum.rs`
+Demonstrates:
+- Creating probabilistic state with perturbed initial conditions
+- Sampling uncertain physical parameters (length, mass, damping)
+- Ensemble simulation with 100 particles
+- Tracking mean ± std trajectories over time
+- Observation that uncertainty propagates and ESS remains stable
+
+### Key Features
+- ✅ All 14 tests pass
+- ✅ Clippy warnings resolved (including pre-existing tau-wasm issues)
+- ✅ Code properly formatted
+- ✅ Example runs successfully showing uncertainty propagation
+- ✅ Integrated into workspace and main tau crate
+
+The implementation follows the specification exactly, providing distribution-wrapped states, ensemble simulation, resampling, and SVGD for parameter inference. The probabilistic framework is ready for uncertainty quantification, inverse problems, and randomized algorithms.

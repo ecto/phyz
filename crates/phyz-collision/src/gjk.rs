@@ -151,7 +151,7 @@ pub fn gjk_distance_rot(
     // Support function for Minkowski difference A - B
     let support = |d: &Vec3| {
         let sa = geom_a.support(d, pos_a, rot_a);
-        let sb = geom_b.support(&-d, pos_b, rot_b);
+        let sb = geom_b.support(&(-*d), pos_b, rot_b);
         sa - sb
     };
 

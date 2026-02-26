@@ -53,7 +53,7 @@ pub fn compute_contact_force(
     // Convert to spatial force (wrench) at contact point
     // τ = r × F, where r is from body COM to contact point
     // For now, assume force applied at body origin (simplified)
-    SpatialVec::from_linear_angular(total_force, Vec3::zeros())
+    SpatialVec::new(Vec3::zeros(), total_force)
 }
 
 #[cfg(test)]
@@ -71,7 +71,7 @@ mod tests {
         };
         let material = ContactMaterial::default();
         let force = compute_contact_force(&collision, &material, &Vec3::zeros(), &Vec3::zeros());
-        assert!(force.linear().norm() < 1e-10);
+        assert!(force.linear.norm() < 1e-10);
     }
 
     #[test]
@@ -88,7 +88,7 @@ mod tests {
             ..Default::default()
         };
         let force = compute_contact_force(&collision, &material, &Vec3::zeros(), &Vec3::zeros());
-        assert!(force.linear().norm() > 0.0);
-        assert!(force.linear().dot(&Vec3::z()) > 0.0);
+        assert!(force.linear.norm() > 0.0);
+        assert!(force.linear.dot(&Vec3::z()) > 0.0);
     }
 }

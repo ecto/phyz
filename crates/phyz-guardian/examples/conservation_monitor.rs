@@ -34,7 +34,7 @@ fn main() {
         .add_revolute_body(
             "link2",
             0,
-            SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)),
+            SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)),
             SpatialInertia::new(
                 mass,
                 Vec3::new(0.0, -length / 2.0, 0.0),
@@ -76,8 +76,9 @@ fn main() {
     for step in 0..total_steps {
         // Semi-implicit Euler step
         let qdd = aba(&model, &state);
-        state.v += &qdd * model.dt;
-        state.q += &state.v * model.dt;
+        state.v += &(&qdd * model.dt);
+        let v_tmp = state.v.clone();
+        state.q += &(&v_tmp * model.dt);
         state.time += model.dt;
 
         // Check conservation every 1000 steps

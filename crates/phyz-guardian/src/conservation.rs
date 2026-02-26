@@ -81,7 +81,7 @@ pub fn total_momentum(model: &Model, state: &State) -> Vec3 {
 
     for (i, body) in model.bodies.iter().enumerate() {
         let mass = body.inertia.mass;
-        let vel_linear = vels[i].linear();
+        let vel_linear = vels[i].linear;
         momentum += mass * vel_linear;
     }
 
@@ -102,12 +102,12 @@ pub fn total_angular_momentum(model: &Model, state: &State) -> Vec3 {
         let com_local = body.inertia.com;
         let com_world = xf.rot.transpose() * com_local + xf.pos;
 
-        // Linear part: r × (m * v)
-        let vel_linear = vel.linear();
+        // Linear part: r x (m * v)
+        let vel_linear = vel.linear;
         ang_momentum += com_world.cross(&(mass * vel_linear));
 
-        // Angular part: I * ω (need to transform inertia to world frame)
-        let omega = vel.angular();
+        // Angular part: I * omega (need to transform inertia to world frame)
+        let omega = vel.angular;
         let inertia_local = body.inertia.inertia;
         let inertia_world = xf.rot.transpose() * inertia_local * xf.rot;
         ang_momentum += inertia_world * omega;
@@ -149,8 +149,9 @@ mod tests {
         // Step forward with semi-implicit Euler
         for _ in 0..1000 {
             let qdd = aba(&model, &state);
-            state.v += &qdd * model.dt;
-            state.q += &state.v * model.dt;
+            state.v += &(&qdd * model.dt);
+            let v_copy = state.v.clone();
+            state.q += &(&v_copy * model.dt);
         }
 
         let monitor = ConservationMonitor::check(&baseline, &model, &state);
@@ -190,8 +191,9 @@ mod tests {
         // Step forward
         for _ in 0..100 {
             let qdd = aba(&model, &state);
-            state.v += &qdd * model.dt;
-            state.q += &state.v * model.dt;
+            state.v += &(&qdd * model.dt);
+            let v_copy = state.v.clone();
+            state.q += &(&v_copy * model.dt);
         }
 
         let monitor = ConservationMonitor::check(&baseline, &model, &state);

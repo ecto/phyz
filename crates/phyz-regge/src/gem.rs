@@ -165,12 +165,12 @@ pub fn extract_riemann_at_vertex(
     }
 
     // Solve via SVD (least-squares)
-    let a_nalg = nalgebra::DMatrix::from_row_slice(n_tris, n_comps, &a_mat);
-    let b_nalg = nalgebra::DVector::from_vec(b_vec);
+    let a_mat_dmat = phyz_math::DMat::from_fn(n_tris, n_comps, |i, j| a_mat[i * n_comps + j]);
+    let b_dvec = phyz_math::DVec::from_slice(&b_vec);
 
-    let svd = a_nalg.svd(true, true);
-    let solution = svd.solve(&b_nalg, 1e-10).unwrap_or_else(|_| {
-        nalgebra::DVector::zeros(n_comps)
+    let svd = a_mat_dmat.svd(true, true);
+    let solution = svd.solve(&b_dvec, 1e-10).unwrap_or_else(|_| {
+        phyz_math::DVec::zeros(n_comps)
     });
 
     // Pack into Riemann20 (first 20 of the 21 symmetric components)

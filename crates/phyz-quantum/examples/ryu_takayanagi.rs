@@ -36,7 +36,7 @@ fn ground_state_simplicial(
     complex: &SimplicialComplex,
     g_squared: f64,
     mw: Option<&[f64]>,
-) -> nalgebra::DVector<f64> {
+) -> phyz_math::DVec {
     if hs.dim() <= 5000 {
         let params = KSParams {
             g_squared,

@@ -47,41 +47,41 @@ impl AABB {
                 let r = Vec3::new(*radius, *radius, half_len + *radius);
                 // Transform by rotation
                 let corners = [
-                    rot * Vec3::new(r.x, r.y, r.z),
-                    rot * Vec3::new(-r.x, r.y, r.z),
-                    rot * Vec3::new(r.x, -r.y, r.z),
-                    rot * Vec3::new(-r.x, -r.y, r.z),
-                    rot * Vec3::new(r.x, r.y, -r.z),
-                    rot * Vec3::new(-r.x, r.y, -r.z),
-                    rot * Vec3::new(r.x, -r.y, -r.z),
-                    rot * Vec3::new(-r.x, -r.y, -r.z),
+                    *rot * Vec3::new(r.x, r.y, r.z),
+                    *rot * Vec3::new(-r.x, r.y, r.z),
+                    *rot * Vec3::new(r.x, -r.y, r.z),
+                    *rot * Vec3::new(-r.x, -r.y, r.z),
+                    *rot * Vec3::new(r.x, r.y, -r.z),
+                    *rot * Vec3::new(-r.x, r.y, -r.z),
+                    *rot * Vec3::new(r.x, -r.y, -r.z),
+                    *rot * Vec3::new(-r.x, -r.y, -r.z),
                 ];
                 let mut min = pos + corners[0];
                 let mut max = min;
                 for corner in &corners[1..] {
-                    let c = pos + corner;
-                    min = min.inf(&c);
-                    max = max.sup(&c);
+                    let c = *pos + *corner;
+                    min = min.component_min(c);
+                    max = max.component_max(c);
                 }
                 AABB::new(min, max)
             }
             Geometry::Box { half_extents } => {
                 let corners = [
-                    rot * Vec3::new(half_extents.x, half_extents.y, half_extents.z),
-                    rot * Vec3::new(-half_extents.x, half_extents.y, half_extents.z),
-                    rot * Vec3::new(half_extents.x, -half_extents.y, half_extents.z),
-                    rot * Vec3::new(-half_extents.x, -half_extents.y, half_extents.z),
-                    rot * Vec3::new(half_extents.x, half_extents.y, -half_extents.z),
-                    rot * Vec3::new(-half_extents.x, half_extents.y, -half_extents.z),
-                    rot * Vec3::new(half_extents.x, -half_extents.y, -half_extents.z),
-                    rot * Vec3::new(-half_extents.x, -half_extents.y, -half_extents.z),
+                    *rot * Vec3::new(half_extents.x, half_extents.y, half_extents.z),
+                    *rot * Vec3::new(-half_extents.x, half_extents.y, half_extents.z),
+                    *rot * Vec3::new(half_extents.x, -half_extents.y, half_extents.z),
+                    *rot * Vec3::new(-half_extents.x, -half_extents.y, half_extents.z),
+                    *rot * Vec3::new(half_extents.x, half_extents.y, -half_extents.z),
+                    *rot * Vec3::new(-half_extents.x, half_extents.y, -half_extents.z),
+                    *rot * Vec3::new(half_extents.x, -half_extents.y, -half_extents.z),
+                    *rot * Vec3::new(-half_extents.x, -half_extents.y, -half_extents.z),
                 ];
                 let mut min = pos + corners[0];
                 let mut max = min;
                 for corner in &corners[1..] {
-                    let c = pos + corner;
-                    min = min.inf(&c);
-                    max = max.sup(&c);
+                    let c = *pos + *corner;
+                    min = min.component_min(c);
+                    max = max.component_max(c);
                 }
                 AABB::new(min, max)
             }
@@ -89,21 +89,21 @@ impl AABB {
                 let half_h = height * 0.5;
                 let r = Vec3::new(*radius, *radius, half_h);
                 let corners = [
-                    rot * Vec3::new(r.x, 0.0, r.z),
-                    rot * Vec3::new(-r.x, 0.0, r.z),
-                    rot * Vec3::new(0.0, r.y, r.z),
-                    rot * Vec3::new(0.0, -r.y, r.z),
-                    rot * Vec3::new(r.x, 0.0, -r.z),
-                    rot * Vec3::new(-r.x, 0.0, -r.z),
-                    rot * Vec3::new(0.0, r.y, -r.z),
-                    rot * Vec3::new(0.0, -r.y, -r.z),
+                    *rot * Vec3::new(r.x, 0.0, r.z),
+                    *rot * Vec3::new(-r.x, 0.0, r.z),
+                    *rot * Vec3::new(0.0, r.y, r.z),
+                    *rot * Vec3::new(0.0, -r.y, r.z),
+                    *rot * Vec3::new(r.x, 0.0, -r.z),
+                    *rot * Vec3::new(-r.x, 0.0, -r.z),
+                    *rot * Vec3::new(0.0, r.y, -r.z),
+                    *rot * Vec3::new(0.0, -r.y, -r.z),
                 ];
                 let mut min = pos + corners[0];
                 let mut max = min;
                 for corner in &corners[1..] {
-                    let c = pos + corner;
-                    min = min.inf(&c);
-                    max = max.sup(&c);
+                    let c = *pos + *corner;
+                    min = min.component_min(c);
+                    max = max.component_max(c);
                 }
                 AABB::new(min, max)
             }
@@ -111,13 +111,13 @@ impl AABB {
                 if vertices.is_empty() {
                     return AABB::new(*pos, *pos);
                 }
-                let v0 = pos + rot * vertices[0];
+                let v0 = *pos + *rot * vertices[0];
                 let mut min = v0;
                 let mut max = v0;
                 for v in vertices.iter().skip(1) {
-                    let vt = pos + rot * v;
-                    min = min.inf(&vt);
-                    max = max.sup(&vt);
+                    let vt = *pos + *rot * v;
+                    min = min.component_min(vt);
+                    max = max.component_max(vt);
                 }
                 AABB::new(min, max)
             }
@@ -153,7 +153,7 @@ impl Geometry {
             }
             Geometry::Capsule { radius, length } => {
                 let half_len = length * 0.5;
-                let axis = rot * Vec3::z();
+                let axis = *rot * Vec3::z();
                 let p1 = pos + axis * half_len;
                 let p2 = pos - axis * half_len;
                 let d = dir.normalize();
@@ -180,11 +180,11 @@ impl Geometry {
                 } else {
                     -half_extents.z
                 };
-                pos + rot * Vec3::new(sx, sy, sz)
+                pos + *rot * Vec3::new(sx, sy, sz)
             }
             Geometry::Cylinder { radius, height } => {
                 let half_h = height * 0.5;
-                let axis = rot * Vec3::z();
+                let axis = *rot * Vec3::z();
                 let local_dir = rot.transpose() * dir;
                 let radial = Vec3::new(local_dir.x, local_dir.y, 0.0);
                 let radial_norm = radial.norm();
@@ -194,13 +194,13 @@ impl Geometry {
                     Vec3::x()
                 };
                 let sz = if local_dir.z >= 0.0 { half_h } else { -half_h };
-                pos + rot * (radial_dir * *radius) + axis * sz
+                pos + *rot * (radial_dir * *radius) + axis * sz
             }
             Geometry::Mesh { vertices, .. } => {
-                let mut best = pos + rot * vertices[0];
+                let mut best = pos + *rot * vertices[0];
                 let mut best_dot = dir.dot(&best);
                 for v in vertices.iter().skip(1) {
-                    let vt = pos + rot * v;
+                    let vt = pos + *rot * v;
                     let d = dir.dot(&vt);
                     if d > best_dot {
                         best = vt;
@@ -214,9 +214,9 @@ impl Geometry {
                 // Otherwise, return point at infinity (clamped to large value)
                 let dot = dir.dot(normal);
                 if dot > 0.0 {
-                    pos + normal * 1e6
+                    pos + *normal * 1e6
                 } else {
-                    pos - normal * 1e6
+                    pos - *normal * 1e6
                 }
             }
         }

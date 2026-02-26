@@ -1,0 +1,75 @@
+/* Minimal styles — Tailwind classes handle most layout */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  background: #000;
+  color: #fff;
+}
+
+canvas {
+  display: block;
+}
+
+.bg-black\/60 {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.backdrop-blur-md {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.rounded-lg { border-radius: 0.5rem; }
+.rounded-full { border-radius: 9999px; }
+
+.absolute { position: absolute; }
+.inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+.top-4 { top: 1rem; }
+.left-4 { left: 1rem; }
+.bottom-8 { bottom: 2rem; }
+.right-8 { right: 2rem; }
+.z-10 { z-index: 10; }
+
+.w-full { width: 100%; }
+.h-full { height: 100%; }
+.h-screen { height: 100vh; }
+
+.overflow-hidden { overflow: hidden; }
+
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.items-end { align-items: flex-end; }
+.gap-3 { gap: 0.75rem; }
+.space-y-1 > * + * { margin-top: 0.25rem; }
+
+.p-3 { padding: 0.75rem; }
+.p-4 { padding: 1rem; }
+.px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+.py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+.mb-2 { margin-bottom: 0.5rem; }
+
+.text-xs { font-size: 0.75rem; }
+.text-sm { font-size: 0.875rem; }
+
+.text-white { color: #fff; }
+.text-white\/40 { color: rgba(255, 255, 255, 0.4); }
+.text-green-400 { color: #4ade80; }
+.text-blue-400 { color: #60a5fa; }
+
+.bg-white\/10 { background: rgba(255, 255, 255, 0.1); }
+.hover\:bg-white\/20:hover { background: rgba(255, 255, 255, 0.2); }
+
+.border { border-width: 1px; border-style: solid; }
+.border-white\/20 { border-color: rgba(255, 255, 255, 0.2); }
+
+.transition-all { transition: all 0.15s ease; }
+.cursor-pointer { cursor: pointer; }
+
+.font-mono {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+}

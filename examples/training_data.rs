@@ -27,7 +27,7 @@ fn main() {
         .add_revolute_body(
             "link2",
             0,
-            SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+            SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
             SpatialInertia::new(
                 0.8,
                 Vec3::new(0.0, 0.0, -0.5),

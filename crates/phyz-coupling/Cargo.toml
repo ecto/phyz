@@ -9,7 +9,6 @@ description = "Multi-scale coupling between different physics solvers for phyz"
 
 [dependencies]
 phyz-math = { workspace = true }
-nalgebra.workspace = true
 
 [dev-dependencies]
 approx = "0.5"

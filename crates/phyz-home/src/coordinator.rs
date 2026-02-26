@@ -1,0 +1,346 @@
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
+
+use crate::supabase::{ResultPayload, SupabaseClient, WorkUnit};
+use crate::viz::Renderer;
+use crate::worker::WorkerPool;
+
+const BATCH_SIZE: usize = 5;
+
+/// State of a single worker slot for the UI.
+pub enum WorkerSlot {
+    Idle,
+    Active {
+        label: String,
+        done: usize,
+        total: usize,
+    },
+}
+
+/// Client-side coordinator: fetches work, dispatches to workers, submits results.
+pub struct Coordinator {
+    client: Rc<SupabaseClient>,
+    pool: Rc<WorkerPool>,
+    contributor_id: String,
+    queue: Rc<RefCell<VecDeque<WorkUnit>>>,
+    dispatched: RefCell<HashMap<String, WorkUnit>>,
+    completed_count: Rc<RefCell<u32>>,
+    running: Rc<RefCell<bool>>,
+    fetching: Rc<RefCell<bool>>,
+    no_work: Rc<RefCell<bool>>,
+    complete: Rc<RefCell<bool>>,
+    renderer: Rc<RefCell<Renderer>>,
+    /// Recent result descriptions for the UI ticker.
+    recent: RefCell<Vec<String>>,
+    /// When true, stop fetching/dispatching but keep draining in-flight work.
+    draining: Rc<RefCell<bool>>,
+    /// Per-worker label for the lane UI (worker_idx → label).
+    worker_labels: RefCell<Vec<String>>,
+    /// Effort level 1-100 — controls how many workers are active.
+    effort: Rc<RefCell<u32>>,
+}
+
+impl Coordinator {
+    pub fn new(
+        client: Rc<SupabaseClient>,
+        pool: Rc<WorkerPool>,
+        contributor_id: String,
+        renderer: Rc<RefCell<Renderer>>,
+    ) -> Self {
+        let n = pool.pool_size();
+        Coordinator {
+            client,
+            pool,
+            contributor_id,
+            queue: Rc::new(RefCell::new(VecDeque::new())),
+            dispatched: RefCell::new(HashMap::new()),
+            completed_count: Rc::new(RefCell::new(0)),
+            running: Rc::new(RefCell::new(false)),
+            fetching: Rc::new(RefCell::new(false)),
+            no_work: Rc::new(RefCell::new(false)),
+            complete: Rc::new(RefCell::new(false)),
+            renderer,
+            recent: RefCell::new(Vec::new()),
+            draining: Rc::new(RefCell::new(false)),
+            worker_labels: RefCell::new(vec![String::new(); n]),
+            effort: Rc::new(RefCell::new(50)),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        *self.running.borrow()
+    }
+
+    pub fn is_complete(&self) -> bool {
+        *self.complete.borrow()
+    }
+
+    pub fn completed_count(&self) -> u32 {
+        *self.completed_count.borrow()
+    }
+
+    pub fn start(&self) {
+        *self.running.borrow_mut() = true;
+        web_sys::console::log_1(&"coordinator: started".into());
+    }
+
+    pub fn stop(&self) {
+        *self.running.borrow_mut() = false;
+        web_sys::console::log_1(&"coordinator: stopped".into());
+    }
+
+    /// Take recent result descriptions for the UI ticker (drains the list).
+    pub fn take_recent(&self) -> Vec<String> {
+        std::mem::take(&mut *self.recent.borrow_mut())
+    }
+
+    /// Enter draining state: stop fetching/dispatching, let in-flight workers finish.
+    pub fn drain(&self) {
+        if *self.draining.borrow() {
+            return;
+        }
+        *self.draining.borrow_mut() = true;
+        crate::dom::set_text("status-text", "finishing up");
+        web_sys::console::log_1(&"coordinator: draining".into());
+    }
+
+    pub fn is_draining(&self) -> bool {
+        *self.draining.borrow()
+    }
+
+    pub fn set_effort(&self, pct: u32) {
+        *self.effort.borrow_mut() = pct.clamp(1, 100);
+    }
+
+    pub fn effort(&self) -> u32 {
+        *self.effort.borrow()
+    }
+
+    /// Max active workers based on effort percentage.
+    pub fn max_workers(&self) -> usize {
+        let effort = *self.effort.borrow() as f64;
+        let total = self.pool.pool_size() as f64;
+        (total * effort / 100.0).ceil().max(1.0) as usize
+    }
+
+    /// Build worker slot info for the UI.
+    pub fn worker_slots(&self) -> Vec<WorkerSlot> {
+        let progress = self.pool.worker_progress();
+        let labels = self.worker_labels.borrow();
+        progress
+            .iter()
+            .enumerate()
+            .map(|(i, &(done, total))| {
+                if total == 0 {
+                    WorkerSlot::Idle
+                } else {
+                    WorkerSlot::Active {
+                        label: labels.get(i).cloned().unwrap_or_default(),
+                        done,
+                        total,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Called periodically (e.g. every 200ms) from the main app loop.
+    pub fn tick(&self) {
+        if !*self.running.borrow() {
+            return;
+        }
+
+        // 1. Always process completed results from workers (even when draining)
+        let results = self.pool.drain_results();
+        for resp in results {
+            self.handle_result(resp);
+        }
+
+        let draining = *self.draining.borrow();
+
+        if draining {
+            // Draining: skip dispatch + fetch. When all workers idle → complete.
+            if self.pool.available() == self.pool.pool_size()
+                && self.dispatched.borrow().is_empty()
+            {
+                if !*self.complete.borrow() {
+                    *self.complete.borrow_mut() = true;
+                    *self.running.borrow_mut() = false;
+                    self.recent.borrow_mut().push(
+                        "<span class=\"ok\">experiment complete</span> \
+                         — all work units finished"
+                            .to_string(),
+                    );
+                    web_sys::console::log_1(&"experiment complete!".into());
+                }
+            }
+            return;
+        }
+
+        // 2. Dispatch batches to idle workers (limited by effort)
+        let max_active = self.max_workers();
+        while self.pool.available() > 0
+            && (self.pool.pool_size() - self.pool.available()) < max_active
+        {
+            let mut batch_units = Vec::new();
+            {
+                let mut q = self.queue.borrow_mut();
+                for _ in 0..BATCH_SIZE {
+                    match q.pop_front() {
+                        Some(u) => batch_units.push(u),
+                        None => break,
+                    }
+                }
+            }
+            if batch_units.is_empty() {
+                break;
+            }
+
+            let items: Vec<(String, crate::supabase::WorkParams)> = batch_units
+                .iter()
+                .map(|u| (u.id.clone(), u.params.clone()))
+                .collect();
+
+            // Build label from first item
+            let first = &batch_units[0];
+            let pert_str = match &first.params.perturbation {
+                crate::supabase::Perturbation::Base => "base".to_string(),
+                crate::supabase::Perturbation::Edge { index, .. } => format!("e{index}"),
+            };
+            let label = format!(
+                "L{} g²={:.1e} {}",
+                first.params.level, first.params.coupling_g2, pert_str
+            );
+
+            // Track dispatched units
+            for u in &batch_units {
+                self.dispatched
+                    .borrow_mut()
+                    .insert(u.id.clone(), u.clone());
+            }
+
+            if let Some(worker_idx) = self.pool.dispatch_batch(&items) {
+                self.worker_labels.borrow_mut()[worker_idx] = label;
+            }
+        }
+
+        // 3. Enter drain when server says no more work and local queue is empty
+        if self.queue.borrow().is_empty()
+            && *self.no_work.borrow()
+            && !*self.fetching.borrow()
+        {
+            self.drain();
+            return;
+        }
+
+        // 4. Fetch more work if queue is low and not already fetching
+        if self.queue.borrow().len() < 5 && !*self.fetching.borrow() {
+            *self.fetching.borrow_mut() = true;
+
+            let client = self.client.clone();
+            let queue = self.queue.clone();
+            let fetching = self.fetching.clone();
+            let no_work = self.no_work.clone();
+
+            wasm_bindgen_futures::spawn_local(async move {
+                match client.fetch_pending_work(10).await {
+                    Ok(units) => {
+                        let count = units.len();
+                        *no_work.borrow_mut() = count == 0;
+                        let mut q = queue.borrow_mut();
+                        for u in units {
+                            q.push_back(u);
+                        }
+                        if count > 0 {
+                            web_sys::console::log_1(
+                                &format!("fetched {count} work units").into(),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(&format!("fetch work: {e}").into());
+                    }
+                }
+                *fetching.borrow_mut() = false;
+            });
+        }
+    }
+
+    fn handle_result(&self, resp: crate::worker::WorkerResponse) {
+        if let Some(error) = &resp.error {
+            web_sys::console::warn_1(&format!("worker error: {error}").into());
+            return;
+        }
+
+        let Some(result_val) = resp.result else {
+            return;
+        };
+        let Ok(payload) = serde_json::from_value::<ResultPayload>(result_val) else {
+            web_sys::console::warn_1(&"failed to parse result payload".into());
+            return;
+        };
+
+        // Look up original work params for viz
+        let unit = self.dispatched.borrow_mut().remove(&resp.id);
+        if let Some(ref unit) = unit {
+            let log_g2 = unit.params.coupling_g2.log10();
+            let n_partitions = payload.entropy_per_partition.len();
+
+            // Expand: one viz point + cache entry per partition entropy
+            for (i, &s_ee) in payload.entropy_per_partition.iter().enumerate() {
+                self.renderer
+                    .borrow_mut()
+                    .add_point(log_g2, s_ee, i as f64);
+
+                crate::cache::append(crate::cache::CachedPoint {
+                    log_g2,
+                    s_ee,
+                    a_cut: i as f64,
+                    partition_index: i,
+                });
+            }
+
+            // Build log ticker entry
+            let n_completed = *self.completed_count.borrow() + 1;
+            let pert_str = match &unit.params.perturbation {
+                crate::supabase::Perturbation::Base => "base".to_string(),
+                crate::supabase::Perturbation::Edge { index, direction } => {
+                    let sign = if *direction > 0.0 { "+" } else { "-" };
+                    format!("{sign}e{index}")
+                }
+            };
+
+            let desc = format!(
+                "<span class=\"prompt\">#{n_completed}</span> \
+                 <span class=\"param\">L{}</span> \
+                 <span class=\"param\">g²=</span><span class=\"val\">{:.1e}</span> \
+                 <span class=\"param\">{pert_str}</span> \
+                 <span class=\"ok\">E₀={:.4}</span> \
+                 <span class=\"param\">S×{n_partitions}</span> \
+                 <span class=\"time\">{:.0}ms</span>",
+                unit.params.level,
+                unit.params.coupling_g2,
+                payload.ground_state_energy,
+                payload.walltime_ms,
+            );
+            let mut recent = self.recent.borrow_mut();
+            recent.push(desc);
+            if recent.len() > 6 {
+                recent.remove(0);
+            }
+        }
+
+        *self.completed_count.borrow_mut() += 1;
+
+        // Submit result to Supabase asynchronously
+        let client = self.client.clone();
+        let uid = resp.id;
+        let cid = self.contributor_id.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = client.submit_result(&uid, &cid, &payload).await {
+                web_sys::console::warn_1(&format!("submit: {e}").into());
+            }
+        });
+    }
+}

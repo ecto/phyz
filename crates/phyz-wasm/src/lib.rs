@@ -1,9 +1,22 @@
 use wasm_bindgen::prelude::*;
 
-use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+mod quantum;
+pub use quantum::*;
+
+use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
 use phyz_diff::analytical_step_jacobians;
+
+/// DVec addition: &a + &b
+fn dv_add(a: &DVec, b: &DVec) -> DVec { a + b }
+/// DVec scaled addition: a + b * s
+fn dv_add_scaled(a: &DVec, b: &DVec, s: f64) -> DVec { a + &(b * s) }
+/// RK4 combination: a + (k1 + k2*2 + k3*2 + k4) * (dt/6)
+fn rk4_combine(a: &DVec, k1: &DVec, k2: &DVec, k3: &DVec, k4: &DVec, dt: f64) -> DVec {
+    let sum = &dv_add(&dv_add(&(k1 + &(k2 * 2.0)), &(k3 * 2.0)), k4);
+    a + &(sum * (dt / 6.0))
+}
 
 // ================================================================
 // Articulated Body Simulation (pendulums, chains)
@@ -76,7 +89,7 @@ impl WasmSim {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)),
                 SpatialInertia::new(
                     mass,
                     Vec3::new(0.0, -length / 2.0, 0.0),
@@ -114,7 +127,7 @@ impl WasmSim {
             let parent_to_joint = if i == 0 {
                 SpatialTransform::identity()
             } else {
-                SpatialTransform::translation(Vec3::new(0.0, -link_length, 0.0))
+                SpatialTransform::from_translation(Vec3::new(0.0, -link_length, 0.0))
             };
 
             builder = builder.add_revolute_body(
@@ -209,23 +222,23 @@ impl WasmSim {
         let k1v = aba(&self.model, &self.state);
         let k1q = self.state.v.clone();
 
-        self.state.q = &q0 + &k1q * (dt / 2.0);
-        self.state.v = &v0 + &k1v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k1q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k1v, dt / 2.0);
         let k2v = aba(&self.model, &self.state);
         let k2q = self.state.v.clone();
 
-        self.state.q = &q0 + &k2q * (dt / 2.0);
-        self.state.v = &v0 + &k2v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k2q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k2v, dt / 2.0);
         let k3v = aba(&self.model, &self.state);
         let k3q = self.state.v.clone();
 
-        self.state.q = &q0 + &k3q * dt;
-        self.state.v = &v0 + &k3v * dt;
+        self.state.q = dv_add_scaled(&q0, &k3q, dt);
+        self.state.v = dv_add_scaled(&v0, &k3v, dt);
         let k4v = aba(&self.model, &self.state);
         let k4q = self.state.v.clone();
 
-        self.state.q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
-        self.state.v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+        self.state.q = rk4_combine(&q0, &k1q, &k2q, &k3q, &k4q, dt);
+        self.state.v = rk4_combine(&v0, &k1v, &k2v, &k3v, &k4v, dt);
         self.state.time += dt;
     }
 }
@@ -480,7 +493,7 @@ impl WasmCradleSim {
             builder = builder.add_revolute_body(
                 &format!("bob{i}"),
                 -1,
-                SpatialTransform::translation(Vec3::new(offset, 0.0, 0.0)),
+                SpatialTransform::from_translation(Vec3::new(offset, 0.0, 0.0)),
                 SpatialInertia::new(
                     mass,
                     Vec3::new(0.0, -length / 2.0, 0.0),
@@ -565,23 +578,23 @@ impl WasmCradleSim {
         let k1v = aba(&self.model, &self.state);
         let k1q = self.state.v.clone();
 
-        self.state.q = &q0 + &k1q * (dt / 2.0);
-        self.state.v = &v0 + &k1v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k1q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k1v, dt / 2.0);
         let k2v = aba(&self.model, &self.state);
         let k2q = self.state.v.clone();
 
-        self.state.q = &q0 + &k2q * (dt / 2.0);
-        self.state.v = &v0 + &k2v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k2q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k2v, dt / 2.0);
         let k3v = aba(&self.model, &self.state);
         let k3q = self.state.v.clone();
 
-        self.state.q = &q0 + &k3q * dt;
-        self.state.v = &v0 + &k3v * dt;
+        self.state.q = dv_add_scaled(&q0, &k3q, dt);
+        self.state.v = dv_add_scaled(&v0, &k3v, dt);
         let k4v = aba(&self.model, &self.state);
         let k4q = self.state.v.clone();
 
-        self.state.q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
-        self.state.v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+        self.state.q = rk4_combine(&q0, &k1q, &k2q, &k3q, &k4q, dt);
+        self.state.v = rk4_combine(&v0, &k1v, &k2v, &k3v, &k4v, dt);
         self.state.time += dt;
     }
 
@@ -743,7 +756,7 @@ impl WasmEnsembleSim {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)),
                 SpatialInertia::new(
                     mass,
                     Vec3::new(0.0, -length / 2.0, 0.0),
@@ -781,23 +794,23 @@ impl WasmEnsembleSim {
                 let k1v = aba(&self.model, &self.states[i]);
                 let k1q = self.states[i].v.clone();
 
-                self.states[i].q = &q0 + &k1q * (dt / 2.0);
-                self.states[i].v = &v0 + &k1v * (dt / 2.0);
+                self.states[i].q = dv_add_scaled(&q0, &k1q, dt / 2.0);
+                self.states[i].v = dv_add_scaled(&v0, &k1v, dt / 2.0);
                 let k2v = aba(&self.model, &self.states[i]);
                 let k2q = self.states[i].v.clone();
 
-                self.states[i].q = &q0 + &k2q * (dt / 2.0);
-                self.states[i].v = &v0 + &k2v * (dt / 2.0);
+                self.states[i].q = dv_add_scaled(&q0, &k2q, dt / 2.0);
+                self.states[i].v = dv_add_scaled(&v0, &k2v, dt / 2.0);
                 let k3v = aba(&self.model, &self.states[i]);
                 let k3q = self.states[i].v.clone();
 
-                self.states[i].q = &q0 + &k3q * dt;
-                self.states[i].v = &v0 + &k3v * dt;
+                self.states[i].q = dv_add_scaled(&q0, &k3q, dt);
+                self.states[i].v = dv_add_scaled(&v0, &k3v, dt);
                 let k4v = aba(&self.model, &self.states[i]);
                 let k4q = self.states[i].v.clone();
 
-                self.states[i].q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
-                self.states[i].v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+                self.states[i].q = rk4_combine(&q0, &k1q, &k2q, &k3q, &k4q, dt);
+                self.states[i].v = rk4_combine(&v0, &k1v, &k2v, &k3v, &k4v, dt);
                 self.states[i].time += dt;
             }
         }
@@ -1464,7 +1477,7 @@ impl WasmWorldSim {
             let pj = if i == 0 {
                 SpatialTransform::identity()
             } else {
-                SpatialTransform::translation(Vec3::new(0.0, -lengths[i - 1], 0.0))
+                SpatialTransform::from_translation(Vec3::new(0.0, -lengths[i - 1], 0.0))
             };
             let m = 0.3 + (i as f64) * 0.1;
             let l = lengths[i];
@@ -1537,7 +1550,7 @@ impl WasmWorldSim {
             let pj = if i == 0 {
                 SpatialTransform::identity()
             } else {
-                SpatialTransform::translation(Vec3::new(0.0, -l, 0.0))
+                SpatialTransform::from_translation(Vec3::new(0.0, -l, 0.0))
             };
             builder = builder.add_revolute_body(
                 &format!("link{i}"),
@@ -1618,20 +1631,20 @@ impl WasmWorldSim {
         let v0 = self.state.v.clone();
         let k1v = aba(&self.model, &self.state);
         let k1q = self.state.v.clone();
-        self.state.q = &q0 + &k1q * (dt / 2.0);
-        self.state.v = &v0 + &k1v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k1q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k1v, dt / 2.0);
         let k2v = aba(&self.model, &self.state);
         let k2q = self.state.v.clone();
-        self.state.q = &q0 + &k2q * (dt / 2.0);
-        self.state.v = &v0 + &k2v * (dt / 2.0);
+        self.state.q = dv_add_scaled(&q0, &k2q, dt / 2.0);
+        self.state.v = dv_add_scaled(&v0, &k2v, dt / 2.0);
         let k3v = aba(&self.model, &self.state);
         let k3q = self.state.v.clone();
-        self.state.q = &q0 + &k3q * dt;
-        self.state.v = &v0 + &k3v * dt;
+        self.state.q = dv_add_scaled(&q0, &k3q, dt);
+        self.state.v = dv_add_scaled(&v0, &k3v, dt);
         let k4v = aba(&self.model, &self.state);
         let k4q = self.state.v.clone();
-        self.state.q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
-        self.state.v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+        self.state.q = rk4_combine(&q0, &k1q, &k2q, &k3q, &k4q, dt);
+        self.state.v = rk4_combine(&v0, &k1v, &k2v, &k3v, &k4v, dt);
         self.state.time += dt;
     }
 }
@@ -4737,20 +4750,20 @@ impl WasmDiffGradientSim {
                 let v0 = self.state.v.clone();
                 let k1v = aba(&self.model, &self.state);
                 let k1q = self.state.v.clone();
-                self.state.q = &q0 + &k1q * (dt / 2.0);
-                self.state.v = &v0 + &k1v * (dt / 2.0);
+                self.state.q = dv_add_scaled(&q0, &k1q, dt / 2.0);
+                self.state.v = dv_add_scaled(&v0, &k1v, dt / 2.0);
                 let k2v = aba(&self.model, &self.state);
                 let k2q = self.state.v.clone();
-                self.state.q = &q0 + &k2q * (dt / 2.0);
-                self.state.v = &v0 + &k2v * (dt / 2.0);
+                self.state.q = dv_add_scaled(&q0, &k2q, dt / 2.0);
+                self.state.v = dv_add_scaled(&v0, &k2v, dt / 2.0);
                 let k3v = aba(&self.model, &self.state);
                 let k3q = self.state.v.clone();
-                self.state.q = &q0 + &k3q * dt;
-                self.state.v = &v0 + &k3v * dt;
+                self.state.q = dv_add_scaled(&q0, &k3q, dt);
+                self.state.v = dv_add_scaled(&v0, &k3v, dt);
                 let k4v = aba(&self.model, &self.state);
                 let k4q = self.state.v.clone();
-                self.state.q = q0 + (&k1q + &k2q * 2.0 + &k3q * 2.0 + &k4q) * (dt / 6.0);
-                self.state.v = v0 + (&k1v + &k2v * 2.0 + &k3v * 2.0 + &k4v) * (dt / 6.0);
+                self.state.q = rk4_combine(&q0, &k1q, &k2q, &k3q, &k4q, dt);
+                self.state.v = rk4_combine(&v0, &k1v, &k2v, &k3v, &k4v, dt);
                 self.state.time += dt;
             }
 
@@ -4765,8 +4778,9 @@ impl WasmDiffGradientSim {
             sp.q[0] = self.theta0 + eps;
             for _ in 0..500 {
                 let acc = aba(&self.model, &sp);
-                sp.v = &sp.v + &acc * dt;
-                sp.q = &sp.q + &sp.v * dt;
+                sp.v = dv_add_scaled(&sp.v, &acc, dt);
+                let v_tmp = sp.v.clone();
+                sp.q = dv_add_scaled(&sp.q, &v_tmp, dt);
             }
             let xp = self.length * sp.q[0].sin();
             let loss_p = (xp - self.target_x).powi(2);
@@ -4775,8 +4789,9 @@ impl WasmDiffGradientSim {
             sm.q[0] = self.theta0 - eps;
             for _ in 0..500 {
                 let acc = aba(&self.model, &sm);
-                sm.v = &sm.v + &acc * dt;
-                sm.q = &sm.q + &sm.v * dt;
+                sm.v = dv_add_scaled(&sm.v, &acc, dt);
+                let v_tmp = sm.v.clone();
+                sm.q = dv_add_scaled(&sm.q, &v_tmp, dt);
             }
             let xm = self.length * sm.q[0].sin();
             let loss_m = (xm - self.target_x).powi(2);
@@ -4793,8 +4808,9 @@ impl WasmDiffGradientSim {
         let dt = self.model.dt;
         for _ in 0..200 {
             let acc = aba(&self.model, &self.render_state);
-            self.render_state.v = &self.render_state.v + &acc * dt;
-            self.render_state.q = &self.render_state.q + &self.render_state.v * dt;
+            self.render_state.v = dv_add_scaled(&self.render_state.v, &acc, dt);
+            let v_tmp = self.render_state.v.clone();
+            self.render_state.q = dv_add_scaled(&self.render_state.q, &v_tmp, dt);
             self.render_state.time += dt;
         }
     }
@@ -4856,8 +4872,9 @@ impl WasmDiffJacobianSim {
 
             // Semi-implicit Euler step
             let acc = aba(&self.model, &self.state);
-            self.state.v = &self.state.v + &acc * dt;
-            self.state.q = &self.state.q + &self.state.v * dt;
+            self.state.v = dv_add_scaled(&self.state.v, &acc, dt);
+            let v_tmp = self.state.v.clone();
+            self.state.q = dv_add_scaled(&self.state.q, &v_tmp, dt);
             self.state.time += dt;
         }
     }
@@ -4926,13 +4943,15 @@ impl WasmDiffSensitivitySim {
 
             // Step both sims
             let acc_a = aba(&self.model, &self.state_a);
-            self.state_a.v = &self.state_a.v + &acc_a * dt;
-            self.state_a.q = &self.state_a.q + &self.state_a.v * dt;
+            self.state_a.v = dv_add_scaled(&self.state_a.v, &acc_a, dt);
+            let va = self.state_a.v.clone();
+            self.state_a.q = dv_add_scaled(&self.state_a.q, &va, dt);
             self.state_a.time += dt;
 
             let acc_b = aba(&self.model, &self.state_b);
-            self.state_b.v = &self.state_b.v + &acc_b * dt;
-            self.state_b.q = &self.state_b.q + &self.state_b.v * dt;
+            self.state_b.v = dv_add_scaled(&self.state_b.v, &acc_b, dt);
+            let vb = self.state_b.v.clone();
+            self.state_b.q = dv_add_scaled(&self.state_b.q, &vb, dt);
             self.state_b.time += dt;
 
             // Actual divergence
@@ -5019,7 +5038,7 @@ impl WasmMjcfAntSim {
             );
             builder = builder.add_revolute_body(
                 &format!("shin_{i}"), (i * 2) as i32,
-                SpatialTransform::translation(Vec3::new(0.0, -hip_len, 0.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, -hip_len, 0.0)),
                 SpatialInertia::new(
                     leg_mass,
                     Vec3::new(0.0, -shin_len / 2.0, 0.0),
@@ -5049,8 +5068,9 @@ impl WasmMjcfAntSim {
         let dt = self.model.dt;
         for _ in 0..n {
             let acc = aba(&self.model, &self.state);
-            self.state.v = &self.state.v + &acc * dt;
-            self.state.q = &self.state.q + &self.state.v * dt;
+            self.state.v = dv_add_scaled(&self.state.v, &acc, dt);
+            let v_tmp = self.state.v.clone();
+            self.state.q = dv_add_scaled(&self.state.q, &v_tmp, dt);
             self.state.time += dt;
         }
     }

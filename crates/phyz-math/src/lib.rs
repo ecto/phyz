@@ -1,6 +1,6 @@
 //! Spatial algebra and math primitives for phyz physics engine.
 //!
-//! Implements 6D spatial vectors, Plücker transforms, and spatial inertia
+//! Implements 6D spatial vectors, Plucker transforms, and spatial inertia
 //! following Featherstone's conventions.
 
 pub mod quaternion;
@@ -9,28 +9,22 @@ pub mod spatial;
 pub use quaternion::Quat;
 pub use spatial::{SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
 
-use nalgebra as na;
-
 /// 3D vector alias.
-pub type Vec3 = na::Vector3<f64>;
+pub type Vec3 = tang::Vec3<f64>;
 /// 3x3 matrix alias.
-pub type Mat3 = na::Matrix3<f64>;
+pub type Mat3 = tang::Mat3<f64>;
 /// 4x4 matrix alias.
-pub type Mat4 = na::Matrix4<f64>;
-/// 6D vector alias.
-pub type Vec6 = na::Vector6<f64>;
-/// 6x6 matrix alias.
-pub type Mat6 = na::Matrix6<f64>;
+pub type Mat4 = tang::Mat4<f64>;
 /// Dynamic vector.
-pub type DVec = na::DVector<f64>;
+pub type DVec = tang_la::DVec<f64>;
 /// Dynamic matrix.
-pub type DMat = na::DMatrix<f64>;
+pub type DMat = tang_la::DMat<f64>;
 
-/// Cross-product matrix: [v]× such that [v]× w = v × w.
+/// Cross-product matrix: [v]x such that [v]x w = v x w.
 #[inline]
 pub fn skew(v: &Vec3) -> Mat3 {
     Mat3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
 }
 
-/// Standard gravity (m/s²).
+/// Standard gravity (m/s^2).
 pub const GRAVITY: f64 = 9.81;

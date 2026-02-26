@@ -6,7 +6,7 @@
 //! - Entanglement entropy
 
 use crate::hilbert::U1HilbertSpace;
-use nalgebra::DVector;
+use phyz_math::DVec;
 use phyz_regge::SimplicialComplex;
 
 /// Decomposition of entanglement entropy into superselection sectors.
@@ -27,7 +27,7 @@ pub struct EntropyDecomposition {
 }
 
 /// Expectation value of n_e² for each edge in the given state.
-pub fn electric_field_sq(hilbert: &U1HilbertSpace, state: &DVector<f64>) -> Vec<f64> {
+pub fn electric_field_sq(hilbert: &U1HilbertSpace, state: &DVec) -> Vec<f64> {
     let n_edges = hilbert.n_edges;
     let mut result = vec![0.0; n_edges];
 
@@ -51,7 +51,7 @@ pub fn electric_field_sq(hilbert: &U1HilbertSpace, state: &DVector<f64>) -> Vec<
 /// shifting all edge quantum numbers along the path simultaneously.
 pub fn wilson_loop(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     path: &[(usize, i32)],
 ) -> f64 {
     let lam = hilbert.lambda as i32;
@@ -175,7 +175,7 @@ fn tree_path(
 /// then computes the entropy.
 pub fn entanglement_entropy(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     edges_a: &[usize],
 ) -> f64 {
     entanglement_entropy_raw(&hilbert.basis, hilbert.n_edges, state, edges_a)
@@ -188,7 +188,7 @@ pub fn entanglement_entropy(
 pub fn entanglement_entropy_raw(
     basis: &[Vec<i32>],
     n_edges: usize,
-    state: &DVector<f64>,
+    state: &DVec,
     edges_a: &[usize],
 ) -> f64 {
     let mut is_a = vec![false; n_edges];
@@ -210,7 +210,7 @@ pub fn entanglement_entropy_raw(
     }
     let dim_a = a_index.len();
 
-    let mut rho: nalgebra::DMatrix<f64> = nalgebra::DMatrix::zeros(dim_a, dim_a);
+    let mut rho: phyz_math::DMat = phyz_math::DMat::zeros(dim_a, dim_a);
 
     let b_configs: Vec<Vec<i32>> = basis
         .iter()
@@ -261,7 +261,7 @@ pub fn entanglement_entropy_raw(
 pub fn entanglement_entropy_decomposed(
     basis: &[Vec<i32>],
     n_edges: usize,
-    state: &DVector<f64>,
+    state: &DVec,
     edges_a: &[usize],
     boundary_edges: &[usize],
 ) -> EntropyDecomposition {
@@ -334,7 +334,7 @@ pub fn entanglement_entropy_decomposed(
         }
 
         // Build ρ_A^q by tracing out B-interior within this sector.
-        let mut rho_q = nalgebra::DMatrix::zeros(dim_a, dim_a);
+        let mut rho_q = phyz_math::DMat::zeros(dim_a, dim_a);
         for entries in b_groups.values() {
             for &(ai, amp_i) in entries {
                 for &(aj, amp_j) in entries {
@@ -344,7 +344,7 @@ pub fn entanglement_entropy_decomposed(
         }
 
         // Normalize: ρ_A^q /= p_q.
-        rho_q /= p_q;
+        rho_q = rho_q.scale(1.0 / p_q);
 
         // S_q = -Tr(ρ_A^q log ρ_A^q) via eigendecomposition.
         let eig = rho_q.symmetric_eigen();

@@ -305,7 +305,7 @@ fn main() {
 }
 
 /// Count off-diagonal non-zeros per row.
-fn row_nnz_stats(h: &nalgebra::DMatrix<f64>, dim: usize) -> (f64, usize) {
+fn row_nnz_stats(h: &phyz_math::DMat, dim: usize) -> (f64, usize) {
     let mut total = 0usize;
     let mut max = 0usize;
     for i in 0..dim {

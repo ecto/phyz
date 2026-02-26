@@ -22,7 +22,8 @@ use crate::lorentzian::{
     all_lorentzian_dihedrals_jacobian, cm_matrix_signed, tri_area_sq_grad_in_pent,
     triangle_area_sq_grad, triangle_area_sq_lorentzian, HingeType,
 };
-use nalgebra::DMatrix;
+use phyz_math::DMat;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
@@ -405,8 +406,12 @@ pub fn local_deficit_angles(
 
     let relevant_tris_vec: Vec<usize> = relevant_tris.into_iter().collect();
 
-    relevant_tris_vec
-        .par_iter()
+    #[cfg(feature = "parallel")]
+    let iter = relevant_tris_vec.par_iter();
+    #[cfg(not(feature = "parallel"))]
+    let iter = relevant_tris_vec.iter();
+
+    iter
         .map(|&ti| {
             let mut hinge_type: Option<HingeType> = None;
             let mut angle_sum = 0.0;
@@ -453,12 +458,12 @@ pub fn local_lorentzian_regge_hessian(
     sq_lengths: &[f64],
     free_edges: &[usize],
     fd_eps: f64,
-) -> DMatrix<f64> {
+) -> DMat {
     let n_free = free_edges.len();
     let free_set: HashSet<usize> = free_edges.iter().copied().collect();
     let free_idx: HashMap<usize, usize> = free_edges.iter().enumerate().map(|(i, &e)| (e, i)).collect();
 
-    let mut hessian = DMatrix::zeros(n_free, n_free);
+    let mut hessian = DMat::zeros(n_free, n_free);
 
     // Compute local deficit angles
     let deficits = local_deficit_angles(complex, sq_lengths, free_edges);
@@ -532,70 +537,78 @@ pub fn local_lorentzian_regge_hessian(
     }
     let relevant_pents_vec: Vec<usize> = relevant_pents.into_iter().collect();
 
+    let accumulate = |mut local_h: DMat, &pi: &usize| -> DMat {
+        let pent_sq = pent_sq_lengths(complex, pi, sq_lengths);
+        let global_edge = complex.pent_edge_indices(pi);
+        let dihedral_jac = all_lorentzian_dihedrals_jacobian(&pent_sq, fd_eps);
+
+        let mut dih_idx = 0;
+        for l in 0..5usize {
+            for m in (l + 1)..5 {
+                // Triangle opposite to (l,m)
+                let mut tri_local = [0usize; 3];
+                let mut ti_local = 0;
+                for v in 0..5 {
+                    if v != l && v != m {
+                        tri_local[ti_local] = v;
+                        ti_local += 1;
+                    }
+                }
+
+                let area_grad_local = tri_area_sq_grad_in_pent(&pent_sq, tri_local);
+
+                let e_ab = local_edge_idx(tri_local[0], tri_local[1]);
+                let e_ac = local_edge_idx(tri_local[0], tri_local[2]);
+                let e_bc = local_edge_idx(tri_local[1], tri_local[2]);
+                let a_sq = triangle_area_sq_lorentzian(
+                    pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc],
+                );
+                let abs_a = a_sq.abs().sqrt();
+                if abs_a < 1e-30 {
+                    dih_idx += 1;
+                    continue;
+                }
+                let sign_a = if a_sq >= 0.0 { 1.0 } else { -1.0 };
+                let area_factor = sign_a / (2.0 * abs_a);
+
+                for e_local in 0..10 {
+                    let ge = global_edge[e_local];
+                    let Some(&fi) = free_idx.get(&ge) else { continue };
+                    let da_e = area_factor * area_grad_local[e_local];
+                    if da_e.abs() < 1e-30 {
+                        continue;
+                    }
+                    for f_local in 0..10 {
+                        let gf = global_edge[f_local];
+                        let Some(&fj) = free_idx.get(&gf) else { continue };
+                        local_h[(fi, fj)] += da_e * (-dihedral_jac[dih_idx][f_local]);
+                    }
+                }
+
+                dih_idx += 1;
+            }
+        }
+        local_h
+    };
+
+    #[cfg(feature = "parallel")]
     let term2 = relevant_pents_vec
         .par_iter()
         .fold(
-            || DMatrix::zeros(n_free, n_free),
-            |mut local_h, &pi| {
-                let pent_sq = pent_sq_lengths(complex, pi, sq_lengths);
-                let global_edge = complex.pent_edge_indices(pi);
-                let dihedral_jac = all_lorentzian_dihedrals_jacobian(&pent_sq, fd_eps);
-
-                let mut dih_idx = 0;
-                for l in 0..5usize {
-                    for m in (l + 1)..5 {
-                        // Triangle opposite to (l,m)
-                        let mut tri_local = [0usize; 3];
-                        let mut ti_local = 0;
-                        for v in 0..5 {
-                            if v != l && v != m {
-                                tri_local[ti_local] = v;
-                                ti_local += 1;
-                            }
-                        }
-
-                        let area_grad_local = tri_area_sq_grad_in_pent(&pent_sq, tri_local);
-
-                        let e_ab = local_edge_idx(tri_local[0], tri_local[1]);
-                        let e_ac = local_edge_idx(tri_local[0], tri_local[2]);
-                        let e_bc = local_edge_idx(tri_local[1], tri_local[2]);
-                        let a_sq = triangle_area_sq_lorentzian(
-                            pent_sq[e_ab], pent_sq[e_ac], pent_sq[e_bc],
-                        );
-                        let abs_a = a_sq.abs().sqrt();
-                        if abs_a < 1e-30 {
-                            dih_idx += 1;
-                            continue;
-                        }
-                        let sign_a = if a_sq >= 0.0 { 1.0 } else { -1.0 };
-                        let area_factor = sign_a / (2.0 * abs_a);
-
-                        for e_local in 0..10 {
-                            let ge = global_edge[e_local];
-                            let Some(&fi) = free_idx.get(&ge) else { continue };
-                            let da_e = area_factor * area_grad_local[e_local];
-                            if da_e.abs() < 1e-30 {
-                                continue;
-                            }
-                            for f_local in 0..10 {
-                                let gf = global_edge[f_local];
-                                let Some(&fj) = free_idx.get(&gf) else { continue };
-                                local_h[(fi, fj)] += da_e * (-dihedral_jac[dih_idx][f_local]);
-                            }
-                        }
-
-                        dih_idx += 1;
-                    }
-                }
-                local_h
-            },
+            || DMat::zeros(n_free, n_free),
+            |local_h, pi| accumulate(local_h, pi),
         )
         .reduce(
-            || DMatrix::zeros(n_free, n_free),
-            |a, b| a + b,
+            || DMat::zeros(n_free, n_free),
+            |a, b| &a + &b,
         );
 
-    hessian + term2
+    #[cfg(not(feature = "parallel"))]
+    let term2 = relevant_pents_vec
+        .iter()
+        .fold(DMat::zeros(n_free, n_free), |local_h, pi| accumulate(local_h, pi));
+
+    &hessian + &term2
 }
 
 /// Local gradient of the Lorentzian Regge action restricted to free edges.

@@ -8,6 +8,5 @@ homepage.workspace = true
 description = "GJK/EPA collision detection and broad-phase spatial hashing for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true

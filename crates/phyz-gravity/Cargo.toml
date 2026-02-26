@@ -9,7 +9,6 @@ description = "Layered gravity solver from constant-g to post-Newtonian correcti
 
 [dependencies]
 phyz-math = { workspace = true }
-nalgebra.workspace = true
 
 [[example]]
 name = "mercury_precession"

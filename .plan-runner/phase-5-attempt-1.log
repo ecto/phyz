@@ -1,0 +1,53 @@
+Excellent! Phase 5 is complete. Let me create a quick summary:
+
+## Phase 5: Particle Physics (MPM) - Complete
+
+I've successfully implemented the Material Point Method (MPM) solver for tau, adding particle physics capabilities to the engine. Here's what was implemented:
+
+### Core Components
+
+**1. tau-particle crate** with three main modules:
+   - **material.rs**: Constitutive models for elastic, plastic, granular, and fluid materials
+   - **particle.rs**: Particle state representation with position, velocity, mass, deformation gradient
+   - **mpm.rs**: Complete MPM solver with P2G/G2P transfer using APIC
+
+### Key Features
+
+- **Constitutive Models**:
+  - Neo-Hookean elastic (with safe matrix inversion)
+  - Elastic-plastic with von Mises yield criterion
+  - Drucker-Prager granular material with friction angle
+  - Fluid with equation of state (ideal gas and water-like)
+
+- **MPM Algorithm**:
+  - Cubic B-spline weight functions for smooth interpolation
+  - P2G (Particle-to-Grid) transfer of mass, momentum, and stress
+  - Grid-based force computation with gravity
+  - G2P (Grid-to-Particle) transfer with PIC/FLIP blending
+  - Boundary conditions for domain walls
+  - APIC affine velocity field for reduced dissipation
+
+### Examples
+
+Created three demonstration programs:
+1. **granular_column.rs**: 40,000 particle column collapse simulation
+2. **water_container.rs**: Fluid filling container with EOS
+3. **sphere_in_sand.rs**: Rigid sphere falling into sand (particle-based coupling concept)
+
+### Tests
+
+All 8 unit tests pass:
+- Material stress computation (elastic, fluid)
+- Weight function correctness
+- Mass conservation
+- Free fall dynamics
+- Momentum conservation (horizontal and vertical with gravity)
+
+### Verification
+
+✅ All workspace tests pass (38 tests total)  
+✅ Clippy passes with no warnings  
+✅ Code formatted with rustfmt  
+✅ Commit created: `phase 5: particle physics (mpm)`
+
+The implementation provides a solid foundation for particle-based simulations and sets the stage for future phases involving fluid dynamics, multi-physics coupling, and advanced material models.

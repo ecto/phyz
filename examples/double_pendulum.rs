@@ -31,7 +31,7 @@ fn main() {
         .add_revolute_body(
             "link2",
             0,
-            SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)), // joint at end of link1
+            SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)), // joint at end of link1
             SpatialInertia::new(
                 mass,
                 Vec3::new(0.0, -length / 2.0, 0.0),

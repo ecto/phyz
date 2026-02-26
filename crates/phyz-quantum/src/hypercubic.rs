@@ -8,7 +8,7 @@
 //! needed) with square plaquettes defined by pairs of coordinate axes.
 
 use crate::diag;
-use nalgebra::DMatrix;
+use phyz_math::DMat;
 use std::collections::HashMap;
 
 /// A small periodic hypercubic lattice for KS Hamiltonian construction.
@@ -266,9 +266,9 @@ pub fn build_hypercubic_hamiltonian(
     hilbert: &HypercubicHilbert,
     lattice: &HypercubicLattice,
     g_squared: f64,
-) -> DMatrix<f64> {
+) -> DMat {
     let dim = hilbert.dim();
-    let mut h = DMatrix::zeros(dim, dim);
+    let mut h = DMat::zeros(dim, dim);
     let lam = hilbert.lambda as i32;
 
     // Electric term: (g²/2) Σ_e n_e²
@@ -365,7 +365,7 @@ mod tests {
         let hs = HypercubicHilbert::new(&lat, 1);
         let h = build_hypercubic_hamiltonian(&hs, &lat, 1.0);
 
-        let diff = (&h - h.transpose()).norm();
+        let diff = (&h - &h.transpose()).norm();
         assert!(diff < 1e-12, "H not symmetric: diff={diff}");
     }
 

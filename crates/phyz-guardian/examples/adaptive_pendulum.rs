@@ -60,8 +60,9 @@ fn main() {
         let (accepted, new_dt) = adaptive.step(&mut model, &mut state, |m, s| {
             // Semi-implicit Euler step
             let qdd = aba(m, s);
-            s.v += &qdd * m.dt;
-            s.q += &s.v * m.dt;
+            s.v += &(&qdd * m.dt);
+            let v_tmp = s.v.clone();
+            s.q += &(&v_tmp * m.dt);
             s.time += m.dt;
         });
 

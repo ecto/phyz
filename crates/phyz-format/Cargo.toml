@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Universal multi-domain physics file format (.phyz) with MJCF/URDF import"
 
 [dependencies]
-nalgebra.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 phyz-math.workspace = true

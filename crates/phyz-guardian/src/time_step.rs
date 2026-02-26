@@ -8,12 +8,18 @@
 use phyz_math::DVec;
 use phyz_model::{Model, State};
 
+/// Helper: add two DVec values (owned + owned).
+fn dvec_add(a: &DVec, b: &DVec) -> DVec { a + b }
+
+/// Helper: subtract two DVec values (owned - owned).
+fn dvec_sub(a: &DVec, b: &DVec) -> DVec { a - b }
+
 /// PI controller for adaptive time-stepping.
 ///
 /// Adjusts dt based on current and previous error estimates:
-/// dt_new = dt_old * (tol/error)^α * (tol/error_prev)^β
+/// dt_new = dt_old * (tol/error)^alpha * (tol/error_prev)^beta
 ///
-/// Typical values: α = 0.4, β = 0.2 (PID without derivative term).
+/// Typical values: alpha = 0.4, beta = 0.2 (PID without derivative term).
 #[derive(Debug, Clone)]
 pub struct PiController {
     /// Target tolerance for local error
@@ -139,25 +145,33 @@ impl EmbeddedRkError {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &dq1 * (dt / 2.0);
-        s2.v += &dv1 * (dt / 2.0);
+        s2.q += &(&dq1 * (dt / 2.0));
+        s2.v += &(&dv1 * (dt / 2.0));
         let (dq2, dv2) = derivatives_fn(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &dq2 * (dt / 2.0);
-        s3.v += &dv2 * (dt / 2.0);
+        s3.q += &(&dq2 * (dt / 2.0));
+        s3.v += &(&dv2 * (dt / 2.0));
         let (dq3, dv3) = derivatives_fn(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &dq3 * dt;
-        s4.v += &dv3 * dt;
+        s4.q += &(&dq3 * dt);
+        s4.v += &(&dv3 * dt);
         let (dq4, dv4) = derivatives_fn(model, &s4);
 
-        // Combine
-        result.q += &(&dq1 + &dq2 * 2.0 + &dq3 * 2.0 + &dq4) * (dt / 6.0);
-        result.v += &(&dv1 + &dv2 * 2.0 + &dv3 * 2.0 + &dv4) * (dt / 6.0);
+        // Combine: (dq1 + 2*dq2 + 2*dq3 + dq4) * dt/6
+        let dq_sum = dvec_add(
+            &dvec_add(&dq1, &(&dq2 * 2.0)),
+            &dvec_add(&(&dq3 * 2.0), &dq4),
+        );
+        let dv_sum = dvec_add(
+            &dvec_add(&dv1, &(&dv2 * 2.0)),
+            &dvec_add(&(&dv3 * 2.0), &dv4),
+        );
+        result.q += &(&dq_sum * (dt / 6.0));
+        result.v += &(&dv_sum * (dt / 6.0));
 
         result
     }
@@ -176,43 +190,81 @@ impl EmbeddedRkError {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &dq1 * (dt / 5.0);
-        s2.v += &dv1 * (dt / 5.0);
+        s2.q += &(&dq1 * (dt / 5.0));
+        s2.v += &(&dv1 * (dt / 5.0));
         let (dq2, dv2) = derivatives_fn(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &(&dq1 * (3.0 / 40.0) + &dq2 * (9.0 / 40.0)) * dt;
-        s3.v += &(&dv1 * (3.0 / 40.0) + &dv2 * (9.0 / 40.0)) * dt;
+        let dq3_inc = dvec_add(&(&dq1 * (3.0 / 40.0)), &(&dq2 * (9.0 / 40.0)));
+        let dv3_inc = dvec_add(&(&dv1 * (3.0 / 40.0)), &(&dv2 * (9.0 / 40.0)));
+        s3.q += &(&dq3_inc * dt);
+        s3.v += &(&dv3_inc * dt);
         let (dq3, dv3) = derivatives_fn(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &(&dq1 * (3.0 / 10.0) - &dq2 * (9.0 / 10.0) + &dq3 * (6.0 / 5.0)) * dt;
-        s4.v += &(&dv1 * (3.0 / 10.0) - &dv2 * (9.0 / 10.0) + &dv3 * (6.0 / 5.0)) * dt;
+        let dq4_inc = dvec_add(
+            &dvec_sub(&(&dq1 * (3.0 / 10.0)), &(&dq2 * (9.0 / 10.0))),
+            &(&dq3 * (6.0 / 5.0)),
+        );
+        let dv4_inc = dvec_add(
+            &dvec_sub(&(&dv1 * (3.0 / 10.0)), &(&dv2 * (9.0 / 10.0))),
+            &(&dv3 * (6.0 / 5.0)),
+        );
+        s4.q += &(&dq4_inc * dt);
+        s4.v += &(&dv4_inc * dt);
         let (dq4, dv4) = derivatives_fn(model, &s4);
 
         // k5
         let mut s5 = state.clone();
-        s5.q += &(&dq1 * (-11.0 / 54.0) + &dq2 * (5.0 / 2.0) - &dq3 * (70.0 / 27.0)
-            + &dq4 * (35.0 / 27.0))
-            * dt;
-        s5.v += &(&dv1 * (-11.0 / 54.0) + &dv2 * (5.0 / 2.0) - &dv3 * (70.0 / 27.0)
-            + &dv4 * (35.0 / 27.0))
-            * dt;
+        let dq5_inc = dvec_add(
+            &dvec_add(
+                &(&dq1 * (-11.0 / 54.0)),
+                &(&dq2 * (5.0 / 2.0)),
+            ),
+            &dvec_add(
+                &(&dq3 * (-70.0 / 27.0)),
+                &(&dq4 * (35.0 / 27.0)),
+            ),
+        );
+        let dv5_inc = dvec_add(
+            &dvec_add(
+                &(&dv1 * (-11.0 / 54.0)),
+                &(&dv2 * (5.0 / 2.0)),
+            ),
+            &dvec_add(
+                &(&dv3 * (-70.0 / 27.0)),
+                &(&dv4 * (35.0 / 27.0)),
+            ),
+        );
+        s5.q += &(&dq5_inc * dt);
+        s5.v += &(&dv5_inc * dt);
         let (dq5, dv5) = derivatives_fn(model, &s5);
 
         // 5th order solution
-        result.q += &(&dq1 * (37.0 / 378.0)
-            + &dq3 * (250.0 / 621.0)
-            + &dq4 * (125.0 / 594.0)
-            + &dq5 * (512.0 / 1771.0))
-            * dt;
-        result.v += &(&dv1 * (37.0 / 378.0)
-            + &dv3 * (250.0 / 621.0)
-            + &dv4 * (125.0 / 594.0)
-            + &dv5 * (512.0 / 1771.0))
-            * dt;
+        let dq_final = dvec_add(
+            &dvec_add(
+                &(&dq1 * (37.0 / 378.0)),
+                &(&dq3 * (250.0 / 621.0)),
+            ),
+            &dvec_add(
+                &(&dq4 * (125.0 / 594.0)),
+                &(&dq5 * (512.0 / 1771.0)),
+            ),
+        );
+        let dv_final = dvec_add(
+            &dvec_add(
+                &(&dv1 * (37.0 / 378.0)),
+                &(&dv3 * (250.0 / 621.0)),
+            ),
+            &dvec_add(
+                &(&dv4 * (125.0 / 594.0)),
+                &(&dv5 * (512.0 / 1771.0)),
+            ),
+        );
+        result.q += &(&dq_final * dt);
+        result.v += &(&dv_final * dt);
 
         result
     }

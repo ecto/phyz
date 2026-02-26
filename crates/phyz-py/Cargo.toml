@@ -15,7 +15,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
-nalgebra = "0.33"
 phyz = { path = "../phyz" }
 phyz-math = { path = "../phyz-math" }
 phyz-model = { path = "../phyz-model" }

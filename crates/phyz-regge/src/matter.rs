@@ -209,7 +209,7 @@ pub fn solve_regge_with_source(
             }
             j
         } else {
-            let mut j = nalgebra::DMatrix::zeros(n_free, n_free);
+            let mut j = phyz_math::DMat::zeros(n_free, n_free);
             for k in 0..n_free {
                 let ek = free_edges[k];
                 let old = sq_lengths[ek];
@@ -236,7 +236,7 @@ pub fn solve_regge_with_source(
 
         // SVD solve
         let rhs =
-            nalgebra::DVector::from_iterator(n_free, residual.iter().map(|r| -r));
+            phyz_math::DVec::from_fn(n_free, |i| -residual[i]);
         let svd = jac.svd(true, true);
         let delta = svd
             .solve(&rhs, config.svd_tol)

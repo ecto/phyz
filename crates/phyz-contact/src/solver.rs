@@ -41,8 +41,8 @@ pub fn find_contacts(
     for (i, geom_opt) in geometries.iter().enumerate() {
         if let Some(geom) = geom_opt {
             let xform = &state.body_xform[i];
-            let pos = xform.translation_vector();
-            let rot = xform.rotation_matrix();
+            let pos = xform.pos;
+            let rot = xform.rot;
             let collision_geom = convert_geometry(geom);
             let aabb = AABB::from_geometry(&collision_geom, &pos, &rot);
             aabbs.push(aabb);
@@ -60,10 +60,10 @@ pub fn find_contacts(
         if let (Some(geom_i), Some(geom_j)) = (&geometries[i], &geometries[j]) {
             let xform_i = &state.body_xform[i];
             let xform_j = &state.body_xform[j];
-            let pos_i = xform_i.translation_vector();
-            let pos_j = xform_j.translation_vector();
-            let rot_i = xform_i.rotation_matrix();
-            let rot_j = xform_j.rotation_matrix();
+            let pos_i = xform_i.pos;
+            let pos_j = xform_j.pos;
+            let rot_i = xform_i.rot;
+            let rot_j = xform_j.rot;
 
             let collision_geom_i = convert_geometry(geom_i);
             let collision_geom_j = convert_geometry(geom_j);
@@ -122,7 +122,7 @@ pub fn contact_forces(
         // Extract linear velocities from spatial velocities
         let vel_i = body_velocities
             .and_then(|vels| vels.get(i))
-            .map(|v| v.linear())
+            .map(|v| v.linear)
             .unwrap_or(Vec3::zeros());
 
         let vel_j = if j == usize::MAX {
@@ -131,7 +131,7 @@ pub fn contact_forces(
         } else {
             body_velocities
                 .and_then(|vels| vels.get(j))
-                .map(|v| v.linear())
+                .map(|v| v.linear)
                 .unwrap_or(Vec3::zeros())
         };
 
@@ -159,7 +159,7 @@ pub fn find_ground_contacts(
     for (i, geom_opt) in geometries.iter().enumerate() {
         if let Some(geom) = geom_opt {
             let xform = &state.body_xform[i];
-            let pos = xform.translation_vector();
+            let pos = xform.pos;
 
             // Check if body is below ground
             let min_z = match geom {

@@ -74,12 +74,12 @@ impl Material {
                     inv.transpose()
                 } else {
                     // If F is singular, return zero stress
-                    return Mat3::zeros();
+                    return Mat3::zero();
                 };
 
                 let ln_j = j_safe.ln();
 
-                mu * (f - f_inv_t) + lambda * ln_j * f_inv_t
+                (*f - f_inv_t) * mu + f_inv_t * (lambda * ln_j)
             }
             Material::Plastic { e, yield_stress } => {
                 // Simplified J-plasticity: treat as elastic for now
@@ -92,17 +92,17 @@ impl Material {
                 let f_inv_t = if let Some(inv) = f.try_inverse() {
                     inv.transpose()
                 } else {
-                    return Mat3::zeros();
+                    return Mat3::zero();
                 };
 
                 let ln_j = j_safe.ln();
 
                 // Apply yield criterion (von Mises on deviatoric stress)
-                let p_elastic = mu * (f - f_inv_t) + lambda * ln_j * f_inv_t;
+                let p_elastic = (*f - f_inv_t) * mu + f_inv_t * (lambda * ln_j);
 
                 // Compute deviatoric stress magnitude
-                let dev_stress = p_elastic - (p_elastic.trace() / 3.0) * Mat3::identity();
-                let dev_norm = dev_stress.norm();
+                let dev_stress = p_elastic - Mat3::identity() * (p_elastic.trace() / 3.0);
+                let dev_norm = dev_stress.norm_sq().sqrt();
 
                 // If yield exceeded, scale back
                 if dev_norm > *yield_stress {
@@ -127,16 +127,16 @@ impl Material {
                 let f_inv_t = if let Some(inv) = f.try_inverse() {
                     inv.transpose()
                 } else {
-                    return Mat3::zeros();
+                    return Mat3::zero();
                 };
 
                 let ln_j = j_safe.ln();
 
-                let p_elastic = mu * (f - f_inv_t) + lambda * ln_j * f_inv_t;
+                let p_elastic = (*f - f_inv_t) * mu + f_inv_t * (lambda * ln_j);
 
                 // Apply Drucker-Prager yield
-                let dev_stress = p_elastic - (p_elastic.trace() / 3.0) * Mat3::identity();
-                let dev_norm = dev_stress.norm();
+                let dev_stress = p_elastic - Mat3::identity() * (p_elastic.trace() / 3.0);
+                let dev_norm = dev_stress.norm_sq().sqrt();
                 let mean_stress = p_elastic.trace() / 3.0;
 
                 let yield_fn = dev_norm - 3.0_f64.sqrt() * mu_eff * mean_stress.abs();
@@ -145,7 +145,7 @@ impl Material {
                     // Scale back to yield surface
                     let scale = (3.0_f64.sqrt() * mu_eff * mean_stress.abs()) / dev_norm;
                     let dev_scaled = dev_stress * scale;
-                    dev_scaled + mean_stress * Mat3::identity()
+                    dev_scaled + Mat3::identity() * mean_stress
                 } else {
                     p_elastic
                 }
@@ -168,10 +168,10 @@ impl Material {
                 let f_inv_t = if let Some(inv) = f.try_inverse() {
                     inv.transpose()
                 } else {
-                    return Mat3::zeros();
+                    return Mat3::zero();
                 };
 
-                -pressure * j_safe * f_inv_t
+                f_inv_t * (-pressure * j_safe)
 
                 // Note: viscous stress would require velocity gradient
                 // For now, just pressure response
@@ -192,7 +192,7 @@ mod tests {
         let stress = mat.compute_stress(&f, j);
 
         // Should be near zero for identity deformation
-        assert!(stress.norm() < 1e-6);
+        assert!(stress.norm_sq().sqrt() < 1e-6);
     }
 
     #[test]
@@ -217,6 +217,6 @@ mod tests {
         // Actually for compression (J<1), we get positive pressure in physics
         // but the formula gives negative p, and then stress = -p*J*F^-T
         // Let's just check that stress is computed (not zero)
-        assert!(stress.norm() > 1.0);
+        assert!(stress.norm_sq().sqrt() > 1.0);
     }
 }

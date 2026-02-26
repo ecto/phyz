@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Multi-physics differentiable simulation engine"
 
 [dependencies]
-nalgebra.workspace = true
 rand = "0.8"
 rand_distr = "0.4"
 phyz-math.workspace = true

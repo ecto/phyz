@@ -1,0 +1,57 @@
+Perfect! Let me create a quick summary of what was implemented:
+
+## Phase 12: Gravity - Complete ✅
+
+I've successfully implemented a layered gravity solver with 5 levels of sophistication, from constant uniform gravity to post-Newtonian corrections for general relativity effects.
+
+### What was implemented:
+
+**New crate: `tau-gravity`**
+
+1. **Layer 1: Constant Gravity** (`constant.rs`)
+   - Uniform gravitational field (e.g., Earth's g = 9.81 m/s²)
+   - Simple force computation: F = m·g
+   - Potential energy calculation
+
+2. **Layer 2: Poisson Solver** (`poisson.rs`)
+   - Density-dependent gravity via Poisson equation: ∇²Φ = 4πGρ
+   - Jacobi iteration on 3D grid
+   - Cloud-in-cell particle density deposition
+   - Force computation via gradient: g = -∇Φ
+
+3. **Layer 3: N-body Solver** (`nbody.rs`)
+   - Direct pairwise O(N²) gravitational forces with softening
+   - Barnes-Hut octree structure for O(N log N) approximation
+   - Hierarchical center-of-mass computation
+   - Opening angle criterion (θ parameter)
+
+4. **Layer 4: Post-Newtonian Corrections** (`pn.rs`)
+   - **1PN**: First post-Newtonian relativistic corrections (v²/c² order)
+     - Perihelion precession (Mercury: 43.1 arcsec/century)
+     - Schwarzschild-like terms
+   - **2.5PN**: Gravitational radiation damping (v⁵/c⁵ order)
+     - Radiative energy loss
+     - Binary orbital decay
+   - Orbital element computation (a, e, i, Ω, ω, ν)
+   - Perihelion precession rate calculator
+
+5. **Supporting infrastructure**:
+   - `GravityParticle`: Position, velocity, force, mass
+   - `GravitySolver` trait: Unified interface for all gravity layers
+   - Physical constants: G, C, G_EARTH
+
+### Tests:
+- ✅ 14 unit tests covering all solver types
+- ✅ 9 integration tests including:
+  - Free fall under constant gravity
+  - N-body energy conservation
+  - Mercury perihelion precession calculation (43.1 arcsec/century)
+  - Orbital element extraction
+  - PN vs Newtonian comparison
+  - 2.5PN radiation reaction
+- ✅ All doctests passing
+
+### Example:
+Created `examples/mercury_precession.rs` demonstrating Mercury's famous 43 arcsec/century perihelion precession using 1PN corrections.
+
+All tests pass, clippy warnings resolved, code formatted, and committed!

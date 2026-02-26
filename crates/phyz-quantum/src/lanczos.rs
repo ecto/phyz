@@ -12,7 +12,7 @@
 
 use crate::diag::Spectrum;
 use crate::hilbert::U1HilbertSpace;
-use nalgebra::{DMatrix, DVector};
+use phyz_math::{DMat, DVec};
 use phyz_regge::SimplicialComplex;
 
 /// Hamiltonian-vector product without storing the full matrix.
@@ -20,14 +20,14 @@ use phyz_regge::SimplicialComplex;
 /// Computes H|v⟩ = H_E|v⟩ + H_B|v⟩ directly from the Hilbert space and
 /// complex structure.
 pub fn hamiltonian_matvec(
-    v: &DVector<f64>,
+    v: &DVec,
     hilbert: &U1HilbertSpace,
     complex: &SimplicialComplex,
     g_squared: f64,
     metric_weights: Option<&[f64]>,
-) -> DVector<f64> {
+) -> DVec {
     let dim = hilbert.dim();
-    let mut result = DVector::zeros(dim);
+    let mut result = DVec::zeros(dim);
 
     let e_coeff = g_squared / 2.0;
     let b_coeff = -1.0 / g_squared * 0.5;
@@ -94,26 +94,26 @@ pub fn lanczos<F>(
     tol: f64,
 ) -> Spectrum
 where
-    F: Fn(&DVector<f64>) -> DVector<f64>,
+    F: Fn(&DVec) -> DVec,
 {
     let m = max_iter.min(dim);
     let k = n_eigenvalues.min(m);
 
     // Lanczos vectors (stored for reorthogonalization and eigenvector recovery)
-    let mut q_vecs: Vec<DVector<f64>> = Vec::with_capacity(m + 1);
+    let mut q_vecs: Vec<DVec> = Vec::with_capacity(m + 1);
 
     // Tridiagonal elements
     let mut alpha: Vec<f64> = Vec::with_capacity(m); // diagonal
     let mut beta: Vec<f64> = Vec::with_capacity(m);  // off-diagonal
 
     // Initial random vector (deterministic seed for reproducibility)
-    let mut q = DVector::zeros(dim);
+    let mut q = DVec::zeros(dim);
     // Use a simple deterministic initialization
     for i in 0..dim {
         q[i] = ((i as f64 + 1.0) * 0.618033988749895).fract() - 0.5;
     }
     let norm = q.norm();
-    q /= norm;
+    q *= 1.0 / norm;
     q_vecs.push(q.clone());
 
     let mut prev_eigenvalues = vec![f64::MAX; k];
@@ -127,15 +127,15 @@ where
         alpha.push(a);
 
         // w = w - α_j * q_j - β_{j-1} * q_{j-1}
-        w -= a * &q_vecs[j];
+        w -= &(&q_vecs[j] * a);
         if j > 0 {
-            w -= beta[j - 1] * &q_vecs[j - 1];
+            w -= &(&q_vecs[j - 1] * beta[j - 1]);
         }
 
         // Full reorthogonalization (crucial for numerical stability)
         for qi in &q_vecs {
             let overlap = qi.dot(&w);
-            w -= overlap * qi;
+            w -= &(qi * overlap);
         }
 
         let b = w.norm();
@@ -167,7 +167,7 @@ where
         }
 
         beta.push(b);
-        let q_next = w / b;
+        let q_next = &w * (1.0 / b);
         q_vecs.push(q_next);
     }
 
@@ -178,7 +178,7 @@ where
 /// Diagonalize the tridiagonal matrix to get eigenvalues only.
 fn diagonalize_tridiagonal(alpha: &[f64], beta: &[f64], k: usize) -> Vec<f64> {
     let m = alpha.len();
-    let mut t = DMatrix::zeros(m, m);
+    let mut t = DMat::zeros(m, m);
     for i in 0..m {
         t[(i, i)] = alpha[i];
         if i > 0 {
@@ -197,11 +197,11 @@ fn diagonalize_tridiagonal(alpha: &[f64], beta: &[f64], k: usize) -> Vec<f64> {
 fn recover_eigenvectors(
     alpha: &[f64],
     beta: &[f64],
-    q_vecs: &[DVector<f64>],
+    q_vecs: &[DVec],
     k: usize,
 ) -> Spectrum {
     let m = alpha.len();
-    let mut t = DMatrix::zeros(m, m);
+    let mut t = DMat::zeros(m, m);
     for i in 0..m {
         t[(i, i)] = alpha[i];
         if i > 0 {
@@ -231,15 +231,15 @@ fn recover_eigenvectors(
         energies.push(eval);
 
         // Eigenvector in original space: Σ_j s_j * q_j
-        let mut v = DVector::zeros(dim);
+        let mut v = DVec::zeros(dim);
         for j in 0..n_q {
             let coeff = eig.eigenvectors[(j, idx)];
-            v += coeff * &q_vecs[j];
+            v += &(&q_vecs[j] * coeff);
         }
         // Normalize (should already be ~1 but enforce)
         let norm = v.norm();
         if norm > 1e-15 {
-            v /= norm;
+            v *= 1.0 / norm;
         }
         states.push(v);
     }
@@ -269,7 +269,7 @@ pub fn lanczos_diagonalize(
     );
 
     let mw = metric_weights.map(|w| w.to_vec());
-    let matvec = |v: &DVector<f64>| {
+    let matvec = |v: &DVec| {
         hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref())
     };
 
@@ -420,7 +420,7 @@ mod tests {
 
         // Test matvec on a few random-ish vectors
         for seed in 0..5 {
-            let mut v = DVector::zeros(hs.dim());
+            let mut v = DVec::zeros(hs.dim());
             for i in 0..hs.dim() {
                 v[i] = ((i + seed * 137) as f64 * 0.618).fract() - 0.5;
             }

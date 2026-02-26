@@ -11,7 +11,7 @@
 //! - [`gauss_law`]: Vertex-edge adjacency, spanning tree, gauge-invariant basis
 //! - [`hilbert`]: Hilbert space with fast config↔index lookup
 //! - [`hamiltonian`]: Sparse Kogut-Susskind Hamiltonian construction
-//! - [`diag`]: Dense eigendecomposition via nalgebra
+//! - [`diag`]: Dense eigendecomposition via tang-la
 //! - [`observables`]: Wilson loops, electric field, entanglement entropy
 //! - [`qubit_map`]: Qubit encoding and resource estimates
 //! - [`stabilizer`]: Z₂ limit → stabilizer code parameters

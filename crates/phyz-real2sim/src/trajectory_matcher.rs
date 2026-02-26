@@ -241,8 +241,9 @@ impl TrajectoryMatcher {
 
             // Step simulation
             let qdd = aba(model, &state);
-            state.v += &qdd * self.dt;
-            state.q += &state.v * self.dt;
+            state.v += &(&qdd * self.dt);
+            let v_clone = state.v.clone();
+            state.q += &(&v_clone * self.dt);
             state.time += self.dt;
 
             // Update body transforms for next iteration

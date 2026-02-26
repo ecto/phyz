@@ -8,7 +8,7 @@ use crate::csr::{build_csr, build_csr_su2};
 use crate::diag::Spectrum;
 use crate::hilbert::U1HilbertSpace;
 use crate::su2_quantum::Su2HilbertSpace;
-use nalgebra::{DMatrix, DVector};
+use phyz_math::{DMat, DVec};
 use phyz_gpu::sparse::{request_device, GpuPrecision, GpuSparseMatrix, GpuVecOps};
 use phyz_regge::SimplicialComplex;
 use std::sync::Arc;
@@ -448,7 +448,7 @@ fn gpu_lanczos_inner(
 /// Diagonalize the tridiagonal matrix to get eigenvalues only.
 fn diagonalize_tridiagonal(alpha: &[f64], beta: &[f64], k: usize) -> Vec<f64> {
     let m = alpha.len();
-    let mut t = DMatrix::zeros(m, m);
+    let mut t = DMat::zeros(m, m);
     for i in 0..m {
         t[(i, i)] = alpha[i];
         if i > 0 {
@@ -473,7 +473,7 @@ fn recover_eigenvectors_gpu(
     k: usize,
 ) -> Spectrum {
     let m = alpha.len();
-    let mut t = DMatrix::zeros(m, m);
+    let mut t = DMat::zeros(m, m);
     for i in 0..m {
         t[(i, i)] = alpha[i];
         if i > 0 {
@@ -507,7 +507,7 @@ fn recover_eigenvectors_gpu(
         energies.push(eval);
 
         // v_k = sum_j s_{j,k} * q_j (computed in f64 on CPU)
-        let mut v = DVector::zeros(dim);
+        let mut v = DVec::zeros(dim);
         for j in 0..n_q {
             let coeff = eig.eigenvectors[(j, idx)];
             for i in 0..dim {
@@ -516,7 +516,7 @@ fn recover_eigenvectors_gpu(
         }
         let norm = v.norm();
         if norm > 1e-15 {
-            v /= norm;
+            v *= 1.0 / norm;
         }
         states.push(v);
     }

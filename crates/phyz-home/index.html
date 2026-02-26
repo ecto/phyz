@@ -14,6 +14,7 @@
   <link data-trunk rel="rust" data-wasm-opt="z"/>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    .hidden { display: none !important; }
 
     /* ─── Dark theme (default) ─── */
     :root {
@@ -450,6 +451,35 @@
     .lb-row.me { background: var(--green-bg); }
     .lb-empty { color: var(--dim); font-style: italic; padding: 12px 0; text-align: center; }
 
+    /* ─── Confetti ─── */
+    #confetti-container {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 100;
+      overflow: hidden;
+    }
+    .confetti-particle {
+      position: absolute;
+      top: -10px;
+      animation: confetti-fall linear forwards;
+    }
+    @keyframes confetti-fall {
+      0%   { transform: translateY(0) rotate(0deg); opacity: 1; }
+      80%  { opacity: 1; }
+      100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+    }
+
+    /* ─── Mute button ─── */
+    #mute-btn {
+      cursor: pointer;
+      color: var(--dim);
+      font-size: 14px;
+      line-height: 1;
+      user-select: none;
+    }
+    #mute-btn:hover { color: var(--text); }
+    #mute-btn.muted { opacity: 0.3; }
+
     /* New entry flash */
     @keyframes entry-flash {
       0%   { background: var(--green-bg); }
@@ -498,6 +528,7 @@
 </head>
 <body>
   <canvas id="viz"></canvas>
+  <div id="confetti-container"></div>
 
   <!-- Top bar -->
   <div id="topbar">
@@ -531,8 +562,8 @@
     </span>
     <span>
       <span id="progress-track"><span id="progress-fill"></span></span>
-      <span class="stat-value" id="progress-num">0</span><span class="stat-label">/1250</span>
-      <span class="stat-label">round </span><span class="stat-value" id="progress-round">1</span>
+      <span class="stat-value" id="progress-num">0</span>/<span class="stat-value" id="progress-total">7200</span>
+      <span class="stat-label">phase </span><span class="stat-value" id="progress-phase">1</span>
     </span>
 
     <span class="sep"></span>
@@ -555,6 +586,7 @@
       <button id="sign-out-btn" class="auth-btn dim">sign out</button>
     </span>
 
+    <span id="mute-btn" title="toggle sound">&#9834;</span>
     <span id="info-btn" title="about">?</span>
 
   </div>
@@ -575,7 +607,10 @@
         4. If gravity emerges from entanglement, S<sub>EE</sub> scales linearly
         with A<sub>cut</sub> &mdash; the slope gives Newton's constant G<sub>N</sub>.
       </div>
-      <div class="splash-meta">50 couplings &times; 25 partitions = 1,250 work units</div>
+      <div class="splash-meta">
+        phase 1: 7,200 eigensolves (levels 0&ndash;1) &bull;
+        phase 2: 6,100 eigensolves (level 3)
+      </div>
       <button id="splash-cta">start computing &rarr;</button>
       <a id="learn-more" href="https://campedersen.com/phyz-at-home" target="_blank" rel="noopener">
         learn more &rarr;

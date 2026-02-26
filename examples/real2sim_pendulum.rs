@@ -74,8 +74,9 @@ fn main() {
 
         // Step simulation
         let qdd = aba(&true_model, &state);
-        state.v += &qdd * true_model.dt;
-        state.q += &state.v * true_model.dt;
+        state.v += &(&qdd * true_model.dt);
+        let v_tmp = state.v.clone();
+        state.q += &(&v_tmp * true_model.dt);
         state.time += true_model.dt;
     }
 

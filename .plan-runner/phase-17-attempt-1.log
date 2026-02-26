@@ -1,0 +1,44 @@
+Perfect! Phase 17 implementation is complete. Here's a summary:
+
+## Phase 17: Reality Ingestion + Universal Format ✅
+
+Successfully implemented inverse problems (real2sim) and the universal .tau format specification.
+
+### New Crates Created
+
+**1. tau-real2sim** - Parameter estimation from real-world observations
+- `TrajectoryMatcher`: Matches simulation output to motion capture/sensor data
+- `ObservationAdapters`: Extract different sensor modalities (joint angles, end-effector pose, COM, velocity)
+- `Optimizers`: Gradient descent and Adam optimizers for parameter estimation
+- `PhysicsParams`: Configurable physics parameters for optimization
+- Numerical gradient computation via finite differences
+
+**2. tau-format** - Universal multi-domain physics format
+- `.tau` JSON schema for representing multi-domain simulations
+- Domain specifications: rigid body, collision, particles, EM, quantum, gravity, LBM
+- Coupling definitions: lorentz force, contact, penalty, Lagrange multipliers
+- Parameter specs with uncertainty quantification
+- Importers: MJCF (implemented), URDF/USD/SDF (placeholders)
+- Round-trip serialization/deserialization
+
+### Example Added
+- `real2sim_pendulum.rs`: Demonstrates complete workflow
+  1. Generate reference trajectory from ground truth model
+  2. Create initial guess with wrong parameters
+  3. Optimize parameters to match observations
+  4. Export identified model to `.tau` format
+
+### Test Coverage
+- 23 new tests across both crates
+- All existing workspace tests still pass
+- Clippy and fmt checks pass
+
+### Key Features
+- Differentiable trajectory matching for inverse problems
+- Multiple optimization algorithms (gradient descent, Adam)
+- Flexible observation adapters for different sensor types
+- Comprehensive .tau format supporting all physics domains
+- Clean serialization/deserialization with serde
+- MJCF import capability leveraging existing tau-mjcf
+
+The implementation enables real-world data ingestion, parameter identification from observations, and a universal format for representing complex multi-domain physics simulations.

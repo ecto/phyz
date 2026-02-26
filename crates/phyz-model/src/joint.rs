@@ -165,23 +165,13 @@ impl Joint {
         match self.joint_type {
             JointType::Revolute | JointType::Hinge => {
                 let s = SpatialVec::new(self.axis, Vec3::zeros());
-                DMat::from_column_slice(
-                    6,
-                    1,
-                    &[
-                        s.data[0], s.data[1], s.data[2], s.data[3], s.data[4], s.data[5],
-                    ],
-                )
+                let arr = s.as_array();
+                DMat::from_row_slice(6, 1, &arr)
             }
             JointType::Prismatic | JointType::Slide => {
                 let s = SpatialVec::new(Vec3::zeros(), self.axis);
-                DMat::from_column_slice(
-                    6,
-                    1,
-                    &[
-                        s.data[0], s.data[1], s.data[2], s.data[3], s.data[4], s.data[5],
-                    ],
-                )
+                let arr = s.as_array();
+                DMat::from_row_slice(6, 1, &arr)
             }
             JointType::Spherical | JointType::Ball => {
                 // 3 DOF: angular velocity in body frame
@@ -198,7 +188,7 @@ impl Joint {
             JointType::Free => {
                 // 6 DOF: [angular; linear] velocity
                 // S = I_6×6
-                DMat::identity(6, 6)
+                DMat::identity(6)
             }
             JointType::Fixed => {
                 // 0 DOF: empty 6×0 matrix

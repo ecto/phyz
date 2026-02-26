@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "JIT compilation of physics kernels to GPU compute shaders for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 naga = "23.0"
 wgpu = "23.0"

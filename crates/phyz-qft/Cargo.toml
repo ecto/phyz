@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Lattice gauge theory with Hybrid Monte Carlo sampling for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 rand = "0.8"
 

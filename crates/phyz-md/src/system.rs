@@ -104,12 +104,16 @@ impl MdSystem {
             // Box-Muller transform for Gaussian sampling
             let sigma = (k_b * temperature / particle.mass).sqrt();
 
-            for d in 0..3 {
+            let mut rand_component = || -> f64 {
                 let u1: f64 = rand();
                 let u2: f64 = rand();
-                let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-                particle.v[d] = sigma * z;
-            }
+                (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+            };
+            particle.v = Vec3::new(
+                sigma * rand_component(),
+                sigma * rand_component(),
+                sigma * rand_component(),
+            );
         }
 
         // Remove center-of-mass motion
@@ -188,12 +192,16 @@ impl MdSystem {
 
                 // Random force
                 let sigma = prefactor * (particle.mass / self.dt).sqrt();
-                for d in 0..3 {
+                let mut rand_component = || -> f64 {
                     let u1: f64 = rand();
                     let u2: f64 = rand();
-                    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
-                    particle.f[d] += sigma * z;
-                }
+                    (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+                };
+                particle.f += Vec3::new(
+                    sigma * rand_component(),
+                    sigma * rand_component(),
+                    sigma * rand_component(),
+                );
             }
         }
     }
@@ -228,13 +236,13 @@ impl MdSystem {
 
             // Apply periodic boundary conditions
             if let Some(box_size) = self.box_size {
-                for d in 0..3 {
-                    if particle.x[d] < 0.0 {
-                        particle.x[d] += box_size[d];
-                    } else if particle.x[d] >= box_size[d] {
-                        particle.x[d] -= box_size[d];
-                    }
+                fn wrap_coord(val: &mut f64, size: f64) {
+                    if *val < 0.0 { *val += size; }
+                    else if *val >= size { *val -= size; }
                 }
+                wrap_coord(&mut particle.x.x, box_size.x);
+                wrap_coord(&mut particle.x.y, box_size.y);
+                wrap_coord(&mut particle.x.z, box_size.z);
             }
         }
 

@@ -544,7 +544,7 @@ mod tests {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, -length, 0.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, -length, 0.0)),
                 SpatialInertia::new(
                     mass,
                     Vec3::new(0.0, -length / 2.0, 0.0),
@@ -580,35 +580,35 @@ mod tests {
             .add_revolute_body(
                 "j2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
                 inertia.clone(),
             )
             // Joint 3: revolute Z
             .add_revolute_body(
                 "j3",
                 1,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
                 inertia.clone(),
             )
             // Joint 4: revolute Z
             .add_revolute_body(
                 "j4",
                 2,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
                 inertia.clone(),
             )
             // Joint 5: revolute Z
             .add_revolute_body(
                 "j5",
                 3,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
                 inertia.clone(),
             )
             // Joint 6: revolute Z
             .add_revolute_body(
                 "j6",
                 4,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
                 inertia,
             )
             .build()

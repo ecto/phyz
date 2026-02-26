@@ -26,6 +26,7 @@ members = [
     "crates/phyz-wasm",
     "crates/phyz-regge",
     "crates/phyz-quantum",
+    "crates/phyz-home",
 ]
 
 [workspace.package]
@@ -36,7 +37,8 @@ repository = "https://github.com/ecto/phyz"
 homepage = "https://phyz.dev"
 
 [workspace.dependencies]
-nalgebra = "0.33"
+tang = { path = "../tang/crates/tang" }
+tang-la = { path = "../tang/crates/tang-la" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 phyz-math = { version = "0.1.0", path = "crates/phyz-math" }
@@ -60,6 +62,6 @@ phyz-prob = { version = "0.1.0", path = "crates/phyz-prob" }
 phyz-world = { version = "0.1.0", path = "crates/phyz-world" }
 phyz-real2sim = { version = "0.1.0", path = "crates/phyz-real2sim" }
 phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
-phyz-regge = { version = "0.1.0", path = "crates/phyz-regge" }
-phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum" }
+phyz-regge = { version = "0.1.0", path = "crates/phyz-regge", default-features = false }
+phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum", default-features = false }
 phyz = { version = "0.1.0", path = "crates/phyz" }

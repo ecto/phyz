@@ -12,7 +12,7 @@
 
 use crate::hilbert::U1HilbertSpace;
 use crate::observables;
-use nalgebra::DVector;
+use phyz_math::DVec;
 use phyz_regge::complex::SimplicialComplex;
 use phyz_regge::geometry::triangle_area;
 
@@ -129,7 +129,7 @@ pub fn cut_area_triangles(
 /// RT-analogous piece.
 pub fn entanglement_for_partition(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> f64 {
@@ -142,7 +142,7 @@ pub fn entanglement_for_partition(
 /// Returns Shannon (edge mode) and distillable components separately.
 pub fn entanglement_decomposed_for_partition(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> observables::EntropyDecomposition {
@@ -163,7 +163,7 @@ pub fn entanglement_decomposed_for_partition(
 /// The complement gets only interior-B edges.
 pub fn entanglement_for_partition_extended(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> f64 {
@@ -183,7 +183,7 @@ pub fn entanglement_for_partition_extended(
 /// boundary edges are excluded, so S_AB may be nonzero.
 pub fn mutual_information(
     hilbert: &U1HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> f64 {

@@ -7,11 +7,14 @@ repository.workspace = true
 homepage.workspace = true
 description = "4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory"
 
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+
 [dependencies]
 phyz-math.workspace = true
-nalgebra.workspace = true
 rand = "0.8"
-rayon = "1.10"
+rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 approx = "0.5"

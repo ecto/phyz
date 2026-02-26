@@ -8,5 +8,4 @@ homepage.workspace = true
 description = "Model and state types for phyz physics engine"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true

@@ -217,7 +217,7 @@ pub fn build_csr_su2(
 mod tests {
     use super::*;
     use crate::lanczos::hamiltonian_matvec;
-    use nalgebra::DVector;
+    use phyz_math::DVec;
 
     fn single_pentachoron() -> SimplicialComplex {
         SimplicialComplex::from_pentachorons(5, &[[0, 1, 2, 3, 4]])
@@ -230,7 +230,7 @@ mod tests {
         let csr = build_csr(&hs, &complex, 1.0, None);
 
         for seed in 0..5u64 {
-            let mut v = DVector::zeros(hs.dim());
+            let mut v = DVec::zeros(hs.dim());
             for i in 0..hs.dim() {
                 v[i] = ((i as u64 + seed * 137) as f64 * 0.618).fract() - 0.5;
             }
@@ -283,7 +283,7 @@ mod tests {
         let weights = vec![2.0; complex.n_triangles()];
         let csr = build_csr(&hs, &complex, 1.0, Some(&weights));
 
-        let mut v = DVector::zeros(hs.dim());
+        let mut v = DVec::zeros(hs.dim());
         for i in 0..hs.dim() {
             v[i] = ((i as f64 + 1.0) * 0.618).fract() - 0.5;
         }
@@ -324,7 +324,7 @@ mod tests {
         let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0, None);
 
         for seed in 0..5u64 {
-            let mut v = DVector::zeros(hs.dim());
+            let mut v = DVec::zeros(hs.dim());
             for i in 0..hs.dim() {
                 v[i] = ((i as u64 + seed * 137) as f64 * 0.618).fract() - 0.5;
             }
@@ -355,7 +355,7 @@ mod tests {
         let h_dense = build_su2_hamiltonian(&hs, &complex, 1.0, Some(&weights));
 
         for seed in 0..5u64 {
-            let mut v = DVector::zeros(hs.dim());
+            let mut v = DVec::zeros(hs.dim());
             for i in 0..hs.dim() {
                 v[i] = ((i as u64 + seed * 137) as f64 * 0.618).fract() - 0.5;
             }

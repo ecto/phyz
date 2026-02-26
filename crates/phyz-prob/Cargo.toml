@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Probabilistic simulation and uncertainty quantification for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true
 rand = "0.8"

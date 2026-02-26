@@ -32,7 +32,7 @@ fn main() {
         .add_prismatic_body(
             "link2",
             0,                                                       // attached to link1
-            SpatialTransform::translation(Vec3::new(1.0, 0.0, 0.0)), // 1m offset
+            SpatialTransform::from_translation(Vec3::new(1.0, 0.0, 0.0)), // 1m offset
             Vec3::new(1.0, 0.0, 0.0),                                // slide along X
             SpatialInertia::new(
                 0.5,                       // 0.5 kg

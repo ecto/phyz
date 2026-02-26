@@ -17,9 +17,11 @@
 //! The gauge-invariant Hilbert space has dimension 2^b₁ where
 //! b₁ = E − V + 1 is the first Betti number.
 
+use crate::diag::Spectrum;
+use crate::lanczos;
 use crate::observables;
 use crate::ryu_takayanagi;
-use nalgebra::{DMatrix, DVector};
+use phyz_math::{DMat, DVec};
 use phyz_regge::complex::SimplicialComplex;
 use std::collections::HashMap;
 
@@ -198,9 +200,9 @@ pub fn build_su2_hamiltonian(
     complex: &SimplicialComplex,
     g_squared: f64,
     metric_weights: Option<&[f64]>,
-) -> DMatrix<f64> {
+) -> DMat {
     let dim = hilbert.dim();
-    let mut h = DMatrix::zeros(dim, dim);
+    let mut h = DMat::zeros(dim, dim);
 
     // Electric term: (g²/2) × j(j+1)|_{j=1/2} × n_e = (3g²/8) × Σ n_e
     let e_coeff = 3.0 * g_squared / 8.0;
@@ -228,12 +230,81 @@ pub fn build_su2_hamiltonian(
     h
 }
 
+/// SU(2) j=1/2 Hamiltonian-vector product without storing the full matrix.
+///
+/// Computes H|v⟩ = H_E|v⟩ + H_B|v⟩ directly from the Hilbert space structure.
+/// Electric term is diagonal (popcount), magnetic term flips triangle edges via XOR.
+pub fn su2_hamiltonian_matvec(
+    v: &DVec,
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    g_squared: f64,
+    metric_weights: Option<&[f64]>,
+) -> DVec {
+    let dim = hilbert.dim();
+    let mut result = DVec::zeros(dim);
+
+    let e_coeff = 3.0 * g_squared / 8.0;
+    let b_coeff = -0.5 / g_squared;
+
+    // Electric term (diagonal): (3g²/8) × popcount(state) × v[i]
+    for (i, &state) in hilbert.basis.iter().enumerate() {
+        result[i] += e_coeff * state.count_ones() as f64 * v[i];
+    }
+
+    // Magnetic term (off-diagonal): plaquette flip via XOR
+    for ti in 0..complex.n_triangles() {
+        let weight = metric_weights.map_or(1.0, |w| w[ti]);
+        let c = b_coeff * weight;
+        let [e0, e1, e2] = complex.tri_edge_indices(ti);
+        let flip_mask: u64 = (1 << e0) | (1 << e1) | (1 << e2);
+
+        for (i, &state) in hilbert.basis.iter().enumerate() {
+            let flipped = state ^ flip_mask;
+            // XOR always preserves Z₂ Gauss law, so flipped is always in basis.
+            if let Some(j) = hilbert.config_to_index(flipped) {
+                result[i] += c * v[j];
+            }
+        }
+    }
+
+    result
+}
+
+/// Lanczos diagonalization for SU(2) j=1/2 Hamiltonian.
+///
+/// Uses matrix-free matvec to find the k lowest eigenvalues/eigenvectors
+/// without constructing the full Hamiltonian. Enables systems up to dim ~262K.
+pub fn su2_lanczos_diagonalize(
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    g_squared: f64,
+    metric_weights: Option<&[f64]>,
+    n_eigenvalues: usize,
+    max_iter: Option<usize>,
+) -> Spectrum {
+    let dim = hilbert.dim();
+    let max_iter = max_iter
+        .unwrap_or_else(|| (20 * n_eigenvalues).max(100))
+        .min(dim);
+    let tol = 1e-10;
+
+    eprintln!("  SU(2) Lanczos: dim={dim}, k={n_eigenvalues}, max_iter={max_iter}");
+
+    let mw = metric_weights.map(|w| w.to_vec());
+    let matvec = |v: &DVec| {
+        su2_hamiltonian_matvec(v, hilbert, complex, g_squared, mw.as_deref())
+    };
+
+    lanczos::lanczos(matvec, dim, n_eigenvalues, max_iter, tol)
+}
+
 /// Entanglement entropy for a vertex partition using SU(2) states.
 ///
 /// Uses the algebraic prescription: edges_a = edges with both endpoints in A.
 pub fn su2_entanglement_for_partition(
     hilbert: &Su2HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> f64 {
@@ -246,7 +317,7 @@ pub fn su2_entanglement_for_partition(
 /// Returns Shannon (edge mode) and distillable components separately.
 pub fn su2_entanglement_decomposed(
     hilbert: &Su2HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     complex: &SimplicialComplex,
     partition_a: &[usize],
 ) -> observables::EntropyDecomposition {
@@ -269,7 +340,7 @@ pub fn su2_entanglement_decomposed(
 /// Returns ⟨ψ|W|ψ⟩ = Σ_i |ψ_i|² × (-1)^(popcount(basis[i] & mask)).
 pub fn su2_wilson_loop(
     hilbert: &Su2HilbertSpace,
-    state: &DVector<f64>,
+    state: &DVec,
     loop_edges: &[usize],
 ) -> f64 {
     let mask: u64 = loop_edges.iter().fold(0u64, |m, &e| m | (1 << e));
@@ -334,7 +405,7 @@ mod tests {
         let complex = single_pentachoron();
         let hs = Su2HilbertSpace::new(&complex);
         let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
-        let diff = (&h - h.transpose()).norm();
+        let diff = (&h - &h.transpose()).norm();
         assert!(diff < 1e-12, "H not symmetric: diff={diff}");
     }
 
@@ -407,7 +478,7 @@ mod tests {
 
         // Pure |0...0⟩ state: popcount(0 & anything) = 0, so W = 1.
         let zero_idx = hs.config_to_index(0).unwrap();
-        let mut state = DVector::zeros(hs.dim());
+        let mut state = DVec::zeros(hs.dim());
         state[zero_idx] = 1.0;
 
         let loops = su2_fundamental_loops(&complex);
@@ -456,16 +527,57 @@ mod tests {
 
         // Magnetic part = H - E_diag. Extract diagonal (electric) part.
         let dim = hs.dim();
-        let mut h_elec = DMatrix::zeros(dim, dim);
+        let mut h_elec = DMat::zeros(dim, dim);
         for i in 0..dim {
             h_elec[(i, i)] = h_none[(i, i)];
         }
         let mag_none = &h_none - &h_elec;
         let mag_two = &h_two - &h_elec;
-        let ratio_diff = (&mag_two - &mag_none * 2.0).norm();
+        let ratio_diff = (&mag_two - &mag_none.scale(2.0)).norm();
         assert!(
             ratio_diff < 1e-12,
             "weights=[2.0] doesn't double magnetic term: diff={ratio_diff}"
+        );
+    }
+
+    #[test]
+    fn test_su2_matvec_matches_dense() {
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
+
+        for seed in 0..5 {
+            let mut v = DVec::zeros(hs.dim());
+            for i in 0..hs.dim() {
+                v[i] = ((i + seed * 137) as f64 * 0.618).fract() - 0.5;
+            }
+
+            let hv_dense = &h * &v;
+            let hv_matvec = su2_hamiltonian_matvec(&v, &hs, &complex, 1.0, None);
+
+            let diff = (&hv_dense - &hv_matvec).norm();
+            assert!(
+                diff < 1e-10,
+                "SU(2) matvec mismatch at seed {seed}: diff={diff}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_su2_lanczos_vs_dense() {
+        let complex = single_pentachoron();
+        let hs = Su2HilbertSpace::new(&complex);
+        let h = build_su2_hamiltonian(&hs, &complex, 1.0, None);
+        let dense = diag::diagonalize(&h, Some(1));
+
+        let lanc = su2_lanczos_diagonalize(&hs, &complex, 1.0, None, 1, None);
+
+        let e0_diff = (dense.ground_energy() - lanc.ground_energy()).abs();
+        assert!(
+            e0_diff < 1e-8,
+            "SU(2) E₀ mismatch: dense={}, lanczos={}, diff={e0_diff}",
+            dense.ground_energy(),
+            lanc.ground_energy()
         );
     }
 

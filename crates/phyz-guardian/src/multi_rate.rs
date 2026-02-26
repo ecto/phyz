@@ -58,21 +58,22 @@ impl RRespaIntegrator {
         // Outer half-step: slow forces
         let f_slow = slow_forces(model, state);
         let acc_slow = self.forces_to_acceleration(model, &f_slow);
-        state.v += &acc_slow * (self.dt_outer / 2.0);
+        state.v += &(&acc_slow * (self.dt_outer / 2.0));
 
         // Inner steps: fast forces
         for _ in 0..n_inner {
             let f_fast = fast_forces(model, state);
             let acc_fast = self.forces_to_acceleration(model, &f_fast);
 
-            state.v += &acc_fast * self.dt_inner;
-            state.q += &state.v * self.dt_inner;
+            state.v += &(&acc_fast * self.dt_inner);
+            let v_copy = state.v.clone();
+            state.q += &(&v_copy * self.dt_inner);
         }
 
         // Outer half-step: slow forces
         let f_slow = slow_forces(model, state);
         let acc_slow = self.forces_to_acceleration(model, &f_slow);
-        state.v += &acc_slow * (self.dt_outer / 2.0);
+        state.v += &(&acc_slow * (self.dt_outer / 2.0));
 
         state.time += self.dt_outer;
     }

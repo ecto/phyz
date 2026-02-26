@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Analytical Jacobians and differentiation for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-rigid.workspace = true

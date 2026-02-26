@@ -8,6 +8,5 @@ homepage.workspace = true
 description = "Material Point Method (MPM) particle simulation for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true

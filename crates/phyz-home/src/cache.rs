@@ -9,6 +9,8 @@ pub struct CachedPoint {
     pub log_g2: f64,
     pub s_ee: f64,
     pub a_cut: f64,
+    #[serde(default)]
+    pub partition_index: usize,
 }
 
 fn storage() -> Option<Storage> {
@@ -90,5 +92,20 @@ pub fn save_session(session: &crate::auth::AuthSession) {
 pub fn clear_session() {
     if let Some(s) = storage() {
         s.remove_item(SESSION_KEY).ok();
+    }
+}
+
+const MUTED_KEY: &str = "phyz_muted";
+
+pub fn load_muted() -> bool {
+    storage()
+        .and_then(|s| s.get_item(MUTED_KEY).ok().flatten())
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+pub fn save_muted(muted: bool) {
+    if let Some(s) = storage() {
+        s.set_item(MUTED_KEY, if muted { "1" } else { "0" }).ok();
     }
 }

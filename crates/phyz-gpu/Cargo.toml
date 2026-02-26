@@ -11,7 +11,6 @@ description = "GPU-accelerated batch simulation using wgpu compute shaders for p
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
-nalgebra = { workspace = true }
 wgpu = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"

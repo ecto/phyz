@@ -26,7 +26,7 @@ impl Quat {
     pub fn identity() -> Self {
         Self {
             w: 1.0,
-            v: Vec3::zeros(),
+            v: Vec3::zero(),
         }
     }
 
@@ -35,12 +35,12 @@ impl Quat {
     pub fn from_axis_angle(axis: &Vec3, angle: f64) -> Self {
         let half_angle = angle * 0.5;
         let (s, c) = half_angle.sin_cos();
-        Self { w: c, v: axis * s }
+        Self { w: c, v: *axis * s }
     }
 
     /// Normalize this quaternion to unit length.
     pub fn normalize(&self) -> Self {
-        let norm = (self.w * self.w + self.v.norm_squared()).sqrt();
+        let norm = (self.w * self.w + self.v.norm_sq()).sqrt();
         if norm < 1e-12 {
             return Self::identity();
         }
@@ -53,8 +53,8 @@ impl Quat {
     /// Quaternion multiplication: self * other.
     pub fn mul(&self, other: &Quat) -> Quat {
         Quat {
-            w: self.w * other.w - self.v.dot(&other.v),
-            v: self.v.cross(&other.v) + other.v * self.w + self.v * other.w,
+            w: self.w * other.w - self.v.dot(other.v),
+            v: self.v.cross(other.v) + other.v * self.w + self.v * other.w,
         }
     }
 
@@ -144,8 +144,8 @@ impl Quat {
         }
     }
 
-    /// Exponential map: exp(θ u) where θ u is axis-angle representation.
-    /// Converts axis-angle to quaternion via q = [cos(θ/2), sin(θ/2) * u].
+    /// Exponential map: exp(theta u) where theta u is axis-angle representation.
+    /// Converts axis-angle to quaternion via q = [cos(theta/2), sin(theta/2) * u].
     /// For small angles, uses first-order approximation.
     pub fn exp(w: &Vec3) -> Quat {
         let theta = w.norm();
@@ -165,14 +165,14 @@ impl Quat {
         }
     }
 
-    /// Logarithmic map: log(q) returns the axis-angle vector θ u such that q = exp(θ u).
+    /// Logarithmic map: log(q) returns the axis-angle vector theta u such that q = exp(theta u).
     pub fn log(&self) -> Vec3 {
         let v_norm = self.v.norm();
         if v_norm < 1e-10 {
-            return Vec3::zeros();
+            return Vec3::zero();
         }
-        // For quaternion q = [cos(θ/2), sin(θ/2) * u], we have:
-        // θ = 2 * atan2(sin(θ/2), cos(θ/2)) = 2 * atan2(|v|, w)
+        // For quaternion q = [cos(theta/2), sin(theta/2) * u], we have:
+        // theta = 2 * atan2(sin(theta/2), cos(theta/2)) = 2 * atan2(|v|, w)
         let angle = 2.0 * v_norm.atan2(self.w);
         self.v * (angle / v_norm)
     }
@@ -181,13 +181,14 @@ impl Quat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
+
+    const EPS: f64 = 1e-10;
 
     #[test]
     fn test_identity() {
         let q = Quat::identity();
         assert_eq!(q.w, 1.0);
-        assert_eq!(q.v, Vec3::zeros());
+        assert_eq!(q.v, Vec3::zero());
     }
 
     #[test]
@@ -199,16 +200,16 @@ mod tests {
         let expected_w = (angle / 2.0).cos();
         let expected_z = (angle / 2.0).sin();
 
-        assert_relative_eq!(q.w, expected_w, epsilon = 1e-10);
-        assert_relative_eq!(q.v.z, expected_z, epsilon = 1e-10);
+        assert!((q.w - expected_w).abs() < EPS);
+        assert!((q.v.z - expected_z).abs() < EPS);
     }
 
     #[test]
     fn test_normalize() {
         let q = Quat::new(1.0, 2.0, 3.0, 4.0);
         let normalized = q.normalize();
-        let norm = (normalized.w * normalized.w + normalized.v.norm_squared()).sqrt();
-        assert_relative_eq!(norm, 1.0, epsilon = 1e-10);
+        let norm = (normalized.w * normalized.w + normalized.v.norm_sq()).sqrt();
+        assert!((norm - 1.0).abs() < EPS);
     }
 
     #[test]
@@ -222,8 +223,10 @@ mod tests {
         // Should equal 180 degree rotation about Z
         let expected = Quat::from_axis_angle(&axis, std::f64::consts::PI);
 
-        assert_relative_eq!(result.w, expected.w, epsilon = 1e-10);
-        assert_relative_eq!(result.v, expected.v, epsilon = 1e-10);
+        assert!((result.w - expected.w).abs() < EPS);
+        assert!((result.v.x - expected.v.x).abs() < EPS);
+        assert!((result.v.y - expected.v.y).abs() < EPS);
+        assert!((result.v.z - expected.v.z).abs() < EPS);
     }
 
     #[test]
@@ -236,7 +239,9 @@ mod tests {
         // 90 degree rotation about Z should map X to Y
         let x = Vec3::new(1.0, 0.0, 0.0);
         let y = m * x;
-        assert_relative_eq!(y, Vec3::new(0.0, 1.0, 0.0), epsilon = 1e-10);
+        assert!((y.x - 0.0).abs() < EPS);
+        assert!((y.y - 1.0).abs() < EPS);
+        assert!((y.z - 0.0).abs() < EPS);
     }
 
     #[test]
@@ -248,8 +253,8 @@ mod tests {
         let q2 = Quat::from_matrix(&m);
 
         // Quaternions q and -q represent the same rotation
-        let same = (q.w - q2.w).abs() < 1e-10 && (q.v - q2.v).norm() < 1e-10;
-        let negated = (q.w + q2.w).abs() < 1e-10 && (q.v + q2.v).norm() < 1e-10;
+        let same = (q.w - q2.w).abs() < EPS && (q.v - q2.v).norm() < EPS;
+        let negated = (q.w + q2.w).abs() < EPS && (q.v + q2.v).norm() < EPS;
 
         assert!(same || negated);
     }
@@ -259,7 +264,9 @@ mod tests {
         let w = Vec3::new(0.1, 0.2, 0.3);
         let q = Quat::exp(&w);
         let w2 = q.log();
-        assert_relative_eq!(w, w2, epsilon = 1e-10);
+        assert!((w.x - w2.x).abs() < EPS);
+        assert!((w.y - w2.y).abs() < EPS);
+        assert!((w.z - w2.z).abs() < EPS);
     }
 
     #[test]
@@ -267,7 +274,7 @@ mod tests {
         let q = Quat::new(0.5, 0.5, 0.5, 0.5).normalize();
         let conj = q.conjugate();
         let result = q.mul(&conj);
-        assert_relative_eq!(result.w, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(result.v.norm(), 0.0, epsilon = 1e-10);
+        assert!((result.w - 1.0).abs() < EPS);
+        assert!(result.v.norm() < EPS);
     }
 }

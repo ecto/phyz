@@ -20,7 +20,7 @@
 //!   Re(U_tri) = (U_tri + U_tri†) / 2
 
 use crate::hilbert::U1HilbertSpace;
-use nalgebra::DMatrix;
+use phyz_math::DMat;
 use phyz_regge::SimplicialComplex;
 
 /// Parameters for the Kogut-Susskind Hamiltonian.
@@ -55,9 +55,9 @@ pub fn build_hamiltonian(
     hilbert: &U1HilbertSpace,
     complex: &SimplicialComplex,
     params: &KSParams,
-) -> DMatrix<f64> {
+) -> DMat {
     let dim = hilbert.dim();
-    let mut h = DMatrix::zeros(dim, dim);
+    let mut h = DMat::zeros(dim, dim);
 
     add_electric_term(&mut h, hilbert, complex, params);
     add_magnetic_term(&mut h, hilbert, complex, params);
@@ -68,7 +68,7 @@ pub fn build_hamiltonian(
 /// Add the electric term: H_E = (g²/2) Σ_e n_e².
 /// This is diagonal in the electric basis.
 fn add_electric_term(
-    h: &mut DMatrix<f64>,
+    h: &mut DMat,
     hilbert: &U1HilbertSpace,
     _complex: &SimplicialComplex,
     params: &KSParams,
@@ -87,7 +87,7 @@ fn add_electric_term(
 /// Re(U) = (U + U†)/2, so we add both the forward and backward shifts
 /// with coefficient 1/2.
 fn add_magnetic_term(
-    h: &mut DMatrix<f64>,
+    h: &mut DMat,
     hilbert: &U1HilbertSpace,
     complex: &SimplicialComplex,
     params: &KSParams,
@@ -152,7 +152,7 @@ mod tests {
         let params = KSParams::default();
         let h = build_hamiltonian(&hs, &complex, &params);
 
-        let diff = (&h - h.transpose()).norm();
+        let diff = (&h - &h.transpose()).norm();
         assert!(diff < 1e-12, "H not symmetric: diff={diff}");
     }
 
@@ -284,7 +284,7 @@ mod tests {
         let h2 = build_hamiltonian(&hs, &complex, &p2);
 
         // Build electric-only for reference.
-        let mut h_e = DMatrix::zeros(hs.dim(), hs.dim());
+        let mut h_e = DMat::zeros(hs.dim(), hs.dim());
         add_electric_term(&mut h_e, &hs, &complex, &p1);
 
         // h2 - h1 should equal the extra magnetic contribution.

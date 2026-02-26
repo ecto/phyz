@@ -9,13 +9,13 @@ use phyz_model::{JointType, Model, State};
 fn joint_velocity(joint: &phyz_model::Joint, qd: &[f64]) -> SpatialVec {
     match joint.joint_type {
         JointType::Revolute | JointType::Hinge => {
-            SpatialVec::new(joint.axis * qd[0], Vec3::zeros())
+            SpatialVec::new(joint.axis * qd[0], Vec3::zero())
         }
         JointType::Prismatic | JointType::Slide => {
-            SpatialVec::new(Vec3::zeros(), joint.axis * qd[0])
+            SpatialVec::new(Vec3::zero(), joint.axis * qd[0])
         }
         JointType::Spherical | JointType::Ball => {
-            SpatialVec::new(Vec3::new(qd[0], qd[1], qd[2]), Vec3::zeros())
+            SpatialVec::new(Vec3::new(qd[0], qd[1], qd[2]), Vec3::zero())
         }
         JointType::Free => SpatialVec::new(
             Vec3::new(qd[0], qd[1], qd[2]),
@@ -36,7 +36,7 @@ pub fn rnea(model: &Model, state: &State, qdd: &DVec) -> DVec {
     let mut vel = vec![SpatialVec::zero(); nb];
     let mut acc = vec![SpatialVec::zero(); nb];
 
-    let a0 = SpatialVec::new(Vec3::zeros(), -model.gravity);
+    let a0 = SpatialVec::new(Vec3::zero(), -model.gravity);
 
     // ── Forward pass: velocities and accelerations ──
     for i in 0..nb {
@@ -89,8 +89,8 @@ pub fn rnea(model: &Model, state: &State, qdd: &DVec) -> DVec {
             tau[v_idx] = s_i.dot(&forces[i]);
         } else if ndof > 1 {
             let s_mat = joint.motion_subspace_matrix(); // 6 x ndof
-            let f_vec = nalgebra::DVector::from_column_slice(forces[i].data.as_slice());
-            let phyz_vec = s_mat.transpose() * &f_vec; // ndof x 1
+            let f_vec = crate::aba::sv_to_dvec(&forces[i]);
+            let phyz_vec = s_mat.transpose().mul_vec(&f_vec); // ndof x 1
             for k in 0..ndof {
                 tau[v_idx + k] = phyz_vec[k];
             }

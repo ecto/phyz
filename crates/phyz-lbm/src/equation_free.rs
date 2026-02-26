@@ -3,7 +3,7 @@
 //! For multi-scale systems, extract low-dimensional dynamics from microscopic simulators
 //! without deriving explicit macroscopic equations.
 
-use nalgebra as na;
+use phyz_math::DMat;
 
 /// Trait for fine-scale solvers (microscopic dynamics).
 pub trait FineSolver {
@@ -163,29 +163,34 @@ pub fn effective_information(micro_states: &[Vec<f64>], coarse_dim: usize) -> f6
         return 1.0;
     }
 
-    // Build data matrix (samples × features)
-    let mut data = na::DMatrix::zeros(n_samples, n_features);
-    for (i, state) in micro_states.iter().enumerate() {
-        for (j, &val) in state.iter().enumerate() {
-            data[(i, j)] = val;
-        }
-    }
+    // Build data matrix (samples x features)
+    let mut data = DMat::from_fn(n_samples, n_features, |i, j| micro_states[i][j]);
 
-    // Center the data
-    let mean = data.column_mean();
+    // Center the data (compute column means)
+    let mut mean = vec![0.0f64; n_features];
+    for j in 0..n_features {
+        for i in 0..n_samples {
+            mean[j] += data[(i, j)];
+        }
+        mean[j] /= n_samples as f64;
+    }
     for i in 0..n_samples {
         for j in 0..n_features {
-            data[(i, j)] -= mean[j];
+            let val = data[(i, j)] - mean[j];
+            data.set(i, j, val);
         }
     }
 
-    // Compute covariance matrix
-    let cov = (data.transpose() * &data) / (n_samples as f64);
+    // Compute covariance matrix: C = D^T * D / n
+    let dt = data.transpose();
+    let cov = dt.mul_mat(&data).scale(1.0 / n_samples as f64);
 
     // Compute eigenvalues (variance along principal components)
     let eigen = cov.symmetric_eigen();
 
-    let mut eigenvalues: Vec<f64> = eigen.eigenvalues.iter().copied().collect();
+    let mut eigenvalues: Vec<f64> = (0..eigen.eigenvalues.len())
+        .map(|i| eigen.eigenvalues[i])
+        .collect();
     eigenvalues.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
     let total_variance: f64 = eigenvalues.iter().sum();

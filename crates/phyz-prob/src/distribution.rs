@@ -100,7 +100,8 @@ impl Distribution<DVec> {
         let n = self.samples[0].len();
         let mut mean = DVec::zeros(n);
         for (sample, weight) in self.samples.iter().zip(&self.weights) {
-            mean += sample * *weight;
+            let scaled = sample * *weight;
+            mean += &scaled;
         }
         mean
     }
@@ -113,7 +114,9 @@ impl Distribution<DVec> {
 
         for (sample, weight) in self.samples.iter().zip(&self.weights) {
             let diff = sample - &mean;
-            cov += diff.clone() * diff.transpose() * *weight;
+            // Weighted outer product: w * diff * diff^T
+            let outer = DMat::from_fn(n, n, |i, j| diff[i] * diff[j] * *weight);
+            cov = &cov + &outer;
         }
         cov
     }

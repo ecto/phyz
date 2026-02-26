@@ -37,7 +37,7 @@ pub fn epa_penetration_rot(
     // For simplicity, we'll build a small initial tetrahedron
     let support = |d: &Vec3| {
         let sa = geom_a.support(d, pos_a, rot_a);
-        let sb = geom_b.support(&-d, pos_b, rot_b);
+        let sb = geom_b.support(&(-*d), pos_b, rot_b);
         sa - sb
     };
 
@@ -141,7 +141,7 @@ impl Face {
         let mut normal = ab.cross(&ac);
         let norm = normal.norm();
         if norm > 1e-10 {
-            normal /= norm;
+            normal = normal / norm;
         }
         let distance = normal.dot(&a);
         // Ensure normal points towards origin

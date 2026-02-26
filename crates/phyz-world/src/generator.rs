@@ -43,7 +43,7 @@ impl WorldGenerator {
                 SpatialTransform::identity()
             } else {
                 // Previous link's endpoint
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -length))
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length))
             };
 
             // Cylinder inertia: I_xx = I_yy = m*L^2/12 + m*(L/2)^2 = m*L^2/3
@@ -108,7 +108,7 @@ impl WorldGenerator {
                     0.0,
                 )),
             );
-            let upper_joint = SpatialTransform::translation(*leg_pos);
+            let upper_joint = SpatialTransform::from_translation(*leg_pos);
             builder = builder.add_revolute_body(
                 &format!("leg{}_upper", leg_idx),
                 0, // parent is torso (body 0)
@@ -118,7 +118,7 @@ impl WorldGenerator {
 
             // Lower leg segment attached to upper leg
             let lower_leg_inertia = upper_leg_inertia;
-            let lower_joint = SpatialTransform::translation(Vec3::new(0.0, 0.0, -leg_length));
+            let lower_joint = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -leg_length));
             let upper_body_idx = 1 + leg_idx * 2;
             builder = builder.add_revolute_body(
                 &format!("leg{}_lower", leg_idx),
@@ -176,7 +176,7 @@ impl WorldGenerator {
             builder = builder.add_fixed_body(
                 &format!("obstacle{}", i),
                 0, // parent is platform
-                SpatialTransform::translation(obs_pos),
+                SpatialTransform::from_translation(obs_pos),
                 obs_inertia,
             );
         }
@@ -219,7 +219,7 @@ impl WorldGenerator {
                             -length,
                         );
                         (
-                            SpatialTransform::translation(offset),
+                            SpatialTransform::from_translation(offset),
                             format!("node_{}_{}", body_count, i),
                         )
                     };

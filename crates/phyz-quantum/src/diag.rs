@@ -1,9 +1,9 @@
 //! Dense eigendecomposition for small Hamiltonians.
 //!
-//! Uses nalgebra's `SymmetricEigen` for real symmetric matrices.
+//! Uses `SymmetricEigen` for real symmetric matrices.
 //! Suitable for Hilbert spaces up to ~50K dimension.
 
-use nalgebra::{DMatrix, DVector};
+use phyz_math::{DMat, DVec};
 
 /// Eigenvalues and eigenstates from diagonalization.
 #[derive(Debug, Clone)]
@@ -11,7 +11,7 @@ pub struct Spectrum {
     /// Eigenvalues in ascending order.
     pub energies: Vec<f64>,
     /// Corresponding eigenstates (columns of the unitary matrix).
-    pub states: Vec<DVector<f64>>,
+    pub states: Vec<DVec>,
 }
 
 impl Spectrum {
@@ -21,7 +21,7 @@ impl Spectrum {
     }
 
     /// Ground state vector.
-    pub fn ground_state(&self) -> &DVector<f64> {
+    pub fn ground_state(&self) -> &DVec {
         &self.states[0]
     }
 
@@ -38,8 +38,8 @@ impl Spectrum {
 ///
 /// If `n_lowest` is `Some(n)`, only the `n` lowest eigenvalues/states
 /// are returned (still computed via full diagonalization).
-pub fn diagonalize(h: &DMatrix<f64>, n_lowest: Option<usize>) -> Spectrum {
-    let eig = h.clone().symmetric_eigen();
+pub fn diagonalize(h: &DMat, n_lowest: Option<usize>) -> Spectrum {
+    let eig = h.symmetric_eigen();
 
     // Sort by eigenvalue.
     let mut indexed: Vec<(usize, f64)> = eig.eigenvalues.iter().enumerate().map(|(i, &e)| (i, e)).collect();
@@ -51,9 +51,9 @@ pub fn diagonalize(h: &DMatrix<f64>, n_lowest: Option<usize>) -> Spectrum {
     };
 
     let energies: Vec<f64> = indexed[..n].iter().map(|&(_, e)| e).collect();
-    let states: Vec<DVector<f64>> = indexed[..n]
+    let states: Vec<DVec> = indexed[..n]
         .iter()
-        .map(|&(i, _)| eig.eigenvectors.column(i).into_owned())
+        .map(|&(i, _)| eig.eigenvectors.column(i))
         .collect();
 
     Spectrum { energies, states }
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_identity_spectrum() {
-        let h = DMatrix::identity(3, 3);
+        let h = DMat::identity(3);
         let spec = diagonalize(&h, None);
 
         assert_eq!(spec.energies.len(), 3);
@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn test_diagonal_matrix() {
-        let h = DMatrix::from_diagonal(&DVector::from_vec(vec![3.0, 1.0, 2.0]));
+        let h = DMat::from_diagonal(&DVec::from_vec(vec![3.0, 1.0, 2.0]));
         let spec = diagonalize(&h, None);
 
         assert!((spec.energies[0] - 1.0).abs() < 1e-12);
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_n_lowest() {
-        let h = DMatrix::from_diagonal(&DVector::from_vec(vec![3.0, 1.0, 2.0]));
+        let h = DMat::from_diagonal(&DVec::from_vec(vec![3.0, 1.0, 2.0]));
         let spec = diagonalize(&h, Some(2));
 
         assert_eq!(spec.energies.len(), 2);
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_gap() {
-        let h = DMatrix::from_diagonal(&DVector::from_vec(vec![3.0, 1.0, 2.0]));
+        let h = DMat::from_diagonal(&DVec::from_vec(vec![3.0, 1.0, 2.0]));
         let spec = diagonalize(&h, None);
         assert!((spec.gap() - 1.0).abs() < 1e-12);
     }

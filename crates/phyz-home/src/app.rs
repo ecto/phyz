@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use wasm_bindgen::prelude::*;
@@ -68,30 +68,31 @@ pub async fn run() {
         Ok(results) => {
             let n_before = renderer.borrow().points.len();
             let mut r = renderer.borrow_mut();
-            // Build a set of existing (log_g2, a_cut) pairs to avoid duplicates
             let mut cache_points = crate::cache::load();
             for res in &results {
                 if let Some(ref cr) = res.consensus_result {
-                    let log_g2 = res.params.g_squared.log10();
-                    // Skip if we already have this point from cache (fuzzy match)
-                    let already = r.points.iter().any(|p| {
-                        (p.log_g2 as f64 - log_g2).abs() < 1e-6
-                            && (p.a_cut as f64 - cr.a_cut).abs() < 1e-6
-                    });
-                    if !already {
-                        r.add_point(log_g2, cr.s_ee, cr.a_cut);
-                        // Also mark as settled
-                        r.points.last_mut().unwrap().age = 3.0;
-                        cache_points.push(crate::cache::CachedPoint {
-                            log_g2, s_ee: cr.s_ee, a_cut: cr.a_cut,
+                    let log_g2 = res.params.coupling_g2.log10();
+                    // Expand per-partition entropies into viz points
+                    for (i, &s_ee) in cr.entropy_per_partition.iter().enumerate() {
+                        let a_cut = i as f64;
+                        let already = r.points.iter().any(|p| {
+                            (p.log_g2 as f64 - log_g2).abs() < 1e-6
+                                && (p.a_cut as f64 - a_cut).abs() < 1e-6
                         });
+                        if !already {
+                            r.add_point(log_g2, s_ee, a_cut);
+                            r.points.last_mut().unwrap().age = 3.0;
+                            cache_points.push(crate::cache::CachedPoint {
+                                log_g2, s_ee, a_cut,
+                                partition_index: i,
+                            });
+                        }
                     }
                 }
             }
             let n_new = r.points.len() - n_before;
             dom::set_text("n-points", &r.points.len().to_string());
             if n_new > 0 {
-                // Persist merged data
                 drop(r);
                 crate::cache::save(&cache_points);
                 web_sys::console::log_1(
@@ -128,20 +129,20 @@ pub async fn run() {
             }
 
             // Fetch server stats to check if display_name is set
-            let needs_name = match client.fetch_my_stats(&contributor_id).await {
+            let display_name = match client.fetch_my_stats(&contributor_id).await {
                 Ok(stats) => {
                     dom::set_text("my-count", &stats.total_units.to_string());
-                    stats.display_name.is_none()
+                    stats.display_name
                 }
-                Err(_) => true,
+                Err(_) => None,
             };
 
-            if needs_name {
+            if display_name.is_none() {
                 // Show display name prompt
                 dom::set_class("name-modal", "");
             }
 
-            show_auth_ui(s);
+            show_auth_ui(display_name.as_deref().unwrap_or(&s.email));
         }
     }
 
@@ -354,7 +355,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "Workers unavailable");
-            start_render_loop(renderer.clone(), None);
+            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)));
             return;
         }
     };
@@ -424,6 +425,28 @@ pub async fn run() {
         .set_onclick(Some(cta_cb.as_ref().unchecked_ref()));
     cta_cb.forget();
 
+    // Wire up mute button
+    let muted = Rc::new(Cell::new(crate::cache::load_muted()));
+    if muted.get() {
+        dom::set_class("mute-btn", "muted");
+    }
+    {
+        let muted = muted.clone();
+        let mute_cb = Closure::wrap(Box::new(move || {
+            let new_val = !muted.get();
+            muted.set(new_val);
+            crate::cache::save_muted(new_val);
+            if new_val {
+                dom::set_class("mute-btn", "muted");
+            } else {
+                dom::set_class("mute-btn", "");
+            }
+        }) as Box<dyn FnMut()>);
+        dom::get_el("mute-btn")
+            .set_onclick(Some(mute_cb.as_ref().unchecked_ref()));
+        mute_cb.forget();
+    }
+
     // Wire up ? button — opens splash modal
     let info_cb = Closure::wrap(Box::new(move || {
         dom::set_class("splash-backdrop", "");
@@ -475,7 +498,7 @@ pub async fn run() {
     wire_mouse_controls(&renderer);
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator));
+    start_render_loop(renderer, Some(coordinator), muted);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -599,13 +622,18 @@ fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
     touchend.forget();
 }
 
-fn start_render_loop(renderer: Rc<RefCell<Renderer>>, coordinator: Option<Rc<Coordinator>>) {
+fn start_render_loop(
+    renderer: Rc<RefCell<Renderer>>,
+    coordinator: Option<Rc<Coordinator>>,
+    muted: Rc<Cell<bool>>,
+) {
     let r = renderer;
     let coord = coordinator;
     let frame_count = Rc::new(RefCell::new(0u32));
     let last_count = Rc::new(RefCell::new(0u32));
     let last_rate_time = Rc::new(RefCell::new(0.0f64));
     let completion_handled = Rc::new(RefCell::new(false));
+    let last_phase = Rc::new(Cell::new(0u32));
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -673,22 +701,44 @@ fn start_render_loop(renderer: Rc<RefCell<Renderer>>, coordinator: Option<Rc<Coo
         }
 
         if count % 60 == 0 {
+            const PHASE1_TOTAL: usize = 7200;
+            const PHASE2_TOTAL: usize = 6100;
+            const GRAND_TOTAL: usize = 13300;
+
             let n_points = r.borrow().points.len();
             dom::set_text("n-points", &n_points.to_string());
 
-            // Progress bar — cycles each round of 1250
-            let in_round = n_points % 1250;
-            let round = n_points / 1250 + 1;
-            let pct = in_round as f64 / 1250.0 * 100.0;
-            dom::set_style("progress-fill", &format!(
-                "width:{pct:.1}%"
-            ));
-            dom::set_text("progress-num", &in_round.to_string());
-            dom::set_text("progress-round", &round.to_string());
-
             if let Some(ref c) = coord {
-                let completed = c.completed_count();
+                let completed = c.completed_count() as usize;
                 dom::set_text("my-count", &completed.to_string());
+
+                // Phase-aware progress
+                let (phase, phase_done, phase_total) = if completed < PHASE1_TOTAL {
+                    (1, completed, PHASE1_TOTAL)
+                } else {
+                    (2, completed - PHASE1_TOTAL, PHASE2_TOTAL)
+                };
+                let pct = phase_done as f64 / phase_total as f64 * 100.0;
+                dom::set_style("progress-fill", &format!("width:{pct:.1}%"));
+                dom::set_text("progress-num", &phase_done.to_string());
+                dom::set_text("progress-total", &phase_total.to_string());
+                dom::set_text("progress-phase", &phase.to_string());
+
+                // Phase completion celebration
+                let completed_phase = if completed >= GRAND_TOTAL {
+                    2u32
+                } else if completed >= PHASE1_TOTAL {
+                    1
+                } else {
+                    0
+                };
+                if completed_phase > last_phase.get() {
+                    last_phase.set(completed_phase);
+                    spawn_confetti();
+                    if !muted.get() {
+                        play_success_sound();
+                    }
+                }
 
                 // Compute rate
                 let now = js_sys::Date::now();
@@ -697,12 +747,12 @@ fn start_render_loop(renderer: Rc<RefCell<Renderer>>, coordinator: Option<Rc<Coo
                 if prev_time > 0.0 {
                     let dt = (now - prev_time) / 1000.0;
                     if dt > 0.0 {
-                        let rate = (completed - prev_count) as f64 / dt;
+                        let rate = (completed as u32 - prev_count) as f64 / dt;
                         dom::set_text("my-rate", &format!("{rate:.1}"));
                     }
                 }
                 *lrt.borrow_mut() = now;
-                *lc.borrow_mut() = completed;
+                *lc.borrow_mut() = completed as u32;
 
                 // Compute G_N from all data
                 if n_points >= 10 {
@@ -738,6 +788,96 @@ fn start_render_loop(renderer: Rc<RefCell<Renderer>>, coordinator: Option<Rc<Coo
     }) as Box<dyn FnMut()>));
 
     dom::request_animation_frame(g.borrow().as_ref().unwrap());
+}
+
+fn spawn_confetti() {
+    let doc = dom::document();
+    let Some(container) = doc.get_element_by_id("confetti-container") else {
+        return;
+    };
+    let colors = ["#44cc66", "#ccaa33", "#cc4444", "#4488cc", "#cc44cc", "#44cccc"];
+
+    // Simple seeded RNG from frame time
+    let mut seed: u64 = js_sys::Date::now() as u64;
+    let mut rng = |max: f64| -> f64 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed as f64 / u64::MAX as f64) * max
+    };
+
+    for _ in 0..60 {
+        let el = doc.create_element("div").unwrap();
+        el.set_class_name("confetti-particle");
+        let x = rng(100.0);
+        let size = 4.0 + rng(4.0);
+        let delay = rng(0.5);
+        let duration = 1.5 + rng(1.0);
+        let color = colors[rng(colors.len() as f64) as usize % colors.len()];
+        el.set_attribute(
+            "style",
+            &format!(
+                "left:{x:.0}%;width:{size:.0}px;height:{size:.0}px;\
+                 background:{color};animation-duration:{duration:.2}s;\
+                 animation-delay:{delay:.2}s"
+            ),
+        )
+        .ok();
+        container.append_child(&el).ok();
+    }
+
+    // Clear after 3s
+    let window = dom::window();
+    let clear_cb = Closure::once(move || {
+        container.set_inner_html("");
+    });
+    window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            clear_cb.as_ref().unchecked_ref(),
+            3000,
+        )
+        .ok();
+    clear_cb.forget();
+}
+
+fn play_success_sound() {
+    let ctx = match web_sys::AudioContext::new() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let gain = ctx.create_gain().unwrap();
+    gain.gain().set_value(0.15);
+    gain.connect_with_audio_node(&ctx.destination()).ok();
+
+    // C5 (523 Hz) for 100ms
+    let osc1 = ctx.create_oscillator().unwrap();
+    osc1.set_type(web_sys::OscillatorType::Sine);
+    osc1.frequency().set_value(523.0);
+    osc1.connect_with_audio_node(&gain).ok();
+    let now = ctx.current_time();
+    osc1.start_with_when(now).ok();
+    osc1.stop_with_when(now + 0.1).ok();
+
+    // E5 (659 Hz) for 100ms, starting after first note
+    let osc2 = ctx.create_oscillator().unwrap();
+    osc2.set_type(web_sys::OscillatorType::Sine);
+    osc2.frequency().set_value(659.0);
+    osc2.connect_with_audio_node(&gain).ok();
+    osc2.start_with_when(now + 0.1).ok();
+    osc2.stop_with_when(now + 0.2).ok();
+
+    // Close context after sound finishes
+    let close_cb = Closure::once(move || {
+        ctx.close().ok();
+    });
+    dom::window()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            close_cb.as_ref().unchecked_ref(),
+            300,
+        )
+        .ok();
+    close_cb.forget();
 }
 
 /// Seed demo data points that mimic the S_EE ~ (1/4G_N) * A_cut relationship.
@@ -777,10 +917,10 @@ fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
     }
 }
 
-fn show_auth_ui(session: &AuthSession) {
+fn show_auth_ui(name: &str) {
     dom::set_class("auth-anon", "hidden");
     dom::set_class("auth-user", "");
-    dom::set_text("user-name", &session.email);
+    dom::set_text("user-name", name);
     dom::set_class("auth-modal", "hidden");
 }
 

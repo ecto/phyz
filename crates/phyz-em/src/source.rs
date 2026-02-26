@@ -130,12 +130,12 @@ impl Source {
                                 let r_vec = p - pos;
 
                                 // Distance from loop axis
-                                let r_perp = r_vec - normal * r_vec.dot(normal);
+                                let r_perp = r_vec - *normal * r_vec.dot(*normal);
                                 let dist = r_perp.norm();
 
                                 // If close to loop radius, apply tangential current
                                 if (dist - radius).abs() < grid.dx * 2.0 {
-                                    let tangent = normal.cross(&r_perp).normalize();
+                                    let tangent = normal.cross(r_perp).normalize();
 
                                     // Add to H-field (current creates magnetic field)
                                     let h_value = value * 0.1; // Scale for stability

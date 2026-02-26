@@ -147,7 +147,7 @@ impl MpmSolver {
                 if w > 1e-12 {
                     // Compute gradient before borrowing grid
                     let grad_w = self.weight_gradient(&p.x, &xi);
-                    let force = -p.volume * stress * grad_w;
+                    let force = -(stress * grad_w) * p.volume;
 
                     // Now borrow grid mutably
                     let node = self.grid.entry(idx).or_default();
@@ -230,7 +230,7 @@ impl MpmSolver {
 
             let mut v_pic = Vec3::zeros();
             let mut v_old_grid = Vec3::zeros();
-            let mut grad_v = Mat3::zeros();
+            let mut grad_v = Mat3::zero();
             let mut total_w = 0.0;
 
             for &idx in &neighbors {
@@ -252,7 +252,14 @@ impl MpmSolver {
 
                         // Velocity gradient for APIC
                         let grad_w = self.weight_gradient(&p.x, &xi);
-                        grad_v += node.velocity * grad_w.transpose();
+                        // Outer product: v * grad_w^T
+                        let v = node.velocity;
+                        let g = grad_w;
+                        grad_v = grad_v + Mat3::new(
+                            v.x * g.x, v.x * g.y, v.x * g.z,
+                            v.y * g.x, v.y * g.y, v.y * g.z,
+                            v.z * g.x, v.z * g.y, v.z * g.z,
+                        );
 
                         total_w += w;
                     }

@@ -34,7 +34,7 @@ impl Particle {
             mass,
             volume,
             f: Mat3::identity(),
-            c: Mat3::zeros(),
+            c: Mat3::zero(),
             j: 1.0,
             material,
         }
@@ -43,7 +43,7 @@ impl Particle {
     /// Update deformation gradient from velocity gradient.
     pub fn update_deformation(&mut self, grad_v: &Mat3, dt: f64) {
         // F_new = (I + dt * ∇v) * F_old
-        self.f = (Mat3::identity() + grad_v * dt) * self.f;
+        self.f = (Mat3::identity() + *grad_v * dt) * self.f;
         self.j = self.f.determinant();
 
         // Prevent degenerate deformation

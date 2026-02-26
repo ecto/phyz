@@ -18,6 +18,7 @@ use crate::foliation::{flat_minkowski_sq_lengths, foliated_hypercubic, FoliatedC
 use crate::gem::{b_grav_tensor_frobenius, extract_gem_fields, induced_gem_emf, GemFields};
 use crate::matter::{solve_regge_with_source, MassCurrentLoop, StressEnergy};
 use crate::tent_move::{tent_edges_for_vertex, TentConfig};
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 /// Configuration for a gravitomagnetic transformer experiment.
@@ -190,8 +191,12 @@ pub fn run_transformer(
     let flat_sq = flat_minkowski_sq_lengths(&fc, config.spacing, config.dt);
     let gem_flat = extract_gem_fields(&fc.complex, &fc, &flat_sq, config.dt, config.spacing);
 
-    let measurements: Vec<TransformerMeasurement> = amplitudes
-        .par_iter()
+    #[cfg(feature = "parallel")]
+    let iter = amplitudes.par_iter();
+    #[cfg(not(feature = "parallel"))]
+    let iter = amplitudes.iter();
+
+    let measurements: Vec<TransformerMeasurement> = iter
         .map(|&amplitude| {
             run_single_amplitude(
                 &fc,

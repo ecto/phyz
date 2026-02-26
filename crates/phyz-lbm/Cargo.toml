@@ -9,6 +9,5 @@ description = "Lattice Boltzmann Method for emergent fluid dynamics in phyz"
 
 [dependencies]
 phyz-math = { workspace = true }
-nalgebra.workspace = true
 
 [dev-dependencies]

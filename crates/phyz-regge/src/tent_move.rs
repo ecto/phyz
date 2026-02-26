@@ -18,7 +18,7 @@ use crate::lorentzian_regge::{
     local_lorentzian_regge_action_grad, local_lorentzian_regge_hessian,
     lorentzian_regge_action_grad,
 };
-use nalgebra::{DMatrix, DVector};
+use phyz_math::{DMat, DVec};
 
 /// Configuration for tent-move time evolution.
 #[derive(Debug, Clone)]
@@ -123,7 +123,7 @@ pub fn solve_regge_at_edges(
         let jac = if config.use_analytical_jacobian {
             local_lorentzian_regge_hessian(complex, sq_lengths, free_edges, config.fd_eps)
         } else {
-            let mut j = DMatrix::zeros(n_free, n_free);
+            let mut j = DMat::zeros(n_free, n_free);
             for k in 0..n_free {
                 let ek = free_edges[k];
                 let old = sq_lengths[ek];
@@ -144,7 +144,7 @@ pub fn solve_regge_at_edges(
         };
 
         // SVD solve: J * delta = -residual (handles gauge null directions)
-        let rhs = DVector::from_iterator(n_free, residual.iter().map(|r| -r));
+        let rhs = DVec::from_fn(n_free, |i| -residual[i]);
         let svd = jac.svd(true, true);
         let delta = svd
             .solve(&rhs, config.svd_tol)

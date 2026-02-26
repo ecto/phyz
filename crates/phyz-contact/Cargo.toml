@@ -8,7 +8,6 @@ homepage.workspace = true
 description = "Soft contact dynamics and penalty-based contact resolution for phyz"
 
 [dependencies]
-nalgebra.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-collision.workspace = true

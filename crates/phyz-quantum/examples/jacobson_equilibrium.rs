@@ -35,12 +35,11 @@ fn main() {
     );
 
     let all_partitions = vertex_bipartitions(complex.n_vertices);
-    // Singleton partitions produce zero ∂S_EE on complete-graph topology
-    // (ground state entropy independent of geometry when |A|=1).
-    // Filter to |A| ≥ 2 for regression sections.
-    let partitions: Vec<&Vec<usize>> = all_partitions.iter().filter(|p| p.len() >= 2).collect();
+    // Balanced partitions (|A|=3) have maximal boundary cut on V=6 →
+    // strongest ∂S_EE signal. Non-balanced partitions add noise.
+    let partitions: Vec<&Vec<usize>> = all_partitions.iter().filter(|p| p.len() == 3).collect();
     eprintln!(
-        "Partitions: {} total, {} with |A|≥2",
+        "Partitions: {} total, {} balanced (|A|=3)",
         all_partitions.len(),
         partitions.len()
     );
@@ -156,13 +155,17 @@ fn main() {
 
     let mut pooled_ds_ee: Vec<f64> = Vec::new();
     let mut pooled_ds_regge: Vec<f64> = Vec::new();
+    let mut pooled_ds_ee_proj: Vec<f64> = Vec::new();
+    let mut pooled_ds_regge_proj: Vec<f64> = Vec::new();
 
     for geo in &geometries {
         let t0 = Instant::now();
         let regge_g = regge_action_grad(&complex, &geo.lengths);
+        let (regge_proj, _) = project_out_conformal(&regge_g);
 
         for part in &partitions {
             let ds_ee = entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
+            let (ee_proj, _) = project_out_conformal(&ds_ee);
 
             for ei in 0..n_edges {
                 println!(
@@ -174,21 +177,32 @@ fn main() {
                 );
                 pooled_ds_ee.push(ds_ee[ei]);
                 pooled_ds_regge.push(regge_g[ei]);
+                pooled_ds_ee_proj.push(ee_proj[ei]);
+                pooled_ds_regge_proj.push(regge_proj[ei]);
             }
         }
         let elapsed = t0.elapsed().as_secs_f64();
         eprintln!("  {} done ({elapsed:.1}s)", geo.name);
     }
 
-    // Correlation.
-    let (slope, intercept, r2) = linear_regression(&pooled_ds_regge, &pooled_ds_ee);
+    // Raw correlation.
+    let (slope_raw, intercept_raw, r2_raw) = linear_regression(&pooled_ds_regge, &pooled_ds_ee);
+    // Conformal-projected correlation.
+    let (slope, intercept, r2) = linear_regression(&pooled_ds_regge_proj, &pooled_ds_ee_proj);
     println!();
-    println!("# Off-shell correlation (pooled):");
+    println!("# Off-shell correlation (pooled, raw):");
     println!("# N = {} data points", pooled_ds_ee.len());
+    println!("# slope = {slope_raw:.6e}");
+    println!("# intercept = {intercept_raw:.6e}");
+    println!("# R^2 = {r2_raw:.6}");
+    println!();
+    println!("# Off-shell correlation (pooled, conformal-projected):");
+    println!("# N = {} data points", pooled_ds_ee_proj.len());
     println!("# slope = {slope:.6e}");
     println!("# intercept = {intercept:.6e}");
     println!("# R^2 = {r2:.6}");
-    eprintln!("  Pooled: slope={slope:.4e}, R²={r2:.4}");
+    eprintln!("  Pooled raw: slope={slope_raw:.4e}, R²={r2_raw:.4}");
+    eprintln!("  Pooled proj: slope={slope:.4e}, R²={r2:.4}");
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -202,6 +216,8 @@ fn main() {
 
     let mut rt_ds_ee: Vec<f64> = Vec::new();
     let mut rt_da_cut: Vec<f64> = Vec::new();
+    let mut rt_ds_ee_proj: Vec<f64> = Vec::new();
+    let mut rt_da_cut_proj: Vec<f64> = Vec::new();
 
     // Use flat + a few off-shell geometries.
     let rt_geos: Vec<GeoSpec> = {
@@ -227,6 +243,8 @@ fn main() {
         for part in &partitions {
             let ds_ee = entanglement_gradient_su2(&complex, &geo.lengths, part, &config);
             let da_cut = cut_area_gradient(&complex, part, &geo.lengths);
+            let (ee_proj, _) = project_out_conformal(&ds_ee);
+            let (cut_proj, _) = project_out_conformal(&da_cut);
 
             for ei in 0..n_edges {
                 println!(
@@ -238,24 +256,30 @@ fn main() {
                 );
                 rt_ds_ee.push(ds_ee[ei]);
                 rt_da_cut.push(da_cut[ei]);
+                rt_ds_ee_proj.push(ee_proj[ei]);
+                rt_da_cut_proj.push(cut_proj[ei]);
             }
         }
         let elapsed = t0.elapsed().as_secs_f64();
         eprintln!("  RT {} done ({elapsed:.1}s)", geo.name);
     }
 
-    let (rt_slope, _rt_int, rt_r2) = linear_regression(&rt_da_cut, &rt_ds_ee);
+    let (rt_slope_raw, _rt_int_raw, rt_r2_raw) = linear_regression(&rt_da_cut, &rt_ds_ee);
+    let (rt_slope, _rt_int, rt_r2) = linear_regression(&rt_da_cut_proj, &rt_ds_ee_proj);
     let rt_gn = if rt_slope.abs() > 1e-15 {
         1.0 / (4.0 * rt_slope)
     } else {
         f64::INFINITY
     };
     println!();
-    println!("# RT differential summary:");
+    println!("# RT differential summary (raw):");
+    println!("# slope = {rt_slope_raw:.6e}, R^2 = {rt_r2_raw:.6}");
+    println!("# RT differential summary (conformal-projected):");
     println!("# slope = {rt_slope:.6e} (≈ 1/4G_N)");
     println!("# R^2 = {rt_r2:.6}");
     println!("# G_N = {rt_gn:.6e}");
-    eprintln!("  RT: slope={rt_slope:.4e}, R²={rt_r2:.4}, G_N={rt_gn:.4e}");
+    eprintln!("  RT raw: R²={rt_r2_raw:.4}");
+    eprintln!("  RT proj: slope={rt_slope:.4e}, R²={rt_r2:.4}, G_N={rt_gn:.4e}");
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
@@ -264,7 +288,7 @@ fn main() {
     eprintln!("\n── Section 4: Coupling Scan ──");
 
     println!("# Section 4: R^2 vs g^2 for off-shell correlation");
-    println!("g_squared\tslope\tR^2");
+    println!("g_squared\tslope_raw\tR^2_raw\tslope_proj\tR^2_proj");
 
     for &g_sq in &[0.5, 1.0, 2.0, 5.0] {
         let t0 = Instant::now();
@@ -275,6 +299,8 @@ fn main() {
 
         let mut scan_ds_ee: Vec<f64> = Vec::new();
         let mut scan_ds_regge: Vec<f64> = Vec::new();
+        let mut scan_ds_ee_proj: Vec<f64> = Vec::new();
+        let mut scan_ds_regge_proj: Vec<f64> = Vec::new();
 
         // Use just 2 off-shell geometries for speed.
         for &seed in &[1u64, 2] {
@@ -283,30 +309,35 @@ fn main() {
                 continue;
             }
             let regge_g = regge_action_grad(&complex, &l);
+            let (regge_proj, _) = project_out_conformal(&regge_g);
             for part in &partitions {
                 let ds_ee = entanglement_gradient_su2(&complex, &l, part, &scan_config);
+                let (ee_proj, _) = project_out_conformal(&ds_ee);
                 for ei in 0..n_edges {
                     scan_ds_ee.push(ds_ee[ei]);
                     scan_ds_regge.push(regge_g[ei]);
+                    scan_ds_ee_proj.push(ee_proj[ei]);
+                    scan_ds_regge_proj.push(regge_proj[ei]);
                 }
             }
         }
 
-        let (s, _i, r2) = linear_regression(&scan_ds_regge, &scan_ds_ee);
-        println!("{g_sq:.6e}\t{s:.6e}\t{r2:.6}");
+        let (s_raw, _i_raw, r2_raw) = linear_regression(&scan_ds_regge, &scan_ds_ee);
+        let (s, _i, r2) = linear_regression(&scan_ds_regge_proj, &scan_ds_ee_proj);
+        println!("{g_sq:.6e}\t{s_raw:.6e}\t{r2_raw:.6}\t{s:.6e}\t{r2:.6}");
         let elapsed = t0.elapsed().as_secs_f64();
-        eprintln!("  g²={g_sq}: R²={r2:.4} ({elapsed:.1}s)");
+        eprintln!("  g²={g_sq}: R²_raw={r2_raw:.4}, R²_proj={r2:.4} ({elapsed:.1}s)");
     }
     println!();
 
     // ═══════════════════════════════════════════════════════════════════
     // Summary
     // ═══════════════════════════════════════════════════════════════════
-    println!("# Summary (∂Δ⁵ = S⁴, |A|≥2 partitions)");
+    println!("# Summary (∂Δ⁵ = S⁴, balanced |A|=3 partitions, conformal-projected)");
     println!("# On-shell: max|∂S_EE^⊥/∂l| = {max_ds_ee_perp:.4e} (want < 1e-3)");
-    println!("# Off-shell: R² = {r2:.4} (want > 0.5)");
-    println!("# RT differential: G_N = {rt_gn:.4e}");
-    println!("# Partitions: {} (filtered from {} total)", partitions.len(), all_partitions.len());
+    println!("# Off-shell: R²_raw = {r2_raw:.4}, R²_proj = {r2:.4} (want > 0.5)");
+    println!("# RT differential: R²_proj = {rt_r2:.4}, G_N = {rt_gn:.4e}");
+    println!("# Partitions: {} balanced (from {} total)", partitions.len(), all_partitions.len());
 
     eprintln!("\n=== Jacobson equilibrium analysis complete ===");
 }

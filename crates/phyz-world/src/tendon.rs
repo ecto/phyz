@@ -143,7 +143,7 @@ mod tests {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
                 SpatialInertia::point_mass(1.0, Vec3::new(0.0, 0.0, -0.5)),
             )
             .build();
@@ -151,8 +151,8 @@ mod tests {
         let mut state = model.default_state();
 
         // Set body transforms manually for testing
-        state.body_xform[0] = SpatialTransform::translation(Vec3::new(0.0, 0.0, 0.0));
-        state.body_xform[1] = SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0));
+        state.body_xform[0] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, 0.0));
+        state.body_xform[1] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0));
 
         let tendon = Tendon::new(vec![0, 1], 100.0, 0.5, 10.0);
         let length = tendon.current_length(&state);
@@ -173,14 +173,14 @@ mod tests {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
                 SpatialInertia::point_mass(1.0, Vec3::new(0.0, 0.0, -0.5)),
             )
             .build();
 
         let mut state = model.default_state();
-        state.body_xform[0] = SpatialTransform::translation(Vec3::new(0.0, 0.0, 0.0));
-        state.body_xform[1] = SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.5));
+        state.body_xform[0] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, 0.0));
+        state.body_xform[1] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.5));
 
         // Tendon with rest length 1.0, current length 1.5 -> stretched by 0.5
         let tendon = Tendon::new(vec![0, 1], 100.0, 1.0, 1000.0);
@@ -190,7 +190,7 @@ mod tests {
         assert_eq!(forces.len(), 2);
 
         // Force magnitude should be k * stretch = 100 * 0.5 = 50
-        let force_mag = forces[0].1.linear().norm();
+        let force_mag = forces[0].1.linear.norm();
         assert!((force_mag - 50.0).abs() < 1e-6);
     }
 
@@ -206,21 +206,21 @@ mod tests {
             .add_revolute_body(
                 "link2",
                 0,
-                SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+                SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
                 SpatialInertia::point_mass(1.0, Vec3::new(0.0, 0.0, -0.5)),
             )
             .build();
 
         let mut state = model.default_state();
-        state.body_xform[0] = SpatialTransform::translation(Vec3::new(0.0, 0.0, 0.0));
-        state.body_xform[1] = SpatialTransform::translation(Vec3::new(0.0, 0.0, -2.0));
+        state.body_xform[0] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, 0.0));
+        state.body_xform[1] = SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -2.0));
 
         // Large stretch (1.0) with high stiffness (100) = 100N force
         // But max_force is 10N, so should saturate
         let tendon = Tendon::new(vec![0, 1], 100.0, 1.0, 10.0);
         let forces = tendon.compute_forces(&state);
 
-        let force_mag = forces[0].1.linear().norm();
+        let force_mag = forces[0].1.linear.norm();
         assert!((force_mag - 10.0).abs() < 1e-6);
     }
 

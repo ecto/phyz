@@ -3,7 +3,7 @@
 use numpy::PyArray1;
 use pyo3::prelude::*;
 use phyz_model::{Model, ModelBuilder};
-use phyz_math::{SpatialInertia, SpatialTransform, Vec3};
+use phyz_math::{Mat3, SpatialInertia, SpatialTransform, Vec3};
 
 use crate::state::PyState;
 
@@ -109,11 +109,11 @@ impl PyModelBuilder {
         mass: f64,
         inertia: [f64; 3],
     ) -> PyRefMut<'_, Self> {
-        let xform = SpatialTransform::translation(Vec3::new(pos[0], pos[1], pos[2]));
+        let xform = SpatialTransform::from_translation(Vec3::new(pos[0], pos[1], pos[2]));
         let si = SpatialInertia::new(
             mass,
             Vec3::zeros(),
-            nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(
+            Mat3::from_diagonal(&Vec3::new(
                 inertia[0], inertia[1], inertia[2],
             )),
         );

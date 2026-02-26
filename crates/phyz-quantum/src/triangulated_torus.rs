@@ -8,7 +8,7 @@
 //! Comparison with the hypercubic version isolates the effect of plaquette
 //! shape (triangular vs square) from topology effects.
 
-use nalgebra::DMatrix;
+use phyz_math::DMat;
 use std::collections::HashMap;
 
 /// Triangulated 2D periodic torus.
@@ -266,9 +266,9 @@ pub fn build_triangulated_torus_hamiltonian(
     hilbert: &TriangulatedTorusHilbert,
     torus: &TriangulatedTorus,
     g_squared: f64,
-) -> DMatrix<f64> {
+) -> DMat {
     let dim = hilbert.dim();
-    let mut h = DMatrix::zeros(dim, dim);
+    let mut h = DMat::zeros(dim, dim);
     let lam = hilbert.lambda as i32;
 
     // Electric term: (g²/2) Σ_e n_e²
@@ -340,7 +340,7 @@ mod tests {
         let hs = TriangulatedTorusHilbert::new(&t, 1);
         let h = build_triangulated_torus_hamiltonian(&hs, &t, 1.0);
 
-        let diff = (&h - h.transpose()).norm();
+        let diff = (&h - &h.transpose()).norm();
         assert!(diff < 1e-12, "H not symmetric: diff={diff}");
     }
 

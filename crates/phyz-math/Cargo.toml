@@ -8,8 +8,8 @@ homepage.workspace = true
 description = "Spatial algebra and math primitives for phyz physics engine"
 
 [dependencies]
-nalgebra.workspace = true
+tang.workspace = true
+tang-la.workspace = true
 
 [dev-dependencies]
-approx = "0.5"
 proptest = "1"

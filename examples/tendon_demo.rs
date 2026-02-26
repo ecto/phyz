@@ -27,7 +27,7 @@ fn main() {
         .add_revolute_body(
             "link2",
             0,
-            SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+            SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
             SpatialInertia::new(
                 0.8,
                 Vec3::new(0.0, 0.0, -0.5),
@@ -37,7 +37,7 @@ fn main() {
         .add_revolute_body(
             "link3",
             1,
-            SpatialTransform::translation(Vec3::new(0.0, 0.0, -1.0)),
+            SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -1.0)),
             SpatialInertia::new(
                 0.6,
                 Vec3::new(0.0, 0.0, -0.5),
@@ -122,7 +122,7 @@ fn main() {
     let forces = world.tendons[0].compute_forces(&world.state);
     println!("  Forces applied to {} body pairs", forces.len() / 2);
     for (i, (body_idx, force)) in forces.iter().enumerate() {
-        let f_norm = force.linear().norm();
+        let f_norm = force.linear.norm();
         println!("    Force {}: body {} ← {:.2} N", i, body_idx, f_norm);
     }
 
@@ -137,7 +137,7 @@ fn main() {
 
     let forces = high_stiffness_tendon.compute_forces(&world.state);
     for (body_idx, force) in &forces {
-        let f_norm = force.linear().norm();
+        let f_norm = force.linear.norm();
         println!(
             "  Body {}: force magnitude = {:.2} N (capped at 10 N)",
             body_idx, f_norm

@@ -19,7 +19,7 @@ use crate::action::{einstein_maxwell_grad, ActionParams, Fields};
 use crate::complex::SimplicialComplex;
 use crate::symmetry::{orthonormalize, project_out_span, Generator};
 
-use nalgebra::DMatrix;
+use phyz_math::DMat;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -148,12 +148,12 @@ pub fn search_symmetries(
         }
     }
 
-    // SVD via nalgebra.
-    let m = DMatrix::from_row_slice(k, dim, &m_data);
+    // SVD via tang-la.
+    let m = DMat::from_fn(k, dim, |i, j| m_data[i * dim + j]);
     let svd = m.svd(false, true);
 
-    let vt = svd.v_t.expect("SVD should produce V^T");
-    let singular_values = &svd.singular_values;
+    let vt = &svd.vt;
+    let singular_values = &svd.s;
 
     // Sort by increasing singular value.
     let n_sv = singular_values.len();
@@ -234,11 +234,11 @@ pub fn search_symmetries_generic(
         }
     }
 
-    let m = DMatrix::from_row_slice(k, dim, &m_data);
+    let m = DMat::from_fn(k, dim, |i, j| m_data[i * dim + j]);
     let svd = m.svd(false, true);
 
-    let vt = svd.v_t.expect("SVD should produce V^T");
-    let singular_values = &svd.singular_values;
+    let vt = &svd.vt;
+    let singular_values = &svd.s;
 
     let n_sv = singular_values.len();
     let mut sv_indices: Vec<(f64, usize)> = singular_values

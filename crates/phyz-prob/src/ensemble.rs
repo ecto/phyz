@@ -119,19 +119,19 @@ pub fn trajectory_uncertainty(trajectories: &[Vec<State>]) -> Vec<(Vec3, Vec3)> 
         // Compute mean
         let mut mean = Vec3::zeros();
         for pos in &positions {
-            mean += pos;
+            mean += *pos;
         }
-        mean /= nsamples as f64;
+        mean = mean / nsamples as f64;
 
         // Compute standard deviation
         let mut var = Vec3::zeros();
         for pos in &positions {
-            let diff = pos - mean;
+            let diff = *pos - mean;
             var.x += diff.x * diff.x;
             var.y += diff.y * diff.y;
             var.z += diff.z * diff.z;
         }
-        var /= nsamples as f64;
+        var = var / nsamples as f64;
 
         let std = Vec3::new(var.x.sqrt(), var.y.sqrt(), var.z.sqrt());
 

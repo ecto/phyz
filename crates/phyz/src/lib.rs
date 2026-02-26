@@ -48,8 +48,9 @@ impl Solver for SemiImplicitEulerSolver {
         let qdd = aba(model, state);
 
         // Semi-implicit Euler: update velocity first, then position
-        state.v += &qdd * dt;
-        state.q += &state.v * dt;
+        state.v += &(&qdd * dt);
+        let v_clone = state.v.clone();
+        state.q += &(&v_clone * dt);
         state.time += dt;
 
         // Update body transforms via FK
@@ -87,25 +88,27 @@ impl Solver for Rk4Solver {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &dq1 * (dt / 2.0);
-        s2.v += &dv1 * (dt / 2.0);
+        s2.q += &(&dq1 * (dt / 2.0));
+        s2.v += &(&dv1 * (dt / 2.0));
         let (dq2, dv2) = Self::derivatives(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &dq2 * (dt / 2.0);
-        s3.v += &dv2 * (dt / 2.0);
+        s3.q += &(&dq2 * (dt / 2.0));
+        s3.v += &(&dv2 * (dt / 2.0));
         let (dq3, dv3) = Self::derivatives(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &dq3 * dt;
-        s4.v += &dv3 * dt;
+        s4.q += &(&dq3 * dt);
+        s4.v += &(&dv3 * dt);
         let (dq4, dv4) = Self::derivatives(model, &s4);
 
         // Combine
-        state.q += &(&dq1 + &dq2 * 2.0 + &dq3 * 2.0 + &dq4) * (dt / 6.0);
-        state.v += &(&dv1 + &dv2 * 2.0 + &dv3 * 2.0 + &dv4) * (dt / 6.0);
+        let dq_sum = &(&(&dq1 + &(&dq2 * 2.0)) + &(&dq3 * 2.0)) + &dq4;
+        state.q += &(&dq_sum * (dt / 6.0));
+        let dv_sum = &(&(&dv1 + &(&dv2 * 2.0)) + &(&dv3 * 2.0)) + &dv4;
+        state.v += &(&dv_sum * (dt / 6.0));
         state.time += dt;
 
         // Update body transforms via FK
@@ -201,8 +204,9 @@ impl Simulator {
         if contacts.is_empty() {
             // No contacts — standard step
             let qdd = aba(model, state);
-            state.v += &qdd * dt;
-            state.q += &state.v * dt;
+            state.v += &(&qdd * dt);
+            let v_clone = state.v.clone();
+            state.q += &(&v_clone * dt);
         } else {
             // Compute contact spatial forces per body
             let materials = vec![material.clone()];
@@ -211,8 +215,9 @@ impl Simulator {
 
             // Run ABA with external forces
             let qdd = aba_with_external_forces(model, state, Some(&spatial_forces));
-            state.v += &qdd * dt;
-            state.q += &state.v * dt;
+            state.v += &(&qdd * dt);
+            let v_clone = state.v.clone();
+            state.q += &(&v_clone * dt);
         }
 
         state.time += dt;
