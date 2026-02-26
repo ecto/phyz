@@ -297,7 +297,7 @@ mod tests {
             metric_weights: None,
         };
         let h = build_hamiltonian(&hs, &complex, &params);
-        let dense = diag::diagonalize(&h, Some(5));
+        let dense = diag::diagonalize_full(&h, Some(5));
 
         // Lanczos
         let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);
@@ -334,7 +334,7 @@ mod tests {
             metric_weights: None,
         };
         let h = build_hamiltonian(&hs, &complex, &params);
-        let dense = diag::diagonalize(&h, Some(10));
+        let dense = diag::diagonalize_full(&h, Some(10));
 
         let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 10, None);
 
@@ -393,7 +393,7 @@ mod tests {
             metric_weights: None,
         };
         let h = build_hamiltonian(&hs, &complex, &params);
-        let dense = diag::diagonalize(&h, Some(5));
+        let dense = diag::diagonalize_full(&h, Some(5));
 
         // Lanczos
         let lanc = lanczos_diagonalize(&hs, &complex, 1.0, None, 5, None);

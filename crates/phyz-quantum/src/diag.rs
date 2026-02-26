@@ -34,11 +34,30 @@ impl Spectrum {
     }
 }
 
+/// Threshold: use Lanczos when dim >= this AND n_lowest is small.
+const LANCZOS_DENSE_THRESHOLD: usize = 64;
+
 /// Diagonalize a real symmetric matrix.
 ///
 /// If `n_lowest` is `Some(n)`, only the `n` lowest eigenvalues/states
-/// are returned (still computed via full diagonalization).
+/// are returned. When `n` is small relative to dim, uses Lanczos with
+/// dense matvec (O(n_iter * dim²)) instead of full eigen (O(dim³)).
 pub fn diagonalize(h: &DMat, n_lowest: Option<usize>) -> Spectrum {
+    let dim = h.nrows();
+    let k = n_lowest.unwrap_or(dim);
+
+    // Use Lanczos when we only need a few eigenvalues of a large matrix.
+    if k < dim / 2 && dim >= LANCZOS_DENSE_THRESHOLD {
+        let matvec = |v: &DVec| h * v;
+        let max_iter = (20 * k).max(100).min(dim);
+        return crate::lanczos::lanczos(matvec, dim, k, max_iter, 1e-12);
+    }
+
+    diagonalize_full(h, n_lowest)
+}
+
+/// Full dense diagonalization (always computes all eigenvalues).
+pub fn diagonalize_full(h: &DMat, n_lowest: Option<usize>) -> Spectrum {
     let eig = h.symmetric_eigen();
 
     // Sort by eigenvalue.
