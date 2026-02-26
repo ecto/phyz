@@ -1,6 +1,49 @@
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Compute "nice" tick values for an axis range.
+fn nice_ticks(min: f32, max: f32, target_count: usize) -> (Vec<f32>, f32) {
+    let range = max - min;
+    if range.abs() < 1e-10 || target_count == 0 {
+        return (vec![], 1.0);
+    }
+    let rough_step = range / target_count as f32;
+    let mag = 10.0f32.powf(rough_step.log10().floor());
+    let normalized = rough_step / mag;
+    let nice_step = if normalized < 1.5 {
+        mag
+    } else if normalized < 3.5 {
+        mag * 2.0
+    } else if normalized < 7.5 {
+        mag * 5.0
+    } else {
+        mag * 10.0
+    };
+    let start = (min / nice_step).ceil() * nice_step;
+    let mut ticks = Vec::new();
+    let mut v = start;
+    while v <= max + nice_step * 0.01 {
+        if v >= min - nice_step * 0.01 {
+            ticks.push(v);
+        }
+        v += nice_step;
+    }
+    (ticks, nice_step)
+}
+
+/// Format a tick value with appropriate decimal places.
+fn tick_label(v: f32, step: f32) -> String {
+    if step >= 0.95 {
+        format!("{:.0}", v)
+    } else if step >= 0.095 {
+        format!("{:.1}", v)
+    } else if step >= 0.0095 {
+        format!("{:.2}", v)
+    } else {
+        format!("{:.3}", v)
+    }
+}
+
 /// Detect if the user prefers light color scheme.
 fn is_light_mode() -> bool {
     web_sys::window()
@@ -135,6 +178,8 @@ pub struct Renderer {
     height: u32,
     dpr: f64,
     frame: u64,
+    /// Mouse position in CSS pixels for hover tooltip.
+    hover_pos: Option<(f32, f32)>,
 }
 
 fn device_pixel_ratio() -> f64 {
@@ -176,6 +221,7 @@ impl Renderer {
             height,
             dpr,
             frame: 0,
+            hover_pos: None,
         })
     }
 
@@ -201,6 +247,14 @@ impl Renderer {
 
     pub fn bounds_z_range(&self) -> f32 {
         self.bounds.z_max - self.bounds.z_min
+    }
+
+    pub fn set_hover(&mut self, x: f32, y: f32) {
+        self.hover_pos = Some((x, y));
+    }
+
+    pub fn clear_hover(&mut self) {
+        self.hover_pos = None;
     }
 
     pub fn render(&mut self) {
@@ -231,8 +285,9 @@ impl Renderer {
         self.ctx.set_fill_style_str(bg);
         self.ctx.fill_rect(0.0, 0.0, w as f64, h as f64);
 
-        // Draw grid
+        // Draw grid + tick marks
         self.draw_grid(w, h, light);
+        self.draw_ticks(w, h, light);
 
         // Age points
         for p in &mut self.points {
@@ -259,6 +314,9 @@ impl Renderer {
 
         // Draw connection lines between nearby points (constellation effect)
         self.draw_connections(&projected, light);
+
+        // Best-fit regression line (behind points)
+        self.draw_regression_line(w, h, light);
 
         // Draw points
         for &idx in &draw_order {
@@ -338,6 +396,12 @@ impl Renderer {
 
         // Axis labels
         self.draw_labels(w, h, light);
+
+        // Hover tooltip (on top of everything)
+        self.draw_hover_tooltip(&projected, w, h, light);
+
+        // Color legend (screen-space overlay)
+        self.draw_color_legend(w, h, light);
     }
 
     /// Draw floating text annotations near fresh labeled points.
@@ -486,15 +550,15 @@ impl Renderer {
         let n = 8;
         for i in 0..=n {
             let f = -r + (4.0 * i as f32 / n as f32);
-            let (x1, y1, _) = self.camera.project([f, -r, -r], w, h);
-            let (x2, y2, _) = self.camera.project([f, -r, r], w, h);
+            let (x1, y1, _) = self.camera.project([f, 0.0, -r], w, h);
+            let (x2, y2, _) = self.camera.project([f, 0.0, r], w, h);
             self.ctx.begin_path();
             self.ctx.move_to(x1 as f64, y1 as f64);
             self.ctx.line_to(x2 as f64, y2 as f64);
             self.ctx.stroke();
 
-            let (x1, y1, _) = self.camera.project([-r, -r, f], w, h);
-            let (x2, y2, _) = self.camera.project([r, -r, f], w, h);
+            let (x1, y1, _) = self.camera.project([-r, 0.0, f], w, h);
+            let (x2, y2, _) = self.camera.project([r, 0.0, f], w, h);
             self.ctx.begin_path();
             self.ctx.move_to(x1 as f64, y1 as f64);
             self.ctx.line_to(x2 as f64, y2 as f64);
