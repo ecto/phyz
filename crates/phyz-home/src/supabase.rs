@@ -189,11 +189,25 @@ impl SupabaseClient {
 
     /// Get total contributor count.
     pub async fn contributor_count(&self) -> Result<usize, String> {
-        let url = format!(
-            "{}?select=id",
-            self.api_url("contributors"),
-        );
+        let url = format!("{}?select=id", self.api_url("contributors"));
+        self.count_rows(&url).await
+    }
 
+    /// Fetch experiment progress: (completed_units, total_units).
+    pub async fn experiment_progress(&self) -> Result<(usize, usize), String> {
+        // Total work units
+        let total_url = format!("{}?select=id", self.api_url("work_units"));
+        let total = self.count_rows(&total_url).await?;
+
+        // Completed work units
+        let done_url = format!("{}?select=id&status=eq.complete", self.api_url("work_units"));
+        let done = self.count_rows(&done_url).await?;
+
+        Ok((done, total))
+    }
+
+    /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.
+    async fn count_rows(&self, url: &str) -> Result<usize, String> {
         let headers = self.headers().map_err(|e| format!("{e:?}"))?;
         headers.set("Prefer", "count=exact").map_err(|e| format!("{e:?}"))?;
         headers.set("Range", "0-0").map_err(|e| format!("{e:?}"))?;
@@ -203,10 +217,9 @@ impl SupabaseClient {
         opts.set_headers(&headers.into());
         opts.set_mode(RequestMode::Cors);
 
-        let request = Request::new_with_str_and_init(&url, &opts).map_err(|e| format!("{e:?}"))?;
+        let request = Request::new_with_str_and_init(url, &opts).map_err(|e| format!("{e:?}"))?;
         let resp = self.do_fetch(request).await?;
 
-        // Count is in Content-Range header: "0-0/N"
         let headers = resp.headers();
         if let Ok(Some(range)) = headers.get("content-range") {
             if let Some(n) = range.split('/').nth(1) {

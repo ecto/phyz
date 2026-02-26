@@ -361,7 +361,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)));
+            start_render_loop(renderer.clone(), None, Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), client.clone());
             return;
         }
     };
@@ -505,7 +505,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), muted, base_units);
+    start_render_loop(renderer, Some(coordinator), muted, base_units, client);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -634,6 +634,7 @@ fn start_render_loop(
     coordinator: Option<Rc<Coordinator>>,
     muted: Rc<Cell<bool>>,
     base_units: Rc<Cell<i64>>,
+    client: Rc<SupabaseClient>,
 ) {
     let r = renderer;
     let coord = coordinator;
@@ -643,6 +644,10 @@ fn start_render_loop(
     let completion_handled = Rc::new(RefCell::new(false));
     let last_phase = Rc::new(Cell::new(0u32));
     let anim = Rc::new(RefCell::new(AnimState::new()));
+    // Experiment progress from server: (done, total)
+    let exp_done: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_total: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_fetching: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -744,25 +749,36 @@ fn start_render_loop(
             a.points.set(n_points as f64);
 
             if let Some(ref c) = coord {
-                let completed = (base_units.get() as u32 + c.completed_count()) as usize;
-                a.completed.set(completed as f64);
+                // User's personal points: server total + session completions
+                let my_units = (base_units.get() as u32 + c.completed_count()) as usize;
+                a.completed.set(my_units as f64);
 
-                // Phase-aware progress
-                let (phase, phase_done, phase_total) = if completed < PHASE1_TOTAL {
-                    (1, completed, PHASE1_TOTAL)
+                // Experiment progress from server (fetched periodically below)
+                let done = exp_done.get();
+                let total = exp_total.get();
+
+                // Phase-aware progress using experiment-wide counts
+                let (phase, phase_done, phase_total) = if total == 0 {
+                    (1, 0, PHASE1_TOTAL)
+                } else if done < PHASE1_TOTAL {
+                    (1, done, PHASE1_TOTAL)
                 } else {
-                    (2, completed - PHASE1_TOTAL, PHASE2_TOTAL)
+                    (2, done - PHASE1_TOTAL, PHASE2_TOTAL)
                 };
-                let pct = phase_done as f64 / phase_total as f64 * 100.0;
+                let pct = if phase_total > 0 {
+                    (phase_done as f64 / phase_total as f64 * 100.0).min(100.0)
+                } else {
+                    0.0
+                };
                 dom::set_style("progress-fill", &format!("width:{pct:.1}%"));
                 a.progress.set(phase_done as f64);
                 dom::set_text("progress-total", &phase_total.to_string());
                 dom::set_text("progress-phase", &phase.to_string());
 
                 // Phase completion celebration
-                let completed_phase = if completed >= GRAND_TOTAL {
+                let completed_phase = if done >= GRAND_TOTAL {
                     2u32
-                } else if completed >= PHASE1_TOTAL {
+                } else if done >= PHASE1_TOTAL {
                     1
                 } else {
                     0
@@ -775,19 +791,20 @@ fn start_render_loop(
                     }
                 }
 
-                // Compute rate
+                // Compute rate (session-only)
+                let session_count = c.completed_count();
                 let now = js_sys::Date::now();
                 let prev_time = *lrt.borrow();
                 let prev_count = *lc.borrow();
                 if prev_time > 0.0 {
                     let dt = (now - prev_time) / 1000.0;
                     if dt > 0.0 {
-                        let rate = (completed as u32 - prev_count) as f64 / dt;
+                        let rate = (session_count - prev_count) as f64 / dt;
                         a.rate.set(rate);
                     }
                 }
                 *lrt.borrow_mut() = now;
-                *lc.borrow_mut() = completed as u32;
+                *lc.borrow_mut() = session_count;
 
                 // Compute G_N from all data + update convergence bar
                 if n_points >= 10 {
@@ -805,6 +822,22 @@ fn start_render_loop(
                 if !a.initialized {
                     a.snap_all();
                     a.initialized = true;
+                }
+
+                // Fetch experiment progress from server every ~30s
+                if !exp_fetching.get() && (count % 1800 == 0 || exp_total.get() == 0) {
+                    exp_fetching.set(true);
+                    let cl = client.clone();
+                    let ed = exp_done.clone();
+                    let et = exp_total.clone();
+                    let ef = exp_fetching.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Ok((done, total)) = cl.experiment_progress().await {
+                            ed.set(done);
+                            et.set(total);
+                        }
+                        ef.set(false);
+                    });
                 }
 
                 // Detect experiment completion
