@@ -182,10 +182,13 @@ fn bench_double_pendulum(c: &mut Criterion) {
 
 fn bench_chain_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("chain_scaling");
-    // Increase sample size tolerance for larger chains
     group.sample_size(20);
 
-    for &n in &[1, 2, 4, 8, 16] {
+    // N=8+ causes combinatorial explosion in the symbolic expression graph
+    // (each joint's expressions depend on all ancestors, so graph size grows
+    // quadratically with chain length). Cap at N=4 to keep total bench time
+    // under 60 seconds.
+    for &n in &[1, 2, 4] {
         let model = make_chain(n);
         let state = random_state(&model);
         let inputs = pack_inputs(&state, model.nq, model.nv);
@@ -217,8 +220,9 @@ fn bench_chain_scaling(c: &mut Criterion) {
 
 fn bench_compiled_reuse(c: &mut Criterion) {
     let mut group = c.benchmark_group("compiled_reuse");
+    group.sample_size(10);
 
-    for &n in &[1, 4, 8] {
+    for &n in &[1, 2, 4] {
         let model = make_chain(n);
 
         // Generate 100 different states
