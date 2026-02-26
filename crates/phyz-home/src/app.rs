@@ -350,6 +350,13 @@ pub async fn run() {
         });
     }
 
+    // Experiment progress cells — shared between realtime + render loop
+    let exp_submitted: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_consensus: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_partial: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let exp_total: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+    let defrag_dirty: Rc<Cell<bool>> = Rc::new(Cell::new(true));
+
     // Connect Supabase Realtime for live leaderboard + results feed
     let rt_client = crate::realtime::RealtimeClient::new();
     {
@@ -376,11 +383,21 @@ pub async fn run() {
         let renderer_feed = renderer.clone();
         let my_cid = contributor_id_rc.clone();
         let feed_ts = last_feed_ts.clone();
+        let es_rt = exp_submitted.clone();
+        let ec_rt = exp_consensus.clone();
+        let ep_rt = exp_partial.clone();
+        let et_rt = exp_total.clone();
+        let dd_rt = defrag_dirty.clone();
         let on_results: Rc<dyn Fn()> = Rc::new(move || {
             let client = client_feed.clone();
             let renderer = renderer_feed.clone();
             let my_cid = my_cid.clone();
             let feed_ts = feed_ts.clone();
+            let es = es_rt.clone();
+            let ec = ec_rt.clone();
+            let ep = ep_rt.clone();
+            let et = et_rt.clone();
+            let dd = dd_rt.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let after = feed_ts.borrow().clone();
                 match client.fetch_results_feed(50, after.as_deref()).await {
@@ -426,6 +443,14 @@ pub async fn run() {
                                     .into(),
                             );
                         }
+                        // Refresh experiment progress for defrag bar
+                        if let Ok(p) = client.experiment_progress().await {
+                            es.set(p.submitted);
+                            ec.set(p.consensus);
+                            ep.set(p.partial);
+                            et.set(p.total);
+                            dd.set(true);
+                        }
                     }
                     Err(e) => {
                         web_sys::console::warn_1(
@@ -470,7 +495,7 @@ pub async fn run() {
             web_sys::console::error_1(&format!("worker pool: {e}").into());
             // Continue without workers — viz still works
             dom::set_text("toggle", "\u{25B6}");
-            start_render_loop(renderer.clone(), None, client.clone(), Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone());
+            start_render_loop(renderer.clone(), None, client.clone(), Rc::new(Cell::new(false)), Rc::new(Cell::new(0i64)), lb_state.clone(), exp_submitted.clone(), exp_consensus.clone(), exp_partial.clone(), exp_total.clone(), defrag_dirty.clone());
             return;
         }
     };
@@ -648,7 +673,7 @@ pub async fn run() {
     unload_cb.forget();
 
     // Start render loop with coordinator tick
-    start_render_loop(renderer, Some(coordinator), client, muted, base_units, lb_state);
+    start_render_loop(renderer, Some(coordinator), client, muted, base_units, lb_state, exp_submitted, exp_consensus, exp_partial, exp_total, defrag_dirty);
 }
 
 fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
@@ -795,6 +820,11 @@ fn start_render_loop(
     muted: Rc<Cell<bool>>,
     base_units: Rc<Cell<i64>>,
     lb_state: Rc<RefCell<LeaderboardState>>,
+    exp_submitted: Rc<Cell<usize>>,
+    exp_consensus: Rc<Cell<usize>>,
+    exp_partial: Rc<Cell<usize>>,
+    exp_total: Rc<Cell<usize>>,
+    defrag_dirty: Rc<Cell<bool>>,
 ) {
     let r = renderer;
     let coord = coordinator;
@@ -804,11 +834,19 @@ fn start_render_loop(
     let completion_handled = Rc::new(RefCell::new(false));
     let last_rounds = Rc::new(Cell::new(0u32));
     let anim = Rc::new(RefCell::new(AnimState::new()));
-    // Experiment progress — polled from server
-    let exp_submitted: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let exp_consensus: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let exp_total: Rc<Cell<usize>> = Rc::new(Cell::new(0));
     let exp_fetching: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+    // Defrag renderer
+    let defrag: Rc<RefCell<Option<crate::defrag::DefragRenderer>>> = {
+        let canvas: Result<web_sys::HtmlCanvasElement, _> = dom::document()
+            .get_element_by_id("defrag")
+            .ok_or("no #defrag")
+            .and_then(|el| el.dyn_into().map_err(|_| "not canvas"));
+        match canvas {
+            Ok(c) => Rc::new(RefCell::new(crate::defrag::DefragRenderer::new(c).ok())),
+            Err(_) => Rc::new(RefCell::new(None)),
+        }
+    };
 
     let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
     let g = f.clone();
@@ -820,9 +858,12 @@ fn start_render_loop(
     let an = anim.clone();
     let es = exp_submitted.clone();
     let ec = exp_consensus.clone();
+    let ep = exp_partial.clone();
     let et = exp_total.clone();
     let ef = exp_fetching.clone();
     let cl = client.clone();
+    let dr = defrag.clone();
+    let dd = defrag_dirty.clone();
     *g.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         // Render
         r.borrow_mut().render();
@@ -852,12 +893,12 @@ fn start_render_loop(
             a.exp_submitted.set(es.get() as f64);
             a.exp_consensus.set(ec.get() as f64);
             a.exp_total.set(et.get() as f64);
-            dom::set_text("exp-submitted", &format!("{}", a.exp_submitted.as_int()));
+            dom::set_text("exp-consensus", &format!("{}", a.exp_consensus.as_int()));
             dom::set_text("exp-total", &format!("{}", a.exp_total.as_int()));
-            let consensus = a.exp_consensus.as_int();
-            dom::set_text("exp-consensus", &format!("{}", consensus));
-            if consensus > 0 {
-                dom::set_class("exp-consensus-wrap", "");
+            let submitted = a.exp_submitted.as_int();
+            dom::set_text("exp-submitted", &format!("{}", submitted));
+            if submitted > 0 {
+                dom::set_class("exp-submitted-wrap", "");
             }
         }
 
@@ -930,16 +971,28 @@ fn start_render_loop(
             let client_ep = cl.clone();
             let es2 = es.clone();
             let ec2 = ec.clone();
+            let ep2 = ep.clone();
             let et2 = et.clone();
             let ef2 = ef.clone();
+            let dd2 = dd.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(p) = client_ep.experiment_progress().await {
                     es2.set(p.submitted);
                     ec2.set(p.consensus);
+                    ep2.set(p.partial);
                     et2.set(p.total);
+                    dd2.set(true);
                 }
                 ef2.set(false);
             });
+        }
+
+        // Render defrag grid when data arrives
+        if dd.get() {
+            dd.set(false);
+            if let Some(ref mut renderer) = *dr.borrow_mut() {
+                renderer.render(et.get(), es.get(), ec.get(), ep.get());
+            }
         }
 
         if count % 60 == 0 {
@@ -989,11 +1042,9 @@ fn start_render_loop(
                 *lrt.borrow_mut() = now;
                 *lc.borrow_mut() = session_count;
 
-                // Compute G_N from all data + update convergence bar
+                // Compute G_N from all data
                 if r.borrow().points.len() >= 10 {
                     let (slope, r2) = linear_regression(&r.borrow().points);
-                    let pct = (r2 * 100.0).min(100.0);
-                    dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
                     a.r2.set(r2);
                     if slope > 0.0 {
                         let g_n = 1.0 / (4.0 * slope);
@@ -1145,8 +1196,6 @@ fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
     }
 
     let (slope, r2) = linear_regression(&renderer.points);
-    let pct = (r2 * 100.0).min(100.0);
-    dom::set_style("convergence-fill", &format!("width:{pct:.1}%"));
     dom::set_text("r2", &format!("{r2:.3} (demo)"));
     if slope > 0.0 {
         let g_n = 1.0 / (4.0 * slope);

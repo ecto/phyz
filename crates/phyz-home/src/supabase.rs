@@ -87,6 +87,7 @@ pub struct ContributorStats {
 pub struct ExperimentProgress {
     pub submitted: usize,
     pub consensus: usize,
+    pub partial: usize,
     pub total: usize,
 }
 
@@ -214,7 +215,8 @@ impl SupabaseClient {
         let total = self.count_rows(&format!("{}?select=id", self.api_url("work_units"))).await?;
         let submitted = self.count_rows(&format!("{}?select=id", self.api_url("results"))).await?;
         let consensus = self.count_rows(&format!("{}?select=id&status=eq.complete", self.api_url("work_units"))).await?;
-        Ok(ExperimentProgress { submitted, consensus, total })
+        let partial = self.count_rows(&format!("{}?select=id&completed_count=gt.0&status=neq.complete", self.api_url("work_units"))).await?;
+        Ok(ExperimentProgress { submitted, consensus, partial, total })
     }
 
     /// Count rows using PostgREST `Prefer: count=exact` + `Range: 0-0`.

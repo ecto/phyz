@@ -4,6 +4,7 @@ mod app;
 mod auth;
 mod cache;
 mod coordinator;
+mod defrag;
 mod dom;
 mod realtime;
 mod supabase;

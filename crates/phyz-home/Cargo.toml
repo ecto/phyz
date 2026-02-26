@@ -13,7 +13,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlInputElement",
     "Event",
-    "CanvasRenderingContext2d", "CanvasGradient",
+    "CanvasRenderingContext2d", "CanvasGradient", "ImageData",
     "Worker", "MessageEvent",
     "Navigator",
     "Headers", "Request", "RequestInit", "RequestMode", "Response",

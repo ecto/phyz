@@ -116,26 +116,25 @@
     /* Worker count label */
     #worker-count { white-space: nowrap; }
 
-    /* Convergence bar (inline, clickable) */
+    /* Convergence / defrag bar (inline, clickable) */
     #convergence-wrap {
       flex: 1;
       min-width: 60px;
+      height: 10px;
       cursor: pointer;
       display: flex;
       align-items: center;
+      border-radius: 2px;
+      overflow: hidden;
+      background: #161620;
     }
-    #convergence-wrap:hover #convergence { background: var(--dim); }
-    #convergence {
-      flex: 1;
-      height: 4px;
-      background: var(--border);
-      transition: background 0.15s;
-    }
-    #convergence-fill {
+    #convergence-wrap:hover { opacity: 0.85; }
+    #defrag {
+      width: 100%;
       height: 100%;
-      width: 0%;
-      background: var(--green-d);
-      transition: width 1s ease-out;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
     }
     /* ─── Bottom bar ─── */
     #bottombar {
@@ -657,18 +656,18 @@
       <span class="stat-label">R² </span>
       <span class="stat-hero" id="r2">&mdash;</span>
     </span>
-    <div id="convergence-wrap" title="Convergence toward R² = 1.0 — click for details">
-      <div id="convergence"><div id="convergence-fill"></div></div>
+    <div id="convergence-wrap" title="Experiment progress — click for details">
+      <canvas id="defrag"></canvas>
     </div>
     <span class="sep"></span>
-    <span title="Results submitted by all contributors">
-      <span class="stat-hero" id="exp-submitted">0</span><span class="stat-label"> / </span><span class="stat-value" id="exp-total">&mdash;</span>
-      <span class="stat-label"> submitted</span>
+    <span title="Work units with verified consensus">
+      <span class="stat-hero" id="exp-consensus">0</span><span class="stat-label"> / </span><span class="stat-value" id="exp-total">&mdash;</span>
+      <span class="stat-label"> verified</span>
     </span>
-    <span id="exp-consensus-wrap" class="hidden" title="Work units with verified consensus">
+    <span id="exp-submitted-wrap" class="hidden" title="Total results submitted by all contributors">
       <span class="stat-label"> · </span>
-      <span class="stat-value" id="exp-consensus">0</span>
-      <span class="stat-label"> consensus</span>
+      <span class="stat-value" id="exp-submitted">0</span>
+      <span class="stat-label"> results</span>
     </span>
     <!-- G_N computed by Rust but not displayed in top bar -->
     <span id="gn" class="hidden">&mdash;</span>
