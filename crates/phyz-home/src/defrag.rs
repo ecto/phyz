@@ -81,7 +81,7 @@ impl DefragRenderer {
         let green: [u8; 3] = [0x33, 0xbb, 0x55]; // verified consensus
         let amber: [u8; 3] = [0xbb, 0x99, 0x33]; // has results, unverified
         let blue: [u8; 3] = [0x33, 0x66, 0x99]; // submitted but unverified
-        let dark: [u8; 3] = [0x16, 0x16, 0x20]; // no data
+        let dark: [u8; 3] = [0x2a, 0x2a, 0x38]; // no data — visible against page bg
 
         let mut buf = vec![0u8; n_cells * 4];
         for i in 0..n_cells {
