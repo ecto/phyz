@@ -80,12 +80,18 @@ pub async fn run() {
                 if let Some(ref cr) = res.consensus_result {
                     let log_g2 = res.params.coupling_g2.log10();
                     let log_g2_bits = (log_g2 as f32).to_bits();
+                    let has_areas = !cr.boundary_area_per_partition.is_empty();
                     for (i, &s_ee) in cr.entropy_per_partition.iter().enumerate() {
                         if !existing.contains(&(log_g2_bits, i)) {
-                            r.add_point(log_g2, s_ee, i as f64);
+                            let a_cut = if has_areas {
+                                cr.boundary_area_per_partition[i]
+                            } else {
+                                i as f64
+                            };
+                            r.add_point(log_g2, s_ee, a_cut);
                             r.points.last_mut().unwrap().age = 3.0;
                             new_cache_points.push(crate::cache::CachedPoint {
-                                log_g2, s_ee, a_cut: i as f64,
+                                log_g2, s_ee, a_cut,
                                 partition_index: i,
                             });
                         }

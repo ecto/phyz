@@ -36,6 +36,8 @@ pub enum Perturbation {
 pub struct ResultPayload {
     pub ground_state_energy: f64,
     pub entropy_per_partition: Vec<f64>,
+    #[serde(default)]
+    pub boundary_area_per_partition: Vec<f64>,
     pub walltime_ms: f64,
 }
 

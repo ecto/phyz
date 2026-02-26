@@ -521,7 +521,7 @@ impl Renderer {
 
         self.ctx.set_fill_style_str(lz);
         let (x, y, _) = self.camera.project([0.0, 0.0, 2.3], w, h);
-        self.ctx.fill_text("A_cut", x as f64, y as f64).ok();
+        self.ctx.fill_text("A_\u{2202}", x as f64, y as f64).ok();
     }
 }
 

@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 use phyz_quantum::jacobson::{
     boundary_5simplex, subdivided_s4, su2_ground_state_with_energy,
 };
-use phyz_quantum::ryu_takayanagi::{perturbed_edge_lengths, vertex_bipartitions};
+use phyz_quantum::ryu_takayanagi::{cut_area_geometric, perturbed_edge_lengths, vertex_bipartitions};
 use phyz_quantum::su2_quantum::{su2_entanglement_for_partition, Su2HilbertSpace};
 use phyz_regge::complex::SimplicialComplex;
 
@@ -68,11 +68,17 @@ impl QuantumSolver {
             .map(|part| su2_entanglement_for_partition(&self.hilbert, &gs, &self.complex, part))
             .collect();
 
+        let areas: Vec<f64> = partitions
+            .iter()
+            .map(|part| cut_area_geometric(&self.complex, part, &lengths))
+            .collect();
+
         let walltime_ms = js_sys::Date::now() - start;
 
         let result = serde_json::json!({
             "ground_state_energy": energy,
             "entropy_per_partition": entropies,
+            "boundary_area_per_partition": areas,
             "walltime_ms": walltime_ms,
         });
 

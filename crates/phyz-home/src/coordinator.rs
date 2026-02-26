@@ -288,16 +288,22 @@ impl Coordinator {
             let n_partitions = payload.entropy_per_partition.len();
 
             // Expand: one viz point + cache entry per partition entropy
+            let has_areas = !payload.boundary_area_per_partition.is_empty();
             let mut cache_batch = Vec::with_capacity(n_partitions);
             for (i, &s_ee) in payload.entropy_per_partition.iter().enumerate() {
+                let a_cut = if has_areas {
+                    payload.boundary_area_per_partition[i]
+                } else {
+                    i as f64
+                };
                 self.renderer
                     .borrow_mut()
-                    .add_point(log_g2, s_ee, i as f64);
+                    .add_point(log_g2, s_ee, a_cut);
 
                 cache_batch.push(crate::cache::CachedPoint {
                     log_g2,
                     s_ee,
-                    a_cut: i as f64,
+                    a_cut,
                     partition_index: i,
                 });
             }
