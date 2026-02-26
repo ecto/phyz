@@ -24,7 +24,7 @@ pub fn potential_energy(model: &Model, state: &State) -> f64 {
         let com_world = xf.rot.transpose() * com_local + xf.pos;
 
         // PE = -m * g · r
-        pe -= mass * model.gravity.dot(&com_world);
+        pe -= mass * model.gravity.dot(com_world);
     }
 
     pe

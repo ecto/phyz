@@ -11,3 +11,6 @@ description = "Analytical Jacobians and differentiation for phyz"
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-rigid.workspace = true
+tang.workspace = true
+tang-la.workspace = true
+tang-expr.workspace = true

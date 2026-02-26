@@ -831,6 +831,9 @@ dependencies = [
  "phyz-math",
  "phyz-model",
  "phyz-rigid",
+ "tang",
+ "tang-expr",
+ "tang-la",
 ]
 
 [[package]]
@@ -1489,6 +1492,13 @@ name = "tang"
 version = "0.1.0"
 dependencies = [
  "paste",
+]
+
+[[package]]
+name = "tang-expr"
+version = "0.1.0"
+dependencies = [
+ "tang",
 ]
 
 [[package]]

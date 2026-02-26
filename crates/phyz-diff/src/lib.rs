@@ -1,7 +1,9 @@
-//! Differentiation utilities for tau: Jacobians of dynamics.
+//! Differentiation utilities for phyz: Jacobians of dynamics.
 //!
-//! Provides both finite-difference and (future) analytical derivatives
-//! of the equations of motion.
+//! Provides finite-difference, analytical (FD-on-ABA), and symbolic (exact)
+//! derivatives of the equations of motion.
+
+pub mod symbolic;
 
 use phyz_math::{DMat, DVec};
 use phyz_model::{Model, State};
