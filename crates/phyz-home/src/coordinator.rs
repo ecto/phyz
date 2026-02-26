@@ -315,15 +315,19 @@ impl Coordinator {
             }
         }
 
-        *self.completed_count.borrow_mut() += 1;
-
-        // Submit result to Supabase asynchronously
+        // Submit result to Supabase — only count as completed on success
         let client = self.client.clone();
         let uid = resp.id;
         let cid = self.contributor_id.clone();
+        let count = self.completed_count.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            if let Err(e) = client.submit_result(&uid, &cid, &payload).await {
-                web_sys::console::warn_1(&format!("submit: {e}").into());
+            match client.submit_result(&uid, &cid, &payload).await {
+                Ok(()) => {
+                    *count.borrow_mut() += 1;
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&format!("submit: {e}").into());
+                }
             }
         });
     }
