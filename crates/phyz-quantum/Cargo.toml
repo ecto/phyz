@@ -17,6 +17,10 @@ wasm-gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck"]  # no pollster — async
 phyz-regge.workspace = true
 phyz-math.workspace = true
 num-complex = "0.4"
+tang.workspace = true
+tang-expr.workspace = true
+tang-la.workspace = true
+tang-mesh.workspace = true
 phyz-gpu = { workspace = true, optional = true }
 wgpu = { version = "23.0", optional = true }
 bytemuck = { version = "1.14", features = ["derive"], optional = true }

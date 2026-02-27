@@ -28,6 +28,7 @@ pub mod qubit_map;
 pub mod ryu_takayanagi;
 pub mod stabilizer;
 pub mod su2_quantum;
+pub mod traced;
 pub mod triangulated_torus;
 
 #[cfg(any(feature = "gpu", feature = "wasm-gpu"))]
