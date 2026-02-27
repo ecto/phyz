@@ -153,6 +153,40 @@ impl QBank {
         result
     }
 
+    /// Async variant of [`download`] for WASM.
+    async fn download_async(&self, ops: &GpuVecOps, index: u32) -> Vec<f64> {
+        let (chunk, local) = self.chunk_and_local(index);
+        let offset = local as u64 * self.vec_bytes;
+
+        let staging = ops.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("qbank_download_staging_async"),
+            size: self.vec_bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = ops.encoder();
+        encoder.copy_buffer_to_buffer(&self.chunks[chunk], offset, &staging, 0, self.vec_bytes);
+        ops.queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        GpuVecOps::map_buffer_async(&ops.device, slice)
+            .await
+            .expect("buffer map failed");
+
+        let data = staging.slice(..).get_mapped_range();
+        let result = match ops.precision {
+            GpuPrecision::F64 => bytemuck::cast_slice::<u8, f64>(&data).to_vec(),
+            GpuPrecision::F32 => {
+                let f32s: &[f32] = bytemuck::cast_slice(&data);
+                f32s.iter().map(|&v| v as f64).collect()
+            }
+        };
+        drop(data);
+        staging.unmap();
+        result
+    }
+
     fn copy_to_buf(&self, encoder: &mut wgpu::CommandEncoder, index: u32, buf: &wgpu::Buffer) {
         let (chunk, local) = self.chunk_and_local(index);
         let offset = local as u64 * self.vec_bytes;
@@ -306,6 +340,39 @@ pub fn gpu_lanczos_diagonalize_su2(
     )
 }
 
+/// Async GPU Lanczos for SU(2) j=1/2 — designed for WASM/WebGPU.
+///
+/// Takes a pre-initialized device/queue (from [`phyz_gpu::sparse::request_device_async`])
+/// so the caller controls adapter selection. WebGPU is f32-only.
+pub async fn gpu_lanczos_diagonalize_su2_async(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    precision: GpuPrecision,
+    hilbert: &Su2HilbertSpace,
+    complex: &SimplicialComplex,
+    g_squared: f64,
+    metric_weights: Option<&[f64]>,
+    n_eigenvalues: usize,
+    max_iter: Option<usize>,
+) -> Result<Spectrum, String> {
+    let dim = hilbert.dim();
+    let max_iter = max_iter
+        .unwrap_or_else(|| (20 * n_eigenvalues).max(100))
+        .min(dim);
+    let m = max_iter.min(dim);
+    let k = n_eigenvalues.min(m);
+
+    let csr = build_csr_su2(hilbert, complex, g_squared, metric_weights);
+
+    let tol = match precision {
+        GpuPrecision::F64 => 1e-10,
+        GpuPrecision::F32 => 1e-5,
+    };
+    let double_reorth = precision == GpuPrecision::F32;
+
+    gpu_lanczos_inner_async(device, queue, precision, &csr, dim, k, m, tol, double_reorth).await
+}
+
 /// Inner GPU Lanczos loop. Separated for testability.
 fn gpu_lanczos_inner(
     device: Arc<wgpu::Device>,
@@ -453,6 +520,188 @@ fn gpu_lanczos_inner(
     Ok(recover_eigenvectors_gpu(
         &alpha, &beta, &ops, &q_bank, dim, k,
     ))
+}
+
+/// Async inner GPU Lanczos loop for WASM. Same algorithm, async I/O points.
+async fn gpu_lanczos_inner_async(
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    precision: GpuPrecision,
+    csr: &crate::csr::CsrMatrix,
+    dim: usize,
+    k: usize,
+    m: usize,
+    tol: f64,
+    double_reorth: bool,
+) -> Result<Spectrum, String> {
+    let dim32 = dim as u32;
+    let ops = GpuVecOps::new(device.clone(), queue.clone(), precision, dim32);
+
+    let gpu_matrix = GpuSparseMatrix::upload(
+        &device,
+        &queue,
+        &csr.row_ptr,
+        &csr.col_indices,
+        &csr.values,
+        precision,
+    );
+
+    let q_bank = QBank::new(&ops, (m + 1) as u32);
+    let w_buf = ops.create_vec_buffer("w");
+
+    let mut alpha: Vec<f64> = Vec::with_capacity(m);
+    let mut beta: Vec<f64> = Vec::with_capacity(m);
+
+    // Initial vector: deterministic seed (same as CPU lanczos)
+    let mut q0 = vec![0.0f64; dim];
+    for i in 0..dim {
+        q0[i] = ((i as f64 + 1.0) * 0.618033988749895).fract() - 0.5;
+    }
+    let norm: f64 = q0.iter().map(|x| x * x).sum::<f64>().sqrt();
+    for x in &mut q0 {
+        *x /= norm;
+    }
+
+    q_bank.upload(&ops, 0, &q0);
+
+    let mut prev_eigenvalues = vec![f64::MAX; k];
+
+    for j in 0..m {
+        // w = H * q_j
+        let mut encoder = ops.encoder();
+        let qj_buf = ops.create_vec_buffer("qj");
+        q_bank.copy_to_buf(&mut encoder, j as u32, &qj_buf);
+        ops.encode_spmv(&mut encoder, &gpu_matrix, &qj_buf, &w_buf);
+        ops.encode_dot(&mut encoder, &qj_buf, &w_buf);
+        let a = ops.submit_and_read_scalar_async(encoder).await;
+        alpha.push(a);
+
+        // Three-term recurrence
+        let mut encoder = ops.encoder();
+        ops.encode_axpy(&mut encoder, -a, &qj_buf, &w_buf);
+        if j > 0 {
+            let qjm1_buf = ops.create_vec_buffer("qjm1");
+            q_bank.copy_to_buf(&mut encoder, (j - 1) as u32, &qjm1_buf);
+            ops.submit_async(encoder).await;
+
+            let mut encoder = ops.encoder();
+            ops.encode_axpy(&mut encoder, -beta[j - 1], &qjm1_buf, &w_buf);
+            ops.submit_async(encoder).await;
+        } else {
+            ops.submit_async(encoder).await;
+        }
+
+        // Full reorthogonalization
+        let n_vecs = (j + 1) as u32;
+        q_bank.run_multi_dot(&ops, &w_buf, n_vecs);
+        q_bank.run_batch_subtract(&ops, &w_buf, n_vecs);
+
+        if double_reorth {
+            q_bank.run_multi_dot(&ops, &w_buf, n_vecs);
+            q_bank.run_batch_subtract(&ops, &w_buf, n_vecs);
+        }
+
+        // norm -> beta
+        let mut encoder = ops.encoder();
+        ops.encode_dot(&mut encoder, &w_buf, &w_buf);
+        let b_sq = ops.submit_and_read_scalar_async(encoder).await;
+        let b = b_sq.sqrt();
+
+        // Check convergence periodically
+        if (j + 1) % 10 == 0 || j == m - 1 || b < 1e-14 {
+            let spec = diagonalize_tridiagonal(&alpha, &beta, k);
+            let max_change = spec
+                .iter()
+                .zip(prev_eigenvalues.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f64, f64::max);
+
+            if max_change < tol {
+                return Ok(recover_eigenvectors_gpu_async(
+                    &alpha, &beta, &ops, &q_bank, dim, k,
+                )
+                .await);
+            }
+            prev_eigenvalues = spec;
+        }
+
+        if b < 1e-14 {
+            return Ok(recover_eigenvectors_gpu_async(
+                &alpha, &beta, &ops, &q_bank, dim, k,
+            )
+            .await);
+        }
+
+        beta.push(b);
+
+        // q_{j+1} = w / beta
+        let mut encoder = ops.encoder();
+        ops.encode_scale(&mut encoder, 1.0 / b, &w_buf);
+        q_bank.copy_from_buf(&mut encoder, &w_buf, (j + 1) as u32);
+        ops.submit_async(encoder).await;
+    }
+
+    Ok(recover_eigenvectors_gpu_async(&alpha, &beta, &ops, &q_bank, dim, k).await)
+}
+
+/// Async variant of [`recover_eigenvectors_gpu`] — downloads Lanczos vectors via async readback.
+async fn recover_eigenvectors_gpu_async(
+    alpha: &[f64],
+    beta: &[f64],
+    ops: &GpuVecOps,
+    q_bank: &QBank,
+    dim: usize,
+    k: usize,
+) -> Spectrum {
+    let m = alpha.len();
+    let mut t = DMat::zeros(m, m);
+    for i in 0..m {
+        t[(i, i)] = alpha[i];
+        if i > 0 {
+            t[(i, i - 1)] = beta[i - 1];
+            t[(i - 1, i)] = beta[i - 1];
+        }
+    }
+    let eig = t.symmetric_eigen();
+
+    let mut indexed: Vec<(usize, f64)> = eig
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .map(|(i, &e)| (i, e))
+        .collect();
+    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+    let n = k.min(indexed.len());
+    let n_q = m;
+
+    // Download all Lanczos vectors from GPU (async)
+    let mut q_vecs: Vec<Vec<f64>> = Vec::with_capacity(n_q);
+    for j in 0..n_q {
+        q_vecs.push(q_bank.download_async(ops, j as u32).await);
+    }
+
+    let mut energies = Vec::with_capacity(n);
+    let mut states = Vec::with_capacity(n);
+
+    for &(idx, eval) in indexed.iter().take(n) {
+        energies.push(eval);
+
+        let mut v = DVec::zeros(dim);
+        for j in 0..n_q {
+            let coeff = eig.eigenvectors[(j, idx)];
+            for i in 0..dim {
+                v[i] += coeff * q_vecs[j][i];
+            }
+        }
+        let norm = v.norm();
+        if norm > 1e-15 {
+            v *= 1.0 / norm;
+        }
+        states.push(v);
+    }
+
+    Spectrum { energies, states }
 }
 
 /// Diagonalize the tridiagonal matrix to get eigenvalues only.

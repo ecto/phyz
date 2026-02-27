@@ -114,6 +114,66 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
     Ok((Arc::new(device), Arc::new(queue), precision))
 }
 
+/// Async variant of [`request_device`] for use in WASM (WebGPU).
+///
+/// Uses `BROWSER_WEBGPU` backend on wasm32; `all()` elsewhere.
+/// WebGPU does not support SHADER_F64, so precision is always F32 on wasm32.
+pub async fn request_device_async() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPrecision), String> {
+    let backends = if cfg!(target_arch = "wasm32") {
+        wgpu::Backends::BROWSER_WEBGPU
+    } else {
+        wgpu::Backends::all()
+    };
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..Default::default()
+    });
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        })
+        .await
+        .ok_or("No GPU adapter found")?;
+
+    let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
+
+    let required_features = if has_f64 {
+        wgpu::Features::SHADER_F64
+    } else {
+        wgpu::Features::empty()
+    };
+
+    let mut limits = wgpu::Limits::default();
+    let adapter_limits = adapter.limits();
+    limits.max_buffer_size = adapter_limits.max_buffer_size;
+    limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
+
+    let (device, queue) = adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("phyz-sparse-device-async"),
+                required_features,
+                required_limits: limits,
+                memory_hints: Default::default(),
+            },
+            None,
+        )
+        .await
+        .map_err(|e| format!("Failed to create device: {e}"))?;
+
+    let precision = if has_f64 {
+        GpuPrecision::F64
+    } else {
+        GpuPrecision::F32
+    };
+
+    Ok((Arc::new(device), Arc::new(queue), precision))
+}
+
 impl GpuSparseMatrix {
     /// Upload a CSR matrix to GPU. Values are converted to f32 if precision is F32.
     pub fn upload(
@@ -1027,6 +1087,96 @@ impl GpuVecOps {
             .expect("buffer map failed");
 
         let data = slice.get_mapped_range();
+        let result = match self.precision {
+            GpuPrecision::F64 => bytemuck::cast_slice::<u8, f64>(&data).to_vec(),
+            GpuPrecision::F32 => {
+                let f32s: &[f32] = bytemuck::cast_slice(&data);
+                f32s.iter().map(|&v| v as f64).collect()
+            }
+        };
+        drop(data);
+        staging.unmap();
+        result
+    }
+
+    // ---- Async variants for WASM (no mpsc, no device.poll(Wait)) ----
+
+    /// Async helper: map a buffer slice and await the result.
+    pub async fn map_buffer_async(
+        device: &wgpu::Device,
+        slice: wgpu::BufferSlice<'_>,
+    ) -> Result<(), wgpu::BufferAsyncError> {
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+        device.poll(wgpu::Maintain::Wait);
+        rx.receive().await.unwrap()
+    }
+
+    /// Async variant of [`submit_and_read_scalar`].
+    pub async fn submit_and_read_scalar_async(&self, encoder: wgpu::CommandEncoder) -> f64 {
+        let elem_size = self.precision.elem_size() as u64;
+
+        let mut encoder = encoder;
+        encoder.copy_buffer_to_buffer(
+            &self.scalar_result_buf,
+            0,
+            &self.scalar_staging,
+            0,
+            elem_size,
+        );
+
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = self.scalar_staging.slice(0..elem_size);
+        Self::map_buffer_async(&self.device, slice)
+            .await
+            .expect("buffer map failed");
+
+        let data = self.scalar_staging.slice(0..elem_size).get_mapped_range();
+        let val = match self.precision {
+            GpuPrecision::F64 => {
+                let bytes: [u8; 8] = data[0..8].try_into().unwrap();
+                f64::from_le_bytes(bytes)
+            }
+            GpuPrecision::F32 => {
+                let bytes: [u8; 4] = data[0..4].try_into().unwrap();
+                f32::from_le_bytes(bytes) as f64
+            }
+        };
+        drop(data);
+        self.scalar_staging.unmap();
+        val
+    }
+
+    /// Async variant of [`submit`] — submits and polls.
+    pub async fn submit_async(&self, encoder: wgpu::CommandEncoder) {
+        self.queue.submit(Some(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
+    }
+
+    /// Async variant of [`download_vec`].
+    pub async fn download_vec_async(&self, buf: &wgpu::Buffer) -> Vec<f64> {
+        let size = self.dim as u64 * self.precision.elem_size() as u64;
+
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("download_staging_async"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.encoder();
+        encoder.copy_buffer_to_buffer(buf, 0, &staging, 0, size);
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        Self::map_buffer_async(&self.device, slice)
+            .await
+            .expect("buffer map failed");
+
+        let data = staging.slice(..).get_mapped_range();
         let result = match self.precision {
             GpuPrecision::F64 => bytemuck::cast_slice::<u8, f64>(&data).to_vec(),
             GpuPrecision::F32 => {

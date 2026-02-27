@@ -30,10 +30,16 @@ pub mod stabilizer;
 pub mod su2_quantum;
 pub mod triangulated_torus;
 
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "wasm-gpu"))]
 pub mod csr;
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "wasm-gpu"))]
 pub mod gpu_lanczos;
+
+/// Re-export GPU sparse types for downstream crates.
+#[cfg(any(feature = "gpu", feature = "wasm-gpu"))]
+pub mod gpu {
+    pub use phyz_gpu::sparse::{GpuPrecision, request_device_async};
+}
 
 pub use diag::Spectrum;
 pub use hamiltonian::KSParams;

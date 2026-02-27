@@ -14,11 +14,17 @@
 //!   L1: V=7, E=20 → 41 perturbations × 50 × 2 = 4,100
 //!   Total: 7,200
 //!
-//! Phase 2 (level 3):
+//! Phase 2 (level 2):
+//!   L2: V=8, E=25 → 51 perturbations × 50 × 2 = 5,100
+//!   Total: 5,100
+//!
+//! Phase 3 (level 3):
 //!   L3: V=9, E=30 → 61 perturbations × 50 × 2 = 6,100
 //!   Total: 6,100
 //!
-//! Grand total: 13,300
+//! Grand total: 18,400
+//!
+//! Use --level N to seed only a specific level (e.g. --level 2).
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -36,6 +42,12 @@ fn main() {
 
     // Check for --delete flag
     let delete_first = args.iter().any(|a| a == "--delete");
+
+    // Check for --level N flag
+    let level_filter: Option<u32> = args
+        .windows(2)
+        .find(|w| w[0] == "--level")
+        .and_then(|w| w[1].parse().ok());
 
     let client = ureq::Agent::new_with_defaults();
     let endpoint = format!("{}/rest/v1/work_units", url);
@@ -58,7 +70,7 @@ fn main() {
         }
     }
 
-    let work_units = generate_work_units();
+    let work_units = generate_work_units(level_filter);
     eprintln!("Generated {} work units", work_units.len());
 
     // Batch insert via PostgREST
@@ -98,7 +110,7 @@ fn edges_for_level(level: u32) -> usize {
     }
 }
 
-fn generate_work_units() -> Vec<serde_json::Value> {
+fn generate_work_units(level_filter: Option<u32>) -> Vec<serde_json::Value> {
     let n_g2 = 50;
     let g2_min: f64 = 0.01;
     let g2_max: f64 = 100.0;
@@ -111,8 +123,11 @@ fn generate_work_units() -> Vec<serde_json::Value> {
 
     let geometry_seeds: Vec<u64> = vec![1, 2];
 
-    // Phase 1: levels 0, 1. Phase 2: level 3.
-    let levels: Vec<u32> = vec![0, 1, 3];
+    let all_levels: Vec<u32> = vec![0, 1, 2, 3];
+    let levels: Vec<u32> = match level_filter {
+        Some(l) => all_levels.into_iter().filter(|&v| v == l).collect(),
+        None => all_levels,
+    };
 
     let mut units = Vec::new();
     for &level in &levels {

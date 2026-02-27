@@ -6,8 +6,28 @@ use crate::supabase::{PendingResult, ResultPayload, SupabaseClient, WorkUnit};
 use crate::viz::Renderer;
 use crate::worker::WorkerPool;
 
-const BATCH_SIZE: usize = 25;
-const ROUND_SIZE: usize = 1024;
+/// Default round size — server prioritizes higher levels via ORDER BY level DESC.
+const DEFAULT_ROUND_SIZE: usize = 256;
+
+/// Batch size per level: how many work units to dispatch to one worker at once.
+fn batch_size_for_level(level: u32) -> usize {
+    match level {
+        0 => 50,
+        1 => 25,
+        2 => 5,
+        _ => 1, // L3+
+    }
+}
+
+/// Round size per level: how many work units to fetch per round.
+fn round_size_for_level(level: u32) -> usize {
+    match level {
+        0 => 1024,
+        1 => 512,
+        2 => 100,
+        _ => 10, // L3+
+    }
+}
 
 /// Round lifecycle state machine.
 enum RoundState {
@@ -309,7 +329,7 @@ impl Coordinator {
         let state = self.state.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            match client.fetch_pending_work(ROUND_SIZE).await {
+            match client.fetch_pending_work(DEFAULT_ROUND_SIZE).await {
                 Ok(mut units) => {
                     // Shuffle so different volunteers naturally spread across
                     // the parameter space instead of all computing the same
@@ -378,7 +398,11 @@ impl Coordinator {
             let mut batch_units = Vec::new();
             {
                 let mut rq = self.round_queue.borrow_mut();
-                for _ in 0..BATCH_SIZE {
+                let batch_sz = rq
+                    .front()
+                    .map(|u| batch_size_for_level(u.params.level))
+                    .unwrap_or(1);
+                for _ in 0..batch_sz {
                     match rq.pop_front() {
                         Some(u) => batch_units.push(u),
                         None => break,
@@ -512,6 +536,13 @@ impl Coordinator {
     fn handle_result(&self, resp: crate::worker::WorkerResponse) {
         if let Some(error) = &resp.error {
             web_sys::console::warn_1(&format!("worker error: {error}").into());
+            // Clean up tracking state so the round doesn't hang
+            self.dispatched.borrow_mut().remove(&resp.id);
+            self.unit_worker.borrow_mut().remove(&resp.id);
+            let mut state = self.state.borrow_mut();
+            if let RoundState::Computing { round_total, .. } = &mut *state {
+                *round_total = round_total.saturating_sub(1);
+            }
             return;
         }
 
@@ -519,6 +550,12 @@ impl Coordinator {
         let worker_idx = self.unit_worker.borrow_mut().remove(&resp.id);
 
         let Some(result_val) = resp.result else {
+            // No result payload — clean up so round doesn't hang
+            self.dispatched.borrow_mut().remove(&resp.id);
+            let mut state = self.state.borrow_mut();
+            if let RoundState::Computing { round_total, .. } = &mut *state {
+                *round_total = round_total.saturating_sub(1);
+            }
             return;
         };
         let Ok(payload) = serde_json::from_value::<ResultPayload>(result_val) else {

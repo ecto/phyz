@@ -1,0 +1,15 @@
+-- Seed level 2 work units.
+--
+-- L2: V=8, E=25 → 51 perturbations × 50 couplings × 2 seeds = 5,100 units
+-- dim=262,144 uses Lanczos automatically (> LANCZOS_THRESHOLD=8192), ~2MB per vector.
+-- Feasible in browser WASM without WebGPU.
+--
+-- Run via:
+--   cargo run -p phyz-quantum --example seed_work_units -- --level 2
+--
+-- No schema changes needed — fetch_pending_work (migration 009) has no level cap,
+-- so L2 units flow to volunteers immediately after insertion.
+
+-- This migration is intentionally empty. L2 work units are seeded via the
+-- seed_work_units example binary, which inserts directly via PostgREST.
+-- The migration exists to document the seeding in the migration sequence.

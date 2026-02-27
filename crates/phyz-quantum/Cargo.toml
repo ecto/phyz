@@ -11,6 +11,7 @@ description = "Hamiltonian lattice gauge theory on simplicial complexes"
 default = ["parallel"]
 parallel = ["phyz-regge/parallel"]
 gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck", "dep:pollster"]
+wasm-gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck"]  # no pollster — async only
 
 [dependencies]
 phyz-regge.workspace = true
