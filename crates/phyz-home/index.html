@@ -475,8 +475,18 @@
     .wk-bar { flex: 1; min-width: 40px; height: 3px; background: var(--border); overflow: hidden; }
     .wk-fill { display: block; height: 100%; background: var(--green-d); transition: width 0.3s; }
     .wk-frac { color: var(--dim); font-size: 9px; width: 36px; flex-shrink: 0; }
+    .wk-elapsed { color: var(--green-d); font-size: 9px; width: 36px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
     .wk-result { color: var(--dim); margin-left: auto; flex-shrink: 0; font-size: 9px; }
     .wk-idle-summary { color: var(--dim); font-style: italic; height: 16px; line-height: 16px; }
+    .wk-fill-pulse {
+      width: 30%;
+      animation: wk-slide 1.5s ease-in-out infinite;
+    }
+    @keyframes wk-slide {
+      0%   { margin-left: 0%; opacity: 0.4; }
+      50%  { margin-left: 70%; opacity: 1; }
+      100% { margin-left: 0%; opacity: 0.4; }
+    }
 
     /* ─── Auth button ─── */
     .auth-btn {

@@ -13,8 +13,8 @@
   
   
 <script type="module">
-import init, * as bindings from '/phyz-home-64f5304105232c7b.js';
-const wasm = await init({ module_or_path: '/phyz-home-64f5304105232c7b_bg.wasm' });
+import init, * as bindings from '/phyz-home-6de6030c66c759f0.js';
+const wasm = await init({ module_or_path: '/phyz-home-6de6030c66c759f0_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -486,8 +486,18 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
     .wk-bar { flex: 1; min-width: 40px; height: 3px; background: var(--border); overflow: hidden; }
     .wk-fill { display: block; height: 100%; background: var(--green-d); transition: width 0.3s; }
     .wk-frac { color: var(--dim); font-size: 9px; width: 36px; flex-shrink: 0; }
+    .wk-elapsed { color: var(--green-d); font-size: 9px; width: 36px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
     .wk-result { color: var(--dim); margin-left: auto; flex-shrink: 0; font-size: 9px; }
     .wk-idle-summary { color: var(--dim); font-style: italic; height: 16px; line-height: 16px; }
+    .wk-fill-pulse {
+      width: 30%;
+      animation: wk-slide 1.5s ease-in-out infinite;
+    }
+    @keyframes wk-slide {
+      0%   { margin-left: 0%; opacity: 0.4; }
+      50%  { margin-left: 70%; opacity: 1; }
+      100% { margin-left: 0%; opacity: 0.4; }
+    }
 
     /* ─── Auth button ─── */
     .auth-btn {
@@ -654,7 +664,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       #log { height: 60px; }
     }
   </style>
-<link rel="modulepreload" href="/phyz-home-64f5304105232c7b.js" crossorigin="anonymous" integrity="sha384-3xJRoh/2rcqiDikyIOkGE6Y00zNt63hf5stOrIkJCWv3czsp3pS3czF8R/RPDntn"><link rel="preload" href="/phyz-home-64f5304105232c7b_bg.wasm" crossorigin="anonymous" integrity="sha384-hte8s/8wl5apO561bWN+NkaGqFB2LQHNhVIUYXzoo8xgoa95BKPG7INRI0MOotJ2" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/phyz-home-6de6030c66c759f0.js" crossorigin="anonymous" integrity="sha384-onkFSpZYsrVARezvyPXNP9bXejp+mrFxbzGVkfNwervtgWxqSjzTbE7wnDDUAg9i"><link rel="preload" href="/phyz-home-6de6030c66c759f0_bg.wasm" crossorigin="anonymous" integrity="sha384-610/bf+7aoxrXaXDiKRWDRyww2ogC/S8MoNBg1q5B2wp6L9JEqQ3h3wwAFqdNUfm" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viz"></canvas>
   <div id="confetti-container"></div>

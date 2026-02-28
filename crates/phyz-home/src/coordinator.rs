@@ -53,6 +53,8 @@ pub struct WorkerSlot {
     pub done: usize,
     pub total: usize,
     pub last_result: Option<String>,
+    /// Seconds since this worker was dispatched (for elapsed time display).
+    pub elapsed_secs: f64,
 }
 
 /// Compute slope and R² from a linear fit of y = slope * x + intercept.
@@ -111,6 +113,8 @@ pub struct Coordinator {
     round_computed: RefCell<usize>,
     /// Points count shown in UI — only updates on round submission.
     visible_points: Rc<RefCell<usize>>,
+    /// Per-worker dispatch timestamp (ms since epoch) for elapsed time display.
+    dispatch_times: RefCell<Vec<f64>>,
 }
 
 impl Coordinator {
@@ -140,6 +144,7 @@ impl Coordinator {
             batch_sizes: RefCell::new(HashMap::new()),
             round_computed: RefCell::new(0),
             visible_points: Rc::new(RefCell::new(initial_points)),
+            dispatch_times: RefCell::new(vec![0.0; n]),
         }
     }
 
@@ -236,15 +241,25 @@ impl Coordinator {
         let progress = self.pool.worker_progress();
         let labels = self.worker_labels.borrow();
         let results = self.worker_results.borrow();
+        let times = self.dispatch_times.borrow();
+        let now = js_sys::Date::now();
         progress
             .iter()
             .enumerate()
-            .map(|(i, &(done, total))| WorkerSlot {
-                active: total > 0,
-                label: labels.get(i).cloned().unwrap_or_default(),
-                done,
-                total,
-                last_result: results.get(i).cloned().flatten(),
+            .map(|(i, &(done, total))| {
+                let elapsed = if total > 0 && times[i] > 0.0 {
+                    (now - times[i]) / 1000.0
+                } else {
+                    0.0
+                };
+                WorkerSlot {
+                    active: total > 0,
+                    label: labels.get(i).cloned().unwrap_or_default(),
+                    done,
+                    total,
+                    last_result: results.get(i).cloned().flatten(),
+                    elapsed_secs: elapsed,
+                }
             })
             .collect()
     }
@@ -439,6 +454,7 @@ impl Coordinator {
                 self.batch_sizes
                     .borrow_mut()
                     .insert(worker_idx, batch_units.len());
+                self.dispatch_times.borrow_mut()[worker_idx] = js_sys::Date::now();
                 let mut uw = self.unit_worker.borrow_mut();
                 for u in &batch_units {
                     uw.insert(u.id.clone(), worker_idx);

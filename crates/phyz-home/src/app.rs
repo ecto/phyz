@@ -932,23 +932,38 @@ fn start_render_loop(
                 for (i, slot) in slots.iter().enumerate() {
                     if slot.active {
                         n_active += 1;
-                        let pct = if slot.total > 0 {
-                            (slot.done as f64 / slot.total as f64 * 100.0).min(100.0)
+                        let is_single = slot.total == 1;
+                        let bar_html = if is_single {
+                            // Single-item batch: show pulsing bar with elapsed time
+                            let elapsed = format_elapsed(slot.elapsed_secs);
+                            format!(
+                                "<span class=\"wk-bar wk-pulse\" title=\"Computing — {elapsed} elapsed\">\
+                                 <span class=\"wk-fill wk-fill-pulse\"></span></span>\
+                                 <span class=\"wk-elapsed\">{elapsed}</span>"
+                            )
                         } else {
-                            0.0
+                            let pct = if slot.total > 0 {
+                                (slot.done as f64 / slot.total as f64 * 100.0).min(100.0)
+                            } else {
+                                0.0
+                            };
+                            let frac = format!("{}/{}", slot.done, slot.total);
+                            format!(
+                                "<span class=\"wk-bar\" title=\"Batch progress: {}/{}\">\
+                                 <span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
+                                 <span class=\"wk-frac\">{frac}</span>",
+                                slot.done, slot.total,
+                            )
                         };
-                        let frac = format!("{}/{}", slot.done, slot.total);
                         let result_html = slot.last_result.as_deref().unwrap_or("");
                         html.push_str(&format!(
                             "<div class=\"wk\" title=\"Worker {i} — computing eigenvalues for this parameter set\">\
                              <span class=\"wk-idx\">w{i}</span>\
                              <span class=\"wk-params\" title=\"Level, coupling g², perturbation direction\">{}</span>\
-                             <span class=\"wk-bar\" title=\"Batch progress: {}/{}\">\
-                             <span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
-                             <span class=\"wk-frac\">{frac}</span>\
-                             <span class=\"wk-result\" title=\"Last result: ground-state energy, partition count, wall time\">{result_html}</span>\
+                             {bar_html}\
+                             <span class=\"wk-result\" title=\"Last result\">{result_html}</span>\
                              </div>",
-                            slot.label, slot.done, slot.total,
+                            slot.label,
                         ));
                     } else {
                         n_idle += 1;
@@ -1174,6 +1189,16 @@ fn play_success_sound() {
 }
 
 /// Seed demo data points that mimic the S_EE ~ (1/4G_N) * A_cut relationship.
+fn format_elapsed(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{:.0}s", secs)
+    } else {
+        let m = (secs / 60.0) as u32;
+        let s = (secs % 60.0) as u32;
+        format!("{m}:{s:02}")
+    }
+}
+
 fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
     let g2_values: Vec<f64> = (0..40)
         .map(|i| {
