@@ -106,6 +106,10 @@ impl WorkerPool {
     pub fn dispatch_batch(&self, items: &[(String, WorkParams)]) -> Option<usize> {
         let idx = self.idle.borrow_mut().pop()?;
 
+        // Mark worker active immediately so UI shows the lane
+        // before the first result message arrives (critical for slow L3 solves).
+        self.progress.borrow_mut()[idx] = (0, items.len());
+
         let msg = WorkerBatchRequest {
             msg_type: "solve_batch".to_string(),
             items: items
