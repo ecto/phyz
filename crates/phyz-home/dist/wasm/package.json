@@ -10,10 +10,12 @@
   },
   "files": [
     "phyz_wasm_bg.wasm",
-    "phyz_wasm.js"
+    "phyz_wasm.js",
+    "phyz_wasm.d.ts"
   ],
   "main": "phyz_wasm.js",
   "homepage": "https://phyz.dev",
+  "types": "phyz_wasm.d.ts",
   "sideEffects": [
     "./snippets/*"
   ]

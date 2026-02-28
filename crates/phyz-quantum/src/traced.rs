@@ -381,6 +381,7 @@ impl TracedSolver {
     }
 
     /// Convert to a WireGraph for distributed execution.
+    #[cfg(feature = "mesh")]
     pub fn to_wire_graph(&self) -> tang_mesh::protocol::WireGraph {
         let outputs = self.all_outputs();
         tang_mesh::protocol::WireGraph::from_expr_graph(&self.graph, &outputs, self.n_inputs)
@@ -491,6 +492,7 @@ mod tests {
 
     /// Test WireGraph roundtrip on traced eigendecomposition.
     #[test]
+    #[cfg(feature = "mesh")]
     fn traced_wire_roundtrip() {
         let (graph, energy) = tang_expr::trace(|| {
             let x = ExprId::var(0);

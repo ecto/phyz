@@ -8,8 +8,9 @@ homepage.workspace = true
 description = "Hamiltonian lattice gauge theory on simplicial complexes"
 
 [features]
-default = ["parallel"]
+default = ["parallel", "mesh"]
 parallel = ["phyz-regge/parallel"]
+mesh = ["dep:tang-mesh"]
 gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck", "dep:pollster"]
 wasm-gpu = ["dep:phyz-gpu", "dep:wgpu", "dep:bytemuck"]  # no pollster — async only
 
@@ -20,7 +21,7 @@ num-complex = "0.4"
 tang.workspace = true
 tang-expr.workspace = true
 tang-la.workspace = true
-tang-mesh.workspace = true
+tang-mesh = { workspace = true, optional = true }
 phyz-gpu = { workspace = true, optional = true }
 wgpu = { version = "23.0", optional = true }
 bytemuck = { version = "1.14", features = ["derive"], optional = true }

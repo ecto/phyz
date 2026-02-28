@@ -1,8 +1,8 @@
 // Web Worker shim: loads phyz_wasm and bridges postMessage.
 // SRI hash ensures WASM integrity — browser refuses tampered modules.
 
-let solver = null;
 let hasWebGPU = false;
+let hasGpuMethod = false;
 
 async function init() {
   const { default: init_wasm, QuantumSolver } = await import('/wasm/phyz_wasm.js');
@@ -10,10 +10,20 @@ async function init() {
 
   // Detect WebGPU support
   hasWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
-  if (hasWebGPU) {
-    console.log('[compute] WebGPU detected — GPU solver available');
+
+  // Probe the WASM module for GPU method
+  try {
+    const probe = new QuantumSolver('s4_level0');
+    hasGpuMethod = typeof probe.solve_all_partitions_gpu === 'function';
+    probe.free();
+  } catch (_) {}
+
+  if (hasWebGPU && hasGpuMethod) {
+    console.log('[compute] WebGPU + GPU solver available');
+  } else if (hasGpuMethod) {
+    console.log('[compute] GPU solver compiled but no WebGPU — using CPU');
   } else {
-    console.log('[compute] No WebGPU — using CPU solver');
+    console.log('[compute] CPU solver only');
   }
 
   return QuantumSolver;
@@ -22,14 +32,16 @@ async function init() {
 let QuantumSolverClass = null;
 const solverCache = {};
 
-function solve_one_cpu(params) {
-  const { level, coupling_g2, geometry_seed, perturbation } = params;
-  const tri = `s4_level${level}`;
+function get_solver(params) {
+  const tri = `s4_level${params.level}`;
   if (!solverCache[tri]) {
     solverCache[tri] = new QuantumSolverClass(tri);
   }
-  const solver = solverCache[tri];
+  return solverCache[tri];
+}
 
+function solve_one_cpu(solver, params) {
+  const { coupling_g2, geometry_seed, perturbation } = params;
   if (perturbation.type === 'base') {
     return JSON.parse(solver.solve_all_partitions(
       coupling_g2, BigInt(geometry_seed), "base", -1, 0.0, 0.0
@@ -42,14 +54,8 @@ function solve_one_cpu(params) {
   }
 }
 
-async function solve_one_gpu(params) {
-  const { level, coupling_g2, geometry_seed, perturbation } = params;
-  const tri = `s4_level${level}`;
-  if (!solverCache[tri]) {
-    solverCache[tri] = new QuantumSolverClass(tri);
-  }
-  const solver = solverCache[tri];
-
+async function solve_one_gpu(solver, params) {
+  const { coupling_g2, geometry_seed, perturbation } = params;
   if (perturbation.type === 'base') {
     return JSON.parse(await solver.solve_all_partitions_gpu(
       coupling_g2, BigInt(geometry_seed), "base", -1, 0.0, 0.0
@@ -63,14 +69,15 @@ async function solve_one_gpu(params) {
 }
 
 async function solve_one(params) {
-  if (hasWebGPU && typeof solverCache[`s4_level${params.level}`]?.solve_all_partitions_gpu === 'function') {
+  const solver = get_solver(params);
+  if (hasWebGPU && hasGpuMethod) {
     try {
-      return await solve_one_gpu(params);
+      return await solve_one_gpu(solver, params);
     } catch (err) {
       console.warn('[compute] GPU solve failed, falling back to CPU:', err);
     }
   }
-  return solve_one_cpu(params);
+  return solve_one_cpu(solver, params);
 }
 
 self.onmessage = async function(e) {
