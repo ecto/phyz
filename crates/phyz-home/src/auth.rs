@@ -8,37 +8,59 @@ pub struct AuthSession {
     pub email: String,
 }
 
+/// Result of checking the URL for a magic link callback.
+pub enum CallbackResult {
+    /// No callback fragment in URL.
+    None,
+    /// Magic link token was present but expired.
+    Expired,
+    /// Valid session extracted and persisted.
+    Ok(AuthSession),
+}
+
 /// Check URL fragment for magic link callback tokens.
 /// Supabase redirects to `app/#access_token=xxx&type=magiclink&...`
-pub fn check_callback() -> Option<AuthSession> {
-    let window = crate::dom::window();
-    let href = window.location().href().ok()?;
-    let url = web_sys::Url::new(&href).ok()?;
+pub fn check_callback() -> CallbackResult {
+    let Some(href) = crate::dom::window().location().href().ok() else {
+        return CallbackResult::None;
+    };
+    let Some(url) = web_sys::Url::new(&href).ok() else {
+        return CallbackResult::None;
+    };
     let hash = url.hash();
     if hash.is_empty() {
-        return None;
+        return CallbackResult::None;
     }
 
     // Hash looks like "#access_token=xxx&token_type=bearer&..."
     // Parse as query params by replacing leading # with ?
     let fake_url = format!("https://x?{}", &hash[1..]);
-    let parsed = web_sys::Url::new(&fake_url).ok()?;
+    let Some(parsed) = web_sys::Url::new(&fake_url).ok() else {
+        return CallbackResult::None;
+    };
     let params = parsed.search_params();
 
-    let access_token = params.get("access_token")?;
+    let Some(access_token) = params.get("access_token") else {
+        return CallbackResult::None;
+    };
     let token_type = params.get("type").unwrap_or_default();
-    if token_type != "magiclink" && token_type != "recovery" {
-        // Only handle magic link callbacks
-        if access_token.is_empty() {
-            return None;
-        }
+    if token_type != "magiclink" && token_type != "recovery" && access_token.is_empty() {
+        return CallbackResult::None;
     }
 
-    // Decode the JWT to extract user_id and email from payload
-    let (user_id, email) = decode_jwt_claims(&access_token)?;
-
-    // Clear the hash fragment
+    // Always clear the hash fragment so a stale token doesn't re-trigger on refresh
     clear_hash();
+
+    // Decode the JWT to extract user_id and email from payload
+    let Some((user_id, email)) = decode_jwt_claims(&access_token) else {
+        return CallbackResult::None;
+    };
+
+    // Reject expired tokens — user needs to request a fresh link
+    if is_jwt_expired(&access_token) {
+        web_sys::console::warn_1(&"auth: magic link expired".into());
+        return CallbackResult::Expired;
+    }
 
     let session = AuthSession {
         access_token,
@@ -49,7 +71,7 @@ pub fn check_callback() -> Option<AuthSession> {
     // Persist session
     crate::cache::save_session(&session);
 
-    Some(session)
+    CallbackResult::Ok(session)
 }
 
 /// Decode JWT payload (base64url middle segment) to extract sub and email.

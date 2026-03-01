@@ -28,9 +28,16 @@ pub async fn run() {
     let renderer = Rc::new(RefCell::new(renderer));
 
     // Check for magic link callback (returning from email click)
-    let session: Rc<RefCell<Option<AuthSession>>> = Rc::new(RefCell::new(
-        auth::check_callback().or_else(auth::load_session),
-    ));
+    let mut link_expired = false;
+    let initial_session = match auth::check_callback() {
+        auth::CallbackResult::Ok(s) => Some(s),
+        auth::CallbackResult::Expired => {
+            link_expired = true;
+            auth::load_session()
+        }
+        auth::CallbackResult::None => auth::load_session(),
+    };
+    let session: Rc<RefCell<Option<AuthSession>>> = Rc::new(RefCell::new(initial_session));
 
     // Initialize Supabase client
     let client = Rc::new(SupabaseClient::new());
@@ -180,6 +187,12 @@ pub async fn run() {
     }) as Box<dyn FnMut()>);
     dom::get_el("sign-in-btn").set_onclick(Some(sign_in_cb.as_ref().unchecked_ref()));
     sign_in_cb.forget();
+
+    // If user arrived via an expired magic link, open the auth modal with a message
+    if link_expired {
+        dom::set_class("auth-modal", "");
+        dom::set_text("auth-status", "link expired — request a new one");
+    }
 
     // Wire auth modal close
     let auth_close_cb = Closure::wrap(Box::new(move || {
