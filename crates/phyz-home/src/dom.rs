@@ -86,6 +86,26 @@ pub fn append_log(entries: &[String]) {
     el.set_scroll_top(el.scroll_height());
 }
 
+/// Detect mobile device via touch support and screen width.
+pub fn is_mobile() -> bool {
+    let w = window();
+    // Primary signal: coarse pointer (touch device)
+    let coarse = w
+        .match_media("(pointer: coarse)")
+        .ok()
+        .flatten()
+        .map(|m| m.matches())
+        .unwrap_or(false);
+    // Secondary signal: narrow viewport
+    let narrow = w
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|w| w <= 768.0)
+        .unwrap_or(false);
+    coarse || narrow
+}
+
 pub fn request_animation_frame(f: &Closure<dyn FnMut()>) {
     window()
         .request_animation_frame(f.as_ref().unchecked_ref())

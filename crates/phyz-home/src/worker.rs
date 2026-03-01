@@ -158,9 +158,15 @@ impl WorkerPool {
     }
 
     /// Recommended pool size: hardwareConcurrency - 1, min 1.
+    /// Capped at 2 on mobile to avoid WASM memory pressure crashing iOS tabs.
     pub fn recommended_size() -> usize {
         let nav = crate::dom::window().navigator();
         let cores = nav.hardware_concurrency() as usize;
-        cores.saturating_sub(1).max(1)
+        let size = cores.saturating_sub(1).max(1);
+        if crate::dom::is_mobile() {
+            size.min(2)
+        } else {
+            size
+        }
     }
 }

@@ -507,8 +507,11 @@ pub async fn run() {
         renderer.clone(),
     ));
 
-    // Gate auto-start behind splash flag
-    if crate::cache::has_seen_splash() {
+    // Gate auto-start behind splash flag.
+    // On mobile, never auto-start — always require an explicit tap to avoid
+    // WASM memory pressure crashing the tab before the user can interact.
+    let is_mobile = dom::is_mobile();
+    if crate::cache::has_seen_splash() && !is_mobile {
         coordinator.start();
         dom::set_text("toggle", "\u{23F8}");
         dom::set_class("toggle", "running");
@@ -520,7 +523,7 @@ pub async fn run() {
         dom::set_class("toggle", "");
         dom::set_text("status-text", "idle");
         dom::set_class("activity-dot", "indicator idle");
-        // Show splash only on first visit
+        // Show splash on first visit or on mobile
         dom::set_class("splash-backdrop", "");
     }
 

@@ -115,6 +115,8 @@ pub struct Coordinator {
     visible_points: Rc<RefCell<usize>>,
     /// Per-worker dispatch timestamp (ms since epoch) for elapsed time display.
     dispatch_times: RefCell<Vec<f64>>,
+    /// On mobile, stagger worker dispatch (one per tick) to avoid memory spikes.
+    mobile: bool,
 }
 
 impl Coordinator {
@@ -145,6 +147,7 @@ impl Coordinator {
             round_computed: RefCell::new(0),
             visible_points: Rc::new(RefCell::new(initial_points)),
             dispatch_times: RefCell::new(vec![0.0; n]),
+            mobile: crate::dom::is_mobile(),
         }
     }
 
@@ -405,10 +408,14 @@ impl Coordinator {
             }
         });
 
-        // Dispatch batches to idle workers
+        // Dispatch batches to idle workers.
+        // On mobile, dispatch at most one new worker per tick to stagger WASM init
+        // and avoid a memory spike that crashes iOS tabs.
         let max_active = self.max_workers();
+        let mut dispatched_this_tick = 0usize;
         while self.pool.available() > 0
             && (self.pool.pool_size() - self.pool.available()) < max_active
+            && (!self.mobile || dispatched_this_tick == 0)
         {
             let mut batch_units = Vec::new();
             {
@@ -459,6 +466,7 @@ impl Coordinator {
                 for u in &batch_units {
                     uw.insert(u.id.clone(), worker_idx);
                 }
+                dispatched_this_tick += 1;
             }
         }
 

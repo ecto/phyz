@@ -8,22 +8,34 @@ async function init() {
   const { default: init_wasm, QuantumSolver } = await import('/wasm/phyz_wasm.js');
   await init_wasm({ module_or_path: '/wasm/phyz_wasm_bg.wasm' });
 
-  // Detect WebGPU support
-  hasWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
-
-  // Probe the WASM module for GPU method
+  // Detect WebGPU support — wrapped defensively because Safari iOS has
+  // experimental/partial WebGPU that can crash on probe.
   try {
-    const probe = new QuantumSolver('s4_level0');
-    hasGpuMethod = typeof probe.solve_all_partitions_gpu === 'function';
-    probe.free();
-  } catch (_) {}
+    hasWebGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
+    if (hasWebGPU) {
+      // Verify we can actually get an adapter (Safari may throw here)
+      const adapter = await navigator.gpu.requestAdapter();
+      hasWebGPU = !!adapter;
+    }
+  } catch (_) {
+    hasWebGPU = false;
+  }
+
+  // Probe the WASM module for GPU method — only if WebGPU is confirmed working
+  if (hasWebGPU) {
+    try {
+      const probe = new QuantumSolver('s4_level0');
+      hasGpuMethod = typeof probe.solve_all_partitions_gpu === 'function';
+      probe.free();
+    } catch (_) {
+      hasGpuMethod = false;
+    }
+  }
 
   if (hasWebGPU && hasGpuMethod) {
     console.log('[compute] WebGPU + GPU solver available');
-  } else if (hasGpuMethod) {
-    console.log('[compute] GPU solver compiled but no WebGPU — using CPU');
   } else {
-    console.log('[compute] CPU solver only');
+    console.log('[compute] CPU solver');
   }
 
   return QuantumSolver;
