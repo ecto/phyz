@@ -221,7 +221,8 @@ pub async fn run() {
                 match client.send_magic_link(&email).await {
                     Ok(()) => dom::set_text("auth-status", "check your email!"),
                     Err(e) => {
-                        dom::set_text("auth-status", &format!("error: {e}"));
+                        let msg = friendly_auth_error(&e);
+                        dom::set_text("auth-status", &msg);
                         // Re-enable on error
                         let el: web_sys::HtmlInputElement =
                             dom::get_el("auth-email").dyn_into().unwrap();
@@ -1250,6 +1251,17 @@ fn seed_demo_data(renderer: &mut crate::viz::Renderer) {
         let gn_str = format!("{g_n:.0}");
         dom::set_text("gn", &gn_str);
         dom::set_text("gn-splash", &gn_str);
+    }
+}
+
+/// Turn raw Supabase error strings into short, human-readable messages.
+fn friendly_auth_error(raw: &str) -> String {
+    if raw.contains("over_email_send_rate_limit") || raw.contains("429") {
+        "too many attempts — try again in a minute".to_string()
+    } else if raw.contains("invalid") {
+        "invalid email address".to_string()
+    } else {
+        format!("error: {raw}")
     }
 }
 
