@@ -1,0 +1,25 @@
+[package]
+name = "phyz-dream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Learned surrogate dynamics for phyz rigid body models"
+
+[features]
+default = []
+gpu = ["dep:tang-compute"]
+
+[dependencies]
+phyz-math = { workspace = true }
+phyz-model = { workspace = true }
+phyz-rigid = { workspace = true }
+tang = { path = "../../../tang/crates/tang" }
+tang-tensor = { path = "../../../tang/crates/tang-tensor" }
+tang-train = { path = "../../../tang/crates/tang-train" }
+tang-safetensors = { path = "../../../tang/crates/tang-safetensors" }
+tang-compute = { path = "../../../tang/crates/tang-compute", optional = true }
+tang-expr = { path = "../../../tang/crates/tang-expr" }
+serde = { workspace = true }
+serde_json = "1"

@@ -2886,6 +2886,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-dream"
+version = "0.1.0"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "serde",
+ "serde_json",
+ "tang",
+ "tang-compute",
+ "tang-expr",
+ "tang-safetensors",
+ "tang-tensor",
+ "tang-train",
+]
+
+[[package]]
 name = "phyz-em"
 version = "0.1.0"
 dependencies = [
@@ -4283,6 +4300,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tang-ad"
+version = "0.1.0"
+dependencies = [
+ "tang",
+ "tang-la",
+]
+
+[[package]]
+name = "tang-compute"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "tang",
+ "tang-expr",
+]
+
+[[package]]
 name = "tang-expr"
 version = "0.1.0"
 dependencies = [
@@ -4330,11 +4364,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "tang-optim"
+version = "0.1.0"
+dependencies = [
+ "tang",
+ "tang-ad",
+ "tang-la",
+]
+
+[[package]]
+name = "tang-safetensors"
+version = "0.1.0"
+dependencies = [
+ "safetensors",
+ "tang",
+ "tang-la",
+ "tang-tensor",
+]
+
+[[package]]
 name = "tang-tensor"
 version = "0.1.0"
 dependencies = [
  "tang",
  "tang-la",
+]
+
+[[package]]
+name = "tang-train"
+version = "0.1.0"
+dependencies = [
+ "tang",
+ "tang-ad",
+ "tang-la",
+ "tang-optim",
+ "tang-tensor",
 ]
 
 [[package]]

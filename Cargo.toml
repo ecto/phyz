@@ -27,6 +27,7 @@ members = [
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",
+    "crates/phyz-dream",
 ]
 
 [workspace.package]
