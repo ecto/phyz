@@ -104,7 +104,7 @@ impl MdSystem {
             // Box-Muller transform for Gaussian sampling
             let sigma = (k_b * temperature / particle.mass).sqrt();
 
-            let mut rand_component = || -> f64 {
+            let rand_component = || -> f64 {
                 let u1: f64 = rand();
                 let u2: f64 = rand();
                 (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
@@ -192,7 +192,7 @@ impl MdSystem {
 
                 // Random force
                 let sigma = prefactor * (particle.mass / self.dt).sqrt();
-                let mut rand_component = || -> f64 {
+                let rand_component = || -> f64 {
                     let u1: f64 = rand();
                     let u2: f64 = rand();
                     (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()

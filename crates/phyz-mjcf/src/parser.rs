@@ -48,6 +48,7 @@ struct GeomElement {
     name: String,
     geom_type: String,
     size: Vec<f64>,
+    #[allow(dead_code)]
     pos: Vec3,
 }
 
