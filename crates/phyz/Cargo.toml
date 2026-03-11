@@ -1,36 +1,14 @@
 [package]
 name = "phyz"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ecto/phyz"
+homepage = "https://phyz.dev"
 description = "Multi-physics differentiable simulation engine"
 
 [dependencies]
-rand = "0.8"
-rand_distr = "0.4"
-phyz-math.workspace = true
-phyz-model.workspace = true
-phyz-rigid.workspace = true
-phyz-diff.workspace = true
-phyz-mjcf.workspace = true
-phyz-collision.workspace = true
-phyz-contact.workspace = true
-phyz-particle.workspace = true
-phyz-lbm.workspace = true
-phyz-em.workspace = true
-phyz-md.workspace = true
-phyz-qft.workspace = true
-phyz-gravity.workspace = true
-phyz-coupling.workspace = true
-phyz-guardian.workspace = true
-phyz-gpu.workspace = true
-phyz-compile.workspace = true
-phyz-real2sim.workspace = true
-phyz-format.workspace = true
-phyz-prob.workspace = true
-phyz-world.workspace = true
+tang = { version = "0.2.0", path = "../../../tang/crates/tang", features = ["std", "la"] }
 
 [dev-dependencies]
 approx = "0.5"
