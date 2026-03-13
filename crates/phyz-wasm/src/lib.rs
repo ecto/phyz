@@ -271,6 +271,37 @@ pub struct WasmParticleSim {
 
 #[wasm_bindgen]
 impl WasmParticleSim {
+    /// Custom particle sim with user-specified initial conditions.
+    /// Arrays must all have the same length.
+    pub fn custom(
+        px: Vec<f64>,
+        py: Vec<f64>,
+        vx: Vec<f64>,
+        vy: Vec<f64>,
+        radii: Vec<f64>,
+        masses: Vec<f64>,
+        bounce: Vec<f64>,
+        wall_x: f64,
+    ) -> WasmParticleSim {
+        let n = px.len();
+        WasmParticleSim {
+            px,
+            py,
+            vx,
+            vy,
+            radii,
+            masses,
+            bounce,
+            stiffness: 50000.0,
+            contact_damping: 200.0,
+            friction: 0.4,
+            n,
+            time: 0.0,
+            dt: 0.0005,
+            wall_x,
+        }
+    }
+
     /// Three spheres with different bounce coefficients.
     pub fn bouncing_spheres() -> WasmParticleSim {
         let r = 0.15;

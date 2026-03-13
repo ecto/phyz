@@ -1,6 +1,18 @@
 /* tslint:disable */
 /* eslint-disable */
 
+export class QuantumSolver {
+    free(): void;
+    [Symbol.dispose](): void;
+    info(): string;
+    constructor(triangulation: string);
+    /**
+     * Solve for all partitions at once. Returns JSON with ground_state_energy,
+     * entropy_per_partition, and walltime_ms.
+     */
+    solve_all_partitions(coupling_g2: number, geometry_seed: bigint, perturbation_type: string, perturbation_index: number, perturbation_direction: number, fd_epsilon: number): string;
+}
+
 /**
  * Fusion viz: two kernels side-by-side, fuse them, animate the merge.
  */
@@ -417,6 +429,11 @@ export class WasmParticleSim {
      * Three spheres with different bounce coefficients.
      */
     static bouncing_spheres(): WasmParticleSim;
+    /**
+     * Custom particle sim with user-specified initial conditions.
+     * Arrays must all have the same length.
+     */
+    static custom(px: Float64Array, py: Float64Array, vx: Float64Array, vy: Float64Array, radii: Float64Array, masses: Float64Array, bounce: Float64Array, wall_x: number): WasmParticleSim;
     num_particles(): number;
     /**
      * Flat [x0,y0,z0, x1,y1,z1, ...] positions.
@@ -783,7 +800,6 @@ export interface InitOutput {
     readonly wasmcradlesim_num_bobs: (a: number) => number;
     readonly wasmcradlesim_pivot_positions: (a: number) => [number, number];
     readonly wasmcradlesim_step_n: (a: number, b: number) => void;
-    readonly wasmcradlesim_time: (a: number) => number;
     readonly wasmdiffgradientsim_current_loss: (a: number) => number;
     readonly wasmdiffgradientsim_current_x: (a: number) => number;
     readonly wasmdiffgradientsim_current_y: (a: number) => number;
@@ -842,6 +858,7 @@ export interface InitOutput {
     readonly wasmgrippersim_step_n: (a: number, b: number) => void;
     readonly wasmguardiansim_adaptive_dt: () => number;
     readonly wasmguardiansim_correction_demo: () => number;
+    readonly wasmguardiansim_e0: (a: number) => number;
     readonly wasmguardiansim_energy_monitor: () => number;
     readonly wasmguardiansim_ke: (a: number) => number;
     readonly wasmguardiansim_ke_history: (a: number) => [number, number];
@@ -858,7 +875,6 @@ export interface InitOutput {
     readonly wasmhourglasssim_outline: (a: number) => [number, number];
     readonly wasmhourglasssim_positions: (a: number) => [number, number];
     readonly wasmhourglasssim_step_n: (a: number, b: number) => void;
-    readonly wasmhourglasssim_time: (a: number) => number;
     readonly wasmlbmsim_cavity_flow: () => number;
     readonly wasmlbmsim_channel_flow: () => number;
     readonly wasmlbmsim_grid_ny: (a: number) => number;
@@ -910,6 +926,7 @@ export interface InitOutput {
     readonly wasmmpmsim_step_n: (a: number, b: number) => void;
     readonly wasmmpmsim_velocities: (a: number) => [number, number];
     readonly wasmparticlesim_bouncing_spheres: () => number;
+    readonly wasmparticlesim_custom: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => number;
     readonly wasmparticlesim_num_particles: (a: number) => number;
     readonly wasmparticlesim_positions: (a: number) => [number, number];
     readonly wasmparticlesim_radii: (a: number) => [number, number];
@@ -1004,17 +1021,18 @@ export interface InitOutput {
     readonly wasmworldsim_nbodies: (a: number) => number;
     readonly wasmreggecurvaturesim_time: (a: number) => number;
     readonly wasmreggesymmetrysim_time: (a: number) => number;
+    readonly wasmcradlesim_time: (a: number) => number;
     readonly wasmdiffjacobiansim_time: (a: number) => number;
     readonly wasmdiffsensitivitysim_time: (a: number) => number;
     readonly wasmgravitysandboxsim_time: (a: number) => number;
     readonly wasmgravitysim_time: (a: number) => number;
     readonly wasmgrippersim_num_particles: (a: number) => number;
     readonly wasmgrippersim_time: (a: number) => number;
-    readonly wasmguardiansim_e0: (a: number) => number;
     readonly wasmguardiansim_q_val: (a: number) => number;
     readonly wasmguardiansim_time: (a: number) => number;
     readonly wasmguardiansim_v_val: (a: number) => number;
     readonly wasmhourglasssim_particle_radius: (a: number) => number;
+    readonly wasmhourglasssim_time: (a: number) => number;
     readonly wasmlbmsim_grid_nx: (a: number) => number;
     readonly wasmlbmsim_time: (a: number) => number;
     readonly wasmmdsim_box_size: (a: number) => number;
@@ -1052,11 +1070,16 @@ export interface InitOutput {
     readonly wasmwavefieldsim_num_pendulums: (a: number) => number;
     readonly wasmwavefieldsim_time: (a: number) => number;
     readonly wasmworldsim_time: (a: number) => number;
+    readonly __wbg_quantumsolver_free: (a: number, b: number) => void;
+    readonly quantumsolver_info: (a: number) => [number, number];
+    readonly quantumsolver_new: (a: number, b: number) => [number, number, number];
+    readonly quantumsolver_solve_all_partitions: (a: number, b: number, c: bigint, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
-    readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+    readonly __externref_table_dealloc: (a: number) => void;
+    readonly __externref_drop_slice: (a: number, b: number) => void;
     readonly __wbindgen_start: () => void;
 }
 

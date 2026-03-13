@@ -1,5 +1,79 @@
 /* @ts-self-types="./phyz_wasm.d.ts" */
 
+export class QuantumSolver {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        QuantumSolverFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_quantumsolver_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    info() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.quantumsolver_info(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} triangulation
+     */
+    constructor(triangulation) {
+        const ptr0 = passStringToWasm0(triangulation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.quantumsolver_new(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0] >>> 0;
+        QuantumSolverFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Solve for all partitions at once. Returns JSON with ground_state_energy,
+     * entropy_per_partition, and walltime_ms.
+     * @param {number} coupling_g2
+     * @param {bigint} geometry_seed
+     * @param {string} perturbation_type
+     * @param {number} perturbation_index
+     * @param {number} perturbation_direction
+     * @param {number} fd_epsilon
+     * @returns {string}
+     */
+    solve_all_partitions(coupling_g2, geometry_seed, perturbation_type, perturbation_index, perturbation_direction, fd_epsilon) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(perturbation_type, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.quantumsolver_solve_all_partitions(this.__wbg_ptr, coupling_g2, geometry_seed, ptr0, len0, perturbation_index, perturbation_direction, fd_epsilon);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) QuantumSolver.prototype[Symbol.dispose] = QuantumSolver.prototype.free;
+
 /**
  * Fusion viz: two kernels side-by-side, fuse them, animate the merge.
  */
@@ -346,7 +420,7 @@ export class WasmCradleSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
 }
@@ -516,7 +590,7 @@ export class WasmDiffJacobianSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
 }
@@ -596,7 +670,7 @@ export class WasmDiffSensitivitySim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
 }
@@ -1044,7 +1118,7 @@ export class WasmGuardianSim {
      * @returns {number}
      */
     e0() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmguardiansim_e0(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1224,7 +1298,7 @@ export class WasmHourglassSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmhourglasssim_time(this.__wbg_ptr);
+        const ret = wasm.wasmdiffgradientsim_time(this.__wbg_ptr);
         return ret;
     }
 }
@@ -1593,7 +1667,7 @@ export class WasmMjcfAntSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
 }
@@ -1817,7 +1891,7 @@ export class WasmMpmSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmguardiansim_e0(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1856,6 +1930,37 @@ export class WasmParticleSim {
      */
     static bouncing_spheres() {
         const ret = wasm.wasmparticlesim_bouncing_spheres();
+        return WasmParticleSim.__wrap(ret);
+    }
+    /**
+     * Custom particle sim with user-specified initial conditions.
+     * Arrays must all have the same length.
+     * @param {Float64Array} px
+     * @param {Float64Array} py
+     * @param {Float64Array} vx
+     * @param {Float64Array} vy
+     * @param {Float64Array} radii
+     * @param {Float64Array} masses
+     * @param {Float64Array} bounce
+     * @param {number} wall_x
+     * @returns {WasmParticleSim}
+     */
+    static custom(px, py, vx, vy, radii, masses, bounce, wall_x) {
+        const ptr0 = passArrayF64ToWasm0(px, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(py, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(vx, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(vy, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(radii, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArrayF64ToWasm0(masses, wasm.__wbindgen_malloc);
+        const len5 = WASM_VECTOR_LEN;
+        const ptr6 = passArrayF64ToWasm0(bounce, wasm.__wbindgen_malloc);
+        const len6 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmparticlesim_custom(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, wall_x);
         return WasmParticleSim.__wrap(ret);
     }
     /**
@@ -2289,7 +2394,7 @@ export class WasmReal2SimAdamVsGdSim {
      * @returns {number}
      */
     adam_length() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmguardiansim_e0(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -2933,7 +3038,7 @@ export class WasmSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -3096,7 +3201,7 @@ export class WasmWorldSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmcradlesim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -3112,8 +3217,16 @@ if (Symbol.dispose) WasmWorldSim.prototype[Symbol.dispose] = WasmWorldSim.protot
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
+        __wbg_Error_8c4e43fe74559d73: function(arg0, arg1) {
+            const ret = Error(getStringFromWasm0(arg0, arg1));
+            return ret;
+        },
         __wbg___wbindgen_throw_be289d5034ed271b: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
+        },
+        __wbg_now_a3af9a2f4bbaa4d1: function() {
+            const ret = Date.now();
+            return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
@@ -3136,6 +3249,9 @@ function __wbg_get_imports() {
     };
 }
 
+const QuantumSolverFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_quantumsolver_free(ptr >>> 0, 1));
 const WasmCompileFusionSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcompilefusionsim_free(ptr >>> 0, 1));
@@ -3316,6 +3432,13 @@ function getUint8ArrayMemory0() {
     return cachedUint8ArrayMemory0;
 }
 
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function passStringToWasm0(arg, malloc, realloc) {
     if (realloc === undefined) {
         const buf = cachedTextEncoder.encode(arg);
@@ -3351,6 +3474,12 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });

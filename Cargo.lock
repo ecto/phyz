@@ -2809,32 +2809,10 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "approx",
- "phyz-collision",
- "phyz-compile",
- "phyz-contact",
- "phyz-coupling",
- "phyz-diff",
- "phyz-em",
- "phyz-format",
- "phyz-gpu",
- "phyz-gravity",
- "phyz-guardian",
- "phyz-lbm",
- "phyz-math",
- "phyz-md",
- "phyz-mjcf",
- "phyz-model",
- "phyz-particle",
- "phyz-prob",
- "phyz-qft",
- "phyz-real2sim",
- "phyz-rigid",
- "phyz-world",
- "rand 0.8.5",
- "rand_distr",
+ "tang",
 ]
 
 [[package]]
@@ -4294,7 +4272,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "tang"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "paste",
 ]
