@@ -356,6 +356,227 @@ fn implicit_force_is_smaller_than_explicit_at_impact() {
     );
 }
 
+/// Goal 4 — `contact_forces*` must apply the contact wrench AT the contact
+/// point (not the body origin). For a contact offset from a body's COM, the
+/// returned `SpatialVec` must have a non-zero angular component
+/// τ = r × F where r is the offset from the body origin to the contact point.
+///
+/// Setup: a small fixed support body at (-0.04, 0, -0.005); a free rod
+/// (modelled as a capsule centred at the origin, axis along +x) just above
+/// it. The contact between them is offset from the rod's COM along -x.
+/// The wrench on the rod must rotate it (non-zero y-torque).
+#[test]
+fn contact_force_torque_at_contact_point() {
+    use phyz::collision::Collision;
+    use phyz::contact::contact_forces_implicit;
+
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_fixed_body(
+            "support",
+            -1,
+            SpatialTransform::from_translation(Vec3::new(-0.04, 0.0, -0.005)),
+            SpatialInertia::new(
+                1.0,
+                Vec3::zeros(),
+                Mat3::from_diagonal(&Vec3::new(0.001, 0.001, 0.001)),
+            ),
+        )
+        .add_free_body(
+            "rod",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::new(
+                0.01,
+                Vec3::zeros(),
+                Mat3::from_diagonal(&Vec3::new(1e-5, 1e-5, 1e-5)),
+            ),
+        )
+        .build();
+    model.bodies[0].geometry = Some(Geometry::Box {
+        half_extents: Vec3::new(0.005, 0.005, 0.005),
+    });
+    model.bodies[1].geometry = Some(Geometry::Capsule {
+        radius: 0.005,
+        length: 0.1,
+    });
+
+    let mut state = model.default_state();
+    state.body_xform[0] =
+        SpatialTransform::new(Mat3::identity(), Vec3::new(-0.04, 0.0, -0.005));
+    state.body_xform[1] = SpatialTransform::new(Mat3::identity(), Vec3::zeros());
+
+    // Construct the contact directly: it's at the support's top face under
+    // the rod's lower surface, at x = -0.04 (where the rod's -x half is).
+    let contact_point_world = Vec3::new(-0.04, 0.0, 0.0);
+    let collision = Collision {
+        body_i: 0,
+        body_j: 1,
+        contact_point: contact_point_world,
+        contact_normal: Vec3::z(),
+        penetration_depth: 1e-3,
+    };
+    let materials = vec![ContactMaterial::default()];
+    let masses = vec![f64::INFINITY, 0.01];
+    let vels = vec![SpatialVec::zero(), SpatialVec::zero()];
+
+    let forces = contact_forces_implicit(
+        std::slice::from_ref(&collision),
+        &state,
+        &materials,
+        Some(&vels),
+        &masses,
+        0.001,
+    );
+
+    // Linear: rod (body 1) gets +z, support (body 0) gets -z.
+    assert!(
+        forces[1].linear.z > 0.0,
+        "rod should be pushed up, got fz = {}",
+        forces[1].linear.z,
+    );
+    assert!(forces[0].linear.z < 0.0);
+
+    // Torque on rod about y-axis: r_j × F_j where r_j is contact_point - rod_pos
+    // = (-0.04, 0, 0). F_j is (0, 0, F_z). Cross product:
+    //   r × F = (0·F_z - 0·0,  0·0 - (-0.04)·F_z,  (-0.04)·0 - 0·0)
+    //         = (0, 0.04·F_z, 0)
+    // i.e. positive y-torque. Without the Goal 4 fix this is zero.
+    let expected_torque_y = 0.04 * forces[1].linear.z;
+    assert!(
+        forces[1].angular.y.abs() > 0.0,
+        "rod should receive a non-zero y-torque from offset contact",
+    );
+    assert_relative_eq!(forces[1].angular.y, expected_torque_y, epsilon = 1e-9);
+    // The other axes are zero for this axis-aligned offset.
+    assert!(forces[1].angular.x.abs() < 1e-12);
+    assert!(forces[1].angular.z.abs() < 1e-12);
+}
+
+/// Goal 4 — 2D simulation of a long thin rod tipping off a small support at
+/// one end. With contact-point torque, the rod's far end translates > 1cm in
+/// 0.5s and the angular velocity grows; without it, the rod would simply
+/// translate upward in lockstep with the contact.
+///
+/// We carry our own 2D rotational integrator (no ABA) so the assertion is
+/// about the wrench, not the full multibody machinery.
+#[test]
+fn rod_tips_off_support_when_contact_is_offset() {
+    use phyz::collision::Collision;
+
+    let m = 0.01_f64; // 10 g rod
+    let length = 0.1_f64;
+    let half_l = length / 2.0;
+    let radius = 0.005_f64;
+    let i_y = m * length * length / 12.0; // thin-rod inertia about y-axis through COM
+    let dt = 1.0 / 2000.0;
+    let g = 9.81_f64;
+    let material = ContactMaterial::default();
+
+    // Support sits flush with the world plane z=0, at x = -half_l + 1cm = -4cm.
+    let support_x = -half_l + 0.01;
+    let support_top_z = 0.0;
+
+    // Rod starts horizontal, centre at (0, 0, radius + ε): the -x half rests
+    // on the support, the +x half overhangs.
+    let mut x = 0.0_f64;
+    let mut z = radius + 1e-4;
+    let mut theta = 0.0_f64; // rotation about world +y axis
+    let mut vx = 0.0_f64;
+    let mut vz = 0.0_f64;
+    let mut omega = 0.0_f64;
+    let initial_tip_z = z; // far end (+x) at θ=0 sits at the COM's z.
+
+    for _ in 0..((0.5_f64 / dt) as usize) {
+        let cos_t = theta.cos();
+        let sin_t = theta.sin();
+
+        // Find the axial parameter s ∈ [-half_l, half_l] that sits over the
+        // support's x. For modest angles, s ≈ (support_x - x)/cos_t.
+        let s = ((support_x - x) / cos_t.max(0.1)).clamp(-half_l, half_l);
+        // World-frame point on rod axis above support.
+        // Sign convention: positive θ means the rod's +x end has tilted DOWN
+        // (so a positive-y torque rotates the +x end downward, see the test
+        // body docstring). With this convention an axial parameter s along
+        // the rod sits at z = z_com - s·sin θ.
+        let p_axis_x = x + s * cos_t;
+        let p_axis_z = z - s * sin_t;
+        // Bottom of capsule cross-section (along world -z).
+        let p_bot_z = p_axis_z - radius;
+
+        let depth = (support_top_z - p_bot_z).max(0.0);
+
+        let (fx, fz, torque_y) = if depth > 0.0 {
+            // Contact point in world (support top).
+            let cp = Vec3::new(p_axis_x, 0.0, support_top_z);
+            // Offset from rod COM to contact point.
+            let r_x = cp.x - x;
+            let r_z = cp.z - z;
+
+            // World-frame velocity at contact point: v_com + ω × r.
+            // Angular velocity vector (0, ω, 0); r = (r_x, 0, r_z).
+            //   (0,ω,0) × (r_x,0,r_z) = (ω·r_z, 0, -ω·r_x)
+            let v_pt = Vec3::new(vx + omega * r_z, 0.0, vz - omega * r_x);
+
+            let collision = Collision {
+                body_i: 0,
+                body_j: 1,
+                contact_point: cp,
+                contact_normal: Vec3::z(),
+                penetration_depth: depth,
+            };
+            let wrench = phyz::compute_contact_force_implicit(
+                &collision,
+                &material,
+                &Vec3::zeros(),
+                &v_pt,
+                f64::INFINITY,
+                m,
+                dt,
+            );
+            let f = wrench.linear;
+            // Torque about world y at rod COM: (r × F).y = r_z*F_x - r_x*F_z.
+            // For F = (0,0,F_z): (r × F).y = -r_x * F_z. With r_x < 0 and F_z > 0
+            // this is positive ⇒ positive rotation about +y ⇒ +x end goes DOWN.
+            let torque_y = r_z * f.x - r_x * f.z;
+            (f.x, f.z, torque_y)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        // Gravity in z, then integrate semi-implicit Euler.
+        let ax = fx / m;
+        let az = fz / m - g;
+        let alpha = torque_y / i_y;
+        vx += ax * dt;
+        vz += az * dt;
+        omega += alpha * dt;
+        x += vx * dt;
+        z += vz * dt;
+        theta += omega * dt;
+
+        assert!(theta.is_finite() && z.is_finite() && omega.is_finite());
+    }
+
+    // Far end of the rod (+x side) world-z position. With our convention
+    // (positive θ ⇒ +x end down), the tip is at z_com − half_l · sin θ.
+    let tip_z_world = z - half_l * theta.sin();
+    let tip_drop = initial_tip_z - tip_z_world; // positive = went down
+
+    assert!(
+        omega.abs() > 0.0,
+        "rod should be rotating; got ω = {omega}",
+    );
+    assert!(
+        tip_drop > 0.01,
+        "far end of rod should drop > 1cm; got {:.4}mm (θ={:.3} rad, z={:.4} m)",
+        tip_drop * 1000.0,
+        theta,
+        z,
+    );
+}
+
 /// Goal 2 — the broad phase used to panic in `partial_cmp(...).unwrap()` when
 /// any AABB endpoint was NaN. After the fix it should produce an empty pair
 /// list rather than aborting.
