@@ -8,6 +8,7 @@ use approx::assert_relative_eq;
 use phyz::{
     ContactMaterial, Geometry, Mat3, ModelBuilder, SpatialInertia, SpatialTransform, SpatialVec,
     Vec3,
+    collision::sweep_and_prune,
     contact::{contact_forces, find_contacts, find_ground_contacts},
 };
 
@@ -109,4 +110,121 @@ fn body_drop_on_fixed_body_with_contacts() {
     // (Goal 4 changes this for general offsets, but for now the wrench is
     // purely linear).
     let _ = SpatialVec::zero();
+}
+
+/// Goal 2 — `find_contacts` must not panic or seed NaN into the world when a
+/// body's transform contains NaN, and the broad phase must totally-order
+/// itself even in the presence of NaN AABB endpoints.
+#[test]
+fn nan_body_xform_does_not_panic_broad_phase() {
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_free_body(
+            "a",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::sphere(1.0, 0.1),
+        )
+        .add_free_body(
+            "b",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::sphere(1.0, 0.1),
+        )
+        .build();
+    model.bodies[0].geometry = Some(Geometry::Sphere { radius: 0.1 });
+    model.bodies[1].geometry = Some(Geometry::Sphere { radius: 0.1 });
+
+    let mut state = model.default_state();
+    // Body 0 stays at the origin; body 1's transform is poisoned with NaN.
+    state.body_xform[0] = SpatialTransform::identity();
+    state.body_xform[1] = SpatialTransform::new(
+        Mat3::identity(),
+        Vec3::new(f64::NAN, f64::NAN, f64::NAN),
+    );
+
+    let geometries: Vec<Option<Geometry>> =
+        model.bodies.iter().map(|b| b.geometry.clone()).collect();
+
+    // Must not panic.
+    let contacts = find_contacts(&model, &state, &geometries);
+    for c in &contacts {
+        assert!(
+            c.contact_normal.x.is_finite()
+                && c.contact_normal.y.is_finite()
+                && c.contact_normal.z.is_finite(),
+            "NaN snuck into a contact normal: {:?}",
+            c.contact_normal,
+        );
+    }
+}
+
+/// Goal 2 — `find_contacts` must derive a finite normal even when the two
+/// bodies are exactly co-located (so `(pos_j - pos_i).normalize()` would NaN).
+#[test]
+fn coincident_bodies_produce_finite_contact_normal() {
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_free_body(
+            "a",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::sphere(1.0, 0.1),
+        )
+        .add_free_body(
+            "b",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::sphere(1.0, 0.1),
+        )
+        .build();
+    model.bodies[0].geometry = Some(Geometry::Sphere { radius: 0.1 });
+    model.bodies[1].geometry = Some(Geometry::Sphere { radius: 0.1 });
+
+    let mut state = model.default_state();
+    // Both spheres centred at the origin — fully overlapping.
+    state.body_xform[0] = SpatialTransform::identity();
+    state.body_xform[1] = SpatialTransform::identity();
+
+    let geometries: Vec<Option<Geometry>> =
+        model.bodies.iter().map(|b| b.geometry.clone()).collect();
+
+    let contacts = find_contacts(&model, &state, &geometries);
+    for c in &contacts {
+        assert!(
+            c.contact_normal.x.is_finite()
+                && c.contact_normal.y.is_finite()
+                && c.contact_normal.z.is_finite(),
+            "got non-finite normal {:?} for coincident bodies",
+            c.contact_normal,
+        );
+        assert!(
+            (c.contact_normal.norm() - 1.0).abs() < 1e-6,
+            "contact normal should be unit length, got |n|={}",
+            c.contact_normal.norm(),
+        );
+    }
+}
+
+/// Goal 2 — the broad phase used to panic in `partial_cmp(...).unwrap()` when
+/// any AABB endpoint was NaN. After the fix it should produce an empty pair
+/// list rather than aborting.
+#[test]
+fn broad_phase_nan_endpoints_do_not_panic() {
+    use phyz::collision::AABB;
+    let nan = f64::NAN;
+    let aabbs = vec![
+        AABB::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)),
+        AABB::new(Vec3::new(nan, 0.0, 0.0), Vec3::new(2.0, 1.0, 1.0)),
+        AABB::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(1.5, 1.5, 1.5)),
+    ];
+    // Should not panic; the NaN body is skipped, but bodies 0 and 2 still
+    // overlap and produce a pair.
+    let pairs = sweep_and_prune(&aabbs);
+    assert!(
+        pairs.iter().all(|&(a, b)| a != 1 && b != 1),
+        "expected NaN body to be excluded, got pairs {pairs:?}",
+    );
 }

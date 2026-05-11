@@ -36,13 +36,26 @@ pub fn find_contacts(
 ) -> Vec<Collision> {
     let mut contacts = Vec::new();
 
-    // Build AABBs for broad phase
+    // Build AABBs for broad phase. If a body's transform contains any
+    // non-finite component (NaN/inf — e.g. left over from an upstream blowup),
+    // emit an empty AABB at the origin. The broad phase will skip it via its
+    // own finiteness filter, but emitting an empty AABB also keeps the index
+    // alignment with `geometries`/`state.body_xform`.
     let mut aabbs = Vec::new();
     for (i, geom_opt) in geometries.iter().enumerate() {
         if let Some(geom) = geom_opt {
             let xform = &state.body_xform[i];
             let pos = xform.pos;
             let rot = xform.rot;
+            if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
+                // Poisoned transform; degrade gracefully and skip this body
+                // by giving it a degenerate, non-finite-tagged AABB.
+                aabbs.push(AABB::new(
+                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
+                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
+                ));
+                continue;
+            }
             let collision_geom = convert_geometry(geom);
             let aabb = AABB::from_geometry(&collision_geom, &pos, &rot);
             aabbs.push(aabb);
@@ -65,6 +78,12 @@ pub fn find_contacts(
             let rot_i = xform_i.rot;
             let rot_j = xform_j.rot;
 
+            // Defensive: even if the broad phase let through a body with a
+            // NaN transform we refuse to produce a contact with a NaN normal.
+            if !pos_is_finite(&pos_i) || !pos_is_finite(&pos_j) {
+                continue;
+            }
+
             let collision_geom_i = convert_geometry(geom_i);
             let collision_geom_j = convert_geometry(geom_j);
             let dist = gjk_distance_rot(
@@ -77,7 +96,35 @@ pub fn find_contacts(
             );
 
             if dist < 0.0 {
-                let normal = (pos_j - pos_i).normalize();
+                // Default: take the normal from the body centres. When the
+                // centres coincide (or are within numerical noise) that
+                // division gives NaN, so we fall back to an EPA-derived
+                // normal, then to +Z. If even EPA can't agree on a
+                // direction we drop the contact rather than seeding NaN.
+                let center_offset = pos_j - pos_i;
+                let normal = if center_offset.norm() > 1e-9 {
+                    center_offset.normalize()
+                } else if let Some((_, epa_normal)) = crate::collision::epa_penetration_rot(
+                    &collision_geom_i,
+                    &collision_geom_j,
+                    &pos_i,
+                    &pos_j,
+                    &rot_i,
+                    &rot_j,
+                ) {
+                    if pos_is_finite(&epa_normal) && epa_normal.norm() > 1e-9 {
+                        epa_normal.normalize()
+                    } else {
+                        Vec3::z()
+                    }
+                } else {
+                    Vec3::z()
+                };
+
+                if !pos_is_finite(&normal) {
+                    continue;
+                }
+
                 let contact_point = (pos_i + pos_j) * 0.5;
                 let penetration_depth = -dist;
 
@@ -93,6 +140,21 @@ pub fn find_contacts(
     }
 
     contacts
+}
+
+fn pos_is_finite(v: &Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+fn rot_is_finite(m: &crate::math::Mat3) -> bool {
+    for i in 0..3 {
+        for j in 0..3 {
+            if !m[(i, j)].is_finite() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Compute contact forces for all contacts using body spatial velocities.
