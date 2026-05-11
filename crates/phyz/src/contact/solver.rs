@@ -138,10 +138,25 @@ pub fn contact_forces(
         // Compute force
         let force = super::compute_contact_force(contact, material, &vel_i, &vel_j);
 
-        // Apply equal and opposite forces
-        forces[i] = forces[i] + force;
-        if j != usize::MAX {
-            forces[j] = forces[j] - force;
+        // Apply equal and opposite forces.
+        //
+        // `compute_contact_force` returns `normal * magnitude`. Conventions for
+        // the normal differ between the two contact sources:
+        //
+        // * `find_ground_contacts` sets `contact_normal = +z`, which is the
+        //   direction we need to push body i (away from the ground). Adding
+        //   the returned wrench directly is therefore correct.
+        // * `find_contacts` sets `contact_normal = (pos_j - pos_i).normalize()`
+        //   — i.e. pointing from i toward j. To separate the pair we must
+        //   push body i in the OPPOSITE direction (-normal) and body j along
+        //   +normal. Naively adding `+force` to body i and `-force` to body j
+        //   pushes them INTO each other, which is what we observe before this
+        //   fix.
+        if j == usize::MAX {
+            forces[i] = forces[i] + force;
+        } else {
+            forces[i] = forces[i] - force;
+            forces[j] = forces[j] + force;
         }
     }
 
