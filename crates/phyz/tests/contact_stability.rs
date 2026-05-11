@@ -208,6 +208,154 @@ fn coincident_bodies_produce_finite_contact_normal() {
     }
 }
 
+/// Goal 3 — a 30mm plastic cube on a flat plate, default `ContactMaterial`,
+/// `dt = 1/2000`. The mecheval `cube_on_plate_simulation_runs` fixture
+/// reproduces this exact scenario. With the explicit penalty force the cube
+/// launches off the plate; with implicit damping it must:
+///
+/// * drift < 5mm in z after 1s, and
+/// * never penetrate the plate by more than 0.5mm at any sub-step.
+///
+/// We drive the simulation with a hand-rolled 1D semi-implicit Euler step on
+/// the cube's z-axis instead of going through the full ABA pipeline: this
+/// isolates the contact-force change and keeps the test independent of the
+/// free-joint integration conventions and of `find_contacts`'s broad/narrow
+/// phase (GJK returns -1 instead of the true penetration depth for
+/// overlapping boxes today — orthogonal to Goal 3). The geometry / depth
+/// computation is done analytically below.
+#[test]
+fn low_mass_cube_settles_on_plate() {
+    use phyz::collision::Collision;
+
+    let m = 0.032_f64; // 32g plastic cube
+    let half = 0.015_f64; // 30mm cube => 15mm half-extent
+    let dt = 1.0 / 2000.0;
+    let g = 9.81_f64;
+    let plate_top = 0.0_f64;
+
+    let material = ContactMaterial::default();
+    let k = material.stiffness;
+
+    // Cube starts 5mm above the plate top.
+    let mut z = half + 0.005;
+    let mut vz = 0.0_f64;
+
+    let mut max_penetration: f64 = 0.0;
+    let total_steps = (1.0 / dt) as usize;
+    for _ in 0..total_steps {
+        let depth = (plate_top - (z - half)).max(0.0);
+        let fz_contact = if depth > 0.0 {
+            max_penetration = max_penetration.max(depth);
+            // Body-pair convention: plate is body i (below), cube is body j
+            // (above). Normal = +z (from i to j). The cube has vel_j = (0,0,vz).
+            let collision = Collision {
+                body_i: 0,
+                body_j: 1,
+                contact_point: Vec3::new(0.0, 0.0, plate_top),
+                contact_normal: Vec3::z(),
+                penetration_depth: depth,
+            };
+            let wrench = phyz::compute_contact_force_implicit(
+                &collision,
+                &material,
+                &Vec3::zeros(),
+                &Vec3::new(0.0, 0.0, vz),
+                f64::INFINITY,
+                m,
+                dt,
+            );
+            // Force on the cube is along +normal (Goal 1 convention).
+            wrench.linear.z
+        } else {
+            0.0
+        };
+
+        let az = fz_contact / m - g;
+        vz += az * dt;
+        z += vz * dt;
+
+        // Sanity: never NaN.
+        assert!(z.is_finite(), "cube z became non-finite: {z}");
+        assert!(vz.is_finite(), "cube vz became non-finite: {vz}");
+        // Never launches off the plate.
+        assert!(
+            z < 1.0,
+            "cube launched: z={z}, vz={vz}; implicit damping is broken",
+        );
+    }
+
+    // Equilibrium under implicit-stiffness scheme: F_c · denom = m · k · x_eq
+    // and F_c = m · g at rest, giving x_eq = g · denom / k where
+    // denom = m + dt·c + dt²·k. This is the discrete-system steady state,
+    // which is slightly larger than the continuous m·g/k.
+    let denom = m + dt * material.damping + dt * dt * k;
+    let x_eq_discrete = g * denom / k;
+    let z_eq = half - x_eq_discrete;
+    let drift = (z - z_eq).abs();
+    assert!(
+        drift < 5e-3,
+        "cube drifted {:.4}mm after 1s, want < 5mm; z={z}, z_eq={z_eq}",
+        drift * 1000.0,
+    );
+    assert!(
+        max_penetration < 5e-4,
+        "max penetration {:.4}mm exceeded 0.5mm",
+        max_penetration * 1000.0,
+    );
+    // Cube has effectively stopped moving.
+    assert!(
+        vz.abs() < 1e-2,
+        "cube still moving at v_z = {vz} after 1s",
+    );
+}
+
+/// Goal 3 sanity: compare implicit vs. explicit contact force at impact for a
+/// low-mass body. The implicit form must produce a strictly smaller (and
+/// always-stable, m·(...)/(m+dt·c+dt²·k)-scaled) force, so the cube can't
+/// flip sign in a single step.
+#[test]
+fn implicit_force_is_smaller_than_explicit_at_impact() {
+    use phyz::collision::Collision;
+    use phyz::{compute_contact_force_implicit, contact::compute_contact_force};
+
+    let material = ContactMaterial::default();
+    // Body-pair convention: body_i is the (stationary) plate at the origin,
+    // body_j is the cube above it, normal = +z (points from i to j).
+    let collision = Collision {
+        body_i: 0,
+        body_j: 1,
+        contact_point: Vec3::zeros(),
+        contact_normal: Vec3::z(),
+        penetration_depth: 1e-5,
+    };
+    // Cube (body j) is falling at ~1 m/s INTO the contact.
+    let vel_i = Vec3::zeros();
+    let vel_j = Vec3::new(0.0, 0.0, -1.0);
+    let dt = 1.0 / 2000.0;
+    let m = 0.032;
+
+    let f_exp = compute_contact_force(&collision, &material, &vel_i, &vel_j).linear.z;
+    let f_imp =
+        compute_contact_force_implicit(&collision, &material, &vel_i, &vel_j, f64::INFINITY, m, dt)
+            .linear
+            .z;
+
+    assert!(f_exp > 0.0);
+    assert!(f_imp > 0.0);
+    assert!(
+        f_imp < f_exp,
+        "implicit force {f_imp} should be < explicit {f_exp}",
+    );
+    // The expected ratio is m/(m+dt·c+dt²·k) ≈ 0.38 for default material.
+    let expected_ratio_upper_bound = 0.5_f64;
+    assert!(
+        f_imp / f_exp < expected_ratio_upper_bound,
+        "implicit/explicit ratio = {}, want < {}",
+        f_imp / f_exp,
+        expected_ratio_upper_bound,
+    );
+}
+
 /// Goal 2 — the broad phase used to panic in `partial_cmp(...).unwrap()` when
 /// any AABB endpoint was NaN. After the fix it should produce an empty pair
 /// list rather than aborting.

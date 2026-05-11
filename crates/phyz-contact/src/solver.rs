@@ -223,6 +223,68 @@ pub fn contact_forces(
     forces
 }
 
+/// Compute contact forces with implicit damping for low-mass-body stability.
+///
+/// See [`crate::compute_contact_force_implicit`] for the derivation. Pass
+/// `f64::INFINITY` in `masses[i]` for fixed/world bodies. For ground contacts
+/// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
+pub fn contact_forces_implicit(
+    contacts: &[Collision],
+    state: &State,
+    materials: &[ContactMaterial],
+    body_velocities: Option<&[SpatialVec]>,
+    masses: &[f64],
+    dt: f64,
+) -> Vec<SpatialVec> {
+    let nbodies = state.body_xform.len();
+    let mut forces = vec![SpatialVec::zero(); nbodies];
+
+    for contact in contacts {
+        let i = contact.body_i;
+        let j = contact.body_j;
+
+        let material = if materials.is_empty() {
+            &ContactMaterial::default()
+        } else {
+            &materials[i.min(materials.len() - 1)]
+        };
+
+        let vel_i = body_velocities
+            .and_then(|vels| vels.get(i))
+            .map(|v| v.linear)
+            .unwrap_or(Vec3::zeros());
+
+        let vel_j = if j == usize::MAX {
+            Vec3::zeros()
+        } else {
+            body_velocities
+                .and_then(|vels| vels.get(j))
+                .map(|v| v.linear)
+                .unwrap_or(Vec3::zeros())
+        };
+
+        let mass_i = masses.get(i).copied().unwrap_or(f64::INFINITY);
+        let mass_j = if j == usize::MAX {
+            f64::INFINITY
+        } else {
+            masses.get(j).copied().unwrap_or(f64::INFINITY)
+        };
+
+        let force = crate::compute_contact_force_implicit(
+            contact, material, &vel_i, &vel_j, mass_i, mass_j, dt,
+        );
+
+        if j == usize::MAX {
+            forces[i] = forces[i] + force;
+        } else {
+            forces[i] = forces[i] - force;
+            forces[j] = forces[j] + force;
+        }
+    }
+
+    forces
+}
+
 /// Find ground plane contacts.
 pub fn find_ground_contacts(
     state: &State,
