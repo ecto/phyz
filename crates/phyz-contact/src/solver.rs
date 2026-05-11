@@ -36,13 +36,24 @@ pub fn find_contacts(
 ) -> Vec<Collision> {
     let mut contacts = Vec::new();
 
-    // Build AABBs for broad phase
+    // Build AABBs for broad phase. If a body's transform contains any
+    // non-finite component (NaN/inf — e.g. left over from an upstream blowup),
+    // emit a NaN-tagged AABB. The broad phase will skip it via its own
+    // finiteness filter, but emitting it keeps the index alignment with
+    // `geometries`/`state.body_xform`.
     let mut aabbs = Vec::new();
     for (i, geom_opt) in geometries.iter().enumerate() {
         if let Some(geom) = geom_opt {
             let xform = &state.body_xform[i];
             let pos = xform.pos;
             let rot = xform.rot;
+            if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
+                aabbs.push(AABB::new(
+                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
+                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
+                ));
+                continue;
+            }
             let collision_geom = convert_geometry(geom);
             let aabb = AABB::from_geometry(&collision_geom, &pos, &rot);
             aabbs.push(aabb);
@@ -65,6 +76,12 @@ pub fn find_contacts(
             let rot_i = xform_i.rot;
             let rot_j = xform_j.rot;
 
+            // Defensive: even if the broad phase let through a body with a
+            // NaN transform we refuse to produce a contact with a NaN normal.
+            if !pos_is_finite(&pos_i) || !pos_is_finite(&pos_j) {
+                continue;
+            }
+
             let collision_geom_i = convert_geometry(geom_i);
             let collision_geom_j = convert_geometry(geom_j);
             let dist = gjk_distance_rot(
@@ -77,7 +94,35 @@ pub fn find_contacts(
             );
 
             if dist < 0.0 {
-                let normal = (pos_j - pos_i).normalize();
+                // Default: take the normal from the body centres. When the
+                // centres coincide (or are within numerical noise) that
+                // division gives NaN, so we fall back to an EPA-derived
+                // normal, then to +Z. If even EPA can't agree on a
+                // direction we drop the contact rather than seeding NaN.
+                let center_offset = pos_j - pos_i;
+                let normal = if center_offset.norm() > 1e-9 {
+                    center_offset.normalize()
+                } else if let Some((_, epa_normal)) = phyz_collision::epa_penetration_rot(
+                    &collision_geom_i,
+                    &collision_geom_j,
+                    &pos_i,
+                    &pos_j,
+                    &rot_i,
+                    &rot_j,
+                ) {
+                    if pos_is_finite(&epa_normal) && epa_normal.norm() > 1e-9 {
+                        epa_normal.normalize()
+                    } else {
+                        Vec3::z()
+                    }
+                } else {
+                    Vec3::z()
+                };
+
+                if !pos_is_finite(&normal) {
+                    continue;
+                }
+
                 let contact_point = (pos_i + pos_j) * 0.5;
                 let penetration_depth = -dist;
 
@@ -93,6 +138,21 @@ pub fn find_contacts(
     }
 
     contacts
+}
+
+fn pos_is_finite(v: &Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+fn rot_is_finite(m: &phyz_math::Mat3) -> bool {
+    for i in 0..3 {
+        for j in 0..3 {
+            if !m[(i, j)].is_finite() {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Compute contact forces for all contacts using body spatial velocities.
@@ -135,13 +195,85 @@ pub fn contact_forces(
                 .unwrap_or(Vec3::zeros())
         };
 
-        // Compute force
         let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
+        let f_linear = force.linear;
 
-        // Apply equal and opposite forces
-        forces[i] = forces[i] + force;
-        if j != usize::MAX {
-            forces[j] = forces[j] - force;
+        // Goal 1 sign convention + Goal 4 contact-point torque (τ = r × F).
+        if j == usize::MAX {
+            let r_i = contact.contact_point - state.body_xform[i].pos;
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);
+        } else {
+            let r_i = contact.contact_point - state.body_xform[i].pos;
+            let r_j = contact.contact_point - state.body_xform[j].pos;
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&(-f_linear)), -f_linear);
+            forces[j] = forces[j] + SpatialVec::new(r_j.cross(&f_linear), f_linear);
+        }
+    }
+
+    forces
+}
+
+/// Compute contact forces with implicit damping for low-mass-body stability.
+///
+/// See [`crate::compute_contact_force_implicit`] for the derivation. Pass
+/// `f64::INFINITY` in `masses[i]` for fixed/world bodies. For ground contacts
+/// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
+pub fn contact_forces_implicit(
+    contacts: &[Collision],
+    state: &State,
+    materials: &[ContactMaterial],
+    body_velocities: Option<&[SpatialVec]>,
+    masses: &[f64],
+    dt: f64,
+) -> Vec<SpatialVec> {
+    let nbodies = state.body_xform.len();
+    let mut forces = vec![SpatialVec::zero(); nbodies];
+
+    for contact in contacts {
+        let i = contact.body_i;
+        let j = contact.body_j;
+
+        let material = if materials.is_empty() {
+            &ContactMaterial::default()
+        } else {
+            &materials[i.min(materials.len() - 1)]
+        };
+
+        let vel_i = body_velocities
+            .and_then(|vels| vels.get(i))
+            .map(|v| v.linear)
+            .unwrap_or(Vec3::zeros());
+
+        let vel_j = if j == usize::MAX {
+            Vec3::zeros()
+        } else {
+            body_velocities
+                .and_then(|vels| vels.get(j))
+                .map(|v| v.linear)
+                .unwrap_or(Vec3::zeros())
+        };
+
+        let mass_i = masses.get(i).copied().unwrap_or(f64::INFINITY);
+        let mass_j = if j == usize::MAX {
+            f64::INFINITY
+        } else {
+            masses.get(j).copied().unwrap_or(f64::INFINITY)
+        };
+
+        let force = crate::compute_contact_force_implicit(
+            contact, material, &vel_i, &vel_j, mass_i, mass_j, dt,
+        );
+        let f_linear = force.linear;
+
+        // Goal 1 sign convention + Goal 4 contact-point torque.
+        if j == usize::MAX {
+            let r_i = contact.contact_point - state.body_xform[i].pos;
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);
+        } else {
+            let r_i = contact.contact_point - state.body_xform[i].pos;
+            let r_j = contact.contact_point - state.body_xform[j].pos;
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&(-f_linear)), -f_linear);
+            forces[j] = forces[j] + SpatialVec::new(r_j.cross(&f_linear), f_linear);
         }
     }
 

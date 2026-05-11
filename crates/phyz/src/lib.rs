@@ -12,4 +12,7 @@ pub use math::{Quat, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
 pub use model::{Body, Geometry, Joint, JointType, Actuator, Model, ModelBuilder, State};
 pub use rigid::{aba, aba_with_external_forces, crba, forward_kinematics, rnea};
 pub use collision::{Collision, AABB, sweep_and_prune, gjk_distance, gjk_distance_rot, epa_penetration, epa_penetration_rot};
-pub use contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+pub use contact::{
+    ContactMaterial, compute_contact_force_implicit, contact_forces, contact_forces_implicit,
+    find_contacts, find_ground_contacts,
+};
