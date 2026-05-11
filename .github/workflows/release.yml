@@ -1,0 +1,73 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  publish-phyz:
+    name: Publish phyz to crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      # The repo's path-deps point at a sibling `tang` checkout that doesn't
+      # exist in CI. `cargo publish` rewrites path deps to registry deps when
+      # uploading, but it still needs to resolve the workspace locally first.
+      # We isolate crates/phyz into a standalone package (its own workspace,
+      # tang resolved from the registry) and publish from there.
+      - name: Stage isolated phyz package
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/phyz-publish
+          cp -r crates/phyz /tmp/phyz-publish/phyz
+          # Strip the path entry from the tang dep and make this package its
+          # own workspace so cargo doesn't try to load the parent workspace.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("/tmp/phyz-publish/phyz/Cargo.toml")
+          src = p.read_text()
+          src = re.sub(r',\s*path\s*=\s*"[^"]*"', "", src)
+          if "[workspace]" not in src:
+              src = src.rstrip() + "\n\n[workspace]\n"
+          p.write_text(src)
+          print(src)
+          PY
+
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          CRATE_VER=$(grep -m1 '^version' /tmp/phyz-publish/phyz/Cargo.toml | cut -d'"' -f2)
+          echo "tag: $TAG  crate: $CRATE_VER"
+          if [ "$TAG" != "$CRATE_VER" ]; then
+            echo "::error::tag v$TAG does not match crates/phyz/Cargo.toml version $CRATE_VER"
+            exit 1
+          fi
+
+      - name: cargo publish --dry-run
+        working-directory: /tmp/phyz-publish/phyz
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --dry-run
+
+      - name: cargo publish
+        working-directory: /tmp/phyz-publish/phyz
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
