@@ -25,6 +25,10 @@ pub fn epa_penetration(
 }
 
 /// EPA with rotation matrices.
+///
+/// Returns `None` rather than panicking when the polytope can't be built or
+/// expanded reliably — degenerate initial simplex, NaN support points, or
+/// failure to converge within the iteration cap.
 pub fn epa_penetration_rot(
     geom_a: &Geometry,
     geom_b: &Geometry,
@@ -33,8 +37,6 @@ pub fn epa_penetration_rot(
     rot_a: &Mat3,
     rot_b: &Mat3,
 ) -> Option<(f64, Vec3)> {
-    // Start with a simplex tetrahedron from GJK
-    // For simplicity, we'll build a small initial tetrahedron
     let support = |d: &Vec3| {
         let sa = geom_a.support(d, pos_a, rot_a);
         let sb = geom_b.support(&(-*d), pos_b, rot_b);
@@ -49,12 +51,23 @@ pub fn epa_penetration_rot(
         Vec3::new(-1.0, -1.0, -1.0).normalize(),
     ];
 
-    let mut points = Vec::new();
+    let mut points: Vec<Vec3> = Vec::new();
     for d in &dirs {
-        points.push(support(d));
+        let p = support(d);
+        if !is_finite(&p) {
+            return None;
+        }
+        points.push(p);
     }
 
-    // Build initial polytope faces
+    // Reject a degenerate initial tetrahedron (coplanar / coincident support
+    // points). EPA assumes the polytope encloses the origin; with a flat
+    // initial simplex the expansion can produce zero-area faces and bogus
+    // normals on glancing curved contacts.
+    if !is_nondegenerate_tetra(&points) {
+        return None;
+    }
+
     let mut faces = vec![
         Face::new(&points, [0, 1, 2]),
         Face::new(&points, [0, 3, 1]),
@@ -63,32 +76,38 @@ pub fn epa_penetration_rot(
     ];
 
     const MAX_ITERATIONS: usize = 64;
+    const MAX_POLYTOPE_FACES: usize = 1024;
     const TOLERANCE: f64 = 1e-6;
 
     for _ in 0..MAX_ITERATIONS {
-        // Find closest face to origin
-        let closest_idx = faces
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.distance.partial_cmp(&b.distance).unwrap())
-            .map(|(i, _)| i)?;
+        let closest_idx = match closest_face(&faces) {
+            Some(idx) => idx,
+            None => return None,
+        };
 
-        let closest = &faces[closest_idx];
+        let closest_distance = faces[closest_idx].distance;
+        let closest_normal = faces[closest_idx].normal;
 
-        // Get new support point in direction of closest face normal
-        let s = support(&closest.normal);
-        let dist = s.dot(&closest.normal);
-
-        // Check convergence
-        if dist - closest.distance < TOLERANCE {
-            return Some((closest.distance, closest.normal));
+        let s = support(&closest_normal);
+        if !is_finite(&s) {
+            return None;
+        }
+        let dist = s.dot(&closest_normal);
+        if !dist.is_finite() {
+            return None;
         }
 
-        // Expand polytope: remove faces visible from s, add new faces
+        if dist - closest_distance < TOLERANCE {
+            if !closest_distance.is_finite() || !is_finite(&closest_normal) {
+                return None;
+            }
+            return Some((closest_distance, closest_normal));
+        }
+
+        // Expand polytope: remove faces visible from s, collect their edges.
         let mut edges = Vec::new();
         faces.retain(|face| {
             if is_visible(&points, face, &s) {
-                // Add edges to boundary
                 for i in 0..3 {
                     let edge = (face.indices[i], face.indices[(i + 1) % 3]);
                     edges.push(edge);
@@ -99,7 +118,7 @@ pub fn epa_penetration_rot(
             }
         });
 
-        // Remove duplicate edges (internal edges)
+        // Drop shared (interior) edges; what remains is the silhouette.
         edges.sort_by_key(|&(a, b)| (a.min(b), a.max(b)));
         let mut unique_edges = Vec::new();
         let mut i = 0;
@@ -118,17 +137,56 @@ pub fn epa_penetration_rot(
             i += 1;
         }
 
-        // Add new point
+        if unique_edges.is_empty() {
+            return None;
+        }
+
         let new_idx = points.len();
         points.push(s);
 
-        // Create new faces from boundary edges
         for (a, b) in unique_edges {
             faces.push(Face::new(&points, [a, b, new_idx]));
+        }
+
+        if faces.len() > MAX_POLYTOPE_FACES {
+            return None;
         }
     }
 
     None
+}
+
+/// Pick the face with the smallest finite distance to the origin. Faces with
+/// non-finite distances (NaN/Inf from degenerate triangles) are skipped — a
+/// naive `partial_cmp().unwrap()` would panic on NaN.
+fn closest_face(faces: &[Face]) -> Option<usize> {
+    let mut best_idx = None;
+    let mut best_dist = f64::INFINITY;
+    for (i, f) in faces.iter().enumerate() {
+        if f.distance.is_finite() && f.distance < best_dist {
+            best_dist = f.distance;
+            best_idx = Some(i);
+        }
+    }
+    best_idx
+}
+
+fn is_finite(v: &Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+/// True iff the four points span a non-degenerate tetrahedron (signed volume
+/// well above floating-point noise).
+fn is_nondegenerate_tetra(points: &[Vec3]) -> bool {
+    if points.len() < 4 {
+        return false;
+    }
+    let a = points[0];
+    let b = points[1];
+    let c = points[2];
+    let d = points[3];
+    let volume = (b - a).cross(&(c - a)).dot(&(d - a));
+    volume.is_finite() && volume.abs() > 1e-12
 }
 
 impl Face {
@@ -138,20 +196,35 @@ impl Face {
         let c = points[indices[2]];
         let ab = b - a;
         let ac = c - a;
-        let mut normal = ab.cross(&ac);
-        let norm = normal.norm();
-        if norm > 1e-10 {
-            normal = normal / norm;
+        let cross = ab.cross(&ac);
+        let norm = cross.norm();
+        // Degenerate (zero-area) triangle: mark distance = +inf so the
+        // closest-face search skips it instead of selecting a face whose
+        // direction is ill-defined.
+        if !norm.is_finite() || norm <= 1e-10 {
+            return Self {
+                indices,
+                normal: Vec3::new(0.0, 0.0, 0.0),
+                distance: f64::INFINITY,
+            };
         }
-        let distance = normal.dot(&a);
-        // Ensure normal points towards origin
+        let mut normal = cross / norm;
+        let mut distance = normal.dot(&a);
         if distance < 0.0 {
             normal = -normal;
+            distance = -distance;
+        }
+        if !distance.is_finite() || !is_finite(&normal) {
+            return Self {
+                indices,
+                normal: Vec3::new(0.0, 0.0, 0.0),
+                distance: f64::INFINITY,
+            };
         }
         Self {
             indices,
             normal,
-            distance: distance.abs(),
+            distance,
         }
     }
 }
@@ -160,4 +233,75 @@ fn is_visible(points: &[Vec3], face: &Face, point: &Vec3) -> bool {
     let a = points[face.indices[0]];
     let to_point = point - a;
     to_point.dot(&face.normal) > 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::geometry::Geometry;
+
+    fn mesh(verts: &[[f64; 3]]) -> Geometry {
+        Geometry::Mesh {
+            vertices: verts.iter().map(|v| Vec3::new(v[0], v[1], v[2])).collect(),
+            faces: Vec::new(),
+        }
+    }
+
+    /// Regression for issue #4: a degenerate (single-vertex) "mesh" used to
+    /// drive EPA into a polytope of zero-area faces and panic in
+    /// `partial_cmp(NaN).unwrap()`. It must return `None` instead.
+    #[test]
+    fn degenerate_single_point_mesh_returns_none() {
+        let g = mesh(&[[0.0, 0.0, 0.0]]);
+        let p = Vec3::zeros();
+        let rot = Mat3::identity();
+        assert!(epa_penetration_rot(&g, &g, &p, &p, &rot, &rot).is_none());
+    }
+
+    /// A flat (coplanar) mesh has zero Minkowski-difference volume; the
+    /// initial tetrahedron is degenerate. EPA must bail rather than panic.
+    #[test]
+    fn coplanar_mesh_returns_none() {
+        let g = mesh(&[
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ]);
+        let p = Vec3::zeros();
+        let rot = Mat3::identity();
+        assert!(epa_penetration_rot(&g, &g, &p, &p, &rot, &rot).is_none());
+    }
+
+    /// Glancing cylindrical-style contact: two thin disks touching edge-to-
+    /// edge. Previously this triggered intermittent panics inside the EPA
+    /// polytope expansion.
+    #[test]
+    fn glancing_thin_disk_contact_no_panic() {
+        let disk: Vec<[f64; 3]> = (0..16)
+            .map(|i| {
+                let t = (i as f64) * std::f64::consts::TAU / 16.0;
+                [t.cos(), t.sin(), 0.0]
+            })
+            .collect();
+        let a = mesh(&disk);
+        let b = mesh(&disk);
+        let pa = Vec3::zeros();
+        let pb = Vec3::new(1.99, 0.0, 0.0);
+        let rot = Mat3::identity();
+        // Must not panic; result may be Some or None depending on the
+        // degenerate initial simplex check, but the call must complete.
+        let _ = epa_penetration_rot(&a, &b, &pa, &pb, &rot, &rot);
+    }
+
+    /// Sphere-sphere penetration still produces a sensible (depth, normal).
+    #[test]
+    fn sphere_sphere_penetrating_still_works() {
+        let s = Geometry::Sphere { radius: 1.0 };
+        let pa = Vec3::zeros();
+        let pb = Vec3::new(1.5, 0.0, 0.0);
+        let (depth, _normal) = epa_penetration(&s, &s, &pa, &pb).expect("EPA returns a result");
+        assert!(depth.is_finite());
+        assert!((depth - 0.5).abs() < 0.1, "depth ~ 0.5, got {}", depth);
+    }
 }
