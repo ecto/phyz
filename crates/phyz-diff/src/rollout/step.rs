@@ -101,7 +101,11 @@ pub(crate) fn lift_vec3<T: Scalar>(v: Vec3<f64>) -> Vec3<T> {
 }
 
 fn lift_mat3<T: Scalar>(m: &Mat3<f64>) -> Mat3<T> {
-    Mat3::from_cols(lift_vec3(m.col(0)), lift_vec3(m.col(1)), lift_vec3(m.col(2)))
+    Mat3::from_cols(
+        lift_vec3(m.col(0)),
+        lift_vec3(m.col(1)),
+        lift_vec3(m.col(2)),
+    )
 }
 
 fn lift_xform<T: Scalar>(xf: &SpatialTransform<f64>) -> SpatialTransform<T> {
@@ -142,11 +146,7 @@ fn assert_single_dof(model: &Model) {
     }
 }
 
-fn joint_transform<T: Scalar>(
-    joint_type: JointType,
-    axis: &Vec3<T>,
-    q: T,
-) -> SpatialTransform<T> {
+fn joint_transform<T: Scalar>(joint_type: JointType, axis: &Vec3<T>, q: T) -> SpatialTransform<T> {
     match joint_type {
         JointType::Revolute | JointType::Hinge => {
             // Rodrigues with negated angle: coordinate transform, matching
@@ -530,7 +530,8 @@ pub(crate) fn rollout_states(
     states.push((q.clone(), v.clone()));
     for t in 0..steps {
         let u = ctrl(t);
-        let (qn, vn, _) = step_generic::<f64>(model, &inertias, contact, None, &q, &v, u.as_slice());
+        let (qn, vn, _) =
+            step_generic::<f64>(model, &inertias, contact, None, &q, &v, u.as_slice());
         q = qn;
         v = vn;
         states.push((q.clone(), v.clone()));

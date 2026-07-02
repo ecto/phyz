@@ -22,7 +22,7 @@ pub mod adjoint;
 pub mod step;
 
 pub use adjoint::{
-    adjoint_rollout_gradient, rollout_objective, AdjointGradients, AdjointRollout, ContactSetup,
-    FinalStateObjective,
+    AdjointGradients, AdjointRollout, ContactSetup, FinalStateObjective, adjoint_rollout_gradient,
+    rollout_objective,
 };
-pub use step::{inertia_params, CollisionMesh, GroundContact, N_INERTIA_PARAMS};
+pub use step::{CollisionMesh, GroundContact, N_INERTIA_PARAMS, inertia_params};

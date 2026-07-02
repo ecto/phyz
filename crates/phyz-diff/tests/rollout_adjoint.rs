@@ -3,7 +3,7 @@
 //! the umbrella crate's `diff_adjoint.rs`; the two copies differ only in
 //! import paths, so one exact closed-form gate proves the mirror is wired.
 
-use phyz_diff::rollout::{adjoint_rollout_gradient, AdjointRollout, FinalStateObjective};
+use phyz_diff::rollout::{AdjointRollout, FinalStateObjective, adjoint_rollout_gradient};
 use phyz_math::{DVec, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 

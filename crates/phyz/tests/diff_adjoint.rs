@@ -7,8 +7,8 @@
 //! gate).
 
 use phyz::diff::{
-    adjoint_rollout_gradient, rollout_objective, AdjointRollout, CollisionMesh, ContactSetup,
-    FinalStateObjective, GroundContact,
+    AdjointRollout, CollisionMesh, ContactSetup, FinalStateObjective, GroundContact,
+    adjoint_rollout_gradient, rollout_objective,
 };
 use phyz::math::{DVec, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz::model::{Joint, JointType, Model, ModelBuilder};
@@ -137,9 +137,7 @@ fn pendulum_inertia_gradient_matches_fd() {
     const STEPS: usize = 300;
     const GATE: f64 = 1e-6;
 
-    let pi0: [f64; 10] = [
-        1.3, 0.4, 0.1, 0.05, 0.02, 0.03, 0.04, 0.005, 0.002, 0.001,
-    ];
+    let pi0: [f64; 10] = [1.3, 0.4, 0.1, 0.05, 0.02, 0.03, 0.04, 0.005, 0.002, 0.001];
 
     let build = |p: [f64; 10]| -> Model {
         ModelBuilder::new()
@@ -177,9 +175,9 @@ fn pendulum_inertia_gradient_matches_fd() {
     let g = adjoint_rollout_gradient(&rollout, &obj);
 
     let h_for = |k: usize| match k {
-        0 => 1e-5,        // mass
-        1..=3 => 1e-6,    // COM
-        _ => 1e-7,        // inertia
+        0 => 1e-5,     // mass
+        1..=3 => 1e-6, // COM
+        _ => 1e-7,     // inertia
     };
 
     let mut live = 0;
@@ -207,7 +205,10 @@ fn pendulum_inertia_gradient_matches_fd() {
     }
     // Mass (0), COM x/y (1, 2), and I_zz (6) must all be live in this
     // configuration — the gate is not vacuously passing on zeros.
-    assert!(live >= 4, "only {live} live channels — gate under-constrained");
+    assert!(
+        live >= 4,
+        "only {live} live channels — gate under-constrained"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -655,5 +656,8 @@ fn tilting_paddle_vertex_gradient_matches_fd() {
     }
     // Both z-channels and the x-channel of a contacting vertex must be live
     // under rotation (world height depends on body x through the tilt).
-    assert!(live >= 3, "only {live} live samples — rotation chain not exercised");
+    assert!(
+        live >= 3,
+        "only {live} live samples — rotation chain not exercised"
+    );
 }

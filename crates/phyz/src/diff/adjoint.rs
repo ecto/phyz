@@ -51,8 +51,8 @@
 //!   bit-identical.
 
 use super::step::{
-    fk_generic, inertia_from_params, lift_inertia, lift_vec3, rollout_states, step_generic,
-    validate_and_params, vertex_wrench, CollisionMesh, GroundContact, N_INERTIA_PARAMS,
+    CollisionMesh, GroundContact, N_INERTIA_PARAMS, fk_generic, inertia_from_params, lift_inertia,
+    lift_vec3, rollout_states, step_generic, validate_and_params, vertex_wrench,
 };
 use crate::math::{DVec, Vec3};
 use crate::model::Model;
@@ -114,10 +114,7 @@ pub struct AdjointGradients {
 /// oracle for gates, and a cheap primal probe for callers).
 pub fn rollout_objective(rollout: &AdjointRollout, objective: &FinalStateObjective) -> f64 {
     validate_and_params(rollout.model);
-    let contact = rollout
-        .contact
-        .as_ref()
-        .map(|c| (&c.ground, c.meshes));
+    let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
     let states = rollout_states(
         rollout.model,
         contact,
@@ -141,10 +138,7 @@ pub fn adjoint_rollout_gradient(
     let nb = model.nbodies();
     let n = model.nv;
     let dt = model.dt;
-    let contact = rollout
-        .contact
-        .as_ref()
-        .map(|c| (&c.ground, c.meshes));
+    let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
 
     // Forward: store the whole trajectory.
     let states = rollout_states(
@@ -174,8 +168,11 @@ pub fn adjoint_rollout_gradient(
         .unwrap_or_default();
 
     // Nominal dual-lifted inertias, reused (and locally overridden) per lane.
-    let inertias_nominal: Vec<SpatialInertia<D>> =
-        model.bodies.iter().map(|b| lift_inertia(&b.inertia)).collect();
+    let inertias_nominal: Vec<SpatialInertia<D>> = model
+        .bodies
+        .iter()
+        .map(|b| lift_inertia(&b.inertia))
+        .collect();
 
     // Backward over steps.
     for t in (0..rollout.steps).rev() {
@@ -194,7 +191,11 @@ pub fn adjoint_rollout_gradient(
         let (q_c, v_c, u_c) = (lift(q_t), lift(v_t), lift(u_t));
 
         // One dual lane: returns wᵀ·∂qdd/∂(seeded input).
-        let contract = |q_d: &[D], v_d: &[D], inertias: &[SpatialInertia<D>], ext: Option<&[SpatialVec<D>]>| -> f64 {
+        let contract = |q_d: &[D],
+                        v_d: &[D],
+                        inertias: &[SpatialInertia<D>],
+                        ext: Option<&[SpatialVec<D>]>|
+         -> f64 {
             let (_, _, qdd) = step_generic(model, inertias, contact, ext, q_d, v_d, &u_c);
             qdd.iter().zip(&w).map(|(a, &wi)| a.dual * wi).sum()
         };
