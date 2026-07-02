@@ -3,6 +3,7 @@
 //! Provides finite-difference, analytical (FD-on-ABA), and symbolic (exact)
 //! derivatives of the equations of motion.
 
+pub mod rollout;
 pub mod symbolic;
 
 use phyz_math::{DMat, DVec};
