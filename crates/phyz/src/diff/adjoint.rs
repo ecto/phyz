@@ -1,0 +1,305 @@
+//! Discrete trajectory adjoint for semi-implicit Euler rollouts.
+//!
+//! # What this computes
+//!
+//! For a rollout `x_{t+1} = f(x_t, u_t; π, V)` (states `x = (q, v)`, open-loop
+//! controls `u_t`, per-body inertia parameters `π`, collision-mesh vertices
+//! `V`) and a final-state objective `J = g(q_T, v_T)`, one backward pass
+//! yields **both** parameter sensitivities:
+//!
+//! - `dJ/dπ` — per body, in the canonical 10-vector packing
+//!   `[m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]` (Task: the inertia
+//!   parameter adjoint that replaces vcad's finite-difference `∂J/∂p`).
+//! - `dJ/dV` — per collision-mesh vertex, `∂J/∂x` in the body frame (the
+//!   contact adjoint that plugs into vcad's `surface_gradient`).
+//!
+//! # How
+//!
+//! Reverse over the trajectory, tangent within the step. The adjoint state
+//! `λ_t = ∂J/∂x_t` is backpropagated through the step Jacobians; those
+//! Jacobians are read out **exactly** with [`tang::Dual`] lanes through the
+//! scalar-generic step of [`super::step`] — no finite differences anywhere.
+//!
+//! Semi-implicit Euler has the structure `v' = v + dt·a`, `q' = q + dt·v'`
+//! with `a = ABA(q, v, u; π, V)`, so with `w := dt·λ_q' + λ_v'`:
+//!
+//! ```text
+//! λ_q = λ_q' + dt·(∂a/∂q)ᵀ w          λ_v = w + dt·(∂a/∂v)ᵀ w
+//! dJ/dπ += dt·wᵀ·∂a/∂π               dJ/dV += dt·wᵀ·∂a/∂V
+//! ```
+//!
+//! Each `∂a/∂(·)` column is one dual lane. The vertex channel avoids a lane
+//! per vertex coordinate: vertices reach the dynamics only through each
+//! body's 6-component contact wrench, so the driver prices the wrench
+//! cotangent `χ_b = dt·wᵀ·∂a/∂(wrench_b)` once (6 lanes per contacting body)
+//! and contracts it against the **local** per-vertex wrench Jacobian
+//! (3 tiny dual evaluations of the penalty law per vertex) — cost per step is
+//! `O(nq + nv + 10·nb + 6·nb)` full dual steps plus `O(3·N)` local
+//! evaluations, independent of coupling between vertices.
+//!
+//! # Contract
+//!
+//! - Joint domain: single-DOF (revolute/prismatic) + fixed, like the
+//!   symbolic tracer. Multi-DOF joints panic.
+//! - **Open-loop control**: `ctrl(t)` must not read the state. A
+//!   state-feedback law would add `∂u/∂x` terms this driver does not model.
+//! - Objective reads the **final state** only.
+//! - Contact: the per-vertex ground-penalty model of [`super::step`]
+//!   (see its module docs for the smoothness contract). The gradient is the
+//!   exact derivative of *that* forward model.
+//! - Determinism: pure `f64` arithmetic in a fixed order; two runs are
+//!   bit-identical.
+
+use super::step::{
+    CollisionMesh, GroundContact, N_INERTIA_PARAMS, fk_generic, inertia_from_params, lift_inertia,
+    lift_vec3, rollout_states, step_generic, validate_and_params, vertex_wrench,
+};
+use crate::math::{DVec, Vec3};
+use crate::model::Model;
+use tang::{Dual, SpatialInertia, SpatialVec, Vec3 as GVec3};
+
+type D = Dual<f64>;
+
+/// Ground contact configuration for an adjoint rollout: the plane and the
+/// collision skins that feel it.
+pub struct ContactSetup<'a> {
+    /// The ground plane and penalty law.
+    pub ground: GroundContact,
+    /// Collision skins (body-frame vertices), one entry per skinned body.
+    pub meshes: &'a [CollisionMesh],
+}
+
+/// A differentiable rollout: model, optional contact, initial state, and an
+/// open-loop control schedule.
+pub struct AdjointRollout<'a> {
+    /// Topology, gravity, timestep, joint damping, and **nominal** body
+    /// inertias (the π the gradient is taken at).
+    pub model: &'a Model,
+    /// Optional ground contact.
+    pub contact: Option<ContactSetup<'a>>,
+    /// Initial joint positions (length `nq`).
+    pub q0: Vec<f64>,
+    /// Initial joint velocities (length `nv`).
+    pub v0: Vec<f64>,
+    /// Number of semi-implicit Euler steps.
+    pub steps: usize,
+    /// Open-loop control at step `t` (length `nv`; must not read the state).
+    pub ctrl: &'a dyn Fn(usize) -> DVec,
+}
+
+/// The analytic gradient of a final-state objective: `(∂g/∂q_T, ∂g/∂v_T)`.
+pub type ObjectiveGradientFn<'a> = &'a dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>);
+
+/// A final-state objective `J = g(q_T, v_T)` with its analytic gradient.
+pub struct FinalStateObjective<'a> {
+    /// `g(q_T, v_T)`.
+    pub value: &'a dyn Fn(&[f64], &[f64]) -> f64,
+    /// `(∂g/∂q_T, ∂g/∂v_T)`.
+    pub gradient: ObjectiveGradientFn<'a>,
+}
+
+/// Everything one backward pass produces.
+pub struct AdjointGradients {
+    /// The objective at the nominal rollout.
+    pub objective: f64,
+    /// `dJ/dπ` per body, canonical packing `[m, cx, cy, cz, Ixx, Iyy, Izz,
+    /// Ixy, Ixz, Iyz]` (COM-frame inertia, body-frame COM).
+    pub d_inertia: Vec<[f64; N_INERTIA_PARAMS]>,
+    /// `∂J/∂x` per collision-mesh vertex (body frame), parallel to
+    /// `contact.meshes`; empty when the rollout has no contact.
+    pub d_vertices: Vec<Vec<Vec3>>,
+}
+
+/// Run the nominal rollout and return the objective value only (the FD
+/// oracle for gates, and a cheap primal probe for callers).
+pub fn rollout_objective(rollout: &AdjointRollout, objective: &FinalStateObjective) -> f64 {
+    validate_and_params(rollout.model);
+    let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
+    let states = rollout_states(
+        rollout.model,
+        contact,
+        &rollout.q0,
+        &rollout.v0,
+        rollout.ctrl,
+        rollout.steps,
+    );
+    let (q_t, v_t) = states.last().expect("rollout produced no states");
+    (objective.value)(q_t, v_t)
+}
+
+/// One nominal rollout forward, one adjoint pass backward: `J`, `dJ/dπ` per
+/// body, and (when contact is configured) `∂J/∂x` per collision-mesh vertex.
+pub fn adjoint_rollout_gradient(
+    rollout: &AdjointRollout,
+    objective: &FinalStateObjective,
+) -> AdjointGradients {
+    let model = rollout.model;
+    let params = validate_and_params(model);
+    let nb = model.nbodies();
+    let n = model.nv;
+    let dt = model.dt;
+    let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
+
+    // Forward: store the whole trajectory.
+    let states = rollout_states(
+        model,
+        contact,
+        &rollout.q0,
+        &rollout.v0,
+        rollout.ctrl,
+        rollout.steps,
+    );
+    let (q_final, v_final) = states.last().expect("rollout produced no states");
+    let j0 = (objective.value)(q_final, v_final);
+    let (mut lam_q, mut lam_v) = (objective.gradient)(q_final, v_final);
+    assert_eq!(lam_q.len(), n, "objective ∂g/∂q length");
+    assert_eq!(lam_v.len(), n, "objective ∂g/∂v length");
+
+    let mut d_inertia = vec![[0.0f64; N_INERTIA_PARAMS]; nb];
+    let mut d_vertices: Vec<Vec<Vec3>> = rollout
+        .contact
+        .as_ref()
+        .map(|c| {
+            c.meshes
+                .iter()
+                .map(|m| vec![Vec3::zeros(); m.vertices.len()])
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Nominal dual-lifted inertias, reused (and locally overridden) per lane.
+    let inertias_nominal: Vec<SpatialInertia<D>> = model
+        .bodies
+        .iter()
+        .map(|b| lift_inertia(&b.inertia))
+        .collect();
+
+    // Backward over steps.
+    for t in (0..rollout.steps).rev() {
+        let (q_t, v_t) = &states[t];
+        let u_t = (rollout.ctrl)(t);
+        let u_t = u_t.as_slice();
+
+        // w = dt·λ_q' + λ_v' — the covector every channel contracts against.
+        let w: Vec<f64> = lam_q
+            .iter()
+            .zip(&lam_v)
+            .map(|(&lq, &lv)| dt * lq + lv)
+            .collect();
+
+        let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
+        let (q_c, v_c, u_c) = (lift(q_t), lift(v_t), lift(u_t));
+
+        // One dual lane: returns wᵀ·∂qdd/∂(seeded input).
+        let contract = |q_d: &[D],
+                        v_d: &[D],
+                        inertias: &[SpatialInertia<D>],
+                        ext: Option<&[SpatialVec<D>]>|
+         -> f64 {
+            let (_, _, qdd) = step_generic(model, inertias, contact, ext, q_d, v_d, &u_c);
+            qdd.iter().zip(&w).map(|(a, &wi)| a.dual * wi).sum()
+        };
+
+        // State lanes: aq[j] = (∂a/∂q)ᵀw, av[j] = (∂a/∂v)ᵀw.
+        let mut aq = vec![0.0f64; n];
+        let mut av = vec![0.0f64; n];
+        for j in 0..n {
+            let mut q_d = q_c.clone();
+            q_d[j] = D::var(q_t[j]);
+            aq[j] = contract(&q_d, &v_c, &inertias_nominal, None);
+
+            let mut v_d = v_c.clone();
+            v_d[j] = D::var(v_t[j]);
+            av[j] = contract(&q_c, &v_d, &inertias_nominal, None);
+        }
+
+        // Inertia-parameter lanes: dJ/dπ[b][k] += dt·wᵀ·∂a/∂π[b][k].
+        for b in 0..nb {
+            for k in 0..N_INERTIA_PARAMS {
+                let mut p: [D; N_INERTIA_PARAMS] =
+                    core::array::from_fn(|i| D::constant(params[b][i]));
+                p[k] = D::var(params[b][k]);
+                let mut inertias = inertias_nominal.clone();
+                inertias[b] = inertia_from_params(&p);
+                d_inertia[b][k] += dt * contract(&q_c, &v_c, &inertias, None);
+            }
+        }
+
+        // Vertex channel: price the wrench cotangent χ once per contacting
+        // body, then contract each vertex's local wrench Jacobian against it.
+        if let Some(setup) = rollout.contact.as_ref() {
+            let mut skinned = vec![false; nb];
+            for m in setup.meshes {
+                skinned[m.body] = true;
+            }
+
+            // χ[b][c] = dt·wᵀ·∂a/∂(wrench_b component c).
+            let mut chi = vec![[0.0f64; 6]; nb];
+            for (b, chi_b) in chi.iter_mut().enumerate() {
+                if !skinned[b] {
+                    continue;
+                }
+                for (c, chi_bc) in chi_b.iter_mut().enumerate() {
+                    let mut ext = vec![SpatialVec::<D>::zero(); nb];
+                    let mut comps = [D::constant(0.0); 6];
+                    comps[c] = D::var(0.0);
+                    ext[b] = SpatialVec::new(
+                        GVec3::new(comps[0], comps[1], comps[2]),
+                        GVec3::new(comps[3], comps[4], comps[5]),
+                    );
+                    *chi_bc = dt * contract(&q_c, &v_c, &inertias_nominal, Some(&ext));
+                }
+            }
+
+            // Local per-vertex wrench Jacobian at the nominal kinematics:
+            // 3 dual evaluations of the penalty law, holding the state fixed.
+            let (xforms, vels) = fk_generic::<f64>(model, q_t, v_t);
+            for (mi, mesh) in setup.meshes.iter().enumerate() {
+                let b = mesh.body;
+                let xf_d = tang::SpatialTransform::<D>::new(
+                    tang::Mat3::from_cols(
+                        lift_vec3(xforms[b].rot.col(0)),
+                        lift_vec3(xforms[b].rot.col(1)),
+                        lift_vec3(xforms[b].rot.col(2)),
+                    ),
+                    lift_vec3(xforms[b].pos),
+                );
+                let twist_d =
+                    SpatialVec::new(lift_vec3(vels[b].angular), lift_vec3(vels[b].linear));
+                for (vi, vtx) in mesh.vertices.iter().enumerate() {
+                    for k in 0..3 {
+                        let mut x_b: GVec3<D> = lift_vec3(*vtx);
+                        match k {
+                            0 => x_b.x = D::var(vtx.x),
+                            1 => x_b.y = D::var(vtx.y),
+                            _ => x_b.z = D::var(vtx.z),
+                        }
+                        let wr = vertex_wrench(&setup.ground, x_b, &xf_d, &twist_d);
+                        let wr = wr.as_array();
+                        let mut acc = 0.0;
+                        for (c, w_c) in wr.iter().enumerate() {
+                            acc += chi[b][c] * w_c.dual;
+                        }
+                        match k {
+                            0 => d_vertices[mi][vi].x += acc,
+                            1 => d_vertices[mi][vi].y += acc,
+                            _ => d_vertices[mi][vi].z += acc,
+                        }
+                    }
+                }
+            }
+        }
+
+        // λ update (see module docs for the derivation).
+        for j in 0..n {
+            lam_q[j] += dt * aq[j];
+            lam_v[j] = w[j] + dt * av[j];
+        }
+    }
+
+    AdjointGradients {
+        objective: j0,
+        d_inertia,
+        d_vertices,
+    }
+}
