@@ -48,6 +48,7 @@
 //! }
 //! ```
 
+pub mod field;
 pub mod forcefield;
 pub mod neighbor;
 pub mod particle;
