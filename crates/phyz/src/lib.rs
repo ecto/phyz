@@ -3,7 +3,7 @@
 pub mod collision;
 pub mod contact;
 pub mod diff;
-pub mod math;
+pub use phyz_math as math;
 pub mod model;
 pub mod rigid;
 

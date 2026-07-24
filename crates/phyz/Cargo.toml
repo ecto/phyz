@@ -8,6 +8,7 @@ homepage = "https://phyz.dev"
 description = "Multi-physics differentiable simulation engine"
 
 [dependencies]
+phyz-math.workspace = true
 tang = { version = "0.2.0", path = "../../../tang/crates/tang", features = ["std", "la"] }
 
 [dev-dependencies]
