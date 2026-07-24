@@ -107,7 +107,7 @@ mod tests {
 #[cfg(test)]
 mod prop_tests {
     use super::*;
-    use crate::quaternion::Quat;
+    use crate::Quat;
     use crate::{Mat3, Vec3};
     use proptest::prelude::*;
 
@@ -229,7 +229,7 @@ mod prop_tests {
             axis in arb_unit_vec(),
             angle in arb_angle(),
         ) {
-            let q = Quat::from_axis_angle(&axis, angle).normalize();
+            let q = Quat::from_axis_angle(axis, angle).normalize();
             let m = q.to_matrix();
             // determinant should be 1
             let det = m.determinant();
@@ -250,7 +250,7 @@ mod prop_tests {
             axis in arb_unit_vec(),
             angle in arb_angle(),
         ) {
-            let q = Quat::from_axis_angle(&axis, angle).normalize();
+            let q = Quat::from_axis_angle(axis, angle).normalize();
             let m = q.to_matrix();
             let q2 = Quat::from_matrix(&m).normalize();
             // q and -q represent the same rotation
