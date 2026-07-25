@@ -15,3 +15,6 @@ phyz-math.workspace = true
 phyz-model.workspace = true
 quick-xml = "0.37"
 thiserror = "2.0"
+
+[dev-dependencies]
+phyz-rigid.workspace = true

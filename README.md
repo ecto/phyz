@@ -115,13 +115,13 @@ opt-in.
 | [`phyz-particle`](crates/phyz-particle) | MPM solver, SPH fluids, granular media |
 | [`phyz-md`](crates/phyz-md) | Molecular dynamics, Lennard-Jones, field engine |
 | [`phyz-em`](crates/phyz-em) | Maxwell's equations on a Yee lattice |
-| [`phyz-lbm`](crates/phyz-lbm) | Lattice Boltzmann fluids |
+| [`phyz-lbm`](crates/phyz-lbm) | Lattice Boltzmann fluids: BGK/TRT/MRT, declarative boundaries, LES |
 | [`phyz-gravity`](crates/phyz-gravity) | N-body gravitational dynamics |
 | [`phyz-qft`](crates/phyz-qft) | Lattice QFT, Wilson action |
 | [`phyz-regge`](crates/phyz-regge) | Regge calculus (discrete GR + EM) |
 | [`phyz-quantum`](crates/phyz-quantum) | Quantum state evolution |
 | [`phyz-prob`](crates/phyz-prob) | Probabilistic inference over physics (SVGD, HMC) |
-| [`phyz-coupling`](crates/phyz-coupling) | Multi-physics coupling: handshake regions, subcycling, Lorentz transfer |
+| [`phyz-coupling`](crates/phyz-coupling) | Multi-physics coupling: `Solver` trait, coupled systems, subcycling, flux accounting |
 | [`phyz-guardian`](crates/phyz-guardian) | Conservation monitoring, adaptive time-stepping, solver auto-switching |
 | [`phyz-world`](crates/phyz-world) | Scene graph and multi-physics world assembly |
 | [`phyz-real2sim`](crates/phyz-real2sim) | Inverse problems, system identification, parameter fitting |
@@ -138,13 +138,15 @@ backend). `phyz-py` (Python bindings) lives outside the workspace.
 
 ```bash
 cargo run --release -p phyz-examples --example pendulum
-cargo run --release -p phyz-examples --example gpu_batch          # phyz-gpu
-cargo run --release -p phyz-examples --example coupled_em_rigid   # phyz-coupling
-cargo run --release -p phyz-examples --example kernel_fusion      # phyz-compile
+cargo run --release -p phyz-examples --example gpu_batch        # phyz-gpu
+cargo run --release -p phyz-examples --example kernel_fusion    # phyz-compile
+cargo run --release -p phyz-coupling --example coupled_cyclotron # phyz-coupling
 ```
 
 All files under `examples/` are registered as targets of the `phyz-examples`
-dev crate and built in CI, so they compile against the current API.
+dev crate and built in CI, so they compile against the current API. Some crates
+also carry their own `examples/` directory (`phyz-coupling`, `phyz-guardian`),
+picked up by cargo directly.
 
 ## Development
 

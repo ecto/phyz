@@ -63,4 +63,4 @@ pub mod system;
 pub use forcefield::{Coulomb, ForceField, HarmonicBond, LennardJones};
 pub use neighbor::{NeighborList, minimum_image};
 pub use particle::Particle;
-pub use system::{Bond, MdSystem, Thermostat};
+pub use system::{Bond, Integrator, MdSystem, Thermostat};

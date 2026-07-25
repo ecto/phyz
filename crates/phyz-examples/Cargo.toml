@@ -49,10 +49,6 @@ name = "gpu_batch"
 path = "../../examples/gpu_batch.rs"
 
 [[example]]
-name = "coupled_em_rigid"
-path = "../../examples/coupled_em_rigid.rs"
-
-[[example]]
 name = "kernel_fusion"
 path = "../../examples/kernel_fusion.rs"
 

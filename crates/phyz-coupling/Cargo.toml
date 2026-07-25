@@ -12,6 +12,11 @@ readme = "README.md"
 
 [dependencies]
 phyz-math = { workspace = true }
+phyz-model = { workspace = true }
+phyz-rigid = { workspace = true }
+phyz-em = { workspace = true }
+phyz-guardian = { workspace = true }
 
 [dev-dependencies]
 approx = "0.5"
+phyz-guardian = { workspace = true }
