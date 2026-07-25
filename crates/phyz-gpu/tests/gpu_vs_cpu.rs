@@ -6,6 +6,21 @@ use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_rigid::{aba, forward_kinematics};
 
+/// Build a [`GpuSimulator`], or return `None` when the machine has no GPU at
+/// all — CI runners are headless, and "there is no adapter here" is not a bug
+/// in phyz. Every *other* failure still panics, so a genuine GPU regression
+/// cannot hide behind this.
+fn gpu_sim_or_skip(model: phyz_model::Model, n: usize) -> Option<GpuSimulator> {
+    match GpuSimulator::new(model, n) {
+        Ok(sim) => Some(sim),
+        Err(e) if e.to_string().contains("Failed to find GPU adapter") => {
+            eprintln!("skipping: no GPU adapter available");
+            None
+        }
+        Err(e) => panic!("Failed to create GPU simulator: {e:?}"),
+    }
+}
+
 /// Create a simple pendulum model for testing.
 fn make_pendulum() -> phyz_model::Model {
     let length = 1.0;
@@ -36,7 +51,9 @@ fn test_gpu_single_step_vs_cpu() {
     let model = make_pendulum();
 
     // Create GPU simulator with single environment
-    let gpu_sim = GpuSimulator::new(model.clone(), 1).expect("Failed to create GPU simulator");
+    let Some(gpu_sim) = gpu_sim_or_skip(model.clone(), 1) else {
+        return;
+    };
 
     // Initialize state
     let mut cpu_state = model.default_state();
@@ -70,7 +87,9 @@ fn test_gpu_multiple_steps_vs_cpu() {
     let model = make_pendulum();
 
     // Create GPU simulator with single environment
-    let gpu_sim = GpuSimulator::new(model.clone(), 1).expect("Failed to create GPU simulator");
+    let Some(gpu_sim) = gpu_sim_or_skip(model.clone(), 1) else {
+        return;
+    };
 
     // Initialize state
     let mut cpu_state = model.default_state();
@@ -112,7 +131,9 @@ fn test_gpu_batch_consistency() {
 
     // Create GPU simulator with multiple environments
     let nworld = 10;
-    let gpu_sim = GpuSimulator::new(model.clone(), nworld).expect("Failed to create GPU simulator");
+    let Some(gpu_sim) = gpu_sim_or_skip(model.clone(), nworld) else {
+        return;
+    };
 
     // Initialize with same state
     let init_state = {
