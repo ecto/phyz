@@ -161,7 +161,7 @@ All files under `examples/` are registered as targets of the `phyz-examples`
 dev crate and built in CI, so they compile against the current API. Some crates
 also carry their own `examples/` directory (`phyz-coupling`, `phyz-guardian`),
 picked up by cargo directly.
-```
+```text
 phyz/
 ├── crates/
 │   ├── phyz/             # Umbrella — re-exports everything
@@ -240,6 +240,20 @@ wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg
   including `phyz-wasm`.
 - GPU support means `phyz-gpu` and `phyz-compile`; the rigid-body core in
   `phyz` runs on the CPU.
+
+## Benchmarks
+
+[**BENCHMARKS.md**](BENCHMARKS.md) — throughput, gradient cost, energy drift,
+and a like-for-like comparison against Rapier, including the cases where phyz
+loses. Reproduce with `make bench`.
+
+Two numbers worth knowing before you adopt phyz:
+
+- The GPU path does not break even against a single CPU thread until roughly
+  **batch 128**. Below that it is slower, substantially so at batch 1.
+- Gradient rollouts cost 18–54× a forward rollout, and that ratio grows with
+  parameter count. The derivatives are *exact*, which is the real benefit —
+  they are not asymptotically cheaper than finite differences today.
 
 ## License
 

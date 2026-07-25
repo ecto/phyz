@@ -500,6 +500,19 @@ fn contact_wrenches<T: Scalar>(
 // Generic ABA (single-DOF) with external wrenches
 // ---------------------------------------------------------------------------
 
+/// Implicit-damping contribution to a joint's effective inertia, mirroring
+/// `rigid::aba::implicit_damping`. The damping *force* stays explicit (it is
+/// in `tau`); adding `dt·c` to `D = Sᵀ Iᴬ S` is the first-order implicit solve
+/// that makes a light, heavily damped distal link stable at RL timesteps.
+///
+/// This must track the concrete ABA and the GPU kernel: if the diff step
+/// omitted it, the adjoint would return exact gradients of dynamics the engine
+/// does not integrate. `dt` and `damping` are model constants, so this carries
+/// no tangent.
+fn implicit_damping<T: Scalar>(model: &Model, joint: &phyz_model::Joint) -> T {
+    T::from_f64(model.dt * joint.damping)
+}
+
 /// Generic mirror of `rigid::aba_with_external_forces` over the full joint
 /// domain, with the body inertias supplied separately so a caller can seed
 /// them.
@@ -602,6 +615,7 @@ pub(crate) fn aba_generic<T: Scalar>(
                 for l in 0..ndof {
                     d[k * ndof + l] = s[k].dot(&u_cols[l]);
                 }
+                d[k * ndof + k] += implicit_damping::<T>(model, joint);
             }
             // rhs column 0 = u, columns 1..7 = Uᵀ.
             let mut rhs = vec![T::ZERO; ndof * 7];
@@ -646,7 +660,7 @@ pub(crate) fn aba_generic<T: Scalar>(
 
         let ia = &i_a[i];
         let u_i = tau_i - s_i.dot(&p_a[i]);
-        let d_i = s_i.dot(&ia.mul_vec(&s_i));
+        let d_i = s_i.dot(&ia.mul_vec(&s_i)) + implicit_damping::<T>(model, joint);
 
         // Same degeneracy guard as the concrete ABA, on the primal.
         if d_i.to_f64().abs() < 1e-20 {
@@ -701,6 +715,7 @@ pub(crate) fn aba_generic<T: Scalar>(
                 for l in 0..ndof {
                     d[k * ndof + l] = s[k].dot(&ia.mul_vec(&s[l]));
                 }
+                d[k * ndof + k] += implicit_damping::<T>(model, joint);
                 rhs[k] = ctrl[v_idx + k]
                     - T::from_f64(joint.damping) * v[v_idx + k]
                     - s[k].dot(&p_a[i])
@@ -721,7 +736,7 @@ pub(crate) fn aba_generic<T: Scalar>(
 
         let s_i = motion_subspace(joint.joint_type, &axis);
         let ia = &i_a[i];
-        let d_i = s_i.dot(&ia.mul_vec(&s_i));
+        let d_i = s_i.dot(&ia.mul_vec(&s_i)) + implicit_damping::<T>(model, joint);
         if d_i.to_f64().abs() < 1e-20 {
             acc[i] = a_parent + c_bias[i];
             continue;
@@ -757,6 +772,81 @@ fn outer_product_6<T: Scalar>(a: &SpatialVec<T>, b: &SpatialVec<T>) -> SpatialMa
         v3_outer(a.linear, b.angular),
         v3_outer(a.linear, b.linear),
     )
+}
+
+/// Body-frame spatial velocities and accelerations at a nominal
+/// `(q, v, qdd)`, mirroring passes 1 and 3 of [`aba_generic`] exactly
+/// (base acceleration `-gravity`, so the accelerations are the ones an
+/// inverse-dynamics pass would use).
+///
+/// This is the kinematic half of the recursive Newton–Euler regressor the
+/// adjoint's inertia channel contracts against; it costs one `O(nb)` sweep,
+/// no dual arithmetic.
+pub(crate) fn nominal_motion(
+    model: &Model,
+    layout: &DofLayout,
+    q: &[f64],
+    v: &[f64],
+    qdd: &[f64],
+) -> (Vec<SpatialVec<f64>>, Vec<SpatialVec<f64>>) {
+    let nb = model.nbodies();
+    let mut vel = vec![SpatialVec::<f64>::zero(); nb];
+    let mut c_bias = vec![SpatialVec::<f64>::zero(); nb];
+    let mut acc = vec![SpatialVec::<f64>::zero(); nb];
+    let mut x_tree = vec![SpatialTransform::<f64>::identity(); nb];
+
+    let a0 = SpatialVec::new(Vec3::zero(), -model.gravity);
+
+    for i in 0..nb {
+        let body = &model.bodies[i];
+        let joint = &model.joints[body.joint_idx];
+        let q_idx = layout.q_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
+        let ndof = joint.ndof();
+
+        let x_joint = if ndof == 0 {
+            SpatialTransform::identity()
+        } else {
+            joint_transform(joint.joint_type, &joint.axis, &q[q_idx..])
+        };
+        x_tree[i] = x_joint.compose(&joint.parent_to_joint);
+
+        let v_joint = if ndof == 0 {
+            SpatialVec::zero()
+        } else {
+            joint_velocity(joint.joint_type, &joint.axis, &v[v_idx..], ndof)
+        };
+
+        if body.parent < 0 {
+            vel[i] = v_joint;
+        } else {
+            let pi = body.parent as usize;
+            vel[i] = x_tree[i].apply_motion(&vel[pi]) + v_joint;
+            c_bias[i] = vel[i].cross_motion(&v_joint);
+        }
+    }
+
+    for i in 0..nb {
+        let body = &model.bodies[i];
+        let joint = &model.joints[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
+        let ndof = joint.ndof();
+
+        let a_parent = if body.parent < 0 {
+            x_tree[i].apply_motion(&a0)
+        } else {
+            x_tree[i].apply_motion(&acc[body.parent as usize])
+        };
+
+        acc[i] = a_parent + c_bias[i];
+        if ndof > 0 {
+            // S·qdd, summed over the joint's DOFs — a multi-DOF joint
+            // contributes every column, not just the first.
+            acc[i] = acc[i] + joint_velocity(joint.joint_type, &joint.axis, &qdd[v_idx..], ndof);
+        }
+    }
+
+    (vel, acc)
 }
 
 // ---------------------------------------------------------------------------
@@ -882,9 +972,15 @@ pub(crate) fn validate_and_params(model: &Model) -> (DofLayout, Vec<[f64; N_INER
     (layout, params)
 }
 
+/// A nominal trajectory: `(states, accels)` — see [`rollout_states`].
+pub(crate) type RolloutTrace = (Vec<(Vec<f64>, Vec<f64>)>, Vec<Vec<f64>>);
+
 /// Convenience: run the plain `f64` rollout for `steps` steps from `(q0, v0)`
 /// under an open-loop control schedule, returning every state along the way
-/// (`states[t] = (q_t, v_t)`, `t = 0..=steps`).
+/// (`states[t] = (q_t, v_t)`, `t = 0..=steps`) and the nominal accelerations
+/// (`accels[t] = qdd(q_t, v_t, u_t)`, length `steps`). The backward pass needs
+/// the accelerations to build its inverse-dynamics regressor; recording them
+/// here is free, recomputing them later is not.
 pub(crate) fn rollout_states(
     model: &Model,
     layout: &DofLayout,
@@ -893,15 +989,16 @@ pub(crate) fn rollout_states(
     v0: &[f64],
     ctrl: &dyn Fn(usize) -> DVec,
     steps: usize,
-) -> Vec<(Vec<f64>, Vec<f64>)> {
+) -> RolloutTrace {
     let inertias: Vec<SpatialInertia<f64>> = model.bodies.iter().map(|b| b.inertia).collect();
     let mut states = Vec::with_capacity(steps + 1);
+    let mut accels = Vec::with_capacity(steps);
     let mut q = q0.to_vec();
     let mut v = v0.to_vec();
     states.push((q.clone(), v.clone()));
     for t in 0..steps {
         let u = ctrl(t);
-        let (qn, vn, _) = step_generic::<f64>(
+        let (qn, vn, qdd) = step_generic::<f64>(
             model,
             layout,
             &inertias,
@@ -914,6 +1011,7 @@ pub(crate) fn rollout_states(
         q = qn;
         v = vn;
         states.push((q.clone(), v.clone()));
+        accels.push(qdd);
     }
-    states
+    (states, accels)
 }

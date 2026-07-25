@@ -204,7 +204,9 @@ pub fn aba_with_external_forces(
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx];
+            let d_i = s_i.dot(&ia.mul_vec(&s_i))
+                + armature[v_idx]
+                + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -244,7 +246,7 @@ pub fn aba_with_external_forces(
             // D = S^T * I_a * S  (ndof x ndof)
             let mut d_mat = s_mat.transpose().mul_mat(&u_mat); // ndof x ndof
             for k in 0..ndof {
-                d_mat[(k, k)] += armature[v_idx + k];
+                d_mat[(k, k)] += armature[v_idx + k] + implicit_damping(joint, model.dt);
             }
 
             // u_vec = tau - S^T * p_a  (ndof x 1)
@@ -307,7 +309,9 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx];
+            let d_i = s_i.dot(&ia.mul_vec(&s_i))
+                + armature[v_idx]
+                + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
@@ -332,7 +336,7 @@ pub fn aba_with_external_forces(
             let u_mat = ia_dmat.mul_mat(&s_mat);
             let mut d_mat = s_mat.transpose().mul_mat(&u_mat);
             for k in 0..ndof {
-                d_mat[(k, k)] += armature[v_idx + k];
+                d_mat[(k, k)] += armature[v_idx + k] + implicit_damping(joint, model.dt);
             }
 
             let d_inv = match d_mat.try_inverse() {
@@ -363,6 +367,24 @@ pub fn aba_with_external_forces(
     }
 
     qdd
+}
+
+
+/// Implicit-damping contribution to a joint's effective inertia.
+///
+/// The damping *force* is applied explicitly (it is part of `qfrc`, see
+/// [`crate::actuation::add_passive_forces`]), but a purely explicit treatment
+/// is stable only for `dt < 2M/c`. Light distal links — a cheetah's foot, a
+/// finger's distal phalanx — violate that at the timesteps RL uses, and blow
+/// up. Adding `dt * c` to `D = S^T I^A S` is the first-order implicit solve of
+/// `v' = v + dt (a_other - c v' / M)`, which is unconditionally stable and is
+/// what MuJoCo's `implicitfast` integrator does.
+///
+/// The GPU kernel applies the identical term; if one side changes, the two
+/// backends silently disagree on every damped model.
+#[inline]
+fn implicit_damping(joint: &phyz_model::Joint, dt: f64) -> f64 {
+    dt * joint.damping
 }
 
 /// Outer product of two 6D spatial vectors, returning a SpatialMat.

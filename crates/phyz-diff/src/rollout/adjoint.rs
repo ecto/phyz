@@ -31,21 +31,43 @@
 //!
 //! For a model of single-DOF joints only, `Φ(q, v') = q + dt·v'`, so
 //! `Φ_q = I`, `Φ_v' = dt·I`, and this collapses to the familiar
-//! `w = dt·λ_q' + λ_v'`, `λ_q = λ_q' + dt·(∂a/∂q)ᵀw`. With a spherical or free
-//! joint in the model `Φ` is a Lie-group step on quaternion coordinates:
-//! `Φ_q` is not the identity and `Φ_v'` is `nq×nv`, not square (see
-//! [`super::step`]'s module docs for the layout). Both blocks are read out
-//! with dual lanes through `Φ` alone — `nq + nv` lanes of a few dozen flops
-//! each, negligible beside the ABA lanes.
+//! `w = dt·λ_q' + λ_v'`, `λ_q = λ_q' + dt·(∂a/∂q)ᵀw` — and the driver takes
+//! that closed form directly, so a single-DOF model pays nothing for this.
+//! With a spherical or free joint `Φ` is a Lie-group step on quaternion
+//! coordinates: `Φ_q` is not the identity and `Φ_v'` is `nq×nv`, not square
+//! (see [`super::step`]'s module docs for the layout). Both blocks are then
+//! read out with dual lanes through `Φ` alone — `nq + nv` lanes of a few dozen
+//! flops each, negligible beside the ABA lanes.
 //!
-//! Each `∂a/∂(·)` column is one dual lane. The vertex channel avoids a lane
-//! per vertex coordinate: vertices reach the dynamics only through each
-//! body's 6-component contact wrench, so the driver prices the wrench
-//! cotangent `χ_b = dt·wᵀ·∂a/∂(wrench_b)` once (6 lanes per contacting body)
-//! and contracts it against the **local** per-vertex wrench Jacobian
-//! (3 tiny dual evaluations of the penalty law per vertex) — cost per step is
-//! `O(nq + nv + 10·nb + 6·nb)` full dual steps plus `O(3·N)` local
-//! evaluations, independent of coupling between vertices.
+//! The two **state** channels are dual lanes: `2·nv` seeded evaluations of
+//! the scalar-generic step per timestep.
+//!
+//! The **parameter** and **contact** channels are not — a lane per parameter
+//! would make the backward pass cost `O(steps · n_params)`, i.e. no better
+//! than finite differences. Both instead ride one linear solve. Write
+//! `y := M⁻¹w` (read out of a single ABA with zero velocity and zero gravity,
+//! where the bias and gravity terms vanish and `qdd = M⁻¹·ctrl`) and let
+//! `A^y := J y` be the body-frame motion field that joint rates `y` induce
+//! (one `O(nb)` velocity sweep). Then, since `M ∂a/∂π = −∂/∂π ID(q, v, a; π)`
+//! at fixed `(q, v, a)` and inverse dynamics is the sum over bodies of
+//! `⟨A^y_b, I_b A_b + V_b ×* I_b V_b⟩` (RNEA's backward pass is the adjoint of
+//! its acceleration pass):
+//!
+//! ```text
+//! dJ/dπ[b][k] −= dt·⟨A^y_b, ΔI·A_b + V_b ×* (ΔI·V_b)⟩,   ΔI := ∂I_b/∂π_k
+//! χ_b          = dt·A^y_b                                (= dt·wᵀ·∂a/∂wrench_b)
+//! ```
+//!
+//! `ΔI` is a constant of the model, priced once outside the time loop; `V_b`
+//! and `A_b` come from one `O(nb)` sweep at the nominal `(q, v, qdd)` recorded
+//! by the forward rollout. So **all** `10·nb` inertia directions and all
+//! `6·nb` wrench directions cost two `O(nb)` sweeps, not `16·nb` dual steps.
+//!
+//! The vertex channel then contracts `χ_b` against the **local** per-vertex
+//! wrench Jacobian (3 tiny dual evaluations of the penalty law per vertex),
+//! so vertices never cost a full step either. Cost per timestep is
+//! `O(nv)` dual steps + `O(1)` ABAs + `O(nb)` sweeps + `O(3·N)` local
+//! evaluations — **independent of the parameter count**.
 //!
 //! # Contract
 //!
@@ -63,15 +85,47 @@
 //!   bit-identical.
 
 use super::step::{
-    CollisionMesh, GroundContact, N_INERTIA_PARAMS, config_update_generic, fk_generic,
-    inertia_from_params, lift_inertia, lift_vec3, rollout_states, step_generic,
-    validate_and_params, vertex_wrench,
+    CollisionMesh, GroundContact, N_INERTIA_PARAMS, aba_generic, config_update_generic, fk_generic,
+    inertia_from_params, joint_nq, lift_inertia, lift_vec3, nominal_motion, rollout_states,
+    step_generic, validate_and_params, vertex_wrench,
 };
 use phyz_math::{DVec, Vec3};
 use phyz_model::Model;
-use tang::{Dual, SpatialInertia, SpatialVec, Vec3 as GVec3};
+use tang::{Dual, Mat3 as GMat3, SpatialInertia, SpatialMat, SpatialVec, Vec3 as GVec3};
 
 type D = Dual<f64>;
+
+/// `∂I_b/∂π_k` as a 6×6 spatial-inertia matrix — the inertia parameterisation
+/// is a fixed algebraic map, so these blocks are constants of the model and
+/// are priced once, outside the time loop.
+fn inertia_param_derivatives(
+    params: &[f64; N_INERTIA_PARAMS],
+) -> [SpatialMat<f64>; N_INERTIA_PARAMS] {
+    let dual_block = |m: &GMat3<D>| {
+        GMat3::new(
+            m.get(0, 0).dual,
+            m.get(0, 1).dual,
+            m.get(0, 2).dual,
+            m.get(1, 0).dual,
+            m.get(1, 1).dual,
+            m.get(1, 2).dual,
+            m.get(2, 0).dual,
+            m.get(2, 1).dual,
+            m.get(2, 2).dual,
+        )
+    };
+    core::array::from_fn(|k| {
+        let mut p: [D; N_INERTIA_PARAMS] = core::array::from_fn(|i| D::constant(params[i]));
+        p[k] = D::var(params[k]);
+        let m = inertia_from_params(&p).to_matrix();
+        SpatialMat::new(
+            dual_block(&m.upper_left),
+            dual_block(&m.upper_right),
+            dual_block(&m.lower_left),
+            dual_block(&m.lower_right),
+        )
+    })
+}
 
 /// Ground contact configuration for an adjoint rollout: the plane and the
 /// collision skins that feel it.
@@ -130,7 +184,7 @@ pub struct AdjointGradients {
 pub fn rollout_objective(rollout: &AdjointRollout, objective: &FinalStateObjective) -> f64 {
     let (layout, _) = validate_and_params(rollout.model);
     let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
-    let states = rollout_states(
+    let (states, _) = rollout_states(
         rollout.model,
         &layout,
         contact,
@@ -159,8 +213,8 @@ pub fn adjoint_rollout_gradient(
     assert_eq!(rollout.q0.len(), nq, "q0 length (DofLayout::nq)");
     assert_eq!(rollout.v0.len(), nv, "v0 length (nv)");
 
-    // Forward: store the whole trajectory.
-    let states = rollout_states(
+    // Forward: store the whole trajectory and its accelerations.
+    let (states, accels) = rollout_states(
         model,
         &layout,
         contact,
@@ -187,12 +241,33 @@ pub fn adjoint_rollout_gradient(
         })
         .unwrap_or_default();
 
-    // Nominal dual-lifted inertias, reused (and locally overridden) per lane.
+    // Nominal dual-lifted inertias, reused per state lane.
     let inertias_nominal: Vec<SpatialInertia<D>> = model
         .bodies
         .iter()
         .map(|b| lift_inertia(&b.inertia))
         .collect();
+    let inertias_f64: Vec<SpatialInertia<f64>> = model.bodies.iter().map(|b| b.inertia).collect();
+
+    // Constants of the model, hoisted out of the time loop.
+    let d_i_mats: Vec<[SpatialMat<f64>; N_INERTIA_PARAMS]> =
+        params.iter().map(inertia_param_derivatives).collect();
+    // `y = M⁻¹w` is read out of ABA with zero velocity and zero gravity, so
+    // the bias and gravity terms vanish and `qdd = M⁻¹·ctrl`.
+    let model_free = {
+        let mut m = model.clone();
+        m.gravity = Vec3::zeros();
+        m
+    };
+    let zeros_v = vec![0.0f64; nv];
+    // With no multi-DOF joint, `Φ(q, v') = q + dt·v'` exactly, so `Φ_q = I` and
+    // `Φ_v' = dt·I` and the two Φ lane sweeps below are a known answer. Skip
+    // them: this is the common case and it keeps the single-DOF cost at the
+    // `2·nv` state lanes.
+    let euclidean_q = model
+        .joints
+        .iter()
+        .all(|j| joint_nq(j.joint_type) == j.ndof());
 
     // Backward over steps.
     for t in (0..rollout.steps).rev() {
@@ -213,18 +288,23 @@ pub fn adjoint_rollout_gradient(
             let qn = config_update_generic(model, &layout, q_d, vn_d, dt_d);
             qn.iter().zip(&lam_q).map(|(x, &l)| x.dual * l).sum()
         };
-        let mut phi_q = vec![0.0f64; nq];
-        for i in 0..nq {
-            let mut q_d = q_c.clone();
-            q_d[i] = D::var(q_t[i]);
-            phi_q[i] = phi_dot(&q_d, &vn_c);
-        }
-        let mut psi = vec![0.0f64; nv];
-        for j in 0..nv {
-            let mut vn_d = vn_c.clone();
-            vn_d[j] = D::var(v_next[j]);
-            psi[j] = phi_dot(&q_c, &vn_d);
-        }
+        let (phi_q, psi) = if euclidean_q {
+            (lam_q.clone(), lam_q.iter().map(|&l| dt * l).collect())
+        } else {
+            let mut phi_q = vec![0.0f64; nq];
+            for i in 0..nq {
+                let mut q_d = q_c.clone();
+                q_d[i] = D::var(q_t[i]);
+                phi_q[i] = phi_dot(&q_d, &vn_c);
+            }
+            let mut psi = vec![0.0f64; nv];
+            for j in 0..nv {
+                let mut vn_d = vn_c.clone();
+                vn_d[j] = D::var(v_next[j]);
+                psi[j] = phi_dot(&q_c, &vn_d);
+            }
+            (phi_q, psi)
+        };
 
         // w = Φ_v'ᵀλ_q' + λ_v' — the covector every channel contracts against.
         let w: Vec<f64> = psi.iter().zip(&lam_v).map(|(&p, &lv)| p + lv).collect();
@@ -253,43 +333,38 @@ pub fn adjoint_rollout_gradient(
             av[j] = contract(&q_c, &v_d, &inertias_nominal, None);
         }
 
-        // Inertia-parameter lanes: dJ/dπ[b][k] += dt·wᵀ·∂a/∂π[b][k].
+        // Inertia and wrench channels, analytically (see module docs). Two
+        // O(nb) sweeps price *all* 10·nb parameter directions and all 6·nb
+        // wrench directions at once — no dual lane per parameter.
+        //
+        //   y   = M⁻¹w                     (one ABA)
+        //   A^y = J y                      (one velocity sweep)
+        //   dJ/dπ[b][k] -= dt·⟨A^y_b, ΔI·A_b + V_b ×* (ΔI·V_b)⟩
+        //   χ_b          = dt·A^y_b
+        let (vel_b, acc_b) = nominal_motion(model, &layout, q_t, v_t, &accels[t]);
+        let y = aba_generic::<f64>(&model_free, &layout, &inertias_f64, q_t, &zeros_v, &w, None);
+        let (_, a_y) = fk_generic::<f64>(model, &layout, q_t, &y);
+
         for b in 0..nb {
             for k in 0..N_INERTIA_PARAMS {
-                let mut p: [D; N_INERTIA_PARAMS] =
-                    core::array::from_fn(|i| D::constant(params[b][i]));
-                p[k] = D::var(params[b][k]);
-                let mut inertias = inertias_nominal.clone();
-                inertias[b] = inertia_from_params(&p);
-                d_inertia[b][k] += dt * contract(&q_c, &v_c, &inertias, None);
+                let di = &d_i_mats[b][k];
+                let f = di.mul_vec(&acc_b[b]) + vel_b[b].cross_force(&di.mul_vec(&vel_b[b]));
+                d_inertia[b][k] -= dt * a_y[b].dot(&f);
             }
         }
 
         // Vertex channel: price the wrench cotangent χ once per contacting
         // body, then contract each vertex's local wrench Jacobian against it.
         if let Some(setup) = rollout.contact.as_ref() {
-            let mut skinned = vec![false; nb];
-            for m in setup.meshes {
-                skinned[m.body] = true;
-            }
-
-            // χ[b][c] = dt·wᵀ·∂a/∂(wrench_b component c).
-            let mut chi = vec![[0.0f64; 6]; nb];
-            for (b, chi_b) in chi.iter_mut().enumerate() {
-                if !skinned[b] {
-                    continue;
-                }
-                for (c, chi_bc) in chi_b.iter_mut().enumerate() {
-                    let mut ext = vec![SpatialVec::<D>::zero(); nb];
-                    let mut comps = [D::constant(0.0); 6];
-                    comps[c] = D::var(0.0);
-                    ext[b] = SpatialVec::new(
-                        GVec3::new(comps[0], comps[1], comps[2]),
-                        GVec3::new(comps[3], comps[4], comps[5]),
-                    );
-                    *chi_bc = dt * contract(&q_c, &v_c, &inertias_nominal, Some(&ext));
-                }
-            }
+            // χ[b][c] = dt·wᵀ·∂a/∂(wrench_b component c). A body-frame wrench
+            // on body b enters the dynamics as Jᵀ_b, so wᵀM⁻¹Jᵀ_b = (J_b y)ᵀ
+            // — the same A^y field the inertia channel already computed.
+            let chi: Vec<[f64; 6]> = (0..nb)
+                .map(|b| {
+                    let m = a_y[b].as_array();
+                    core::array::from_fn(|c| dt * m[c])
+                })
+                .collect();
 
             // Local per-vertex wrench Jacobian at the nominal kinematics:
             // 3 dual evaluations of the penalty law, holding the state fixed.

@@ -3,10 +3,19 @@
 use crate::{Body, Joint, State};
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
-/// A motor actuator attached to a joint.
+/// An actuator attached to a joint.
 ///
-/// The generalized force an actuator produces is
-/// `gear * clamp(ctrl, ctrl_range)`, applied to the first DOF of `joint_idx`.
+/// Follows MuJoCo's affine actuator model: the generalized force applied to the
+/// joint's first DOF is
+///
+/// ```text
+/// f = gear * (gain * ctrl + bias_q * q + bias_v * v)
+/// ```
+///
+/// which expresses `<motor>`, `<position>`, `<velocity>` and the affine subset
+/// of `<general>` with one parameter set, so downstream code never branches on
+/// actuator type. A plain motor is `gain = 1, bias_q = bias_v = 0`, for which
+/// this reduces to `gear * clamp(ctrl)`.
 #[derive(Debug, Clone)]
 pub struct Actuator {
     /// Actuator name, as declared in the source model.
@@ -19,6 +28,30 @@ pub struct Actuator {
     pub gear: f64,
     /// Optional `[lo, hi]` clamp on the control signal, before `gear`.
     pub ctrl_range: Option<[f64; 2]>,
+    /// Coefficient on `ctrl`. 1 for a motor, `kp` for a position servo.
+    pub gain: f64,
+    /// Coefficient on joint position. `-kp` for a position servo, else 0.
+    pub bias_q: f64,
+    /// Coefficient on joint velocity. `-kv` for a servo, else 0.
+    pub bias_v: f64,
+    /// Force limits applied after the affine law, or `None` if unlimited.
+    pub force_range: Option<[f64; 2]>,
+}
+
+impl Default for Actuator {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            joint_name: String::new(),
+            joint_idx: 0,
+            gear: 1.0,
+            ctrl_range: None,
+            gain: 1.0,
+            bias_q: 0.0,
+            bias_v: 0.0,
+            force_range: None,
+        }
+    }
 }
 
 impl Actuator {
@@ -30,9 +63,59 @@ impl Actuator {
         }
     }
 
-    /// Generalized force produced by this actuator for a raw control value.
+    /// Generalized force produced by this actuator for a raw control value,
+    /// ignoring any state feedback.
+    ///
+    /// Correct for motors. Position and velocity servos additionally depend on
+    /// `q` and `v`; use [`Self::force_at`] for those.
     pub fn force(&self, ctrl: f64) -> f64 {
-        self.gear * self.clamp_ctrl(ctrl)
+        self.force_at(ctrl, 0.0, 0.0)
+    }
+
+    /// Evaluate the full affine actuator law at the joint's current state.
+    pub fn force_at(&self, ctrl: f64, q: f64, v: f64) -> f64 {
+        let f = self.gear * (self.gain * self.clamp_ctrl(ctrl) + self.bias_q * q + self.bias_v * v);
+        match self.force_range {
+            Some([lo, hi]) => f.clamp(lo.min(hi), hi.max(lo)),
+            None => f,
+        }
+    }
+
+    /// A direct-torque motor: `f = gear * ctrl`.
+    pub fn motor(name: &str, joint_name: &str, joint_idx: usize, gear: f64) -> Self {
+        Self {
+            name: name.to_string(),
+            joint_name: joint_name.to_string(),
+            joint_idx,
+            gear,
+            ..Default::default()
+        }
+    }
+
+    /// A position servo: `f = gear * (kp * (ctrl - q) - kv * v)`.
+    pub fn position(
+        name: &str,
+        joint_name: &str,
+        joint_idx: usize,
+        gear: f64,
+        kp: f64,
+        kv: f64,
+    ) -> Self {
+        Self {
+            gain: kp,
+            bias_q: -kp,
+            bias_v: -kv,
+            ..Self::motor(name, joint_name, joint_idx, gear)
+        }
+    }
+
+    /// A velocity servo: `f = gear * kv * (ctrl - v)`.
+    pub fn velocity(name: &str, joint_name: &str, joint_idx: usize, gear: f64, kv: f64) -> Self {
+        Self {
+            gain: kv,
+            bias_v: -kv,
+            ..Self::motor(name, joint_name, joint_idx, gear)
+        }
     }
 }
 
@@ -95,6 +178,42 @@ impl Model {
             };
             if v_idx < self.nv {
                 qfrc[v_idx] += act.force(ctrl[a]);
+            }
+        }
+        qfrc
+    }
+
+    /// Map actuator-space controls to generalized forces, evaluating the full
+    /// affine actuator law against the joint's current state.
+    ///
+    /// Identical to [`Self::actuator_forces`] for plain motors. Position and
+    /// velocity servos need `q` and `v`, so this is the variant the dynamics
+    /// call; the state-free one remains for callers that only have controls.
+    pub fn actuator_forces_at(
+        &self,
+        ctrl: &phyz_math::DVec,
+        q: &phyz_math::DVec,
+        v: &phyz_math::DVec,
+    ) -> phyz_math::DVec {
+        let mut qfrc = phyz_math::DVec::zeros(self.nv);
+        if self.actuators.is_empty() {
+            for i in 0..self.nv.min(ctrl.len()) {
+                qfrc[i] = ctrl[i];
+            }
+            return qfrc;
+        }
+        for (a, act) in self.actuators.iter().enumerate() {
+            if a >= ctrl.len() {
+                break;
+            }
+            let (Some(&v_idx), Some(&q_idx)) = (
+                self.v_offsets.get(act.joint_idx),
+                self.q_offsets.get(act.joint_idx),
+            ) else {
+                continue;
+            };
+            if v_idx < self.nv && q_idx < q.len() {
+                qfrc[v_idx] += act.force_at(ctrl[a], q[q_idx], v[v_idx]);
             }
         }
         qfrc

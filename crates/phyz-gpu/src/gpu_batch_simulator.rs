@@ -30,7 +30,7 @@ struct BatchSimParams {
 /// Layout matches the WGSL shader's `BODY_STRIDE` of 32:
 /// ```text
 /// [0]  parent (bitcast i32)
-/// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed)
+/// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
 /// [2]  q_offset
 /// [3]  v_offset
 /// [4]  mass
@@ -179,6 +179,7 @@ impl GpuBatchSimulator {
                     bgl_storage_rw(1), // q
                     bgl_storage_rw(2), // v
                     bgl_storage_ro(3), // qdd
+                    bgl_storage_ro(4), // bodies (joint layout)
                 ],
             });
 
@@ -268,6 +269,10 @@ impl GpuBatchSimulator {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: state.qdd_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: bodies_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -361,8 +366,8 @@ impl GpuBatchSimulator {
             });
             pass.set_pipeline(&self.integrate_pipeline);
             pass.set_bind_group(0, &self.integrate_bind_group, &[]);
-            let total_dofs = (self.state.nworld * self.state.nv) as u32;
-            let workgroups = total_dofs.div_ceil(256);
+            let threads = (self.state.nworld * self.model.nbodies()) as u32;
+            let workgroups = threads.div_ceil(64);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
@@ -406,7 +411,8 @@ fn pack_bodies(model: &Model) -> Vec<f32> {
             phyz_model::JointType::Revolute | phyz_model::JointType::Hinge => 0,
             phyz_model::JointType::Prismatic | phyz_model::JointType::Slide => 1,
             phyz_model::JointType::Fixed => 2,
-            _ => 2, // treat unsupported as fixed for now
+            phyz_model::JointType::Spherical | phyz_model::JointType::Ball => 3,
+            phyz_model::JointType::Free => 4,
         };
         data[base + 1] = f32::from_bits(jtype);
         // [2] q_offset

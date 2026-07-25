@@ -10,11 +10,14 @@
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDocTests;
 
-mod defaults;
+mod attrs;
+pub mod defaults;
+pub mod inertia;
 mod parser;
 
-pub use defaults::ElementDefaults;
-pub use parser::MjcfLoader;
+pub use attrs::Attrs;
+pub use defaults::DefaultsManager;
+pub use parser::{MjcfLoader, SensorElement, UnsupportedFeature};
 
 use thiserror::Error;
 
