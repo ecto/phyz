@@ -519,7 +519,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **measured**: 0.000000000e0
 - **expected**: 0.000000000e0
 - **error**: 0.0000e0 (abs) — tolerance 2.0000e-2
-- _note_: production average T* = 0.7167 (target 0.722)
+- _note_: production average T* = 0.7049 (target 0.722)
 
 ### LJ fluid g(r): first-peak position — PASS
 
@@ -537,9 +537,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_peak_height`
 - **reference**: Verlet (1968) — g(r_max) ≈ 3.0 for ρ* = 0.8442, T* = 0.722
 - **metric**: g(r) at the first maximum
-- **measured**: 2.998691463e0
+- **measured**: 3.020677073e0
 - **expected**: 3.000000000e0
-- **error**: 4.3618e-4 (rel) — tolerance 1.2000e-1
+- **error**: 6.8924e-3 (rel) — tolerance 1.2000e-1
 
 ### LJ fluid g(r): first-minimum position and depth — PASS
 
@@ -557,9 +557,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_minimum_depth`
 - **reference**: Verlet (1968) — g ≈ 0.60 at the first minimum
 - **metric**: g(r) at the first minimum
-- **measured**: 5.676898708e-1
+- **measured**: 5.687108957e-1
 - **expected**: 6.000000000e-1
-- **error**: 5.3850e-2 (rel) — tolerance 2.0000e-1
+- **error**: 5.2149e-2 (rel) — tolerance 2.0000e-1
 - _note_: measured minimum at r* = 1.537
 
 ### LJ fluid excess energy at ρ* = 0.8442, T* = 0.722 — PASS
@@ -568,9 +568,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.thermo.energy`
 - **reference**: Verlet, *Phys. Rev.* 159 (1967) 98, Table II; Johnson, Zollweg & Gubbins, *Mol. Phys.* 78 (1993) 591 — U*/N ≈ −5.7 with a 2.5σ truncation (no tail correction)
 - **metric**: ⟨U⟩/N in reduced units
-- **measured**: -5.649768395e0
+- **measured**: -5.659001407e0
 - **expected**: -5.700000000e0
-- **error**: 8.8126e-3 (rel) — tolerance 5.0000e-2
+- **error**: 7.1927e-3 (rel) — tolerance 5.0000e-2
 - _note_: Reported without a long-range tail correction, matching the crate's hard truncation.
 
 ### LJ fluid virial pressure at ρ* = 0.8442, T* = 0.722 — REPORT
@@ -579,8 +579,8 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.thermo.pressure`
 - **reference**: Verlet (1967) Table II — P*V/Nk_BT ≈ 0.5, i.e. P* ≈ 0.3 at this state point with a 2.5σ truncation
 - **metric**: ⟨P⟩ in reduced units
-- **measured**: 8.382557798e-1
+- **measured**: 7.819440674e-1
 - **expected**: 3.000000000e-1
-- **error**: 5.3826e-1 (abs) — tolerance 3.5000e-1
+- **error**: 4.8194e-1 (abs) — tolerance 3.5000e-1
 - _note_: Reported as a diagnostic: the truncation convention (shifted vs unshifted, tail correction) moves the reference value by more than the statistical error of this run, so a tight pass/fail claim would not be meaningful.
 
