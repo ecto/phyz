@@ -36,8 +36,9 @@ fn fcc_system(n_side: usize, dt: f64) -> MdSystem {
     let l = (n as f64 / rho).cbrt();
     let a = l / n_side as f64;
 
-    let mut system =
-        MdSystem::lennard_jones(LennardJones::monatomic(EPSILON, SIGMA, 2.5 * SIGMA), dt);
+    // Seeded so the melt/equilibrate/sample run is reproducible.
+    let mut system = MdSystem::with_seed(dt, 0x5EED_1EE7);
+    system.set_lennard_jones(LennardJones::monatomic(EPSILON, SIGMA, 2.5 * SIGMA));
     // A skin that keeps at least three cells per axis in this box, so the
     // binned neighbor build is what gets exercised.
     system.neighbor_list.skin = 0.6;

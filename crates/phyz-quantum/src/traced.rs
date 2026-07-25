@@ -12,9 +12,9 @@
 //! 4. Compute ground state energy + entanglement entropy per partition
 
 use tang::Scalar;
-use tang_expr::node::ExprId;
 use tang_expr::ExprGraph;
-use tang_la::{branchless_jacobi_eigen, DMat};
+use tang_expr::node::ExprId;
+use tang_la::{DMat, branchless_jacobi_eigen};
 
 use crate::hilbert::U1HilbertSpace;
 use phyz_regge::SimplicialComplex;
@@ -65,17 +65,10 @@ pub fn trace_quantum_entropy(
     let (graph, outputs) = tang_expr::trace(|| {
         // Input variables
         let g_squared = ExprId::var(0);
-        let metric_weights: Vec<ExprId> = (0..n_tri)
-            .map(|i| ExprId::var((i + 1) as u16))
-            .collect();
+        let metric_weights: Vec<ExprId> = (0..n_tri).map(|i| ExprId::var((i + 1) as u16)).collect();
 
         // Build Hamiltonian
-        let h = build_traced_hamiltonian(
-            dim,
-            g_squared,
-            &metric_weights,
-            &ham_structure,
-        );
+        let h = build_traced_hamiltonian(dim, g_squared, &metric_weights, &ham_structure);
 
         // Eigendecompose
         let (eigenvalues, eigenvectors) = branchless_jacobi_eigen(&h, n_sweeps);
@@ -88,12 +81,8 @@ pub fn trace_quantum_entropy(
         let mut boundary_areas = Vec::new();
 
         for ps in &partition_structures {
-            let entropy = traced_entanglement_entropy(
-                &ground_state,
-                &ps.b_groups,
-                ps.dim_a,
-                n_sweeps,
-            );
+            let entropy =
+                traced_entanglement_entropy(&ground_state, &ps.b_groups, ps.dim_a, n_sweeps);
             entropies.push(entropy);
 
             // Boundary area = sum of metric weights for triangles touching boundary edges
@@ -163,7 +152,10 @@ fn precompute_hamiltonian_structure(
         for i in 0..dim {
             let config = hilbert.index_to_config(i);
             if let Some(j) = apply_triangle_shift_static(
-                hilbert, config, &edge_indices, &TRIANGLE_HOLONOMY_SIGNS,
+                hilbert,
+                config,
+                &edge_indices,
+                &TRIANGLE_HOLONOMY_SIGNS,
             ) {
                 magnetic_entries.push((ti, i, j));
             }
@@ -209,12 +201,7 @@ fn precompute_partition_structure(
     let b_configs: Vec<Vec<i32>> = hilbert
         .basis
         .iter()
-        .map(|c| {
-            (0..n_edges)
-                .filter(|e| !is_a[*e])
-                .map(|e| c[e])
-                .collect()
-        })
+        .map(|c| (0..n_edges).filter(|e| !is_a[*e]).map(|e| c[e]).collect())
         .collect();
 
     let mut b_group_map: HashMap<Vec<i32>, Vec<(usize, usize)>> = HashMap::new();
@@ -473,9 +460,7 @@ mod tests {
         let traced_s: f64 = graph.eval(entropy, &[]);
 
         // Reference: eigenvalues of [[0.7,0.1],[0.1,0.3]]
-        let ref_mat = tang_la::DMat::<f64>::from_fn(2, 2, |i, j| {
-            [[0.7, 0.1], [0.1, 0.3]][i][j]
-        });
+        let ref_mat = tang_la::DMat::<f64>::from_fn(2, 2, |i, j| [[0.7, 0.1], [0.1, 0.3]][i][j]);
         let eig = tang_la::SymmetricEigen::new(&ref_mat);
         let ref_s: f64 = eig
             .eigenvalues

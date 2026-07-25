@@ -59,12 +59,13 @@ impl MpmSolver {
         self.grid_to_particle(particles);
     }
 
-    /// Convert world position to grid index.
+    /// Convert world position to the nearest grid index (base of the 3-node
+    /// quadratic stencil; offsets -1..=1 then cover |dx| < 1.5).
     fn position_to_index(&self, x: &Vec3) -> GridIndex {
         (
-            (x.x / self.h).floor() as i32,
-            (x.y / self.h).floor() as i32,
-            (x.z / self.h).floor() as i32,
+            (x.x / self.h).round() as i32,
+            (x.y / self.h).round() as i32,
+            (x.z / self.h).round() as i32,
         )
     }
 
@@ -77,25 +78,28 @@ impl MpmSolver {
         )
     }
 
-    /// Cubic B-spline weight function.
+    /// Quadratic B-spline weight function.
     fn weight(&self, x: &Vec3, xi: &Vec3) -> f64 {
         let dx = (x - xi) / self.h;
         self.n(dx.x) * self.n(dx.y) * self.n(dx.z)
     }
 
-    /// Cubic B-spline kernel (1D).
+    /// Quadratic B-spline kernel (1D), support |x| < 3/2.
+    ///
+    /// Paired with a nearest-node base index and a 3-node-per-axis stencil,
+    /// these weights form a partition of unity.
     fn n(&self, x: f64) -> f64 {
         let x = x.abs();
-        if x < 1.0 {
-            0.5 * x * x * x - x * x + 2.0 / 3.0
-        } else if x < 2.0 {
-            -(x - 2.0).powi(3) / 6.0
+        if x < 0.5 {
+            0.75 - x * x
+        } else if x < 1.5 {
+            0.5 * (1.5 - x) * (1.5 - x)
         } else {
             0.0
         }
     }
 
-    /// Gradient of cubic B-spline weight function.
+    /// Gradient of quadratic B-spline weight function.
     fn weight_gradient(&self, x: &Vec3, xi: &Vec3) -> Vec3 {
         let dx = (x - xi) / self.h;
         Vec3::new(
@@ -105,20 +109,20 @@ impl MpmSolver {
         )
     }
 
-    /// Derivative of cubic B-spline kernel (1D).
+    /// Derivative of quadratic B-spline kernel (1D).
     fn dn(&self, x: f64) -> f64 {
         let sign = x.signum();
         let x = x.abs();
-        if x < 1.0 {
-            sign * (1.5 * x * x - 2.0 * x)
-        } else if x < 2.0 {
-            sign * (-0.5 * (x - 2.0).powi(2))
+        if x < 0.5 {
+            -2.0 * x * sign
+        } else if x < 1.5 {
+            -(1.5 - x) * sign
         } else {
             0.0
         }
     }
 
-    /// Get neighboring grid cells (3x3x3 stencil).
+    /// Get neighboring grid cells (3x3x3 stencil, matching the quadratic kernel).
     fn get_neighbors(&self, idx: GridIndex) -> Vec<GridIndex> {
         let mut neighbors = Vec::new();
         for di in -1..=1 {
@@ -333,13 +337,146 @@ mod tests {
         // Weight at same position should be high
         let x = Vec3::new(5.0, 5.0, 5.0);
         let w = solver.weight(&x, &x);
-        // Cubic spline at x=0 gives n(0) = 2/3, so w = (2/3)^3 ≈ 0.296
+        // Quadratic spline at x=0 gives n(0) = 3/4, so w = (3/4)^3 ≈ 0.422
         assert!(w > 0.2);
 
         // Weight far away should be zero
         let x2 = Vec3::new(10.0, 10.0, 10.0);
         let w2 = solver.weight(&x, &x2);
         assert!(w2.abs() < 1e-12);
+    }
+
+    /// Deterministic LCG so failures reproduce.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    #[test]
+    fn test_partition_of_unity() {
+        // The kernel, the base index rounding, and the stencil bounds must agree:
+        // weights over the stencil sum to exactly 1 for any particle position.
+        let h = 0.1;
+        let solver = MpmSolver::new(h, 0.01, (Vec3::zeros(), Vec3::new(1.0, 1.0, 1.0)));
+
+        let mut rng = Lcg(0x5eed);
+        for _ in 0..2000 {
+            let x = Vec3::new(rng.next_f64(), rng.next_f64(), rng.next_f64());
+            let base = solver.position_to_index(&x);
+
+            let sum: f64 = solver
+                .get_neighbors(base)
+                .iter()
+                .map(|&idx| solver.weight(&x, &solver.index_to_position(idx)))
+                .sum();
+
+            assert!(
+                (sum - 1.0).abs() < 1e-12,
+                "weights sum to {sum} at x = {x:?} (base {base:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_weight_gradient_sums_to_zero() {
+        // Corollary of partition of unity: the gradients must cancel.
+        let solver = MpmSolver::new(0.1, 0.01, (Vec3::zeros(), Vec3::new(1.0, 1.0, 1.0)));
+
+        let mut rng = Lcg(0xc0ffee);
+        for _ in 0..500 {
+            let x = Vec3::new(rng.next_f64(), rng.next_f64(), rng.next_f64());
+            let base = solver.position_to_index(&x);
+
+            let mut sum = Vec3::zeros();
+            for &idx in &solver.get_neighbors(base) {
+                sum += solver.weight_gradient(&x, &solver.index_to_position(idx));
+            }
+
+            assert!(sum.norm() < 1e-9, "gradients sum to {sum:?} at x = {x:?}");
+        }
+    }
+
+    #[test]
+    fn test_p2g_mass_conservation() {
+        // Total grid mass must equal total particle mass after P2G.
+        let mut solver = MpmSolver::new(0.1, 0.01, (Vec3::zeros(), Vec3::new(1.0, 1.0, 1.0)));
+
+        let mat = Material::Elastic { e: 1e6, nu: 0.3 };
+        let mut rng = Lcg(0xbeef);
+        let particles: Vec<Particle> = (0..64)
+            .map(|_| {
+                let x = Vec3::new(
+                    0.2 + 0.6 * rng.next_f64(),
+                    0.2 + 0.6 * rng.next_f64(),
+                    0.2 + 0.6 * rng.next_f64(),
+                );
+                Particle::new(x, Vec3::zeros(), 0.5 + rng.next_f64(), 0.001, mat)
+            })
+            .collect();
+
+        let expected: f64 = particles.iter().map(|p| p.mass).sum();
+
+        solver.grid.clear();
+        solver.particle_to_grid(&particles);
+
+        let actual = solver.total_grid_mass();
+        assert!(
+            (expected - actual).abs() < 1e-12 * expected.max(1.0),
+            "grid mass {actual} != particle mass {expected}"
+        );
+    }
+
+    #[test]
+    fn test_p2g_g2p_momentum_conservation() {
+        // With no forces (undeformed elastic => zero stress, no grid update so
+        // no gravity) and pure PIC transfer, a P2G -> G2P round trip conserves
+        // total momentum exactly.
+        let mut solver = MpmSolver::new(0.1, 0.001, (Vec3::zeros(), Vec3::new(1.0, 1.0, 1.0)));
+        solver.alpha = 0.0; // pure PIC
+
+        let mat = Material::Elastic { e: 1e6, nu: 0.3 };
+        let mut rng = Lcg(0xd00d);
+        let mut particles: Vec<Particle> = (0..64)
+            .map(|_| {
+                let x = Vec3::new(
+                    0.2 + 0.6 * rng.next_f64(),
+                    0.2 + 0.6 * rng.next_f64(),
+                    0.2 + 0.6 * rng.next_f64(),
+                );
+                let v = Vec3::new(
+                    rng.next_f64() - 0.5,
+                    rng.next_f64() - 0.5,
+                    rng.next_f64() - 0.5,
+                );
+                Particle::new(x, v, 0.5 + rng.next_f64(), 0.001, mat)
+            })
+            .collect();
+
+        let initial = MpmSolver::total_momentum(&particles);
+
+        solver.grid.clear();
+        solver.particle_to_grid(&particles);
+        // Grid momentum must match particle momentum too.
+        let grid_momentum: Vec3 = solver.grid.values().map(|n| n.momentum).sum();
+        assert!(
+            (grid_momentum - initial).norm() < 1e-12,
+            "P2G momentum {grid_momentum:?} != {initial:?}"
+        );
+
+        solver.grid_to_particle(&mut particles);
+
+        let final_momentum = MpmSolver::total_momentum(&particles);
+        assert!(
+            (final_momentum - initial).norm() < 1e-12,
+            "round-trip momentum {final_momentum:?} != {initial:?}"
+        );
     }
 
     #[test]
@@ -363,7 +500,10 @@ mod tests {
 
     #[test]
     fn test_free_fall() {
-        let mut solver = MpmSolver::new(0.1, 0.01, (Vec3::zeros(), Vec3::new(1.0, 2.0, 1.0)));
+        // dt must respect the CFL limit: rho = mass/volume = 100, E = 1e6 gives
+        // a wave speed of 100 m/s, so with h = 0.1 the explicit scheme needs
+        // dt <= ~1e-3. Larger steps make the elastic response blow up.
+        let mut solver = MpmSolver::new(0.1, 0.001, (Vec3::zeros(), Vec3::new(1.0, 2.0, 1.0)));
 
         let mat = Material::Elastic { e: 1e6, nu: 0.3 };
         let mut particles = vec![Particle::new(
@@ -376,8 +516,8 @@ mod tests {
 
         let initial_y = particles[0].x.y;
 
-        // Simulate free fall for 50 steps (0.5 seconds)
-        for _ in 0..50 {
+        // Simulate free fall for 0.5 seconds
+        for _ in 0..500 {
             solver.step(&mut particles);
         }
 

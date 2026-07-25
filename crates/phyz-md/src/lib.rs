@@ -12,8 +12,9 @@
 //! - Cell-list Verlet neighbor lists with a skin and displacement-triggered
 //!   rebuilds, O(N) per step
 //! - Virial and pressure, so NPT is possible at all
-//! - Velocity Verlet with Langevin, Berendsen, and Nosé-Hoover thermostats and
-//!   a Berendsen barostat
+//! - Velocity Verlet (NVE) and BAOAB Langevin (NVT) integration, plus
+//!   Berendsen and Nosé-Hoover thermostats and a Berendsen barostat
+//! - A per-system seeded PRNG, so trajectories are reproducible by choice
 //! - FIRE energy minimization
 //!
 //! # Units
@@ -73,6 +74,10 @@
 //! | `neighbor::NeighborList` (O(N²)) | [`field::neighbor::NeighborList`] (cell lists, O(N)) |
 //! | `Bond { i, j, potential }` | [`system::Bond`] `{ i, j, k, r0 }` |
 //!
+//! The Langevin thermostat's API is unchanged: `set_thermostat`,
+//! `clear_thermostat`, `with_seed`/`set_seed`, and the [`Integrator`] enum all
+//! behave as before — only the state they act on became structure-of-arrays.
+//!
 //! Accelerations now go through [`field::units::FORCE_TO_ACCEL`] rather than
 //! `a = f/m` on raw amu, so timesteps are in real femtoseconds. Trajectories
 //! from the old code will not reproduce numerically; they were not in a
@@ -92,4 +97,4 @@ pub use field::potentials::{Coulomb, HarmonicAngles, HarmonicBonds, LennardJones
 pub use field::verlet::{Barostat, Berendsen, NoseHoover};
 pub use field::virial::Contribution;
 pub use particle::Particle;
-pub use system::{Bond, Electrostatics, MdSystem, Thermostat};
+pub use system::{Bond, Electrostatics, Integrator, MdSystem, Thermostat};

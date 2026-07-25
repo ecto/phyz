@@ -2848,7 +2848,11 @@ name = "phyz-coupling"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "phyz-em",
+ "phyz-guardian",
  "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
 ]
 
 [[package]]
@@ -2967,6 +2971,9 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "phyz-math",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_distr",
  "rayon",
 ]
 
@@ -2976,6 +2983,7 @@ version = "0.1.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
+ "phyz-rigid",
  "quick-xml 0.37.5",
  "thiserror 2.0.18",
 ]
