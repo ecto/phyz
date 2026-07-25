@@ -1,8 +1,10 @@
 name: ci
 
 on:
+  # Only main on push — every other branch is covered by pull_request, and
+  # listing both there would run each PR twice.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 env:
