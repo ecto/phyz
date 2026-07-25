@@ -60,6 +60,15 @@ pub mod diff {
     };
 }
 
+/// Integrated time stepping: the [`Simulator`] driver and its solvers.
+///
+/// The only module here that isn't a re-export — it composes forward
+/// dynamics, contact and integration, which no single sub-crate owns.
+#[cfg(all(feature = "contact", feature = "diff"))]
+pub mod sim;
+#[cfg(all(feature = "contact", feature = "diff"))]
+pub use sim::{Rk4Solver, SemiImplicitEulerSolver, Simulator, Solver};
+
 // Re-export core types at crate root for convenience
 #[cfg(feature = "collision")]
 pub use collision::{
