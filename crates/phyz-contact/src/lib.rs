@@ -13,6 +13,7 @@ pub struct ReadmeDocTests;
 pub mod assemble;
 pub mod cone;
 pub mod convex;
+pub mod gradient;
 pub mod material;
 pub mod solver;
 
