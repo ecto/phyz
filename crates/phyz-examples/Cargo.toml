@@ -17,10 +17,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-# Not `workspace = true`: the workspace dependency pins 0.1.0 while the crate
-# is at 0.3.1 (version-split fix tracked separately). Path-only avoids the
-# mismatch without touching the shared table.
-phyz = { path = "../phyz" }
+phyz = { workspace = true }
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }

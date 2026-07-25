@@ -3,9 +3,10 @@
 //! This crate is a thin umbrella over the **rigid-body stack**: every type and
 //! function below lives in one of the focused `phyz-*` crates and is
 //! re-exported here, so `cargo add phyz` gives you that stack behind a single
-//! dependency. There is no code of its own — the modules are aliases, not
-//! copies, so a fix in `phyz-collision` is a fix for `phyz::collision` by
-//! construction.
+//! dependency. The re-exported modules are aliases, not copies, so a fix in
+//! `phyz-collision` is a fix for `phyz::collision` by construction. [`sim`] is
+//! the one module with code of its own: the time loop, which none of the
+//! focused crates own.
 //!
 //! It does **not** cover the whole workspace. `phyz-gpu`, `phyz-particle`,
 //! `phyz-lbm`, `phyz-em`, `phyz-md` and the rest are separate crates you add
@@ -81,6 +82,15 @@ pub mod diff {
         StepJacobians, finite_diff_jacobians, rollout, semi_implicit_step_jacobians, symbolic,
     };
 }
+
+/// Integrated time stepping: the [`Simulator`] driver and its solvers.
+///
+/// The only module here that isn't a re-export — it composes forward
+/// dynamics, contact and integration, which no single sub-crate owns.
+#[cfg(all(feature = "contact", feature = "diff"))]
+pub mod sim;
+#[cfg(all(feature = "contact", feature = "diff"))]
+pub use sim::{Rk4Solver, SemiImplicitEulerSolver, Simulator, Solver};
 
 // Re-export core types at crate root for convenience
 #[cfg(feature = "collision")]

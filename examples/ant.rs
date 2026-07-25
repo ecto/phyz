@@ -4,8 +4,8 @@
 //! and simulates 1000 steps with zero control using step_with_contacts.
 //! Reports joint positions, torso height, total sim time, and per-step timing.
 
+use phyz::Simulator;
 use phyz_contact::ContactMaterial;
-use phyz_examples::Simulator;
 use phyz_mjcf::MjcfLoader;
 use std::time::Instant;
 

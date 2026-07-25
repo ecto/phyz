@@ -163,8 +163,13 @@ pub fn gjk_distance_rot(
         // Ensure dir is not zero
         let dir_norm = dir.norm();
         if dir_norm < 1e-10 {
-            // Direction is zero, likely at origin
-            return 0.0;
+            // The search direction collapsed: the origin lies on the current
+            // simplex. With a single point that means the two surfaces touch
+            // exactly (distance 0). With two or more the origin is enclosed by
+            // the simplex, so the shapes are penetrating — reporting 0 here
+            // makes deep overlaps invisible to `find_contacts`, which only
+            // treats a negative return as a contact.
+            return if simplex.len() >= 2 { -1.0 } else { 0.0 };
         }
 
         s = support(&dir);

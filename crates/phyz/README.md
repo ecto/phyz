@@ -2,9 +2,10 @@
 
 The differentiable rigid-body core of phyz.
 
-`phyz` holds no code of its own. It re-exports the focused `phyz-*` crates that
-make up the rigid-body stack, so `cargo add phyz` gets you all of them behind
-one dependency and `phyz::collision` is literally `phyz_collision`.
+`phyz` re-exports the focused `phyz-*` crates that make up the rigid-body
+stack, so `cargo add phyz` gets you all of them behind one dependency and
+`phyz::collision` is literally `phyz_collision`. The one thing it adds is
+`sim` — the time loop, which none of the focused crates own.
 
 It does **not** cover the whole workspace — `phyz-gpu`, `phyz-particle`,
 `phyz-lbm` and friends are separate crates you add explicitly.
@@ -30,6 +31,7 @@ cargo add phyz --no-default-features -F diff    # ...plus gradients
 | `collision` | [`phyz-collision`](https://docs.rs/phyz-collision): `gjk_distance`, `epa_penetration`, `ray_cast`, `sweep_and_prune`, `AABB` |
 | `contact` | [`phyz-contact`](https://docs.rs/phyz-contact): `find_contacts`, `find_ground_contacts`, `contact_forces`, `ContactMaterial` |
 | `diff` | [`phyz-diff`](https://docs.rs/phyz-diff): `adjoint_rollout_gradient`, plus the per-step Jacobians |
+| `sim` | `Simulator`, `Solver`, `SemiImplicitEulerSolver`, `Rk4Solver` — this crate's only original code |
 
 ## Forward dynamics
 

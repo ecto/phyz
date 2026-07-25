@@ -17,9 +17,9 @@ jobs:
         with:
           path: phyz
 
-      # The workspace resolves `tang` through a path dependency on a sibling
-      # checkout (see the workspace Cargo.toml). Nothing builds without it.
-      # Removing this path dep is tracked separately.
+      # tang/tang-la/tang-expr come from crates.io, but tang-mesh is not
+      # published and phyz-quantum's default `mesh` feature needs it, so the
+      # sibling checkout is still required for a full workspace build.
       - name: Check out sibling tang
         uses: actions/checkout@v4
         with:

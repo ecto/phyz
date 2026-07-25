@@ -53,9 +53,11 @@ for _ in 0..500 {
 let e = total_energy(&model, &state);
 ```
 
-There is deliberately no `Simulator` type: integration policy belongs to the
-caller. See [`phyz-guardian`](https://docs.rs/phyz-guardian) for adaptive
-time-stepping and conservation monitoring on top of these primitives.
+This crate provides the dynamics, not the time loop — the example above writes
+its own integrator. If you want a ready-made stepper, `phyz::sim` has
+`Simulator` with semi-implicit Euler and RK4 solvers, and
+[`phyz-guardian`](https://docs.rs/phyz-guardian) adds adaptive time-stepping
+and conservation monitoring on top of these primitives.
 
 ## Part of phyz
 

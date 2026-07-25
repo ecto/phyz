@@ -14,9 +14,10 @@ cargo add phyz
 
 The `phyz` crate is an umbrella over the **rigid-body stack**: spatial math,
 articulated models, Featherstone dynamics, collision, contact, and the
-differentiable rollout. It holds no code of its own — the modules are
-re-exports of the focused `phyz-*` crates, so `phyz::collision` and
-`phyz_collision` are the same thing.
+differentiable rollout. Those modules are re-exports of the focused `phyz-*`
+crates, so `phyz::collision` and `phyz_collision` are the same thing. It also
+adds `phyz::sim` — `Simulator` and its solvers — which is the one piece of code
+it owns.
 
 Collision, contact and diff are default features and can be turned off:
 
@@ -112,7 +113,7 @@ opt-in.
 
 | Crate | What it does |
 | --- | --- |
-| [`phyz`](crates/phyz) | Umbrella over the rigid-body stack: re-exports math, model, rigid, collision, contact, diff |
+| [`phyz`](crates/phyz) | Umbrella over the rigid-body stack: re-exports math, model, rigid, collision, contact, diff, plus the `sim` time loop |
 | [`phyz-math`](crates/phyz-math) | Spatial algebra: vectors, matrices, quaternions, spatial transforms and inertias |
 | [`phyz-model`](crates/phyz-model) | Articulated body models, joints, actuators, state |
 | [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, energy |
@@ -143,8 +144,9 @@ backend), and `phyz-quantum` (Hamiltonian lattice gauge theory — it depends on
 the unpublished `tang-mesh`). `phyz-py` (Python bindings) lives outside the
 workspace.
 
-> **Versioning note:** `phyz` is at 0.3.x; every other crate is at 0.1.0. That
-> split is being addressed separately.
+Every workspace crate shares one version (`workspace.package.version`), so
+`phyz` and the crates it re-exports never disagree. `phyz-py`, which lives
+outside the workspace, versions independently.
 
 ## Examples
 
@@ -168,12 +170,16 @@ cargo clippy --workspace -- -D warnings
 cargo doc --workspace --no-deps
 ```
 
-The workspace resolves `tang` through a path dependency on a sibling checkout,
-so `../tang` must exist next to this repo:
+`tang`, `tang-la` and `tang-expr` come from crates.io. The one exception is
+`tang-mesh`, which is unpublished and backs `phyz-quantum`'s default `mesh`
+feature, so a full workspace build still wants a sibling checkout:
 
 ```bash
 git clone https://github.com/ecto/tang ../tang
 ```
+
+To develop against a local `tang`, uncomment the `[patch.crates-io]` block at
+the bottom of the workspace `Cargo.toml`.
 
 Build the WASM demos:
 

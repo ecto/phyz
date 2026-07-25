@@ -2,7 +2,7 @@
 //!
 //! Demonstrates recording trajectories for machine learning training.
 
-use phyz_examples::{SemiImplicitEulerSolver, Solver};
+use phyz::{SemiImplicitEulerSolver, Solver};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_world::{Sensor, TrajectoryRecorder, World};

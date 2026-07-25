@@ -4,7 +4,7 @@
 //! - Link 1: revolute joint (rotation about Z axis)
 //! - Link 2: prismatic joint (translation along X axis)
 
-use phyz_examples::Simulator;
+use phyz::Simulator;
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_rigid::total_energy;
