@@ -447,6 +447,81 @@ fn outer_product_6<T: Scalar>(a: &SpatialVec<T>, b: &SpatialVec<T>) -> SpatialMa
     )
 }
 
+/// Body-frame spatial velocities and accelerations at a nominal
+/// `(q, v, qdd)`, mirroring passes 1 and 3 of [`aba_generic`] exactly
+/// (base acceleration `-gravity`, so the accelerations are the ones an
+/// inverse-dynamics pass would use).
+///
+/// This is the kinematic half of the recursive Newton–Euler regressor the
+/// adjoint's inertia channel contracts against; it costs one `O(nb)` sweep,
+/// no dual arithmetic.
+pub(crate) fn nominal_motion(
+    model: &Model,
+    q: &[f64],
+    v: &[f64],
+    qdd: &[f64],
+) -> (Vec<SpatialVec<f64>>, Vec<SpatialVec<f64>>) {
+    let nb = model.nbodies();
+    let mut vel = vec![SpatialVec::<f64>::zero(); nb];
+    let mut c_bias = vec![SpatialVec::<f64>::zero(); nb];
+    let mut acc = vec![SpatialVec::<f64>::zero(); nb];
+    let mut x_tree = vec![SpatialTransform::<f64>::identity(); nb];
+
+    let a0 = SpatialVec::new(Vec3::zero(), -model.gravity);
+
+    for i in 0..nb {
+        let body = &model.bodies[i];
+        let joint = &model.joints[body.joint_idx];
+        let q_idx = model.q_offsets[body.joint_idx];
+        let v_idx = model.v_offsets[body.joint_idx];
+        let ndof = joint.ndof();
+
+        let x_joint = if ndof == 0 {
+            SpatialTransform::identity()
+        } else {
+            joint_transform(joint.joint_type, &joint.axis, q[q_idx])
+        };
+        x_tree[i] = x_joint.compose(&joint.parent_to_joint);
+
+        let v_joint = if ndof == 0 {
+            SpatialVec::zero()
+        } else {
+            let s = motion_subspace(joint.joint_type, &joint.axis);
+            SpatialVec::new(s.angular * v[v_idx], s.linear * v[v_idx])
+        };
+
+        if body.parent < 0 {
+            vel[i] = v_joint;
+        } else {
+            let pi = body.parent as usize;
+            vel[i] = x_tree[i].apply_motion(&vel[pi]) + v_joint;
+            c_bias[i] = vel[i].cross_motion(&v_joint);
+        }
+    }
+
+    for i in 0..nb {
+        let body = &model.bodies[i];
+        let joint = &model.joints[body.joint_idx];
+        let v_idx = model.v_offsets[body.joint_idx];
+        let ndof = joint.ndof();
+
+        let a_parent = if body.parent < 0 {
+            x_tree[i].apply_motion(&a0)
+        } else {
+            x_tree[i].apply_motion(&acc[body.parent as usize])
+        };
+
+        acc[i] = a_parent + c_bias[i];
+        if ndof > 0 {
+            let s = motion_subspace(joint.joint_type, &joint.axis);
+            let a_j = qdd[v_idx];
+            acc[i] = acc[i] + SpatialVec::new(s.angular * a_j, s.linear * a_j);
+        }
+    }
+
+    (vel, acc)
+}
+
 // ---------------------------------------------------------------------------
 // Generic semi-implicit Euler step
 // ---------------------------------------------------------------------------
@@ -512,9 +587,15 @@ pub(crate) fn validate_and_params(model: &Model) -> Vec<[f64; N_INERTIA_PARAMS]>
         .collect()
 }
 
+/// A nominal trajectory: `(states, accels)` — see [`rollout_states`].
+pub(crate) type RolloutTrace = (Vec<(Vec<f64>, Vec<f64>)>, Vec<Vec<f64>>);
+
 /// Convenience: run the plain `f64` rollout for `steps` steps from `(q0, v0)`
 /// under an open-loop control schedule, returning every state along the way
-/// (`states[t] = (q_t, v_t)`, `t = 0..=steps`).
+/// (`states[t] = (q_t, v_t)`, `t = 0..=steps`) and the nominal accelerations
+/// (`accels[t] = qdd(q_t, v_t, u_t)`, length `steps`). The backward pass needs
+/// the accelerations to build its inverse-dynamics regressor; recording them
+/// here is free, recomputing them later is not.
 pub(crate) fn rollout_states(
     model: &Model,
     contact: Option<(&GroundContact, &[CollisionMesh])>,
@@ -522,19 +603,21 @@ pub(crate) fn rollout_states(
     v0: &[f64],
     ctrl: &dyn Fn(usize) -> DVec,
     steps: usize,
-) -> Vec<(Vec<f64>, Vec<f64>)> {
+) -> RolloutTrace {
     let inertias: Vec<SpatialInertia<f64>> = model.bodies.iter().map(|b| b.inertia).collect();
     let mut states = Vec::with_capacity(steps + 1);
+    let mut accels = Vec::with_capacity(steps);
     let mut q = q0.to_vec();
     let mut v = v0.to_vec();
     states.push((q.clone(), v.clone()));
     for t in 0..steps {
         let u = ctrl(t);
-        let (qn, vn, _) =
+        let (qn, vn, qdd) =
             step_generic::<f64>(model, &inertias, contact, None, &q, &v, u.as_slice());
         q = qn;
         v = vn;
         states.push((q.clone(), v.clone()));
+        accels.push(qdd);
     }
-    states
+    (states, accels)
 }
