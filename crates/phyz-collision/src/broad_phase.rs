@@ -43,8 +43,9 @@ pub fn sweep_and_prune(aabbs: &[AABB]) -> Vec<CollisionPair> {
         });
     }
 
-    // Sort endpoints by value. We use `total_cmp` so any residual NaN that
-    // slips past `aabb_is_finite` is still totally ordered and cannot panic.
+    // Sort endpoints by value. We use `total_cmp` so any residual NaN that slips
+    // past `aabb_is_finite` (e.g. a denormal mishandled by an underlying SIMD
+    // op) is still totally ordered and cannot panic.
     endpoints.sort_by(|a, b| a.value.total_cmp(&b.value));
 
     // Sweep and collect pairs
@@ -111,6 +112,8 @@ mod tests {
 
     #[test]
     fn test_sweep_and_prune_nan_aabb_is_ignored() {
+        // A poisoned AABB (NaN component) must not crash the sort or produce
+        // spurious pairs against the live body.
         let nan = f64::NAN;
         let aabbs = vec![
             AABB::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)),
