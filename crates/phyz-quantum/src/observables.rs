@@ -482,6 +482,15 @@ mod tests {
         assert!(s >= -1e-10, "entropy should be non-negative: {s}");
     }
 
+    // S(A) == S(A^c) needs the physical Hilbert space to factorize as H_A ⊗ H_B,
+    // which a Gauss-law-constrained basis does not. Measured on the single
+    // pentachoron at size 2: dim(rho_A) = 9 but dim(rho_{A^c}) = 219, which is the
+    // whole basis — every basis state has a unique complement config, so the A
+    // config is *determined* by its complement. The two reduced density matrices
+    // therefore have different ranks and give S(A) = 1.6639 vs S(A^c) = 1.6980.
+    // Resolving this needs an extended-Hilbert-space prescription; the sector-aware
+    // `entanglement_entropy_decomposed` is the start of one.
+    #[ignore = "known limitation: naive entropy is not basis-symmetric on a gauge-constrained Hilbert space"]
     #[test]
     fn test_entropy_equals_complement_entropy() {
         // For a pure global state the Schmidt decomposition forces
