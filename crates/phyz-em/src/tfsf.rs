@@ -37,7 +37,7 @@
 //! Everything else is untouched because the corresponding incident component
 //! is identically zero.
 
-use crate::grid::{YeeGrid, EPS0, MU0};
+use crate::grid::{EPS0, MU0, YeeGrid};
 
 /// One-dimensional auxiliary FDTD grid carrying the incident plane wave.
 ///
@@ -138,7 +138,18 @@ impl Tfsf {
     /// boundaries, where the incident field is uniform in x and y and there is
     /// no transverse scattered-field region.
     pub fn slab_z(grid: &YeeGrid, k0: usize, k1: usize) -> Self {
-        Self::build(grid, 0, grid.nx - 1, 0, grid.ny - 1, k0, k1, false, false, true)
+        Self::build(
+            grid,
+            0,
+            grid.nx - 1,
+            0,
+            grid.ny - 1,
+            k0,
+            k1,
+            false,
+            false,
+            true,
+        )
     }
 
     /// A one-way plane-wave injector at plane `k0`.
@@ -435,7 +446,10 @@ mod tests {
         let leak_high = db(peak_abs(&sf_high) / inside);
         println!("TFSF leakage: below {leak_low:.1} dB, above {leak_high:.1} dB");
         assert!(leak_low < -55.0, "leakage below the box: {leak_low:.1} dB");
-        assert!(leak_high < -55.0, "leakage above the box: {leak_high:.1} dB");
+        assert!(
+            leak_high < -55.0,
+            "leakage above the box: {leak_high:.1} dB"
+        );
     }
 
     /// Inside the total-field region the simulated wave must *be* the incident
@@ -478,7 +492,11 @@ mod tests {
         }
         assert!(scale > 1e-3, "no incident wave present");
         let rel = worst / scale;
-        println!("total-field vs incident: {:.2e} relative ({:.1} dB)", rel, db(rel));
+        println!(
+            "total-field vs incident: {:.2e} relative ({:.1} dB)",
+            rel,
+            db(rel)
+        );
         assert!(
             rel < 1e-10,
             "total field departs from the incident wave by {rel:.3e} (relative)"
@@ -522,7 +540,10 @@ mod tests {
 
         let eta = peak_e / peak_h;
         let err = (eta - eta0).abs() / eta0;
-        println!("measured wave impedance {eta:.2} Ω vs η₀ = {eta0:.2} Ω ({:.2}%)", err * 100.0);
+        println!(
+            "measured wave impedance {eta:.2} Ω vs η₀ = {eta0:.2} Ω ({:.2}%)",
+            err * 100.0
+        );
         // A positive H with a positive E is a +z travelling wave; the sign and
         // magnitude together confirm the injection direction.
         assert!(err < 0.02, "wave impedance off by {:.2}%", err * 100.0);

@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Multi-physics differentiable simulation engine"
+keywords = ["physics", "simulation", "differentiable", "robotics", "dynamics"]
+categories = ["simulation", "science", "science::robotics"]
+readme = "README.md"
 
 [features]
 default = ["collision", "contact", "diff"]

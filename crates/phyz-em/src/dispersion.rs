@@ -367,14 +367,7 @@ impl DispersiveState {
     /// Advance all polarizations from level n to n+1 using the current E field.
     ///
     /// Must be called *before* the E-field update of the same step.
-    pub fn advance(
-        &mut self,
-        mat_id: &[u32],
-        e: [&Array3D; 3],
-        nx: usize,
-        ny: usize,
-        nz: usize,
-    ) {
+    pub fn advance(&mut self, mat_id: &[u32], e: [&Array3D; 3], nx: usize, ny: usize, nz: usize) {
         for d in self.dp.iter_mut() {
             d.clear();
         }

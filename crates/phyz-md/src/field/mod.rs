@@ -21,7 +21,7 @@
 //! - [`virial`] — energy/force/virial bundles and the pressure they produce
 //! - [`verlet`] — velocity-Verlet stepping with Berendsen and Nosé-Hoover
 //!   thermostats and a Berendsen barostat
-//! - [`fire`] — FIRE energy minimization
+//! - [`fire`](mod@fire) — FIRE energy minimization
 //! - [`units`] — the Å / eV / amu / fs / e / K unit constants shared by all of
 //!   the above
 //! - [`special`], [`fft`] — the `erf`/`erfc` and radix-2 FFT support the above

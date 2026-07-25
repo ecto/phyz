@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "GJK/EPA collision detection, ray casting, and broad-phase spatial hashing for phyz"
+keywords = ["collision", "gjk", "epa", "physics", "geometry"]
+categories = ["simulation", "algorithms", "science"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

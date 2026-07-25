@@ -1,22 +1,24 @@
 # phyz-compile
 
-Physics compiler for JIT compilation of physics kernels to GPU compute shaders.
+A physics kernel compiler: IR → fused WGSL compute shaders.
 
-## Features
+A domain-specific IR for grid-based physics, compiled to WebGPU shading
+language with kernel fusion and forward-mode automatic differentiation.
 
-- **Physics IR**: Domain-specific intermediate representation for physics computations
-- **WGSL Compilation**: Generates WebGPU Shading Language compute shaders
-- **Kernel Fusion**: Automatically fuses compatible kernels to reduce memory bandwidth
-- **Automatic Differentiation**: Forward-mode AD for computing gradients
-- **Stencil Operations**: Built-in support for common stencil patterns (Laplacian, averaging)
-- **Scheduling Hints**: Tile sizes, loop unrolling, prefetching
+| Type | Purpose |
+| --- | --- |
+| `KernelBuilder` | declare fields, tile size, and ops |
+| `StencilBuilder` | ready-made stencils (`laplacian_3d`, gradients, ...) |
+| `PhysicsOp`, `PhysicsProgram` | the IR itself |
+| `Compiler`, `CompiledKernel` | IR → WGSL source + workgroup size |
+| `FusionOptimizer` | merge independent kernels into one dispatch |
+| `AutoDiff` | augment a kernel with tangent fields |
 
-## Example
+## Example: heat diffusion
 
 ```rust
-use phyz_compile::{KernelBuilder, StencilBuilder, PhysicsOp, Compiler};
+use phyz_compile::{Compiler, KernelBuilder, PhysicsOp, StencilBuilder};
 
-// Build a heat diffusion kernel: ∂T/∂t = κ ∇²T
 let kernel = KernelBuilder::new("heat_diffusion")
     .field("T", [64, 64, 64])
     .field("T_new", [64, 64, 64])
@@ -26,84 +28,40 @@ let kernel = KernelBuilder::new("heat_diffusion")
         PhysicsOp::add(
             PhysicsOp::load("T"),
             PhysicsOp::mul(
-                PhysicsOp::constant(0.01), // κ * dt
+                PhysicsOp::constant(0.01),               // κ·dt
                 StencilBuilder::laplacian_3d("T", 1.0),
             ),
         ),
     ))
     .build();
 
-// Compile to WGSL
-let mut compiler = Compiler::new();
-let compiled = compiler.compile(&kernel).unwrap();
-
+let compiled = Compiler::new().compile(&kernel).unwrap();
 println!("{}", compiled.wgsl_source);
 ```
 
-## Kernel Fusion
-
-Fuse independent kernels to reduce memory traffic:
+## Example: fusion
 
 ```rust
 use phyz_compile::{FusionOptimizer, KernelBuilder, PhysicsOp};
 
-let kernel1 = KernelBuilder::new("diffusion")
-    .field("T", [64, 64, 64])
-    .op(/* ... */)
-    .build();
-
-let kernel2 = KernelBuilder::new("advection")
-    .field("U", [64, 64, 64])
-    .op(/* ... */)
-    .build();
-
-if FusionOptimizer::can_fuse(&kernel1, &kernel2) {
-    let fused = FusionOptimizer::fuse(kernel1, kernel2).unwrap();
-    // 1.5-3x speedup expected from reduced memory bandwidth
+# let k1 = KernelBuilder::new("k1").field("A", [64, 64, 64])
+#     .op(PhysicsOp::store("A", PhysicsOp::mul(PhysicsOp::load("A"), PhysicsOp::constant(2.0)))).build();
+# let k2 = KernelBuilder::new("k2").field("B", [64, 64, 64])
+#     .op(PhysicsOp::store("B", PhysicsOp::add(PhysicsOp::load("B"), PhysicsOp::constant(1.0)))).build();
+if FusionOptimizer::can_fuse(&k1, &k2) {
+    let fused = FusionOptimizer::fuse(k1, k2).unwrap();
+    // one dispatch instead of two
 }
 ```
 
-## Automatic Differentiation
+Compilation needs no GPU — it only generates shader source. Run
+`cargo run --release -p phyz-examples --example kernel_fusion` for the full
+pipeline end to end.
 
-Augment kernels with forward-mode AD:
+## Part of phyz
 
-```rust
-use phyz_compile::{AutoDiff, KernelBuilder, PhysicsOp};
+[`phyz`](https://github.com/ecto/phyz) is an open-source differentiable
+multi-physics simulation workspace in pure Rust. Each crate is independent —
+adding this one does not pull in the rest.
 
-let kernel = KernelBuilder::new("forward")
-    .field("x", [64, 64, 64])
-    .field("y", [64, 64, 64])
-    .op(PhysicsOp::store("y", PhysicsOp::mul(
-        PhysicsOp::load("x"),
-        PhysicsOp::load("x"),
-    )))
-    .build();
-
-// Augment with derivatives (creates dx, dy fields)
-let ad_kernel = AutoDiff::augment_forward_mode(&kernel).unwrap();
-```
-
-## Architecture
-
-```
-PhysicsProgram (IR)
-    ↓
-Compiler
-    ↓
-WGSL Source (Naga-compatible)
-    ↓
-wgpu Compute Pipeline
-```
-
-## Examples
-
-- `heat_equation.rs`: Heat diffusion PDE compilation
-- `fusion.rs`: Kernel fusion demonstration
-- `autodiff.rs`: Automatic differentiation
-
-Run with:
-```bash
-cargo run --example heat_equation
-cargo run --example fusion
-cargo run --example autodiff
-```
+Licensed under [MIT](https://github.com/ecto/phyz/blob/main/LICENSE).

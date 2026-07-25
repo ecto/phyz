@@ -7,6 +7,14 @@
 //! - Solver quality assessment and graceful degradation
 //! - Multi-rate integration (r-RESPA)
 
+#![warn(missing_docs)]
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod conservation;
 pub mod degradation;
 pub mod multi_rate;

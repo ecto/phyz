@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build, test, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: phyz
+
+      # tang/tang-la/tang-expr come from crates.io, but tang-mesh is not
+      # published and phyz-quantum's default `mesh` feature needs it, so the
+      # sibling checkout is still required for a full workspace build.
+      - name: Check out sibling tang
+        uses: actions/checkout@v4
+        with:
+          repository: ecto/tang
+          path: tang
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: phyz
+
+      - name: Build workspace
+        working-directory: phyz
+        run: cargo build --workspace --all-targets
+
+      # Every file under examples/ is a target of the phyz-examples crate, so
+      # this is what stops the documented API from rotting.
+      - name: Build examples
+        working-directory: phyz
+        run: cargo build --workspace --examples
+
+      # Two contact tests are #[ignore]d against known bugs — see the reasons
+      # on them in crates/phyz/tests/contact_stability.rs. Everything else runs.
+      - name: Test workspace
+        working-directory: phyz
+        run: cargo test --workspace
+
+      # The root README is included as a doc-test of crates/phyz, so its
+      # Quick Start is compiled and run by the step above.
+      - name: Documentation builds clean
+        working-directory: phyz
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      # Advisory for now: the workspace has a backlog of pre-existing clippy
+      # warnings. Flip `continue-on-error` off once that is cleared.
+      - name: Clippy
+        working-directory: phyz
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings

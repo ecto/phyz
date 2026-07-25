@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory"
+keywords = ["regge-calculus", "relativity", "physics", "gravity", "einstein"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [features]
 default = ["parallel"]
@@ -18,3 +21,7 @@ rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

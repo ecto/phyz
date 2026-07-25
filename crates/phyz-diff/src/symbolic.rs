@@ -670,14 +670,14 @@ mod tests {
 
     #[test]
     fn test_symbolic_vs_analytical() {
-        // Symbolic should match the existing analytical_step_jacobians
+        // Symbolic should match the existing semi_implicit_step_jacobians
         let model = make_pendulum();
         let mut state = model.default_state();
         state.q[0] = 0.3;
         state.v[0] = 0.1;
 
         let sym = symbolic_step_jacobians(&model, &state);
-        let anal = crate::analytical_step_jacobians(&model, &state);
+        let anal = crate::semi_implicit_step_jacobians(&model, &state);
 
         let eps = 1e-4;
         assert!(

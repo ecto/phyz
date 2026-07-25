@@ -67,6 +67,12 @@
 //! assert!(r.norm() > 0.9); // silver is a good mirror in the visible
 //! ```
 
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod analysis;
 pub mod boundary;
 pub mod cpml;
@@ -83,7 +89,7 @@ pub use boundary::BoundaryCondition;
 pub use cpml::{Cpml, CpmlConfig};
 pub use dispersion::{C64, DispersiveMaterial, Pole};
 pub use grid::{Array3D, YeeGrid};
-pub use scattering::{rayleigh_cross_section, CrossSectionMonitor};
-pub use tfsf::{Aux1D, Tfsf};
+pub use scattering::{CrossSectionMonitor, rayleigh_cross_section};
 pub use solver::FdtdSolver;
 pub use source::{Probe, Source};
+pub use tfsf::{Aux1D, Tfsf};
