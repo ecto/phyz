@@ -2,7 +2,7 @@
 //!
 //! Implements GJK (Gilbert-Johnson-Keerthi) for distance queries,
 //! EPA (Expanding Polytope Algorithm) for penetration depth,
-//! and broad-phase spatial hashing.
+//! analytic ray casting, and broad-phase spatial hashing.
 
 #![warn(missing_docs)]
 
@@ -16,11 +16,13 @@ pub mod broad_phase;
 pub mod epa;
 pub mod geometry;
 pub mod gjk;
+pub mod raycast;
 
 pub use broad_phase::sweep_and_prune;
 pub use epa::{epa_penetration, epa_penetration_rot};
 pub use geometry::{AABB, Geometry};
 pub use gjk::{gjk_distance, gjk_distance_rot};
+pub use raycast::{Ray, RayHit, ray_cast, ray_intersect};
 
 use phyz_math::Vec3;
 

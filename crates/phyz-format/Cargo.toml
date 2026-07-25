@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Universal multi-domain physics file format (.phyz) with MJCF/URDF import"
+description = "Universal multi-domain physics file format (.phyz) with MJCF and URDF import"
 keywords = ["fileformat", "serialization", "mjcf", "urdf", "physics"]
 categories = ["encoding", "simulation", "science::robotics"]
 readme = "README.md"
@@ -16,6 +16,7 @@ serde_json.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-mjcf.workspace = true
+phyz-urdf.workspace = true
 thiserror = "2.0"
 
 [dev-dependencies]

@@ -107,9 +107,10 @@ opt-in.
 | [`phyz-model`](crates/phyz-model) | Articulated body models, joints, actuators, state |
 | [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, energy |
 | [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians: finite-difference, chain-rule, and symbolic |
-| [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, sweep-and-prune broad phase |
+| [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
 | [`phyz-mjcf`](crates/phyz-mjcf) | MuJoCo MJCF model loading |
+| [`phyz-urdf`](crates/phyz-urdf) | URDF (ROS) robot description import |
 | [`phyz-gpu`](crates/phyz-gpu) | wgpu compute: batched simulation of many independent worlds |
 | [`phyz-compile`](crates/phyz-compile) | Physics IR → WGSL compute shaders, with kernel fusion |
 | [`phyz-particle`](crates/phyz-particle) | MPM solver, SPH fluids, granular media |
@@ -123,9 +124,9 @@ opt-in.
 | [`phyz-prob`](crates/phyz-prob) | Probabilistic inference over physics (SVGD, HMC) |
 | [`phyz-coupling`](crates/phyz-coupling) | Multi-physics coupling: `Solver` trait, coupled systems, subcycling, flux accounting |
 | [`phyz-guardian`](crates/phyz-guardian) | Conservation monitoring, adaptive time-stepping, solver auto-switching |
-| [`phyz-world`](crates/phyz-world) | Scene graph and multi-physics world assembly |
+| [`phyz-world`](crates/phyz-world) | Scene graph, world assembly, collision-backed sensors |
 | [`phyz-real2sim`](crates/phyz-real2sim) | Inverse problems, system identification, parameter fitting |
-| [`phyz-format`](crates/phyz-format) | `.phyz` scene serialization and model I/O |
+| [`phyz-format`](crates/phyz-format) | `.phyz` scene serialization, MJCF and URDF import |
 | [`phyz-dream`](crates/phyz-dream) | Learned latent dynamics on top of the simulator |
 
 Not published: `phyz-wasm` (browser demo bindings) and `phyz-home` (the site
@@ -142,7 +143,6 @@ cargo run --release -p phyz-examples --example gpu_batch        # phyz-gpu
 cargo run --release -p phyz-examples --example kernel_fusion    # phyz-compile
 cargo run --release -p phyz-coupling --example coupled_cyclotron # phyz-coupling
 ```
-
 All files under `examples/` are registered as targets of the `phyz-examples`
 dev crate and built in CI, so they compile against the current API. Some crates
 also carry their own `examples/` directory (`phyz-coupling`, `phyz-guardian`),

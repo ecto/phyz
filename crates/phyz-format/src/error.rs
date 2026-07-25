@@ -33,6 +33,17 @@ pub enum TauFormatError {
     /// An imported MJCF model failed to load.
     MjcfError(#[from] phyz_mjcf::MjcfError),
 
+    #[error("URDF import error: {0}")]
+    /// An imported URDF model failed to load.
+    UrdfError(#[from] phyz_urdf::UrdfError),
+
+    #[error("{format} import is not implemented; see the phyz-format docs for supported formats")]
+    /// The requested import format has no implementation in this build.
+    UnsupportedImportFormat {
+        /// The format that was asked for.
+        format: &'static str,
+    },
+
     #[error("Invalid parameter: {0}")]
     /// A field is present but its value is out of range or malformed.
     InvalidParameter(String),
