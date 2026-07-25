@@ -6,8 +6,8 @@ on:
       - "v*.*.*"
 
 jobs:
-  publish-phyz:
-    name: Publish phyz to crates.io
+  publish:
+    name: Publish phyz crates to crates.io
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,65 +26,34 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
-      # The workspace pins `tang` to a git rev (unpublished crates in that repo
-      # are needed by other members), but crates.io rejects git deps. We isolate
-      # crates/phyz into a standalone package — its own workspace, with tang
-      # resolved from the registry — and publish from there.
-      - name: Stage isolated phyz package
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/phyz-publish
-          cp -r crates/phyz /tmp/phyz-publish/phyz
-          # Replace the workspace-inherited tang dep with a registry dep and
-          # make this package its own workspace so cargo doesn't try to load the
-          # parent workspace.
-          python3 - <<'PY'
-          import re, pathlib
-          p = pathlib.Path("/tmp/phyz-publish/phyz/Cargo.toml")
-          src = p.read_text()
-          src = re.sub(
-              r'^tang = \{[^\n]*\}$',
-              'tang = { version = "0.2.0", features = ["std", "la"] }',
-              src,
-              flags=re.M,
-          )
-          src = re.sub(
-              r'^phyz-math\.workspace = true$',
-              'phyz-math = "0.1.0"',
-              src,
-              flags=re.M,
-          )
-          # Any remaining path/workspace inheritance would not resolve standalone.
-          src = re.sub(r',\s*path\s*=\s*"[^"]*"', "", src)
-          if ".workspace = true" in src or "workspace = true" in src:
-              raise SystemExit(
-                  "unresolved workspace inheritance in isolated package:\n" + src
-              )
-          if "[workspace]" not in src:
-              src = src.rstrip() + "\n\n[workspace]\n"
-          p.write_text(src)
-          print(src)
-          PY
-
-      - name: Verify tag matches Cargo.toml version
+      # Every workspace crate shares [workspace.package] version, so checking
+      # the umbrella is equivalent to checking all of them.
+      - name: Verify tag matches workspace version
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME#v}"
-          CRATE_VER=$(grep -m1 '^version' /tmp/phyz-publish/phyz/Cargo.toml | cut -d'"' -f2)
+          CRATE_VER=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='phyz'))")
           echo "tag: $TAG  crate: $CRATE_VER"
           if [ "$TAG" != "$CRATE_VER" ]; then
-            echo "::error::tag v$TAG does not match crates/phyz/Cargo.toml version $CRATE_VER"
+            echo "::error::tag v$TAG does not match workspace version $CRATE_VER"
             exit 1
           fi
 
-      - name: cargo publish --dry-run
-        working-directory: /tmp/phyz-publish/phyz
+      # Dependency order: math -> model -> rigid -> collision -> contact,
+      # diff -> phyz. `cargo publish` rewrites the path entries of
+      # [workspace.dependencies] to plain registry deps on upload, so each
+      # crate resolves its phyz-* deps from the versions published just above.
+      - name: Publish in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --dry-run
-
-      - name: cargo publish
-        working-directory: /tmp/phyz-publish/phyz
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        run: |
+          set -euo pipefail
+          for crate in phyz-math phyz-model phyz-rigid phyz-collision \
+                       phyz-contact phyz-diff phyz; do
+            echo "::group::publish $crate"
+            cargo publish -p "$crate"
+            # Give the index a moment to serve the new version to the next crate.
+            sleep 30
+            echo "::endgroup::"
+          done

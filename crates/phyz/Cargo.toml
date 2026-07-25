@@ -1,16 +1,27 @@
 [package]
 name = "phyz"
-version = "0.3.1"
-edition = "2024"
-rust-version = "1.89"
-license = "MIT"
-repository = "https://github.com/ecto/phyz"
-homepage = "https://phyz.dev"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Multi-physics differentiable simulation engine"
+
+[features]
+default = ["collision", "contact", "diff"]
+collision = ["dep:phyz-collision"]
+# Contact resolution runs its own broad/narrow phase, so it implies collision.
+contact = ["dep:phyz-contact", "collision"]
+diff = ["dep:phyz-diff"]
 
 [dependencies]
 phyz-math.workspace = true
-tang = { workspace = true, features = ["std", "la"] }
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+phyz-collision = { workspace = true, optional = true }
+phyz-contact = { workspace = true, optional = true }
+phyz-diff = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = "0.5"
