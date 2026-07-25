@@ -61,13 +61,11 @@ pub fn hamiltonian_matvec(
                     break;
                 }
             }
-            if valid {
-                if let Some(j) = hilbert.config_to_index(&new_config) {
-                    // H[i,j] = c and H[j,i] = c (symmetric)
-                    // result[i] += c * v[j] and result[j] += c * v[i]
-                    result[i] += c * v[j];
-                    result[j] += c * v[i];
-                }
+            if valid && let Some(j) = hilbert.config_to_index(&new_config) {
+                // H[i,j] = c and H[j,i] = c (symmetric)
+                // result[i] += c * v[j] and result[j] += c * v[i]
+                result[i] += c * v[j];
+                result[j] += c * v[i];
             }
         }
     }

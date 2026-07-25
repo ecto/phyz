@@ -34,11 +34,11 @@ fn invariants(p: &[GravityParticle]) -> Invariants {
     let r = p[1].x - p[0].x;
     let v = p[1].v - p[0].v;
     let r_mag = r.norm();
-    let h = r.cross(&v);
+    let h = r.cross(v);
     Invariants {
         energy: 0.5 * v.norm_squared() - mu / r_mag,
         h,
-        e_vec: v.cross(&h) / mu - r / r_mag,
+        e_vec: v.cross(h) / mu - r / r_mag,
     }
 }
 

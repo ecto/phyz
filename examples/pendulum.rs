@@ -52,8 +52,8 @@ fn main() {
     let mut zero_crossings: Vec<f64> = Vec::new();
     let total_steps = 20_000; // 20 seconds
 
-    print!("time(s)    q(rad)     v(rad/s)   KE         PE         Total E\n");
-    print!("─────────────────────────────────────────────────────────────────\n");
+    println!("time(s)    q(rad)     v(rad/s)   KE         PE         Total E");
+    println!("─────────────────────────────────────────────────────────────────");
 
     for step in 0..total_steps {
         sim.step(&model, &mut state);

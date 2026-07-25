@@ -28,10 +28,6 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
-    # Advisory for now: the workspace has a backlog of pre-existing clippy
-    # findings. Delete this line once that is cleared; do not add blanket
-    # #[allow]s to make it pass.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

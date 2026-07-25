@@ -55,7 +55,7 @@ fn test_gpu_single_step_vs_cpu() {
     gpu_sim.load_states(&[cpu_state.clone()]);
 
     // CPU step
-    forward_kinematics(&model, &mut cpu_state);
+    forward_kinematics(&model, &cpu_state);
     let qdd_cpu = aba(&model, &cpu_state);
     cpu_state.v[0] += model.dt * qdd_cpu[0];
     cpu_state.q[0] += model.dt * cpu_state.v[0];
@@ -101,7 +101,7 @@ fn test_gpu_multiple_steps_vs_cpu() {
 
     for _ in 0..nsteps {
         // CPU step
-        forward_kinematics(&model, &mut cpu_state);
+        forward_kinematics(&model, &cpu_state);
         let qdd_cpu = aba(&model, &cpu_state);
         cpu_state.v[0] += model.dt * qdd_cpu[0];
         cpu_state.q[0] += model.dt * cpu_state.v[0];

@@ -43,6 +43,19 @@ pub struct ContactPipeline {
     nworld: usize,
 }
 
+/// Physical parameters of the penalty ground-contact model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroundContactParams {
+    /// Height of the ground plane along the gravity axis.
+    pub ground_height: f64,
+    /// Penalty stiffness.
+    pub stiffness: f64,
+    /// Penalty damping.
+    pub damping: f64,
+    /// Coulomb friction coefficient.
+    pub friction: f64,
+}
+
 impl ContactPipeline {
     /// Create a contact pipeline for ground plane contacts.
     pub fn new(
@@ -51,11 +64,14 @@ impl ContactPipeline {
         model: &Model,
         state: &GpuState,
         bodies_buffer: &wgpu::Buffer,
-        ground_height: f64,
-        stiffness: f64,
-        damping: f64,
-        friction: f64,
+        contact: GroundContactParams,
     ) -> Result<Self, String> {
+        let GroundContactParams {
+            ground_height,
+            stiffness,
+            damping,
+            friction,
+        } = contact;
         let nworld = state.nworld;
 
         // Pack contact params

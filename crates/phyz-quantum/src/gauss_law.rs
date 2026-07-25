@@ -293,7 +293,7 @@ mod tests {
         let basis = enumerate_gauge_invariant(&complex, 1);
 
         assert!(basis.len() <= 729);
-        assert!(basis.len() > 0);
+        assert!(!basis.is_empty());
 
         // All-zero state must be in the basis.
         let zero = vec![0i32; 10];

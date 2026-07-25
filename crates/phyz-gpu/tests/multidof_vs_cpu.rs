@@ -80,7 +80,7 @@ fn compare(model: &Model, state: &State, tol: f64, label: &str) {
         return;
     };
 
-    sim.load_states(&[state.clone()]);
+    sim.load_states(std::slice::from_ref(state));
     sim.step();
     let gpu = sim.readback_states();
 

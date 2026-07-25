@@ -84,10 +84,7 @@ pub fn epa_penetration_rot(
     const TOLERANCE: f64 = 1e-6;
 
     for _ in 0..MAX_ITERATIONS {
-        let closest_idx = match closest_face(&faces) {
-            Some(idx) => idx,
-            None => return None,
-        };
+        let closest_idx = closest_face(&faces)?;
 
         let closest_distance = faces[closest_idx].distance;
         let closest_normal = faces[closest_idx].normal;
@@ -96,7 +93,7 @@ pub fn epa_penetration_rot(
         if !is_finite(&s) {
             return None;
         }
-        let dist = s.dot(&closest_normal);
+        let dist = s.dot(closest_normal);
         if !dist.is_finite() {
             return None;
         }
@@ -189,7 +186,7 @@ fn is_nondegenerate_tetra(points: &[Vec3]) -> bool {
     let b = points[1];
     let c = points[2];
     let d = points[3];
-    let volume = (b - a).cross(&(c - a)).dot(&(d - a));
+    let volume = (b - a).cross(c - a).dot(d - a);
     volume.is_finite() && volume.abs() > 1e-12
 }
 
@@ -200,7 +197,7 @@ impl Face {
         let c = points[indices[2]];
         let ab = b - a;
         let ac = c - a;
-        let cross = ab.cross(&ac);
+        let cross = ab.cross(ac);
         let norm = cross.norm();
         // Degenerate (zero-area) triangle: mark distance = +inf so the
         // closest-face search skips it instead of selecting a face whose
@@ -213,7 +210,7 @@ impl Face {
             };
         }
         let mut normal = cross / norm;
-        let mut distance = normal.dot(&a);
+        let mut distance = normal.dot(a);
         if distance < 0.0 {
             normal = -normal;
             distance = -distance;
@@ -236,7 +233,7 @@ impl Face {
 fn is_visible(points: &[Vec3], face: &Face, point: &Vec3) -> bool {
     let a = points[face.indices[0]];
     let to_point = point - a;
-    to_point.dot(&face.normal) > 0.0
+    to_point.dot(face.normal) > 0.0
 }
 
 #[cfg(test)]

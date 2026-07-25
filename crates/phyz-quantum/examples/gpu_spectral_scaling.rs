@@ -9,11 +9,17 @@
 //! Run:
 //!   cargo run -p phyz-quantum --features gpu --release --example gpu_spectral_scaling
 
+#[cfg(feature = "gpu")]
 use phyz_quantum::hilbert::U1HilbertSpace;
+#[cfg(feature = "gpu")]
 use phyz_quantum::lanczos::lanczos_diagonalize;
+#[cfg(feature = "gpu")]
 use phyz_quantum::observables::{entanglement_entropy, fundamental_loops, wilson_loop};
+#[cfg(feature = "gpu")]
 use phyz_regge::SimplicialComplex;
+#[cfg(feature = "gpu")]
 use std::panic;
+#[cfg(feature = "gpu")]
 use std::time::Instant;
 
 #[cfg(feature = "gpu")]
@@ -26,7 +32,6 @@ fn main() {
         eprintln!(
             "Run with: cargo run -p phyz-quantum --features gpu --release --example gpu_spectral_scaling"
         );
-        return;
     }
 
     #[cfg(feature = "gpu")]
@@ -320,6 +325,7 @@ fn run_scaling_study() {
 ///
 /// Fits log(gap) = -beta * log(b1) + intercept.
 /// Returns (beta, R², intercept).
+#[cfg(feature = "gpu")]
 fn log_log_fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
     let n = points.len() as f64;
     let xs: Vec<f64> = points.iter().map(|(x, _)| x.ln()).collect();

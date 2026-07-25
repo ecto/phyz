@@ -107,7 +107,7 @@ pub fn total_angular_momentum(model: &Model, state: &State) -> Vec3 {
 
         // Linear part: r x (m * v)
         let vel_linear = vel.linear;
-        ang_momentum += com_world.cross(&(mass * vel_linear));
+        ang_momentum += com_world.cross(mass * vel_linear);
 
         // Angular part: I * omega (need to transform inertia to world frame)
         let omega = vel.angular;

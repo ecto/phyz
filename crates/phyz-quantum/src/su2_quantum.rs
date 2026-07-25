@@ -148,10 +148,10 @@ fn cycle_basis_enumerate(complex: &SimplicialComplex) -> Vec<u64> {
             }
         }
         for &v in &path_b {
-            if !set_a.contains(&v) {
-                if let Some((_, pe)) = parent[v] {
-                    mask |= 1 << pe;
-                }
+            if !set_a.contains(&v)
+                && let Some((_, pe)) = parent[v]
+            {
+                mask |= 1 << pe;
             }
         }
         cycle_masks.push(mask);
@@ -332,7 +332,7 @@ pub fn su2_wilson_loop(hilbert: &Su2HilbertSpace, state: &DVec, loop_edges: &[us
     let mask: u64 = loop_edges.iter().fold(0u64, |m, &e| m | (1 << e));
     let mut expectation = 0.0;
     for (i, &basis_state) in hilbert.basis.iter().enumerate() {
-        let sign = if (basis_state & mask).count_ones() % 2 == 0 {
+        let sign = if (basis_state & mask).count_ones().is_multiple_of(2) {
             1.0
         } else {
             -1.0
@@ -488,7 +488,7 @@ mod tests {
         for (li, lp) in loops.iter().enumerate() {
             let w = su2_wilson_loop(&hs, gs, lp);
             assert!(
-                w >= -1.0 - 1e-12 && w <= 1.0 + 1e-12,
+                (-1.0 - 1e-12..=1.0 + 1e-12).contains(&w),
                 "loop {li}: W = {w}, expected ∈ [-1, 1]"
             );
         }

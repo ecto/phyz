@@ -34,7 +34,7 @@ pub fn vertex_bipartitions(n_vertices: usize) -> Vec<Vec<usize>> {
         if size > half {
             continue;
         }
-        if size == half && n_vertices % 2 == 0 && !a.contains(&0) {
+        if size == half && n_vertices.is_multiple_of(2) && !a.contains(&0) {
             continue;
         }
 

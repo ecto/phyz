@@ -37,9 +37,9 @@ impl Simplex {
         let ab = b - a;
         let ao = -a;
 
-        if ab.dot(&ao) > 0.0 {
+        if ab.dot(ao) > 0.0 {
             // Origin is between A and B
-            *dir = ab.cross(&ao).cross(&ab);
+            *dir = ab.cross(ao).cross(ab);
         } else {
             // Origin is past A
             self.points.remove(0);
@@ -55,23 +55,23 @@ impl Simplex {
         let ab = b - a;
         let ac = c - a;
         let ao = -a;
-        let abc = ab.cross(&ac);
+        let abc = ab.cross(ac);
 
-        if abc.cross(&ac).dot(&ao) > 0.0 {
-            if ac.dot(&ao) > 0.0 {
+        if abc.cross(ac).dot(ao) > 0.0 {
+            if ac.dot(ao) > 0.0 {
                 // Origin is past AC edge
                 self.points = vec![c, a];
-                *dir = ac.cross(&ao).cross(&ac);
+                *dir = ac.cross(ao).cross(ac);
             } else {
                 // Origin is past A
                 self.points = vec![a];
                 *dir = ao;
             }
-        } else if ab.cross(&abc).dot(&ao) > 0.0 {
-            if ab.dot(&ao) > 0.0 {
+        } else if ab.cross(abc).dot(ao) > 0.0 {
+            if ab.dot(ao) > 0.0 {
                 // Origin is past AB edge
                 self.points = vec![b, a];
-                *dir = ab.cross(&ao).cross(&ab);
+                *dir = ab.cross(ao).cross(ab);
             } else {
                 // Origin is past A
                 self.points = vec![a];
@@ -79,7 +79,7 @@ impl Simplex {
             }
         } else {
             // Origin is above or below triangle
-            if abc.dot(&ao) > 0.0 {
+            if abc.dot(ao) > 0.0 {
                 *dir = abc;
             } else {
                 self.points = vec![b, c, a];
@@ -99,22 +99,22 @@ impl Simplex {
         let ab = b - a;
         let ac = c - a;
         let ad = d - a;
-        let abc = ab.cross(&ac);
-        let acd = ac.cross(&ad);
-        let adb = ad.cross(&ab);
+        let abc = ab.cross(ac);
+        let acd = ac.cross(ad);
+        let adb = ad.cross(ab);
 
         // Check which face the origin is closest to
-        if abc.dot(&ao) > 0.0 {
+        if abc.dot(ao) > 0.0 {
             // Origin is past ABC face
             self.points = vec![c, b, a];
             return self.triangle_case(dir);
         }
-        if acd.dot(&ao) > 0.0 {
+        if acd.dot(ao) > 0.0 {
             // Origin is past ACD face
             self.points = vec![d, c, a];
             return self.triangle_case(dir);
         }
-        if adb.dot(&ao) > 0.0 {
+        if adb.dot(ao) > 0.0 {
             // Origin is past ADB face
             self.points = vec![b, d, a];
             return self.triangle_case(dir);
@@ -173,7 +173,7 @@ pub fn gjk_distance_rot(
         }
 
         s = support(&dir);
-        if s.dot(&dir) < 0.0 {
+        if s.dot(dir) < 0.0 {
             // No intersection
             return dir_norm;
         }

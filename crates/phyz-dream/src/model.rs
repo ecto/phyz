@@ -30,8 +30,8 @@ impl NormStats {
         let mut mean = vec![0.0f64; dim];
         for i in 0..n {
             let t = get_vec(i);
-            for j in 0..dim {
-                mean[j] += t.data()[j] as f64;
+            for (m, v) in mean.iter_mut().zip(t.data()) {
+                *m += *v as f64;
             }
         }
         for m in &mut mean {

@@ -207,12 +207,12 @@ pub fn contact_forces(
         // point in world frame). For ground contacts, only body i is updated.
         if j == usize::MAX {
             let r_i = contact.contact_point - state.body_xform[i].pos;
-            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(f_linear), f_linear);
         } else {
             let r_i = contact.contact_point - state.body_xform[i].pos;
             let r_j = contact.contact_point - state.body_xform[j].pos;
-            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&(-f_linear)), -f_linear);
-            forces[j] = forces[j] + SpatialVec::new(r_j.cross(&f_linear), f_linear);
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(-f_linear), -f_linear);
+            forces[j] = forces[j] + SpatialVec::new(r_j.cross(f_linear), f_linear);
         }
     }
 
@@ -280,12 +280,12 @@ pub fn contact_forces_implicit(
         // Apply at the contact point (Goal 4). Sign convention from Goal 1.
         if j == usize::MAX {
             let r_i = contact.contact_point - state.body_xform[i].pos;
-            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(f_linear), f_linear);
         } else {
             let r_i = contact.contact_point - state.body_xform[i].pos;
             let r_j = contact.contact_point - state.body_xform[j].pos;
-            forces[i] = forces[i] + SpatialVec::new(r_i.cross(&(-f_linear)), -f_linear);
-            forces[j] = forces[j] + SpatialVec::new(r_j.cross(&f_linear), f_linear);
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(-f_linear), -f_linear);
+            forces[j] = forces[j] + SpatialVec::new(r_j.cross(f_linear), f_linear);
         }
     }
 
