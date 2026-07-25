@@ -409,6 +409,70 @@ mod tests {
         }
     }
 
+    /// Sum of the masses of every particle stored beneath `node`, walking to
+    /// the leaves. Returns it so callers can compare against `node.mass`.
+    fn subtree_mass(node: &OctreeNode, all: &[GravityParticle]) -> f64 {
+        match node.children {
+            Some(ref children) => children.iter().map(|c| subtree_mass(c, all)).sum(),
+            None => node.particles.iter().map(|&i| all[i].m).sum(),
+        }
+    }
+
+    /// Assert `node.mass == sum of descendant particle masses` at every node,
+    /// and that `node.com` is the mass-weighted mean of those particles.
+    fn assert_mass_invariant(node: &OctreeNode, all: &[GravityParticle]) {
+        let expected = subtree_mass(node, all);
+        assert!(
+            (node.mass - expected).abs() <= 1e-6 * expected.max(1.0),
+            "node.mass {} != subtree mass {expected}",
+            node.mass
+        );
+
+        if expected > 0.0 {
+            let mut com = Vec3::zeros();
+            let mut collect = |n: &OctreeNode| n.particles.iter().for_each(|&i| com += all[i].x * all[i].m);
+            walk_leaves(node, &mut collect);
+            com = com / expected;
+            assert!(
+                (node.com - com).norm() <= 1e-6 * (1.0 + com.norm()),
+                "node.com {:?} != {com:?}",
+                node.com
+            );
+        }
+
+        if let Some(ref children) = node.children {
+            for c in children.iter() {
+                assert_mass_invariant(c, all);
+            }
+        }
+    }
+
+    fn walk_leaves(node: &OctreeNode, f: &mut impl FnMut(&OctreeNode)) {
+        match node.children {
+            Some(ref children) => children.iter().for_each(|c| walk_leaves(c, f)),
+            None => f(node),
+        }
+    }
+
+    #[test]
+    fn test_octree_mass_and_com_invariant() {
+        // Random cloud: exercises ordinary subdivision.
+        let cloud = random_cloud(300, 0xa11ce);
+        assert_mass_invariant(&BarnesHutTree::build(&cloud, 1e-3).root, &cloud);
+
+        // Coincident cloud: exercises the MAX_DEPTH cap, where multiple
+        // particles land in one leaf.
+        let mut coincident: Vec<_> = (0..16)
+            .map(|_| GravityParticle::new(Vec3::new(1.0, 2.0, 3.0), Vec3::zeros(), 1e9))
+            .collect();
+        coincident.push(GravityParticle::new(
+            Vec3::new(5.0, 0.0, 0.0),
+            Vec3::zeros(),
+            1e9,
+        ));
+        assert_mass_invariant(&BarnesHutTree::build(&coincident, 1e-3).root, &coincident);
+    }
+
     /// Deterministic LCG so the test is reproducible without a `rand` dep.
     struct Lcg(u64);
 
