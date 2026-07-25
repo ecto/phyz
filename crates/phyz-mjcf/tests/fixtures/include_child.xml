@@ -1,0 +1,7 @@
+<mujocoinclude>
+  <body name="included_child" pos="0 0 0.5">
+    <inertial mass="2" diaginertia="0.2 0.2 0.2"/>
+    <joint name="j_child" class="shared"/>
+    <geom name="g_child" class="shared"/>
+  </body>
+</mujocoinclude>
