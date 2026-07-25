@@ -318,8 +318,17 @@ mod tests {
         assert!(diff < 1e-6);
     }
 
+    /// The closed-form rate `6πGM/(c²a(1−e²))` must reproduce the textbook
+    /// 43″/century for Mercury.
+    ///
+    /// This exercises [`perihelion_precession_rate`] only — it never calls the
+    /// solver. The benchmark that actually *integrates* the post-Newtonian
+    /// equations of motion and measures the resulting apsidal drift lives in
+    /// `phyz-validate` (`gravity.pn.mercury_precession`), and currently
+    /// disagrees with general relativity by a factor of three; see the note
+    /// there about the 1PN coefficients in [`PostNewtonianSolver::pn1_acceleration`].
     #[test]
-    fn test_mercury_precession() {
+    fn test_mercury_precession_closed_form() {
         // Mercury orbital parameters
         let a = 57.9e9; // semi-major axis (m)
         let e = 0.2056; // eccentricity
@@ -328,9 +337,62 @@ mod tests {
 
         let precession = perihelion_precession_rate(a, e, m_sun, period);
 
-        // Expected: 43.1 arcsec/century
-        // Allow 10% tolerance due to simplified formula
-        assert!(precession > 38.0 && precession < 48.0);
+        // Einstein (1915): 42.98 arcsec/century.
+        let rel = (precession - 42.98).abs() / 42.98;
+        assert!(
+            rel < 0.01,
+            "closed-form precession = {precession} arcsec/century (expected 42.98, rel err {rel:.3e})"
+        );
+    }
+
+    /// Two-body invariants of the Newtonian limit: the eccentricity
+    /// (Laplace–Runge–Lenz) vector is conserved only for an exact 1/r² force.
+    #[test]
+    fn test_newtonian_limit_conserves_lrl_vector() {
+        let m_sun = 1.989e30;
+        let m = 5.972e24;
+        let a = 1.496e11;
+        let e = 0.2;
+        let mu = G * (m_sun + m);
+
+        let mut solver = PostNewtonianSolver::new(0.0);
+        solver.softening = 0.0;
+
+        let r_apo = a * (1.0 + e);
+        let v_apo = (mu * (1.0 - e) / (a * (1.0 + e))).sqrt();
+        let mut p = vec![
+            GravityParticle::new(Vec3::zeros(), Vec3::zeros(), m_sun),
+            GravityParticle::new(Vec3::new(r_apo, 0.0, 0.0), Vec3::new(0.0, v_apo, 0.0), m),
+        ];
+
+        let lrl = |p: &[GravityParticle]| {
+            let r = p[1].x - p[0].x;
+            let v = p[1].v - p[0].v;
+            v.cross(&r.cross(&v)) / mu - r / r.norm()
+        };
+
+        solver.compute_forces(&mut p);
+        let e0 = lrl(&p);
+
+        // Two orbits at 2000 steps/orbit.
+        let t = 2.0 * std::f64::consts::PI * (a * a * a / mu).sqrt();
+        let dt = t / 2000.0;
+        for _ in 0..4000 {
+            for q in p.iter_mut() {
+                q.velocity_verlet_step(dt);
+            }
+            solver.compute_forces(&mut p);
+            for q in p.iter_mut() {
+                q.velocity_verlet_complete(dt);
+            }
+        }
+
+        let drift = (lrl(&p) - e0).norm() / e0.norm();
+        // Velocity Verlet's apsidal error accumulates as N_orbits·(2π/N_steps)².
+        assert!(
+            drift < 1e-4,
+            "LRL vector drifted by {drift:.3e} over 2 orbits"
+        );
     }
 
     #[test]

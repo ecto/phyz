@@ -156,10 +156,57 @@ cargo run --release -p phyz-examples --example gpu_batch        # phyz-gpu
 cargo run --release -p phyz-examples --example kernel_fusion    # phyz-compile
 cargo run --release -p phyz-coupling --example coupled_cyclotron # phyz-coupling
 ```
+
 All files under `examples/` are registered as targets of the `phyz-examples`
 dev crate and built in CI, so they compile against the current API. Some crates
 also carry their own `examples/` directory (`phyz-coupling`, `phyz-guardian`),
 picked up by cargo directly.
+```
+phyz/
+├── crates/
+│   ├── phyz/             # Umbrella — re-exports everything
+│   ├── phyz-math/        # Spatial algebra, vectors, matrices
+│   ├── phyz-model/       # Articulated body models, joints, inertia
+│   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics
+│   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
+│   ├── phyz-mjcf/        # MuJoCo MJCF model loading
+│   ├── phyz-urdf/        # URDF (ROS) robot description import
+│   ├── phyz-collision/   # GJK/EPA collision, ray casting
+│   ├── phyz-contact/     # Contact resolution, friction
+│   ├── phyz-gpu/         # WGPU compute, batched simulation
+│   ├── phyz-compile/     # Physics kernel compiler, op fusion
+│   ├── phyz-particle/    # SPH fluids, granular media
+│   ├── phyz-em/          # Maxwell's equations on Yee lattice
+│   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
+│   ├── phyz-qft/         # Lattice QFT, Wilson action
+│   ├── phyz-gravity/     # N-body gravitational dynamics
+│   ├── phyz-lbm/         # Lattice Boltzmann fluid method
+│   ├── phyz-regge/       # Regge calculus (discrete GR + EM)
+│   ├── phyz-prob/        # Probabilistic inference (SVGD, HMC)
+│   ├── phyz-coupling/    # Multi-physics coupling layer
+│   ├── phyz-guardian/    # Energy/momentum conservation guards
+│   ├── phyz-world/       # Scene graph, multi-physics world
+│   ├── phyz-real2sim/    # Inverse problems, parameter fitting
+│   ├── phyz-format/      # Serialization, model I/O (.phyz, MJCF, URDF)
+│   ├── phyz-validate/    # Closed-form physics benchmarks for every solver
+│   └── phyz-wasm/        # WASM bindings for browser demos
+├── examples/             # Runnable examples
+└── site/                 # Landing page + interactive demos
+```
+
+## Validation
+
+Every solver is benchmarked against a closed-form solution or published reference
+data, with a quantitative error and — where a discretization parameter exists — a
+demonstrated convergence order:
+
+```bash
+cargo run --release -p phyz-validate
+```
+
+That writes `target/validation/validation.md` and `validation.json`. See
+[VALIDATION.md](VALIDATION.md) for the current results, including the benchmarks
+that fail.
 
 ## Development
 

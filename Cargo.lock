@@ -3125,6 +3125,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-validate"
+version = "0.3.1"
+dependencies = [
+ "phyz-em",
+ "phyz-gravity",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-md",
+ "phyz-model",
+ "phyz-rigid",
+]
+
+[[package]]
 name = "phyz-wasm"
 version = "0.3.1"
 dependencies = [
