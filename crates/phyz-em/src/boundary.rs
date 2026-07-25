@@ -143,7 +143,13 @@ impl YeeGrid {
         // layer off along the other two.
         let n = [self.nx, self.ny, self.nz];
         let thick: Vec<usize> = (0..3)
-            .map(|a| if self.periodic[a] { 0 } else { thickness.min(n[a] / 2) })
+            .map(|a| {
+                if self.periodic[a] {
+                    0
+                } else {
+                    thickness.min(n[a] / 2)
+                }
+            })
             .collect();
         if thick.iter().all(|&t| t == 0) {
             return;
