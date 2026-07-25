@@ -77,3 +77,8 @@ debug-assertions = false
 [profile.dev.package.phyz-wasm]
 opt-level = 2
 debug-assertions = false
+
+# The LBM validation benchmarks run flows to steady state on real grids;
+# unoptimized they take tens of minutes instead of tens of seconds.
+[profile.dev.package.phyz-lbm]
+opt-level = 3
