@@ -1,0 +1,23 @@
+# Local development against a sibling `tang` checkout.
+#
+# The workspace pins `tang` to a git rev (see [workspace.dependencies] in the
+# root Cargo.toml) so that a fresh checkout — CI included — builds without a
+# sibling directory. To work against your own tang tree instead, copy this file
+# to `.cargo/config.toml` (gitignored) and adjust the paths:
+#
+#     cp .cargo/config.toml.example .cargo/config.toml
+#
+# `paths` overrides sources by package name, so every tang crate below is
+# resolved from disk instead of the pinned git rev. The local versions must
+# match the pinned ones, otherwise cargo ignores the override.
+
+paths = [
+    "../tang/crates/tang",
+    "../tang/crates/tang-la",
+    "../tang/crates/tang-expr",
+    "../tang/crates/tang-mesh",
+    "../tang/crates/tang-tensor",
+    "../tang/crates/tang-train",
+    "../tang/crates/tang-safetensors",
+    "../tang/crates/tang-compute",
+]

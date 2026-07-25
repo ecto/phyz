@@ -164,6 +164,10 @@ impl ContactProblem {
 }
 
 /// Solve the convex contact problem.
+// The loop indices here drive stride arithmetic into flat, row-major arrays
+// (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
+// the explicit ranges stay.
+#[allow(clippy::needless_range_loop)]
 pub fn solve_contacts(problem: &ContactProblem, config: &ContactSolverConfig) -> ContactSolution {
     let n = problem.n;
     let mut f = vec![Vec3::zeros(); n];

@@ -203,7 +203,7 @@ fn model_to_phyz_spec(model: &phyz_model::Model, params: &PhysicsParams) -> Phyz
     use std::collections::HashMap;
 
     // Build domain config
-    let mut bodies = vec![BodySpec {
+    let bodies = vec![BodySpec {
         name: "link".to_string(),
         mass: model.bodies[0].inertia.mass,
         inertia: [
@@ -221,7 +221,7 @@ fn model_to_phyz_spec(model: &phyz_model::Model, params: &PhysicsParams) -> Phyz
         ],
     }];
 
-    let mut joints = vec![JointSpec {
+    let joints = vec![JointSpec {
         joint_type: JointTypeSpec::Revolute,
         parent: "world".to_string(),
         child: "link".to_string(),

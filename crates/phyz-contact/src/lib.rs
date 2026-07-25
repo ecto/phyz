@@ -49,7 +49,7 @@ pub fn compute_contact_force(
 
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
-    let normal_vel = rel_vel.dot(&normal);
+    let normal_vel = rel_vel.dot(normal);
 
     // Penalty force: F = k * depth^p - c * v_n
     let k = material.stiffness;
@@ -123,7 +123,7 @@ pub fn compute_contact_force_implicit(
 
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
-    let normal_vel = rel_vel.dot(&normal);
+    let normal_vel = rel_vel.dot(normal);
 
     let k = material.stiffness;
     let c = material.damping;
@@ -188,6 +188,9 @@ mod tests {
     use super::*;
 
     #[test]
+    // Exercises the deprecated penalty path on purpose: it is still shipped, so
+    // it still needs coverage.
+    #[allow(deprecated)]
     fn test_contact_force_zero_depth() {
         let collision = Collision {
             body_i: 0,
@@ -202,6 +205,9 @@ mod tests {
     }
 
     #[test]
+    // Exercises the deprecated penalty path on purpose: it is still shipped, so
+    // it still needs coverage.
+    #[allow(deprecated)]
     fn test_contact_force_penetration() {
         let collision = Collision {
             body_i: 0,
@@ -216,6 +222,6 @@ mod tests {
         };
         let force = compute_contact_force(&collision, &material, &Vec3::zeros(), &Vec3::zeros());
         assert!(force.linear.norm() > 0.0);
-        assert!(force.linear.dot(&Vec3::z()) > 0.0);
+        assert!(force.linear.dot(Vec3::z()) > 0.0);
     }
 }

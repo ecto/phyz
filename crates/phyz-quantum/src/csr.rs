@@ -89,12 +89,10 @@ pub fn build_csr(
                     break;
                 }
             }
-            if valid {
-                if let Some(j) = hilbert.config_to_index(&new_config) {
-                    // H[i,j] = c and H[j,i] = c (symmetric)
-                    rows[i].push((j as u32, c));
-                    rows[j].push((i as u32, c));
-                }
+            if valid && let Some(j) = hilbert.config_to_index(&new_config) {
+                // H[i,j] = c and H[j,i] = c (symmetric)
+                rows[i].push((j as u32, c));
+                rows[j].push((i as u32, c));
             }
         }
     }
@@ -112,11 +110,11 @@ pub fn build_csr(
         // Merge duplicates
         let mut merged: Vec<(u32, f64)> = Vec::new();
         for &(col, val) in row.iter() {
-            if let Some(last) = merged.last_mut() {
-                if last.0 == col {
-                    last.1 += val;
-                    continue;
-                }
+            if let Some(last) = merged.last_mut()
+                && last.0 == col
+            {
+                last.1 += val;
+                continue;
             }
             merged.push((col, val));
         }
@@ -189,11 +187,11 @@ pub fn build_csr_su2(
 
         let mut merged: Vec<(u32, f64)> = Vec::new();
         for &(col, val) in row.iter() {
-            if let Some(last) = merged.last_mut() {
-                if last.0 == col {
-                    last.1 += val;
-                    continue;
-                }
+            if let Some(last) = merged.last_mut()
+                && last.0 == col
+            {
+                last.1 += val;
+                continue;
             }
             merged.push((col, val));
         }

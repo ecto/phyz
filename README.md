@@ -210,29 +210,45 @@ that fail.
 
 ## Development
 
+Minimum supported Rust version: **1.89**. Edition 2024 sets the floor at 1.85,
+but the dependency tree raises it to 1.89 (iroh, via `tang-mesh`). It's declared
+as `rust-version` in `[workspace.package]` and checked by CI.
+
 ```bash
+cargo fmt --all --check
 cargo test --workspace
 cargo build --workspace --examples
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo doc --workspace --no-deps
 ```
 
-`tang`, `tang-la` and `tang-expr` come from crates.io. The one exception is
-`tang-mesh`, which is unpublished and backs `phyz-quantum`'s default `mesh`
-feature, so a full workspace build still wants a sibling checkout:
-
-```bash
-git clone https://github.com/ecto/tang ../tang
-```
-
-To develop against a local `tang`, uncomment the `[patch.crates-io]` block at
-the bottom of the workspace `Cargo.toml`.
+A plain `git clone` is enough — no sibling directories required. `tang`,
+`tang-la` and `tang-expr` are declared as crates.io deps (so the phyz crates
+stay publishable) but resolve through a `[patch.crates-io]` pinned to a git rev,
+because the published `tang` predates the API these crates need. The unpublished
+tang crates — `tang-mesh`, which backs `phyz-quantum`'s default `mesh` feature,
+plus the ones `phyz-dream` uses — are git deps for the same reason.
 
 Build the WASM demos:
 
 ```bash
 wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above plus an MSRV check on
+every push and pull request.
+
+### Working against a local `tang`
+
+To develop against your own tang tree instead of the pinned rev, copy the
+example cargo config and point it at your checkout:
+
+```bash
+cp .cargo/config.toml.example .cargo/config.toml
+```
+
+That file is gitignored, so it never affects CI. When tang changes land
+upstream, bump the `rev` in the root `Cargo.toml` instead.
 
 ## Status
 

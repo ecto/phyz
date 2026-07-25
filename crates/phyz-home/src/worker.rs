@@ -32,7 +32,10 @@ pub struct BatchProgress {
 /// Message received from a compute worker.
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct WorkerResponse {
+    // Discriminant of the worker protocol. Responses are routed by `id`, so it
+    // is never read, but it stays part of the documented message shape.
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     pub msg_type: String,
     pub id: String,
     pub result: Option<serde_json::Value>,

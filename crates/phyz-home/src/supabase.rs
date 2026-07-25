@@ -61,6 +61,9 @@ pub struct PendingResult {
 /// A result from the global feed with contributor name and work unit context.
 #[derive(Debug, Clone, Deserialize)]
 pub struct FeedResult {
+    // Part of the JSON the feed endpoint returns. Kept so this struct documents
+    // the wire format even though the UI does not read it back.
+    #[allow(dead_code)]
     pub result_id: String,
     pub contributor_id: String,
     pub contributor_name: String,
@@ -206,10 +209,10 @@ impl SupabaseClient {
         let resp = self.do_fetch(request).await?;
 
         let headers = resp.headers();
-        if let Ok(Some(range)) = headers.get("content-range") {
-            if let Some(n) = range.split('/').nth(1) {
-                return n.parse().map_err(|e| format!("parse count: {e}"));
-            }
+        if let Ok(Some(range)) = headers.get("content-range")
+            && let Some(n) = range.split('/').nth(1)
+        {
+            return n.parse().map_err(|e| format!("parse count: {e}"));
         }
         Ok(0)
     }
@@ -259,10 +262,10 @@ impl SupabaseClient {
         let resp = self.do_fetch(request).await?;
 
         let headers = resp.headers();
-        if let Ok(Some(range)) = headers.get("content-range") {
-            if let Some(n) = range.split('/').nth(1) {
-                return n.parse().map_err(|e| format!("parse count: {e}"));
-            }
+        if let Ok(Some(range)) = headers.get("content-range")
+            && let Some(n) = range.split('/').nth(1)
+        {
+            return n.parse().map_err(|e| format!("parse count: {e}"));
         }
         Ok(0)
     }

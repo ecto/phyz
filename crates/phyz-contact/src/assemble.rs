@@ -46,9 +46,9 @@ pub fn assemble(
         let mut rows = DMat::zeros(3, nv);
         for col in 0..nv {
             let v = Vec3::new(point_j[(0, col)], point_j[(1, col)], point_j[(2, col)]);
-            rows[(0, col)] = v.dot(&nrm);
-            rows[(1, col)] = v.dot(&u);
-            rows[(2, col)] = v.dot(&w);
+            rows[(0, col)] = v.dot(nrm);
+            rows[(1, col)] = v.dot(u);
+            rows[(2, col)] = v.dot(w);
         }
         jacobians.push(rows);
     }
@@ -198,12 +198,12 @@ pub fn contact_wrenches(
 
         let i = c.body_i;
         let r_i = c.contact_point - state.body_xform[i].pos;
-        out[i] = out[i] + SpatialVec::new(r_i.cross(&force), force);
+        out[i] = out[i] + SpatialVec::new(r_i.cross(force), force);
 
         if c.body_j != usize::MAX {
             let j = c.body_j;
             let r_j = c.contact_point - state.body_xform[j].pos;
-            out[j] = out[j] + SpatialVec::new(r_j.cross(&(-force)), -force);
+            out[j] = out[j] + SpatialVec::new(r_j.cross(-force), -force);
         }
     }
     out
@@ -414,7 +414,7 @@ mod tests {
             &DVec::zeros(model.nv),
             &cfg,
         );
-        let dim = 6;
+        let _dim = 6;
         // Normal-normal off-diagonal block entry between contact 0 and 1.
         // Row 0 (contact 0's normal) x column 3 (contact 1's normal).
         let off = asm.problem.delassus[3];

@@ -1,7 +1,6 @@
 //! Double pendulum — energy conservation and gradient validation.
 
 use phyz::Simulator;
-use phyz_diff;
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_rigid::total_energy;

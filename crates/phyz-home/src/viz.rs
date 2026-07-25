@@ -249,14 +249,6 @@ impl Renderer {
         self.points.push(p);
     }
 
-    pub fn bounds_z_min(&self) -> f32 {
-        self.bounds.z_min
-    }
-
-    pub fn bounds_z_range(&self) -> f32 {
-        self.bounds.z_max - self.bounds.z_min
-    }
-
     pub fn set_hover(&mut self, x: f32, y: f32) {
         self.hover_pos = Some((x, y));
     }
@@ -1079,7 +1071,7 @@ impl Renderer {
     }
 
     /// Draw a HUD panel with regression stats and physics interpretation.
-    fn draw_stats_hud(&self, w: f32, h: f32, light: bool) {
+    fn draw_stats_hud(&self, _w: f32, h: f32, light: bool) {
         if self.points.len() < 10 {
             return;
         }

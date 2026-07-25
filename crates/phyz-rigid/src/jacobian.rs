@@ -61,10 +61,10 @@ pub fn point_jacobian(
                 // Angular DOFs contribute `omega x r`; linear DOFs contribute
                 // the axis directly.
                 let contribution = match joint.joint_type {
-                    JointType::Revolute | JointType::Hinge => axis_world.cross(&arm),
+                    JointType::Revolute | JointType::Hinge => axis_world.cross(arm),
                     JointType::Prismatic | JointType::Slide => axis_world,
-                    JointType::Spherical | JointType::Ball => body_axis(d).cross(&arm),
-                    JointType::Free if d < 3 => body_axis(d).cross(&arm),
+                    JointType::Spherical | JointType::Ball => body_axis(d).cross(arm),
+                    JointType::Free if d < 3 => body_axis(d).cross(arm),
                     JointType::Free => body_axis(d - 3),
                     JointType::Fixed => Vec3::zeros(),
                 };
@@ -151,7 +151,7 @@ mod tests {
         );
 
         // Revolute about +Z through the origin: v = omega x r.
-        let expected = (Vec3::z() * state.v[0]).cross(&p_world);
+        let expected = (Vec3::z() * state.v[0]).cross(p_world);
         assert!(
             (v - expected).norm() < 1e-9,
             "jacobian velocity {v:?} vs omega x r {expected:?}"
@@ -254,7 +254,7 @@ mod tests {
         // Rotation about +x moves a point on +z toward -y (omega x r).
         let col = Vec3::new(j[(0, 0)], j[(1, 0)], j[(2, 0)]);
         assert!(
-            (col - Vec3::x().cross(&p)).norm() < 1e-12,
+            (col - Vec3::x().cross(p)).norm() < 1e-12,
             "rotation column: {col:?}"
         );
     }

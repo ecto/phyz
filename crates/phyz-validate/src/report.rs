@@ -137,6 +137,10 @@ pub struct Validation {
 
 impl Validation {
     /// Build a validation, computing the error and status from the inputs.
+    // Every argument is an independent fact about one validation case, and all
+    // call sites pass them positionally at the point of measurement. Grouping
+    // them into structs would add indirection without removing any decisions.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: &str,
         name: &str,

@@ -14,16 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # [patch.crates-io] in the root Cargo.toml points tang at a sibling
-      # checkout, so the workspace cannot be resolved without it. See the TODO
-      # there: once tang publishes the API phyz-diff needs, drop the patch and
-      # this step goes away with it.
-      - name: Check out sibling tang
-        uses: actions/checkout@v4
-        with:
-          repository: ecto/tang
-          path: ../tang
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

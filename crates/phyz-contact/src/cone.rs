@@ -88,8 +88,8 @@ pub fn contact_frame(normal: &Vec3) -> (Vec3, Vec3, Vec3) {
     } else {
         Vec3::z()
     };
-    let u = n.cross(&a).normalize();
-    let w = n.cross(&u);
+    let u = n.cross(a).normalize();
+    let w = n.cross(u);
     (n, u, w)
 }
 
@@ -193,11 +193,11 @@ mod tests {
             assert!((n.norm() - 1.0).abs() < 1e-12);
             assert!((u.norm() - 1.0).abs() < 1e-12);
             assert!((w.norm() - 1.0).abs() < 1e-12);
-            assert!(n.dot(&u).abs() < 1e-12);
-            assert!(n.dot(&w).abs() < 1e-12);
-            assert!(u.dot(&w).abs() < 1e-12);
+            assert!(n.dot(u).abs() < 1e-12);
+            assert!(n.dot(w).abs() < 1e-12);
+            assert!(u.dot(w).abs() < 1e-12);
             // Right-handed.
-            assert!((u.cross(&w) - n).norm() < 1e-12);
+            assert!((u.cross(w) - n).norm() < 1e-12);
         }
     }
 }

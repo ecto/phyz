@@ -306,10 +306,12 @@ impl GpuBatchSimulator {
             &self.model,
             &self.state,
             &self.bodies_buffer,
-            ground_height,
-            stiffness,
-            damping,
-            friction,
+            crate::contact_pipeline::GroundContactParams {
+                ground_height,
+                stiffness,
+                damping,
+                friction,
+            },
         )?;
         self.contact_pipeline = Some(pipeline);
         Ok(())
@@ -579,34 +581,34 @@ mod tests {
             .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
             .dt(0.001)
             // Joint 1: revolute Z
-            .add_revolute_body("j1", -1, SpatialTransform::identity(), inertia.clone())
+            .add_revolute_body("j1", -1, SpatialTransform::identity(), inertia)
             // Joint 2: revolute Z, offset along Z
             .add_revolute_body(
                 "j2",
                 0,
                 SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
-                inertia.clone(),
+                inertia,
             )
             // Joint 3: revolute Z
             .add_revolute_body(
                 "j3",
                 1,
                 SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
-                inertia.clone(),
+                inertia,
             )
             // Joint 4: revolute Z
             .add_revolute_body(
                 "j4",
                 2,
                 SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
-                inertia.clone(),
+                inertia,
             )
             // Joint 5: revolute Z
             .add_revolute_body(
                 "j5",
                 3,
                 SpatialTransform::from_translation(Vec3::new(0.0, 0.0, -length)),
-                inertia.clone(),
+                inertia,
             )
             // Joint 6: revolute Z
             .add_revolute_body(
@@ -632,7 +634,7 @@ mod tests {
             }
         };
 
-        sim.load_states(&[state.clone()]);
+        sim.load_states(std::slice::from_ref(state));
         sim.step();
         let gpu_states = sim.readback_states();
 

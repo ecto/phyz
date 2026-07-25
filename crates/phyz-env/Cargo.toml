@@ -9,8 +9,8 @@ description = "Batched reinforcement-learning environments for phyz (Gymnasium-s
 
 [features]
 default = []
-# Zero-copy interop with the tang ML stack. Off by default so the crate builds
-# without a sibling ../tang checkout.
+# Zero-copy interop with the tang ML stack. Off by default to keep the default
+# build lean; tang itself resolves from the pinned git rev, not a sibling path.
 tang = ["dep:tang-tensor"]
 # GPU-resident batch backend (wgpu). Design-complete, implementation gated.
 gpu = ["dep:phyz-gpu"]
@@ -21,5 +21,5 @@ phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
 phyz-mjcf = { workspace = true }
 phyz-gpu = { workspace = true, optional = true }
-tang-tensor = { path = "../../../tang/crates/tang-tensor", optional = true }
+tang-tensor = { workspace = true, optional = true }
 thiserror = "2"

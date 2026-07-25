@@ -38,7 +38,7 @@
 //! `p' = normalize(exp(−dt·ω) ⊗ p)`.
 //!
 //! This differs from `phyz_model`'s own `nq == nv` exponential-coordinate
-//! packing (and from [`phyz::sim::SemiImplicitEulerSolver`]'s flat
+//! packing (and from `phyz::sim::SemiImplicitEulerSolver`'s flat
 //! `q += dt·v`, which for a free joint would add angular rates to positional
 //! coordinates). Build the initial configuration with
 //! [`DofLayout::neutral_q`] and index it with [`DofLayout::q_offsets`].

@@ -3,9 +3,13 @@
 //! Run with:
 //!   cargo run -p phyz-quantum --features gpu --release --example gpu_lanczos_bench
 
+#[cfg(feature = "gpu")]
 use phyz_quantum::hilbert::U1HilbertSpace;
+#[cfg(feature = "gpu")]
 use phyz_quantum::lanczos::lanczos_diagonalize;
+#[cfg(feature = "gpu")]
 use phyz_regge::SimplicialComplex;
+#[cfg(feature = "gpu")]
 use std::time::Instant;
 
 #[cfg(feature = "gpu")]
@@ -18,7 +22,6 @@ fn main() {
         eprintln!(
             "Run with: cargo run -p phyz-quantum --features gpu --release --example gpu_lanczos_bench"
         );
-        return;
     }
 
     #[cfg(feature = "gpu")]

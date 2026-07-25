@@ -105,6 +105,10 @@ pub fn classify(
 /// - sliding:    the normal row as above; the tangential rows replaced by the
 ///   differential of `f_t = -mu * f_n * t_hat`, with `t_hat` the (fixed) slip
 ///   direction.
+// The loop indices here drive stride arithmetic into flat, row-major arrays
+// (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
+// the explicit ranges stay.
+#[allow(clippy::needless_range_loop)]
 pub fn impulse_sensitivity(
     problem: &ContactProblem,
     solution: &ContactSolution,
@@ -203,6 +207,10 @@ pub fn impulse_sensitivity(
 /// That structural zero is a real property of Coulomb friction, not an
 /// approximation — and it is a good check on the whole derivation, because a
 /// finite difference reproduces it exactly.
+// The loop indices here drive stride arithmetic into flat, row-major arrays
+// (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
+// the explicit ranges stay.
+#[allow(clippy::needless_range_loop)]
 pub fn friction_sensitivity(
     problem: &ContactProblem,
     solution: &ContactSolution,

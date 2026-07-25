@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  # Only main on push — every other branch is covered by pull_request, and
+  # listing both there would run each PR twice.
   push:
     branches: [main]
   pull_request:
@@ -8,59 +10,95 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
-    name: build, test, docs
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: phyz
-
-      # tang/tang-la/tang-expr come from crates.io, but tang-mesh is not
-      # published and phyz-quantum's default `mesh` feature needs it, so the
-      # sibling checkout is still required for a full workspace build.
-      - name: Check out sibling tang
-        uses: actions/checkout@v4
-        with:
-          repository: ecto/tang
-          path: tang
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
+      - run: cargo fmt --all --check
 
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: phyz
+          key: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build workspace
-        working-directory: phyz
-        run: cargo build --workspace --all-targets
-
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
       # Every file under examples/ is a target of the phyz-examples crate, so
-      # this is what stops the documented API from rotting.
-      - name: Build examples
-        working-directory: phyz
-        run: cargo build --workspace --examples
-
-      # Two contact tests are #[ignore]d against known bugs — see the reasons
-      # on them in crates/phyz/tests/contact_stability.rs. Everything else runs.
+      # --all-targets is what stops the documented API from rotting.
+      - name: Build workspace and examples
+        run: cargo build --workspace --all-targets
+      # --no-fail-fast: without it cargo stops at the first failing test binary,
+      # which hides every failure behind whichever crate happens to fail first.
       - name: Test workspace
-        working-directory: phyz
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
-      # The root README is included as a doc-test of crates/phyz, so its
-      # Quick Start is compiled and run by the step above.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      # The root README is included as a doc-test of crates/phyz, so its Quick
+      # Start is compiled and run by the test job.
       - name: Documentation builds clean
-        working-directory: phyz
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps
 
-      # Advisory for now: the workspace has a backlog of pre-existing clippy
-      # warnings. Flip `continue-on-error` off once that is cleared.
-      - name: Clippy
-        working-directory: phyz
-        continue-on-error: true
-        run: cargo clippy --workspace --all-targets -- -D warnings
+  # MSRV. Edition 2024 sets the floor at 1.85, but the dependency tree raises it
+  # to 1.89 (iroh, via tang-mesh). Mirrored as `rust-version` in
+  # [workspace.package] so cargo enforces it for consumers — bump both together.
+  msrv:
+    name: msrv (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: cargo check --workspace --all-targets
+
+  wasm:
+    name: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: wasm-pack build phyz-wasm
+        run: wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg

@@ -180,7 +180,7 @@ impl Geometry {
                 let p1 = pos + axis * half_len;
                 let p2 = pos - axis * half_len;
                 let d = dir.normalize();
-                if dir.dot(&axis) > 0.0 {
+                if dir.dot(axis) > 0.0 {
                     p1 + d * *radius
                 } else {
                     p2 + d * *radius
@@ -221,10 +221,10 @@ impl Geometry {
             }
             Geometry::Mesh { vertices, .. } => {
                 let mut best = pos + *rot * vertices[0];
-                let mut best_dot = dir.dot(&best);
+                let mut best_dot = dir.dot(best);
                 for v in vertices.iter().skip(1) {
                     let vt = pos + *rot * v;
-                    let d = dir.dot(&vt);
+                    let d = dir.dot(vt);
                     if d > best_dot {
                         best = vt;
                         best_dot = d;

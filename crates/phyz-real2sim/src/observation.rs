@@ -213,10 +213,10 @@ mod tests {
     #[test]
     fn test_center_of_mass_observer() {
         let model = make_pendulum();
-        let mut state = model.default_state();
+        let state = model.default_state();
 
         // Need to compute forward kinematics to update body transforms
-        phyz_rigid::forward_kinematics(&model, &mut state);
+        phyz_rigid::forward_kinematics(&model, &state);
 
         let observer = CenterOfMassObserver;
         let obs = observer.extract(&state, &model);

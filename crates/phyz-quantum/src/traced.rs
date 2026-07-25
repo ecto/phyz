@@ -88,7 +88,7 @@ pub fn trace_quantum_entropy(
             // Boundary area = sum of metric weights for triangles touching boundary edges
             let mut area = ExprId::ZERO;
             for &ti in &ps.boundary_triangles {
-                area = area + metric_weights[ti];
+                area += metric_weights[ti];
             }
             boundary_areas.push(area);
         }
@@ -341,7 +341,7 @@ fn traced_entanglement_entropy(
         let ln_lam = Scalar::ln(lam);
         let contribution = lam * ln_lam;
         let safe = ExprId::select(lam - eps, contribution, ExprId::ZERO);
-        entropy = entropy - safe;
+        entropy -= safe;
     }
 
     entropy
@@ -452,7 +452,7 @@ mod tests {
                 let ln_lam = Scalar::ln(lam);
                 let contribution = lam * ln_lam;
                 let safe = ExprId::select(lam - eps, contribution, ExprId::ZERO);
-                s = s - safe;
+                s -= safe;
             }
             s
         });

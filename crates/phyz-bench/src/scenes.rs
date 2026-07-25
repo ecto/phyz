@@ -6,7 +6,11 @@
 //! makes the measurement representative of the library as it actually exists.
 
 use phyz_collision::Collision;
-use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+// The penalty path is deprecated but still what most callers run today, so the
+// benchmark deliberately measures it.
+#[allow(deprecated)]
+use phyz_contact::contact_forces;
+use phyz_contact::{ContactMaterial, find_contacts, find_ground_contacts};
 use phyz_math::{Mat3, SpatialInertia, SpatialTransform, SpatialVec, Vec3};
 use phyz_model::{Body, GeomInstance, Geometry, Model, ModelBuilder, State};
 use phyz_rigid::{aba_with_external_forces, forward_kinematics};
@@ -161,8 +165,7 @@ pub fn build_model(scene: Scene, dt: f64) -> Model {
                                 BOX_HALF_EXTENT,
                             ),
                         };
-                        let mut body =
-                            Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
+                        let mut body = Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
                         // `geometry` mirrors the first centred entry in
                         // `collisions`; set both so single-shape and
                         // multi-shape consumers agree.
@@ -286,6 +289,7 @@ impl PhyzSim {
             // flatter the engine.
             let mut contacts: Vec<Collision> = find_ground_contacts(&self.state, &self.geoms, 0.0);
             contacts.extend(find_contacts(&self.model, &self.state, &self.geoms));
+            #[allow(deprecated)]
             let forces: Vec<SpatialVec> =
                 contact_forces(&contacts, &self.state, &self.materials, Some(&velocities));
             aba_with_external_forces(&self.model, &self.state, Some(&forces))

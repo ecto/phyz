@@ -136,7 +136,7 @@ fn coupled_contact_gradient_matches_finite_difference() {
     assert!(sol.converged);
 
     let sens = impulse_sensitivity(&p, &sol, &cfg).expect("sensitivity available");
-    let dim = 6;
+    let _dim = 6;
 
     // Perturbing contact 1's normal free velocity must move contact 0's
     // impulse — the cross term.
@@ -268,7 +268,7 @@ fn stick_slip_transition_is_a_documented_gradient_discontinuity() {
     let p = problem(1, mu, &[-1.0, critical, 0.0], 0.0);
     let sol = solve_contacts(&p, &cfg);
     let sens = impulse_sensitivity(&p, &sol, &cfg).unwrap();
-    let analytic = sens[1 * 3 + 1]; // d f_u / d b_u
+    let analytic = sens[3 + 1]; // d f_u / d b_u
 
     // A wide finite difference straddles the regime switch.
     let h = 0.05;

@@ -121,7 +121,7 @@ pub fn epa_from_simplex(
         if !is_finite(&s) {
             return best;
         }
-        let dist = s.dot(&closest_normal);
+        let dist = s.dot(closest_normal);
         if !dist.is_finite() {
             return best;
         }
@@ -224,13 +224,13 @@ fn build_tetrahedron(seed: &[Vec3], support: &impl Fn(&Vec3) -> Vec3) -> Option<
     if pts.len() == 2 {
         let ab = pts[1] - pts[0];
         let axis = least_aligned_axis(&ab);
-        let ortho = ab.cross(&axis);
+        let ortho = ab.cross(axis);
         for d in [ortho, -ortho] {
             if d.norm() < 1e-12 {
                 continue;
             }
             let p = support(&d.normalize());
-            if is_finite(&p) && (p - pts[0]).cross(&(p - pts[1])).norm() > 1e-12 {
+            if is_finite(&p) && (p - pts[0]).cross(p - pts[1]).norm() > 1e-12 {
                 pts.push(p);
                 break;
             }
@@ -242,7 +242,7 @@ fn build_tetrahedron(seed: &[Vec3], support: &impl Fn(&Vec3) -> Vec3) -> Option<
 
     // 3 -> 4: search along the triangle's normal.
     if pts.len() == 3 {
-        let n = (pts[1] - pts[0]).cross(&(pts[2] - pts[0]));
+        let n = (pts[1] - pts[0]).cross(pts[2] - pts[0]);
         if n.norm() < 1e-12 {
             return None;
         }
@@ -276,7 +276,7 @@ fn build_tetrahedron(seed: &[Vec3], support: &impl Fn(&Vec3) -> Vec3) -> Option<
 }
 
 fn signed_volume(a: &Vec3, b: &Vec3, c: &Vec3, d: &Vec3) -> f64 {
-    (b - a).cross(&(c - a)).dot(&(d - a))
+    (b - a).cross(c - a).dot(d - a)
 }
 
 /// A unit axis that is far from parallel to `v`, for building an orthogonal.
@@ -336,13 +336,13 @@ impl Face {
         let a = points[indices[0]];
         let b = points[indices[1]];
         let c = points[indices[2]];
-        let cross = (b - a).cross(&(c - a));
+        let cross = (b - a).cross(c - a);
         let norm = cross.norm();
         if !norm.is_finite() || norm <= 1e-14 {
             return None;
         }
         let normal = cross / norm;
-        let distance = normal.dot(&a);
+        let distance = normal.dot(a);
         if !distance.is_finite() || !is_finite(&normal) {
             return None;
         }
@@ -358,7 +358,7 @@ impl Face {
 
 fn is_visible(points: &[Vec3], face: &Face, point: &Vec3) -> bool {
     let a = points[face.indices[0]];
-    (point - a).dot(&face.normal) > 1e-12
+    (point - a).dot(face.normal) > 1e-12
 }
 
 #[cfg(test)]

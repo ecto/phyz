@@ -94,9 +94,9 @@ impl PostNewtonianSolver {
 
         let v2_i = vi.norm_squared();
         let v2_j = vj.norm_squared();
-        let vi_dot_vj = vi.dot(&vj);
-        let vi_dot_n = vi.dot(&n);
-        let vj_dot_n = vj.dot(&n);
+        let vi_dot_vj = vi.dot(vj);
+        let vi_dot_n = vi.dot(n);
+        let vj_dot_n = vj.dot(n);
 
         let c2 = C * C;
 
@@ -136,7 +136,7 @@ impl PostNewtonianSolver {
         let n = r / r_mag;
 
         let v_rel = vi - vj;
-        let v_rel_dot_n = v_rel.dot(&n);
+        let v_rel_dot_n = v_rel.dot(n);
 
         let c5 = C.powi(5);
         let coeff = -8.0 / 5.0 * G * G * mi * mj * (mi + mj) / (c5 * r3);
@@ -221,14 +221,14 @@ pub fn orbital_elements(x: Vec3, v: Vec3, m_central: f64) -> (f64, f64, f64, f64
     let energy = v2 / 2.0 - mu / r;
 
     // Angular momentum vector
-    let h = x.cross(&v);
+    let h = x.cross(v);
     let h_mag = h.norm();
 
     // Semi-major axis
     let a = -mu / (2.0 * energy);
 
     // Eccentricity vector: e = (v × h) / μ - r̂
-    let e_vec = v.cross(&h) / mu - x / r;
+    let e_vec = v.cross(h) / mu - x / r;
     let e = e_vec.norm();
 
     // Inclination
@@ -250,7 +250,7 @@ pub fn orbital_elements(x: Vec3, v: Vec3, m_central: f64) -> (f64, f64, f64, f64
 
     // Argument of periapsis
     let omega_bar = if n_mag > 1e-10 && e > 1e-10 {
-        let omega_bar_raw = (n.dot(&e_vec) / (n_mag * e)).acos();
+        let omega_bar_raw = (n.dot(e_vec) / (n_mag * e)).acos();
         if e_vec.z < 0.0 {
             2.0 * std::f64::consts::PI - omega_bar_raw
         } else {
@@ -262,8 +262,8 @@ pub fn orbital_elements(x: Vec3, v: Vec3, m_central: f64) -> (f64, f64, f64, f64
 
     // True anomaly
     let nu = if e > 1e-10 {
-        let nu_raw = (e_vec.dot(&x) / (e * r)).acos();
-        if x.dot(&v) < 0.0 {
+        let nu_raw = (e_vec.dot(x) / (e * r)).acos();
+        if x.dot(v) < 0.0 {
             2.0 * std::f64::consts::PI - nu_raw
         } else {
             nu_raw
@@ -368,7 +368,7 @@ mod tests {
         let lrl = |p: &[GravityParticle]| {
             let r = p[1].x - p[0].x;
             let v = p[1].v - p[0].v;
-            v.cross(&r.cross(&v)) / mu - r / r.norm()
+            v.cross(r.cross(v)) / mu - r / r.norm()
         };
 
         solver.compute_forces(&mut p);

@@ -346,10 +346,9 @@ fn main() {
             .overlaps
             .iter()
             .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+            && overlap.abs() > 0.1
         {
-            if overlap.abs() > 0.1 {
-                print!("  strongest: {name}={overlap:.3}");
-            }
+            print!("  strongest: {name}={overlap:.3}");
         }
         println!();
     }

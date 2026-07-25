@@ -222,13 +222,13 @@ fn clip_faces(reference: &Face, incident: &Face, normal: &Vec3) -> Option<Vec<Ma
         let a = reference.verts[i];
         let b = reference.verts[(i + 1) % n_ref];
         let edge = b - a;
-        let plane_n = edge.cross(&reference.normal);
+        let plane_n = edge.cross(reference.normal);
         let nn = plane_n.norm();
         if nn < 1e-12 {
             continue;
         }
         let mut plane_n = plane_n / nn;
-        if (centroid - a).dot(&plane_n) < 0.0 {
+        if (centroid - a).dot(plane_n) < 0.0 {
             plane_n = -plane_n;
         }
         poly = clip_polygon(&poly, &a, &plane_n);

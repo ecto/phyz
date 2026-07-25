@@ -336,7 +336,7 @@ impl std::error::Error for ContinuationError {}
 /// * `config` - Tent move configuration
 /// * `make_source` - Closure that builds a StressEnergy source for a given amplitude
 /// * `evolve_fn` - Closure that evolves all tent moves for one amplitude, given
-///                  `(sq_lengths, source, config)` → max residual
+///   `(sq_lengths, source, config)` → max residual
 ///
 /// # Adaptive stepping
 /// If a step fails to converge, the increment is halved and retried.

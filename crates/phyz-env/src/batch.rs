@@ -145,7 +145,10 @@ impl BatchEnv {
     }
 
     /// Load a model from an MJCF file and wrap it in a batch.
-    pub fn from_mjcf(path: &str, config_fn: impl FnOnce(&Model) -> EnvConfig) -> Result<Self, EnvError> {
+    pub fn from_mjcf(
+        path: &str,
+        config_fn: impl FnOnce(&Model) -> EnvConfig,
+    ) -> Result<Self, EnvError> {
         let loader = phyz_mjcf::MjcfLoader::from_file(path)?;
         let model = loader.build_model();
         let config = config_fn(&model);
@@ -240,9 +243,12 @@ impl BatchEnv {
             xform: &self.slots[i].xform,
             vel: &self.slots[i].vel,
         };
-        self.config
-            .obs
-            .write(&self.model, &view, &self.last_action[i * nu..(i + 1) * nu], dst);
+        self.config.obs.write(
+            &self.model,
+            &view,
+            &self.last_action[i * nu..(i + 1) * nu],
+            dst,
+        );
     }
 }
 

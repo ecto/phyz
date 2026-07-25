@@ -150,11 +150,16 @@ pub async fn run() {
 
     // Auth UI setup
     {
-        let sess = session.borrow();
-        if let Some(ref s) = *sess {
+        // Copy out what the awaits below need, then release the borrow: holding
+        // a RefCell guard across an await lets any borrow_mut() in between panic.
+        let sess = session
+            .borrow()
+            .as_ref()
+            .map(|s| (s.user_id.clone(), s.access_token.clone(), s.email.clone()));
+        if let Some((user_id, access_token, email)) = sess {
             // Authenticated: link auth to contributor
             if let Err(e) = client
-                .link_auth(&contributor_id, &s.user_id, &s.access_token)
+                .link_auth(&contributor_id, &user_id, &access_token)
                 .await
             {
                 web_sys::console::warn_1(&format!("link_auth: {e}").into());
@@ -176,7 +181,7 @@ pub async fn run() {
                 dom::set_class("name-modal", "");
             }
 
-            show_auth_ui(display_name.as_deref().unwrap_or(&s.email));
+            show_auth_ui(display_name.as_deref().unwrap_or(&email));
         }
     }
 
@@ -413,31 +418,37 @@ pub async fn run() {
                         if let Some(first) = results.first() {
                             *feed_ts.borrow_mut() = Some(first.submitted_at.clone());
                         }
-                        let mut r = renderer.borrow_mut();
                         let mut n_added = 0usize;
-                        for res in &results {
-                            // Skip own results (already shown by coordinator)
-                            if res.contributor_id == *my_cid {
-                                continue;
-                            }
-                            let log_g2 = res.coupling_g2.log10();
-                            let has_areas = !res.result_data.boundary_area_per_partition.is_empty();
-                            for (i, &s_ee) in
-                                res.result_data.entropy_per_partition.iter().enumerate()
-                            {
-                                let a_cut = if has_areas {
-                                    res.result_data.boundary_area_per_partition[i]
-                                } else {
-                                    i as f64
-                                };
-                                // Label first partition with contributor name
-                                let label = if i == 0 {
-                                    Some(res.contributor_name.clone())
-                                } else {
-                                    None
-                                };
-                                r.add_point_labeled(log_g2, s_ee, a_cut, label);
-                                n_added += 1;
+                        // Scoped so the renderer borrow cannot reach the await
+                        // below: holding a RefCell guard across an await lets any
+                        // borrow in between panic.
+                        {
+                            let mut r = renderer.borrow_mut();
+                            for res in &results {
+                                // Skip own results (already shown by coordinator)
+                                if res.contributor_id == *my_cid {
+                                    continue;
+                                }
+                                let log_g2 = res.coupling_g2.log10();
+                                let has_areas =
+                                    !res.result_data.boundary_area_per_partition.is_empty();
+                                for (i, &s_ee) in
+                                    res.result_data.entropy_per_partition.iter().enumerate()
+                                {
+                                    let a_cut = if has_areas {
+                                        res.result_data.boundary_area_per_partition[i]
+                                    } else {
+                                        i as f64
+                                    };
+                                    // Label first partition with contributor name
+                                    let label = if i == 0 {
+                                        Some(res.contributor_name.clone())
+                                    } else {
+                                        None
+                                    };
+                                    r.add_point_labeled(log_g2, s_ee, a_cut, label);
+                                    n_added += 1;
+                                }
                             }
                         }
                         if n_added > 0 {
@@ -500,14 +511,18 @@ pub async fn run() {
                 renderer.clone(),
                 None,
                 client.clone(),
-                Rc::new(Cell::new(false)),
-                Rc::new(Cell::new(0i64)),
-                lb_state.clone(),
-                exp_submitted.clone(),
-                exp_consensus.clone(),
-                exp_partial.clone(),
-                exp_total.clone(),
-                defrag_dirty.clone(),
+                RenderUiState {
+                    muted: Rc::new(Cell::new(false)),
+                    base_units: Rc::new(Cell::new(0i64)),
+                    lb_state: lb_state.clone(),
+                    defrag_dirty: defrag_dirty.clone(),
+                },
+                ExperimentCounters {
+                    submitted: exp_submitted.clone(),
+                    consensus: exp_consensus.clone(),
+                    partial: exp_partial.clone(),
+                    total: exp_total.clone(),
+                },
             );
             return;
         }
@@ -687,14 +702,18 @@ pub async fn run() {
         renderer,
         Some(coordinator),
         client,
-        muted,
-        base_units,
-        lb_state,
-        exp_submitted,
-        exp_consensus,
-        exp_partial,
-        exp_total,
-        defrag_dirty,
+        RenderUiState {
+            muted,
+            base_units,
+            lb_state,
+            defrag_dirty,
+        },
+        ExperimentCounters {
+            submitted: exp_submitted,
+            consensus: exp_consensus,
+            partial: exp_partial,
+            total: exp_total,
+        },
     );
 }
 
@@ -835,19 +854,45 @@ fn wire_mouse_controls(renderer: &Rc<RefCell<Renderer>>) {
     touchend.forget();
 }
 
+/// The self-referential `requestAnimationFrame` callback cell: the closure needs
+/// a handle to itself in order to schedule the next frame.
+type AnimationFrameCb = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
+/// Experiment-wide progress counters shared with the render loop.
+struct ExperimentCounters {
+    submitted: Rc<Cell<usize>>,
+    consensus: Rc<Cell<usize>>,
+    partial: Rc<Cell<usize>>,
+    total: Rc<Cell<usize>>,
+}
+
+/// UI state the render loop reads each frame.
+struct RenderUiState {
+    muted: Rc<Cell<bool>>,
+    base_units: Rc<Cell<i64>>,
+    lb_state: Rc<RefCell<LeaderboardState>>,
+    defrag_dirty: Rc<Cell<bool>>,
+}
+
 fn start_render_loop(
     renderer: Rc<RefCell<Renderer>>,
     coordinator: Option<Rc<Coordinator>>,
     client: Rc<SupabaseClient>,
-    muted: Rc<Cell<bool>>,
-    base_units: Rc<Cell<i64>>,
-    lb_state: Rc<RefCell<LeaderboardState>>,
-    exp_submitted: Rc<Cell<usize>>,
-    exp_consensus: Rc<Cell<usize>>,
-    exp_partial: Rc<Cell<usize>>,
-    exp_total: Rc<Cell<usize>>,
-    defrag_dirty: Rc<Cell<bool>>,
+    ui: RenderUiState,
+    exp: ExperimentCounters,
 ) {
+    let RenderUiState {
+        muted,
+        base_units,
+        lb_state,
+        defrag_dirty,
+    } = ui;
+    let ExperimentCounters {
+        submitted: exp_submitted,
+        consensus: exp_consensus,
+        partial: exp_partial,
+        total: exp_total,
+    } = exp;
     let r = renderer;
     let coord = coordinator;
     let frame_count = Rc::new(RefCell::new(0u32));
@@ -870,7 +915,7 @@ fn start_render_loop(
         }
     };
 
-    let f: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let f: AnimationFrameCb = Rc::new(RefCell::new(None));
     let g = f.clone();
 
     let fc = frame_count.clone();
@@ -940,40 +985,41 @@ fn start_render_loop(
         };
 
         // Update worker lanes every ~10 frames (~167ms)
-        if count % 10 == 0 {
-            if let Some(ref c) = coord {
-                let slots = c.worker_slots();
-                let mut html = String::new();
-                let mut n_active = 0usize;
-                let mut n_idle = 0usize;
-                for (i, slot) in slots.iter().enumerate() {
-                    if slot.active {
-                        n_active += 1;
-                        let is_single = slot.total == 1;
-                        let bar_html = if is_single {
-                            // Single-item batch: show pulsing bar with elapsed time
-                            let elapsed = format_elapsed(slot.elapsed_secs);
-                            format!(
-                                "<span class=\"wk-bar wk-pulse\" title=\"Computing — {elapsed} elapsed\">\
+        if count % 10 == 0
+            && let Some(ref c) = coord
+        {
+            let slots = c.worker_slots();
+            let mut html = String::new();
+            let mut n_active = 0usize;
+            let mut n_idle = 0usize;
+            for (i, slot) in slots.iter().enumerate() {
+                if slot.active {
+                    n_active += 1;
+                    let is_single = slot.total == 1;
+                    let bar_html = if is_single {
+                        // Single-item batch: show pulsing bar with elapsed time
+                        let elapsed = format_elapsed(slot.elapsed_secs);
+                        format!(
+                            "<span class=\"wk-bar wk-pulse\" title=\"Computing — {elapsed} elapsed\">\
                                  <span class=\"wk-fill wk-fill-pulse\"></span></span>\
                                  <span class=\"wk-elapsed\">{elapsed}</span>"
-                            )
+                        )
+                    } else {
+                        let pct = if slot.total > 0 {
+                            (slot.done as f64 / slot.total as f64 * 100.0).min(100.0)
                         } else {
-                            let pct = if slot.total > 0 {
-                                (slot.done as f64 / slot.total as f64 * 100.0).min(100.0)
-                            } else {
-                                0.0
-                            };
-                            let frac = format!("{}/{}", slot.done, slot.total);
-                            format!(
-                                "<span class=\"wk-bar\" title=\"Batch progress: {}/{}\">\
+                            0.0
+                        };
+                        let frac = format!("{}/{}", slot.done, slot.total);
+                        format!(
+                            "<span class=\"wk-bar\" title=\"Batch progress: {}/{}\">\
                                  <span class=\"wk-fill\" style=\"width:{pct:.0}%\"></span></span>\
                                  <span class=\"wk-frac\">{frac}</span>",
-                                slot.done, slot.total,
-                            )
-                        };
-                        let result_html = slot.last_result.as_deref().unwrap_or("");
-                        html.push_str(&format!(
+                            slot.done, slot.total,
+                        )
+                    };
+                    let result_html = slot.last_result.as_deref().unwrap_or("");
+                    html.push_str(&format!(
                             "<div class=\"wk\" title=\"Worker {i} — computing eigenvalues for this parameter set\">\
                              <span class=\"wk-idx\">w{i}</span>\
                              <span class=\"wk-params\" title=\"Level, coupling g², perturbation direction\">{}</span>\
@@ -982,19 +1028,18 @@ fn start_render_loop(
                              </div>",
                             slot.label,
                         ));
-                    } else {
-                        n_idle += 1;
-                    }
+                } else {
+                    n_idle += 1;
                 }
-                if n_idle > 0 && n_active > 0 {
-                    html.push_str(&format!(
-                        "<div class=\"wk-idle-summary\">+ {n_idle} idle</div>"
-                    ));
-                }
-                dom::set_inner_html("workers", &html);
-                let total = n_active + n_idle;
-                dom::set_text("worker-count", &format!("{n_active}/{total}w"));
             }
+            if n_idle > 0 && n_active > 0 {
+                html.push_str(&format!(
+                    "<div class=\"wk-idle-summary\">+ {n_idle} idle</div>"
+                ));
+            }
+            dom::set_inner_html("workers", &html);
+            let total = n_active + n_idle;
+            dom::set_text("worker-count", &format!("{n_active}/{total}w"));
         }
 
         // Flush cache to localStorage every ~5s (not every frame)
@@ -1317,7 +1362,7 @@ impl LeaderboardState {
         for (i, entry) in entries.iter().enumerate() {
             let rank = i as u32 + 1;
             let is_me =
-                auth_id.map_or(false, |id| id == entry.player_id) || entry.player_id == self.my_id;
+                auth_id.is_some_and(|id| id == entry.player_id) || entry.player_id == self.my_id;
 
             if is_me {
                 self.my_rank = Some(rank);
