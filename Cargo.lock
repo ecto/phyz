@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -2967,6 +2967,9 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "phyz-math",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "rand_distr",
 ]
 
 [[package]]
