@@ -1,0 +1,22 @@
+[package]
+name = "phyz-validate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Closed-form physics benchmarks for every phyz solver"
+publish = false
+
+[dependencies]
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+phyz-em.workspace = true
+phyz-gravity.workspace = true
+phyz-lbm.workspace = true
+phyz-md.workspace = true
+
+[[bin]]
+name = "phyz-validate"
+path = "src/main.rs"
