@@ -8,11 +8,13 @@
 //!
 //! Requires the `contact` and `diff` features (both on by default).
 
-use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+use phyz_contact::{
+    ContactMaterial, ContactSolverConfig, find_contacts, find_ground_contacts, solve_contacts,
+};
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
 use phyz_model::{Geometry, Model, State};
-use phyz_rigid::{aba, aba_with_external_forces, forward_kinematics};
+use phyz_rigid::{aba, forward_kinematics};
 
 /// Pluggable solver trait.
 ///
@@ -169,7 +171,7 @@ impl Simulator {
         let dt = model.dt;
 
         // Run FK to get current transforms and velocities
-        let (xforms, velocities) = forward_kinematics(model, state);
+        let (xforms, _velocities) = forward_kinematics(model, state);
         state.body_xform = xforms;
 
         // Collect body geometries
@@ -183,23 +185,31 @@ impl Simulator {
         let body_contacts = find_contacts(model, state, &geometries);
         contacts.extend(body_contacts);
 
-        if contacts.is_empty() {
-            // No contacts — standard step
-            let qdd = aba(model, state);
-            state.v += &(&qdd * dt);
-            let v_clone = state.v.clone();
-            state.q += &(&v_clone * dt);
-        } else {
-            // Compute contact spatial forces per body
-            let materials = vec![material.clone()];
-            let spatial_forces = contact_forces(&contacts, state, &materials, Some(&velocities));
+        // Free velocity: where the system lands after one step with every
+        // force except contact. The contact solve then finds the impulses
+        // that correct it.
+        let qdd = aba(model, state);
+        let free_qd = &state.v + &(&qdd * dt);
 
-            // Run ABA with external forces
-            let qdd = aba_with_external_forces(model, state, Some(&spatial_forces));
-            state.v += &(&qdd * dt);
-            let v_clone = state.v.clone();
-            state.q += &(&v_clone * dt);
+        if contacts.is_empty() {
+            state.v = free_qd;
+        } else {
+            // Convex contact solve. Unlike the penalty law this replaces,
+            // every contact is solved *together* through the Delassus
+            // operator, so pressing on one corner of a box correctly unloads
+            // another — and friction is a real Coulomb cone with stiction
+            // rather than a viscous damper that vanished at low sliding speed.
+            let materials = vec![material.clone()];
+            let config = ContactSolverConfig::simulation();
+            let asm =
+                phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, &config);
+            let solution = solve_contacts(&asm.problem, &config);
+            // v' = v_free + M^-1 J^T f.
+            state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }
+
+        let v_clone = state.v.clone();
+        state.q += &(&v_clone * dt);
 
         state.time += dt;
 

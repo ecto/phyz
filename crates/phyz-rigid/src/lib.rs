@@ -19,11 +19,13 @@ pub mod aba;
 pub mod actuation;
 pub mod crba;
 pub mod energy;
+pub mod jacobian;
 pub mod kinematics;
 pub mod rnea;
 
 pub use aba::{aba, aba_with_external_forces};
 pub use crba::crba;
 pub use energy::{kinetic_energy, potential_energy, total_energy};
+pub use jacobian::{point_jacobian, relative_point_jacobian};
 pub use kinematics::{BodyKinematics, forward_kinematics, forward_kinematics_acc};
 pub use rnea::{body_wrenches, rnea};

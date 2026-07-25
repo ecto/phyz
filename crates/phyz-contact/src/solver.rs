@@ -147,6 +147,11 @@ fn rot_is_finite(m: &phyz_math::Mat3) -> bool {
 ///
 /// `body_velocities` should come from forward_kinematics (linear part of spatial velocity).
 /// Returns spatial forces for each body in body frame.
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`), which couples contacts through the Delassus \
+            operator instead of treating each in isolation"
+)]
 pub fn contact_forces(
     contacts: &[Collision],
     state: &State,
@@ -184,6 +189,7 @@ pub fn contact_forces(
         };
 
         // Compute force
+        #[allow(deprecated)]
         let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
         let f_linear = force.linear;
 
@@ -216,6 +222,11 @@ pub fn contact_forces(
 /// `masses[i]` is the effective contact mass of body `i`. Use
 /// `f64::INFINITY` for fixed/world bodies. For ground contacts
 /// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`), which couples contacts through the Delassus \
+            operator instead of treating each in isolation"
+)]
 pub fn contact_forces_implicit(
     contacts: &[Collision],
     state: &State,
@@ -258,6 +269,7 @@ pub fn contact_forces_implicit(
             masses.get(j).copied().unwrap_or(f64::INFINITY)
         };
 
+        #[allow(deprecated)]
         let force = crate::compute_contact_force_implicit(
             contact, material, &vel_i, &vel_j, mass_i, mass_j, dt,
         );

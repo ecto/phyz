@@ -1,5 +1,10 @@
 //! Integration tests for the phyz physics engine.
 
+// These tests still exercise the deprecated penalty path directly. They are
+// retained until it is deleted, so the old behaviour stays pinned while the
+// convex solve takes over the production stepper.
+#![allow(deprecated)]
+
 use approx::assert_relative_eq;
 use phyz::{
     ContactMaterial, Geometry, Model, ModelBuilder, Simulator,
