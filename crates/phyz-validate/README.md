@@ -37,7 +37,7 @@ The binary exits non-zero when any benchmark fails.
 |---|---|
 | `rigid` | pendulum period vs the elliptic-integral solution at 5–150°, RK4 fourth-order convergence, total-energy conservation, fast-top precession `Ω = mgl/(I₃ω₃)` and its `ω₃⁻²` approach |
 | `gravity` | Kepler energy / angular momentum / Laplace–Runge–Lenz conservation with `Δt²` scaling; Mercury perihelion precession from *integrated* 1PN equations of motion |
-| `em` | numerical dispersion vs the analytic Yee relation, `Δx²` phase-velocity convergence, TM₁₁₀ cavity resonance, measured absorbing-boundary reflection coefficient |
+| `em` | numerical dispersion vs the analytic Yee relation, `Δx²` phase-velocity convergence, TM₁₁₀ cavity resonance, CPML reflection coefficient and residual-energy drain |
 | `lbm` | Poiseuille profile vs `u(y) = Fy(H−y)/2ρν` and its viscosity-independence across BGK/TRT/MRT, Taylor–Green decay rate and field shape, lid-driven cavity and primary-vortex position vs Ghia, Ghia & Shin (1982), mass conservation, forcing isotropy |
 | `md` | velocity-Verlet bounded energy error and secular drift, start-up consistency, Lennard-Jones `g(r)` and `⟨U⟩/N` at ρ\* = 0.8442, T\* = 0.722 |
 

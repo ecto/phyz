@@ -2,7 +2,7 @@
 
 Every entry compares a phyz solver against a closed-form solution or published reference data, and reports a quantitative error — not a pass/fail bit. Tolerances are declared before the measurement is taken and are never relaxed to make a benchmark pass.
 
-**39 passed · 3 failed · 2 reported (diagnostic)**
+**41 passed · 2 failed · 3 reported (diagnostic)**
 
 ## Failures
 
@@ -10,7 +10,6 @@ Every entry compares a phyz solver against a closed-form solution or published r
 |---|---|---:|---:|---:|---:|
 | `gravity.pn.mercury_precession` | precession of the eccentricity vector (arcsec/century), 400 orbits at 4000 steps/orbit | 1.433255e1 | 4.299726e1 | 6.667e-1 (rel) | 2.000e-2 |
 | `gravity.pn.mercury_convergence` | \|Δϖ_measured − Δϖ_GR\| / Δϖ_GR at 4000 steps/orbit (60 orbits) | 6.663155e-1 | 0.000000e0 | 6.663e-1 (abs) | 2.000e-2 |
-| `em.absorbing_boundary_reflection` | reflection coefficient R (dB), 16-cell layer, best σ_max over 1e−2…1e6 S/m | -1.162370e1 | -6.000000e1 | 4.838e1 (abs) | 0.000e0 |
 
 ## Rigid-body dynamics — Featherstone ABA (`phyz-rigid`)
 
@@ -231,8 +230,8 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the m=1 standing mode (rad/s)
 - **measured**: 1.471467353e10
 - **expected**: 1.471467353e10
-- **error**: 1.0287e-12 (rel) — tolerance 1.0000e-9
-- _note_: For one spatial eigenmode the leapfrog is exactly E^{n+1} = 2cos(ωΔt)E^n − E^{n−1}, so a correct implementation matches the analytic Yee root to round-off. This directly tests the update coefficients dt/(μΔx) and dt/(εΔx).
+- **error**: 2.6877e-12 (rel) — tolerance 1.0000e-9
+- _note_: For one spatial eigenmode the leapfrog is exactly E^{n+1} = 2cos(ωΔt)E^n − E^{n−1}, so a correct implementation matches the analytic Yee root to round-off. This directly tests the update coefficients Δt/(μΔx) and Δt/(εΔx).
 
 ### Numerical dispersion, 1-D PEC cavity mode m=3 (coarse, kΔx large) — PASS
 
@@ -242,7 +241,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the m=3 standing mode (rad/s)
 - **measured**: 8.800370794e10
 - **expected**: 8.800370794e10
-- **error**: 2.7395e-14 (rel) — tolerance 1.0000e-9
+- **error**: 1.0473e-13 (rel) — tolerance 1.0000e-9
 
 ### Phase-velocity error vanishes as Δx² under refinement — PASS
 
@@ -250,9 +249,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `em.dispersion_convergence`
 - **reference**: Second-order accuracy of the Yee scheme; ω/ck − 1 = −(kΔx)²(1 − S²)/24 + O(Δx⁴)
 - **metric**: |ω_num − ck| / ck at the finest grid (Δx = L/128)
-- **measured**: 2.300801705e-5
+- **measured**: 2.300803253e-5
 - **expected**: 0.000000000e0
-- **error**: 2.3008e-5 (abs) — tolerance 1.0000e-4
+- **error**: 2.3008e-5 (abs) — tolerance 3.4508e-5
 - **convergence in Δx/L**: measured order p = 2.000 (expected 2.0 ± 0.1) — OK
 
   | Δx/L | error | ratio |
@@ -260,7 +259,8 @@ Every entry compares a phyz solver against a closed-form solution or published r
   | 6.250000e-2 | 1.472338e-3 | NaN |
   | 3.125000e-2 | 3.681179e-4 | 4.000 |
   | 1.562500e-2 | 9.203155e-5 | 4.000 |
-  | 7.812500e-3 | 2.300802e-5 | 4.000 |
+  | 7.812500e-3 | 2.300803e-5 | 4.000 |
+- _note_: Tolerance is 1.5 × (error at Δx = L/16) / 64 = 3.451e-5, derived from the measured coarse grid rather than chosen after the fact.
 
 ### TM₁₁₀ square-cavity resonance vs the discrete Yee root — PASS
 
@@ -270,7 +270,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the TM₁₁₀ mode (rad/s)
 - **measured**: 3.329143762e10
 - **expected**: 3.329143762e10
-- **error**: 1.1539e-13 (rel) — tolerance 1.0000e-9
+- **error**: 5.3282e-13 (rel) — tolerance 1.0000e-9
 - _note_: Exercises the x- and y-curl updates and the PEC boundary on four walls.
 
 ### TM₁₁₀ square-cavity resonance vs closed-form f = (c/2)√((m/Lx)²+(n/Ly)²) — PASS
@@ -290,9 +290,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `em.cavity_convergence`
 - **reference**: Second-order accuracy of the Yee scheme
 - **metric**: |f_num − f_exact| / f_exact at 81×81
-- **measured**: 5.354654189e-5
+- **measured**: 5.354654448e-5
 - **expected**: 0.000000000e0
-- **error**: 5.3547e-5 (abs) — tolerance 1.0000e-3
+- **error**: 5.3547e-5 (abs) — tolerance 8.0368e-5
 - **convergence in Δx/L**: measured order p = 2.000 (expected 2.0 ± 0.1) — OK
 
   | Δx/L | error | ratio |
@@ -302,19 +302,38 @@ Every entry compares a phyz solver against a closed-form solution or published r
   | 2.500000e-2 | 2.141924e-4 | 4.000 |
   | 1.250000e-2 | 5.354654e-5 | 4.000 |
 
-### Reflection coefficient of the `PmlLayer` absorbing boundary — FAIL
+### Reflection coefficient of the CPML absorbing boundary — PASS
 
 - **crate**: `phyz-em`
-- **id**: `em.absorbing_boundary_reflection`
-- **reference**: Berenger (1994); Taflove & Hagness ch. 7 — a correctly implemented 10–16 cell CPML reaches R < −60 dB (typically −80 dB) for a normally incident broadband pulse
-- **metric**: reflection coefficient R (dB), 16-cell layer, best σ_max over 1e−2…1e6 S/m
-- **measured**: -1.162370043e1
+- **id**: `em.cpml_reflection`
+- **reference**: Roden & Gedney (2000); Taflove & Hagness ch. 7 — a correctly implemented 10-cell CPML reaches R < −60 dB for a normally incident broadband pulse
+- **metric**: worst broadband reflection R (dB), 10-cell CPML
+- **measured**: -9.031680093e1
 - **expected**: -6.000000000e1
-- **error**: 4.8376e1 (abs) — tolerance 0.0000e0
-- _note_: best σ_max = 1.000e0 S/m
-- _note_: σ_max sweep: σ_max = 1e-2 S/m → R =   -0.28 dB; σ_max = 1e-1 S/m → R =   -2.56 dB; σ_max = 1e0  S/m → R =  -11.62 dB; σ_max = 1e1  S/m → R =   -4.49 dB; σ_max = 1e2  S/m → R =   -2.85 dB; σ_max = 1e3  S/m → R =   -1.81 dB; σ_max = 1e4  S/m → R =   -1.15 dB; σ_max = 1e5  S/m → R =   -0.76 dB; σ_max = 1e6  S/m → R =   -0.19 dB
-- _note_: `phyz_em::PmlLayer` (crates/phyz-em/src/boundary.rs:28-67) builds only a graded *electric* conductivity profile σ(d). `update_h_field` (crates/phyz-em/src/fdtd.rs:15-50) has no magnetic-loss term, so the matching condition σ*/μ = σ/ε is never imposed: the layer is a lossy dielectric slab, not a perfectly matched layer. Its wave impedance η = √(μ/(ε + iσ/ω)) differs from the vacuum impedance at every frequency, and the impedance jump at the layer's front face reflects regardless of how the profile is graded.
-- _note_: `apply_pml_boundary` (boundary.rs:163-205) additionally *sums* the σ contributions of all six faces, so corner cells receive up to 6σ_max, and thickness is derived from `nx` alone (`8.min(self.nx / 4)`) even for anisotropic grids. This benchmark bypasses that routine and applies the graded profile to the +z face only, which is the most favourable case for the layer.
+- **error**: 0.0000e0 (abs) — tolerance 0.0000e0
+- _note_: One-sided criterion: any value at or below −60 dB passes. Measured by differencing the probe against the same excitation in a 4000-cell domain, so what remains is exactly what the boundary sent back.
+
+### CPML drains a radiating pulse out of the grid — PASS
+
+- **crate**: `phyz-em`
+- **id**: `em.cpml_drains_the_grid`
+- **reference**: An absorbing boundary removes outgoing energy; after several transits an open domain should retain a negligible fraction of the peak field energy, and orders of magnitude less than an impedance-mismatched lossy layer
+- **metric**: residual field energy / peak, after 4000 steps on a 300-cell grid
+- **measured**: 2.571522080e-6
+- **expected**: 1.618300643e-4
+- **error**: 0.0000e0 (abs) — tolerance 0.0000e0
+- _note_: The cheap `LossyAbsorber` retains 1.618e-1 of the peak on the same problem — 62932× more energy left ringing in the domain. Criterion: CPML must leave at most 1/1000 of that, i.e. 1.618e-4.
+
+### Residual energy left by the cheap graded-conductivity absorber — REPORT
+
+- **crate**: `phyz-em`
+- **id**: `em.lossy_absorber_residual`
+- **reference**: `BoundaryCondition::LossyAbsorber` adds electric loss σ without the matching magnetic loss σ* = σμ/ε, so it is impedance-mismatched at every frequency and is documented as not being a PML
+- **metric**: residual field energy / peak, after 4000 steps on a 300-cell grid
+- **measured**: 1.618300643e-1
+- **expected**: 0.000000000e0
+- **error**: 1.6183e-1 (abs) — tolerance 0.0000e0
+- _note_: Reported, not failed: this boundary is offered as the cheap option and the crate documents its limits. The measurement quantifies the gap so a caller can decide; use `BoundaryCondition::Cpml` when reflections matter.
 
 ## Fluids — lattice Boltzmann D2Q9 (`phyz-lbm`)
 
@@ -519,7 +538,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **measured**: 0.000000000e0
 - **expected**: 0.000000000e0
 - **error**: 0.0000e0 (abs) — tolerance 2.0000e-2
-- _note_: production average T* = 0.7049 (target 0.722)
+- _note_: production average T* = 0.7007 (target 0.722)
 
 ### LJ fluid g(r): first-peak position — PASS
 
@@ -537,9 +556,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_peak_height`
 - **reference**: Verlet (1968) — g(r_max) ≈ 3.0 for ρ* = 0.8442, T* = 0.722
 - **metric**: g(r) at the first maximum
-- **measured**: 3.020677073e0
+- **measured**: 3.047930263e0
 - **expected**: 3.000000000e0
-- **error**: 6.8924e-3 (rel) — tolerance 1.2000e-1
+- **error**: 1.5977e-2 (rel) — tolerance 1.2000e-1
 
 ### LJ fluid g(r): first-minimum position and depth — PASS
 
@@ -547,9 +566,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_minimum`
 - **reference**: Verlet (1968) — first minimum at r* ≈ 1.55 with g ≈ 0.60
 - **metric**: r* of the first minimum of g(r)
-- **measured**: 1.536830515e0
+- **measured**: 1.553626477e0
 - **expected**: 1.550000000e0
-- **error**: 1.3169e-2 (abs) — tolerance 6.0000e-2
+- **error**: 3.6265e-3 (abs) — tolerance 6.0000e-2
 
 ### LJ fluid g(r): depth of the first minimum — PASS
 
@@ -557,10 +576,10 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_minimum_depth`
 - **reference**: Verlet (1968) — g ≈ 0.60 at the first minimum
 - **metric**: g(r) at the first minimum
-- **measured**: 5.687108957e-1
+- **measured**: 5.697413911e-1
 - **expected**: 6.000000000e-1
-- **error**: 5.2149e-2 (rel) — tolerance 2.0000e-1
-- _note_: measured minimum at r* = 1.537
+- **error**: 5.0431e-2 (rel) — tolerance 2.0000e-1
+- _note_: measured minimum at r* = 1.554
 
 ### LJ fluid excess energy at ρ* = 0.8442, T* = 0.722 — PASS
 
@@ -568,9 +587,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.thermo.energy`
 - **reference**: Verlet, *Phys. Rev.* 159 (1967) 98, Table II; Johnson, Zollweg & Gubbins, *Mol. Phys.* 78 (1993) 591 — U*/N ≈ −5.7 with a 2.5σ truncation (no tail correction)
 - **metric**: ⟨U⟩/N in reduced units
-- **measured**: -5.659001407e0
+- **measured**: -5.663930769e0
 - **expected**: -5.700000000e0
-- **error**: 7.1927e-3 (rel) — tolerance 5.0000e-2
+- **error**: 6.3279e-3 (rel) — tolerance 5.0000e-2
 - _note_: Reported without a long-range tail correction, matching the crate's hard truncation.
 
 ### LJ fluid virial pressure at ρ* = 0.8442, T* = 0.722 — REPORT
@@ -579,8 +598,8 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.thermo.pressure`
 - **reference**: Verlet (1967) Table II — P*V/Nk_BT ≈ 0.5, i.e. P* ≈ 0.3 at this state point with a 2.5σ truncation
 - **metric**: ⟨P⟩ in reduced units
-- **measured**: 7.819440674e-1
+- **measured**: 7.756879245e-1
 - **expected**: 3.000000000e-1
-- **error**: 4.8194e-1 (abs) — tolerance 3.5000e-1
+- **error**: 4.7569e-1 (abs) — tolerance 3.5000e-1
 - _note_: Reported as a diagnostic: the truncation convention (shifted vs unshifted, tail correction) moves the reference value by more than the statistical error of this run, so a tight pass/fail claim would not be meaningful.
 

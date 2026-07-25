@@ -23,9 +23,6 @@ const KNOWN_FAILURES: &[&str] = &[
     // against the general-relativistic 42.998″/century, and does not converge.
     "gravity.pn.mercury_precession",
     "gravity.pn.mercury_convergence",
-    // `PmlLayer` has no magnetic loss term, so it is a lossy slab, not a matched
-    // layer; best measured reflection is ≈ −12 dB against ≈ −60 dB for a real PML.
-    "em.absorbing_boundary_reflection",
 ];
 
 #[test]
