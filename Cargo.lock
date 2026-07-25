@@ -2812,8 +2812,12 @@ name = "phyz"
 version = "0.3.1"
 dependencies = [
  "approx",
+ "phyz-collision",
+ "phyz-contact",
+ "phyz-diff",
  "phyz-math",
- "tang",
+ "phyz-model",
+ "phyz-rigid",
 ]
 
 [[package]]

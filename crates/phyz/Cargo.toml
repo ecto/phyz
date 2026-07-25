@@ -8,8 +8,12 @@ homepage = "https://phyz.dev"
 description = "Multi-physics differentiable simulation engine"
 
 [dependencies]
+phyz-collision.workspace = true
+phyz-contact.workspace = true
+phyz-diff.workspace = true
 phyz-math.workspace = true
-tang = { version = "0.2.0", path = "../../../tang/crates/tang", features = ["std", "la"] }
+phyz-model.workspace = true
+phyz-rigid.workspace = true
 
 [dev-dependencies]
 approx = "0.5"

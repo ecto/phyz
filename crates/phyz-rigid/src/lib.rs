@@ -11,11 +11,13 @@ pub mod aba;
 pub mod actuation;
 pub mod crba;
 pub mod energy;
+pub mod integrator;
 pub mod kinematics;
 pub mod rnea;
 
 pub use aba::{aba, aba_with_external_forces};
 pub use crba::crba;
 pub use energy::{kinetic_energy, potential_energy, total_energy};
+pub use integrator::{Integrator, Simulator};
 pub use kinematics::forward_kinematics;
 pub use rnea::rnea;

@@ -6,6 +6,14 @@
 pub mod rollout;
 pub mod symbolic;
 
+// The rollout adjoint API is the crate's headline surface; hoist it to the
+// root so callers can write `phyz_diff::AdjointRollout` (and so the `phyz`
+// facade's `phyz::diff::…` spelling keeps working).
+pub use rollout::{
+    AdjointGradients, AdjointRollout, CollisionMesh, ContactSetup, FinalStateObjective,
+    GroundContact, N_INERTIA_PARAMS, adjoint_rollout_gradient, inertia_params, rollout_objective,
+};
+
 use phyz_math::{DMat, DVec};
 use phyz_model::{Model, State};
 use phyz_rigid::aba;
