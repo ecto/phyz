@@ -48,6 +48,8 @@ pub fn find_contacts(
             let pos = xform.pos;
             let rot = xform.rot;
             if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
+                // Poisoned transform; degrade gracefully and skip this body
+                // by giving it a degenerate, non-finite-tagged AABB.
                 aabbs.push(AABB::new(
                     Vec3::new(f64::NAN, f64::NAN, f64::NAN),
                     Vec3::new(f64::NAN, f64::NAN, f64::NAN),
@@ -195,10 +197,14 @@ pub fn contact_forces(
                 .unwrap_or(Vec3::zeros())
         };
 
+        // Compute force
         let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
         let f_linear = force.linear;
 
-        // Goal 1 sign convention + Goal 4 contact-point torque (τ = r × F).
+        // Apply equal and opposite forces AT THE CONTACT POINT. Sign
+        // convention follows Goal 1; the torque component follows Goal 4
+        // (τ = r × F where r is from the body's frame origin to the contact
+        // point in world frame). For ground contacts, only body i is updated.
         if j == usize::MAX {
             let r_i = contact.contact_point - state.body_xform[i].pos;
             forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);
@@ -215,8 +221,14 @@ pub fn contact_forces(
 
 /// Compute contact forces with implicit damping for low-mass-body stability.
 ///
-/// See [`crate::compute_contact_force_implicit`] for the derivation. Pass
-/// `f64::INFINITY` in `masses[i]` for fixed/world bodies. For ground contacts
+/// Like [`contact_forces`], but the per-contact wrench is computed by
+/// [`crate::compute_contact_force_implicit`] which uses the body velocity at
+/// the END of the step. This makes the contact solve unconditionally stable
+/// for any choice of `dt`, contact stiffness, and damping — preventing the
+/// "low-mass cube launches off the plate" failure mode of the explicit form.
+///
+/// `masses[i]` is the effective contact mass of body `i`. Use
+/// `f64::INFINITY` for fixed/world bodies. For ground contacts
 /// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
 pub fn contact_forces_implicit(
     contacts: &[Collision],
@@ -265,7 +277,7 @@ pub fn contact_forces_implicit(
         );
         let f_linear = force.linear;
 
-        // Goal 1 sign convention + Goal 4 contact-point torque.
+        // Apply at the contact point (Goal 4). Sign convention from Goal 1.
         if j == usize::MAX {
             let r_i = contact.contact_point - state.body_xform[i].pos;
             forces[i] = forces[i] + SpatialVec::new(r_i.cross(&f_linear), f_linear);

@@ -2,7 +2,7 @@
 
 Every entry compares a phyz solver against a closed-form solution or published reference data, and reports a quantitative error — not a pass/fail bit. Tolerances are declared before the measurement is taken and are never relaxed to make a benchmark pass.
 
-**41 passed · 2 failed · 3 reported (diagnostic)**
+**40 passed · 2 failed · 4 reported (diagnostic)**
 
 ## Failures
 
@@ -484,18 +484,18 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **crate**: `phyz-md`
 - **id**: `md.verlet_energy_order`
 - **reference**: Hairer, Lubich & Wanner, *Geometric Numerical Integration* — a symplectic second-order integrator has an O(Δt²) *bounded* energy error, with no secular term
-- **metric**: peak |ΔE|/|E| over 40 reduced time units, LJ dimer, Δt = 0.001
-- **measured**: 8.185103590e-5
+- **metric**: peak |ΔE|/|E| over 40 reduced time units, LJ dimer, Δt = 0.001 τ
+- **measured**: 8.624402237e-5
 - **expected**: 0.000000000e0
-- **error**: 8.1851e-5 (abs) — tolerance 1.0000e-4
-- **convergence in Δt**: measured order p = 2.004 (expected 2.0 ± 0.3) — OK
+- **error**: 8.6244e-5 (abs) — tolerance 1.0000e-4
+- **convergence in Δt/τ**: measured order p = 2.004 (expected 2.0 ± 0.3) — OK
 
-  | Δt | error | ratio |
+  | Δt/τ | error | ratio |
   |---:|---:|---:|
-  | 8.000000e-3 | 5.282052e-3 | NaN |
-  | 4.000000e-3 | 1.312172e-3 | 4.025 |
-  | 2.000000e-3 | 3.275322e-4 | 4.006 |
-  | 1.000000e-3 | 8.185104e-5 | 4.002 |
+  | 8.000000e-3 | 5.565542e-3 | NaN |
+  | 4.000000e-3 | 1.382597e-3 | 4.025 |
+  | 2.000000e-3 | 3.451110e-4 | 4.006 |
+  | 1.000000e-3 | 8.624402e-5 | 4.002 |
 - _note_: The dimer never approaches the 2.5σ cutoff, so this isolates the integrator from force-truncation and neighbour-list artefacts.
 
 ### Velocity Verlet: no secular energy drift on the LJ dimer — PASS
@@ -503,31 +503,30 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **crate**: `phyz-md`
 - **id**: `md.verlet_secular_drift`
 - **reference**: Symplectic integrators conserve a shadow Hamiltonian exactly, so d⟨E⟩/dt = 0
-- **metric**: |d(ΔE/E)/dt| per reduced time unit, Δt = 0.001
-- **measured**: 1.936252194e-9
+- **metric**: |d(ΔE/E)/dt| per reduced time unit, Δt = 0.001 τ
+- **measured**: 2.040172758e-9
 - **expected**: 0.000000000e0
-- **error**: 1.9363e-9 (abs) — tolerance 1.0000e-6
-- _note_: secular slopes across Δt: Δt=0.0080 → 1.048e-7, Δt=0.0040 → 2.940e-8, Δt=0.0020 → 7.632e-9, Δt=0.0010 → 1.936e-9
+- **error**: 2.0402e-9 (abs) — tolerance 1.0000e-6
+- _note_: secular slopes across Δt: Δt=0.0080τ → 1.104e-7, Δt=0.0040τ → 3.097e-8, Δt=0.0020τ → 8.042e-9, Δt=0.0010τ → 2.040e-9
 
 ### First integration step is a valid velocity-Verlet step — PASS
 
 - **crate**: `phyz-md`
 - **id**: `md.startup_consistency`
 - **reference**: A correct velocity-Verlet start-up evaluates a(0) before the first drift, so the local truncation error of step 1 is O(Δt³) like every other step
-- **metric**: |ΔE|/|E| across the first step alone, Δt = 0.001, v(0)·a(0) ≠ 0
-- **measured**: 2.703912297e-9
+- **metric**: |ΔE|/|E| across the first step alone, Δt = 0.001 τ, v(0)·a(0) ≠ 0
+- **measured**: 2.150589824e-8
 - **expected**: 0.000000000e0
-- **error**: 2.7039e-9 (abs) — tolerance 1.0000e-6
-- **convergence in Δt**: measured order p = 3.017 (expected 3.0 ± 0.3) — OK
+- **error**: 2.1506e-8 (abs) — tolerance 1.0000e-6
+- **convergence in Δt/τ**: measured order p = 3.011 (expected 3.0 ± 0.3) — OK
 
-  | Δt | error | ratio |
+  | Δt/τ | error | ratio |
   |---:|---:|---:|
-  | 8.000000e-3 | 1.435715e-6 | NaN |
-  | 4.000000e-3 | 1.757769e-7 | 8.168 |
-  | 2.000000e-3 | 2.174444e-8 | 8.084 |
-  | 1.000000e-3 | 2.703912e-9 | 8.042 |
-- _note_: The measured order is what distinguishes the two cases. A start-up that drifts with a = 0 drops half of the first kick, which is an O(Δt) velocity error and shows up here as order 1; a sound start-up shows the ordinary O(Δt³) local truncation error of a single velocity-Verlet step.
-- _note_: `MdSystem::step` (crates/phyz-md/src/system.rs:250-272) now calls `compute_forces()` when `self.step == 0`, so the accumulator holds F(x(0)) before the first drift. An earlier revision did not, and this benchmark measured order 0.993 against it. The other MD benchmarks still prime forces explicitly, which is harmless either way.
+  | 8.000000e-3 | 1.127236e-5 | NaN |
+  | 4.000000e-3 | 1.391246e-6 | 8.102 |
+  | 2.000000e-3 | 1.726829e-7 | 8.057 |
+  | 1.000000e-3 | 2.150590e-8 | 8.030 |
+- _note_: `MdSystem::step` primes the force accumulator when `self.step == 0`, so it holds F(x(0)) before the first drift. An earlier revision did not, and this benchmark measured order 0.993 against it.
 
 ### LJ fluid g(r): excluded volume inside the repulsive core — PASS
 
@@ -538,7 +537,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **measured**: 0.000000000e0
 - **expected**: 0.000000000e0
 - **error**: 0.0000e0 (abs) — tolerance 2.0000e-2
-- _note_: production average T* = 0.7007 (target 0.722)
+- _note_: production average T* = 0.7150 (target 0.722); ε = 0.0103 eV, σ = 3.4 Å
 
 ### LJ fluid g(r): first-peak position — PASS
 
@@ -546,9 +545,9 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_peak_position`
 - **reference**: Verlet (1968); Hansen & McDonald, *Theory of Simple Liquids* Fig. 4.2 — first peak at r* ≈ 1.09 for ρ* = 0.8442, T* = 0.722
 - **metric**: r* of the first maximum of g(r)
-- **measured**: 1.083339543e0
+- **measured**: 1.081659947e0
 - **expected**: 1.090000000e0
-- **error**: 6.6605e-3 (abs) — tolerance 4.0000e-2
+- **error**: 8.3401e-3 (abs) — tolerance 4.0000e-2
 
 ### LJ fluid g(r): first-peak height — PASS
 
@@ -556,19 +555,19 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_peak_height`
 - **reference**: Verlet (1968) — g(r_max) ≈ 3.0 for ρ* = 0.8442, T* = 0.722
 - **metric**: g(r) at the first maximum
-- **measured**: 3.047930263e0
+- **measured**: 3.012272342e0
 - **expected**: 3.000000000e0
-- **error**: 1.5977e-2 (rel) — tolerance 1.2000e-1
+- **error**: 4.0908e-3 (rel) — tolerance 1.2000e-1
 
-### LJ fluid g(r): first-minimum position and depth — PASS
+### LJ fluid g(r): first-minimum position — PASS
 
 - **crate**: `phyz-md`
 - **id**: `md.rdf.first_minimum`
-- **reference**: Verlet (1968) — first minimum at r* ≈ 1.55 with g ≈ 0.60
+- **reference**: Verlet (1968) — first minimum at r* ≈ 1.55
 - **metric**: r* of the first minimum of g(r)
-- **measured**: 1.553626477e0
+- **measured**: 1.551946881e0
 - **expected**: 1.550000000e0
-- **error**: 3.6265e-3 (abs) — tolerance 6.0000e-2
+- **error**: 1.9469e-3 (abs) — tolerance 6.0000e-2
 
 ### LJ fluid g(r): depth of the first minimum — PASS
 
@@ -576,30 +575,29 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `md.rdf.first_minimum_depth`
 - **reference**: Verlet (1968) — g ≈ 0.60 at the first minimum
 - **metric**: g(r) at the first minimum
-- **measured**: 5.697413911e-1
+- **measured**: 5.695322944e-1
 - **expected**: 6.000000000e-1
-- **error**: 5.0431e-2 (rel) — tolerance 2.0000e-1
-- _note_: measured minimum at r* = 1.554
+- **error**: 5.0780e-2 (rel) — tolerance 2.0000e-1
+- _note_: measured minimum at r* = 1.552
 
-### LJ fluid excess energy at ρ* = 0.8442, T* = 0.722 — PASS
+### LJ fluid excess energy at ρ* = 0.8442, T* = 0.722 — REPORT
 
 - **crate**: `phyz-md`
 - **id**: `md.thermo.energy`
-- **reference**: Verlet, *Phys. Rev.* 159 (1967) 98, Table II; Johnson, Zollweg & Gubbins, *Mol. Phys.* 78 (1993) 591 — U*/N ≈ −5.7 with a 2.5σ truncation (no tail correction)
+- **reference**: Verlet, *Phys. Rev.* 159 (1967) 98, Table II gives U*/N ≈ −5.7 for the *truncated* potential; Johnson, Zollweg & Gubbins, *Mol. Phys.* 78 (1993) 591 give ≈ −5.4 truncated-and-shifted at 2.5σ, which is what this crate implements
 - **metric**: ⟨U⟩/N in reduced units
-- **measured**: -5.663930769e0
-- **expected**: -5.700000000e0
-- **error**: 6.3279e-3 (rel) — tolerance 5.0000e-2
-- _note_: Reported without a long-range tail correction, matching the crate's hard truncation.
+- **measured**: -5.205049962e0
+- **expected**: -5.400000000e0
+- **error**: 3.6102e-2 (rel) — tolerance 5.0000e-2
+- _note_: Reported: the truncation convention shifts the reference by ~5%, more than the statistical error here, so a tight pass/fail claim would be about the convention rather than the solver.
 
 ### LJ fluid virial pressure at ρ* = 0.8442, T* = 0.722 — REPORT
 
 - **crate**: `phyz-md`
 - **id**: `md.thermo.pressure`
-- **reference**: Verlet (1967) Table II — P*V/Nk_BT ≈ 0.5, i.e. P* ≈ 0.3 at this state point with a 2.5σ truncation
+- **reference**: Verlet (1967) Table II — P* ≈ 0.3 at this state point, with the same truncation-convention caveat as the energy
 - **metric**: ⟨P⟩ in reduced units
-- **measured**: 7.756879245e-1
+- **measured**: 8.262776527e-1
 - **expected**: 3.000000000e-1
-- **error**: 4.7569e-1 (abs) — tolerance 3.5000e-1
-- _note_: Reported as a diagnostic: the truncation convention (shifted vs unshifted, tail correction) moves the reference value by more than the statistical error of this run, so a tight pass/fail claim would not be meaningful.
+- **error**: 5.2628e-1 (abs) — tolerance 3.5000e-1
 

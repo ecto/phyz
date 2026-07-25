@@ -1,22 +1,36 @@
 //! Molecular dynamics with interatomic potentials.
 //!
-//! Implements Velocity Verlet integration for MD simulation with:
-//! - Lennard-Jones and Coulomb potentials
-//! - Harmonic bonded interactions
-//! - Neighbor lists for efficient force computation
-//! - Periodic boundary conditions
-//! - Langevin thermostat
+//! A single structure-of-arrays engine ([`field`]) provides the numerics, and
+//! [`MdSystem`] is a stateful driver over it:
+//!
+//! - Lennard-Jones with per-species Lorentz-Berthelot mixing
+//! - Long-range electrostatics by Ewald summation or particle mesh Ewald,
+//!   validated against the NaCl Madelung constant
+//! - Bonded terms: harmonic bonds and angles, periodic proper torsions, and
+//!   harmonic impropers — enough to express an AMBER/CHARMM/OPLS-style force
+//!   field
+//! - Cell-list Verlet neighbor lists with a skin and displacement-triggered
+//!   rebuilds, O(N) per step
+//! - Virial and pressure, so NPT is possible at all
+//! - Velocity Verlet (NVE) and BAOAB Langevin (NVT) integration, plus
+//!   Berendsen and Nosé-Hoover thermostats and a Berendsen barostat
+//! - A per-system seeded PRNG, so trajectories are reproducible by choice
+//! - FIRE energy minimization
+//!
+//! # Units
+//!
+//! Å, eV, amu, fs, e, K. See [`field::units`] — in particular
+//! [`field::units::FORCE_TO_ACCEL`], which relates a force in eV/Å on a mass in
+//! amu to an acceleration in Å/fs².
 //!
 //! # Example
 //!
 //! ```
-//! use phyz_md::{MdSystem, LennardJones, Particle};
+//! use phyz_md::{LennardJones, MdSystem, Particle};
 //! use phyz_math::Vec3;
-//! use std::sync::Arc;
 //!
 //! // Create argon fluid
-//! let lj = Arc::new(LennardJones::argon());
-//! let mut system = MdSystem::new(lj, 0.001); // 1 fs timestep
+//! let mut system = MdSystem::lennard_jones(LennardJones::argon(), 1.0); // 1 fs
 //!
 //! // Add particles
 //! for i in 0..10 {
@@ -29,32 +43,58 @@
 //! }
 //!
 //! // Set periodic boundaries
-//! system.set_box_size(Vec3::new(34.0, 10.0, 10.0));
+//! system.set_box_size(Vec3::new(34.0, 34.0, 34.0));
 //!
 //! // Initialize velocities at 300K
-//! let k_b = 8.617e-5; // eV/K
+//! let k_b = phyz_md::field::units::KB_EV_PER_K;
 //! system.initialize_velocities(300.0, k_b);
+//! system.compute_forces();
 //!
 //! // Run simulation
-//! for _ in 0..1000 {
+//! for _ in 0..100 {
 //!     system.step();
-//!
-//!     if system.step % 100 == 0 {
-//!         let ke = system.kinetic_energy();
-//!         let pe = system.potential_energy();
-//!         let temp = system.temperature(k_b);
-//!         println!("Step {}: T={:.1}K, E={:.4} eV", system.step, temp, ke + pe);
-//!     }
 //! }
+//! let temp = system.temperature(k_b);
+//! let pressure = system.pressure_gpa();
 //! ```
+//!
+//! # Migration from the pre-consolidation API
+//!
+//! The crate previously shipped two disjoint stacks: an array-of-structs
+//! `ForceField`/`NeighborList` path behind `MdSystem`, and this SoA `field`
+//! module. They shared no code, and the exported path was the weaker of the
+//! two — it could not use the cell lists that already existed. They are now one
+//! engine, which changes the following:
+//!
+//! | Before | Now |
+//! |---|---|
+//! | `MdSystem::new(Arc<dyn ForceField>, dt)` | `MdSystem::lennard_jones(lj, dt)`, or `MdSystem::new(dt)` plus `set_lennard_jones` / `set_pme` / … |
+//! | `forcefield::{ForceField, LennardJones, Coulomb, HarmonicBond}` | [`field::potentials`] equivalents; the `ForceField` trait is gone |
+//! | `system.particles: Vec<Particle>` | [`MdSystem::positions`] & co. (SoA); [`MdSystem::particle`] reads one atom back |
+//! | `neighbor::NeighborList` (O(N²)) | [`field::neighbor::NeighborList`] (cell lists, O(N)) |
+//! | `Bond { i, j, potential }` | [`system::Bond`] `{ i, j, k, r0 }` |
+//!
+//! The Langevin thermostat's API is unchanged: `set_thermostat`,
+//! `clear_thermostat`, `with_seed`/`set_seed`, and the [`Integrator`] enum all
+//! behave as before — only the state they act on became structure-of-arrays.
+//!
+//! Accelerations now go through [`field::units::FORCE_TO_ACCEL`] rather than
+//! `a = f/m` on raw amu, so timesteps are in real femtoseconds. Trajectories
+//! from the old code will not reproduce numerically; they were not in a
+//! self-consistent unit system.
 
+pub mod analysis;
 pub mod field;
-pub mod forcefield;
-pub mod neighbor;
 pub mod particle;
 pub mod system;
 
-pub use forcefield::{Coulomb, ForceField, HarmonicBond, LennardJones};
-pub use neighbor::{NeighborList, minimum_image};
+pub use analysis::Rdf;
+pub use field::cell::{Lattice, min_image};
+pub use field::dihedral::{DihedralTerm, HarmonicImpropers, ImproperTerm, PeriodicDihedrals};
+pub use field::ewald::{Ewald, Pme};
+pub use field::neighbor::NeighborList;
+pub use field::potentials::{Coulomb, HarmonicAngles, HarmonicBonds, LennardJones};
+pub use field::verlet::{Barostat, Berendsen, NoseHoover};
+pub use field::virial::Contribution;
 pub use particle::Particle;
-pub use system::{Bond, Integrator, MdSystem, Thermostat};
+pub use system::{Bond, Electrostatics, Integrator, MdSystem, Thermostat};

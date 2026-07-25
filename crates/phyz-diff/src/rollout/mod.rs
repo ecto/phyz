@@ -1,9 +1,6 @@
 //! Differentiable rollouts: exact parameter and contact-surface adjoints.
 //!
-//! Mirror of the umbrella crate's `phyz::diff` module for the split-crate
-//! world (`phyz_model::Model` instead of `phyz::Model`), following the same
-//! duplication convention as the rest of the tree — the two copies differ
-//! only in import paths.
+//! Re-exported by the umbrella crate as `phyz::diff`.
 //!
 //! One backward pass of the discrete trajectory adjoint yields, for a
 //! semi-implicit Euler rollout with a final-state objective:

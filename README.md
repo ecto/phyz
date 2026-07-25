@@ -61,7 +61,7 @@ phyz/
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
 │   ├── phyz-particle/    # SPH fluids, granular media
 │   ├── phyz-em/          # Maxwell's equations on Yee lattice
-│   ├── phyz-md/          # Molecular dynamics, Lennard-Jones
+│   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
 │   ├── phyz-qft/         # Lattice QFT, Wilson action
 │   ├── phyz-gravity/     # N-body gravitational dynamics
 │   ├── phyz-lbm/         # Lattice Boltzmann fluid method

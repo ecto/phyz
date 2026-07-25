@@ -57,11 +57,27 @@ pub fn compute_contact_force(
 }
 
 /// Compute a contact force using implicit damping (and implicit stiffness)
-/// based on the post-step velocity of the contact pair.
+/// based on the post-step velocity of the contact pair, rather than the
+/// current-step velocity used by [`compute_contact_force`].
 ///
-/// See `phyz::contact::compute_contact_force_implicit` for the derivation.
-/// `mass_i` / `mass_j` are the effective contact masses of the pair; use
-/// `f64::INFINITY` for the world or any body that cannot translate.
+/// The explicit penalty form `F = k·x - c·v_n` injects energy each step when
+/// `c·dt` is comparable to the body's mass — characteristic of light bodies
+/// (≈ grams) on default materials — causing the body to bounce off and
+/// sometimes launch into space. Substituting `v_n_next = v_n + dt·F/m_eff`
+/// (semi-implicit Euler closed in one Newton step) and solving for `F` gives
+///
+/// ```text
+///         m_eff · (k·x - c·v_n)
+///   F = ─────────────────────────
+///         m_eff + dt·c + dt²·k
+/// ```
+///
+/// which is unconditionally stable for any `dt`, `k`, `c`, `m_eff > 0` (no
+/// negative real eigenvalues for the discrete update map).
+///
+/// `mass_i` / `mass_j` are the effective masses of the bodies on either side
+/// of the contact. Use `f64::INFINITY` for the world (ground) or any body
+/// that cannot translate (fixed joint).
 pub fn compute_contact_force_implicit(
     collision: &Collision,
     material: &ContactMaterial,
@@ -83,7 +99,13 @@ pub fn compute_contact_force_implicit(
     let k = material.stiffness;
     let c = material.damping;
 
+    // Reduced mass for the pair. Either side can be infinite (world/fixed):
+    //   - both infinite → no body to accelerate, force = 0
+    //   - one infinite  → m_eff = the finite mass
+    //   - both finite   → m_eff = m_i · m_j / (m_i + m_j)
     let m_eff = if !mass_i.is_finite() && !mass_j.is_finite() {
+        // No mobile body to apply the force to; the integrator will be
+        // a no-op anyway. Drop the contact.
         return SpatialVec::zero();
     } else if !mass_i.is_finite() {
         mass_j
@@ -99,14 +121,26 @@ pub fn compute_contact_force_implicit(
         return SpatialVec::zero();
     }
 
-    // One-step Newton with implicit stiffness and damping. See
-    // `phyz::contact::compute_contact_force_implicit` for the derivation.
+    // Solve the post-step velocity in the penetration direction (u = -v_n) under
+    // a one-step Newton with both stiffness and damping evaluated at the end of
+    // the step:
+    //
+    //   u_next = (m·u − dt·k·x) / (m + dt·c + dt²·k)
+    //
+    // The contact force on body j along +normal is then
+    //
+    //   F = m·(u − u_next)/dt = m·[k·x − (c + dt·k)·v_n] / (m + dt·c + dt²·k)
+    //
+    // which reduces to the explicit `k·x − c·v_n` in the limit `dt → 0` and is
+    // unconditionally stable for any positive m, k, c, dt.
     let denom = m_eff + dt * c + dt * dt * k;
     let force_magnitude = m_eff * (k * depth - (c + dt * k) * normal_vel) / denom;
-    let force_magnitude = force_magnitude.max(0.0);
+    let force_magnitude = force_magnitude.max(0.0); // No pulling.
 
     let force = normal * force_magnitude;
 
+    // Friction (explicit; the implicit damping above already removes the
+    // dominant bounce energy in the normal direction).
     let tangent_vel = rel_vel - normal * normal_vel;
     let tangent_speed = tangent_vel.norm();
     let friction_force = if tangent_speed > 1e-10 {
