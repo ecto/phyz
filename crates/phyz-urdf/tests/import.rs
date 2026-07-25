@@ -81,7 +81,7 @@ fn dynamics_and_limits_are_imported() {
     let r = load_str(TWO_LINK, &opts()).unwrap();
     let sh = &r.model.joints[r.joint_index("shoulder").unwrap()];
     assert!((sh.damping - 0.7).abs() < 1e-12);
-    assert!((sh.friction - 0.25).abs() < 1e-12);
+    assert!((sh.friction_loss - 0.25).abs() < 1e-12);
     assert_eq!(sh.limits, Some([-1.57, 1.57]));
     assert_eq!(sh.effort_limit, Some(50.0));
     assert_eq!(sh.velocity_limit, Some(3.0));
@@ -453,4 +453,26 @@ fn options_override_world_settings() {
     .unwrap();
     assert!((r.model.dt - 0.004).abs() < 1e-12);
     assert!((r.model.gravity.z + 1.62).abs() < 1e-12);
+}
+
+#[test]
+fn a_missing_limit_element_does_not_weld_the_joint_shut() {
+    // `urdf-rs` defaults an absent <limit> to lower = upper = 0. Passing that
+    // through as a real limit would lock the joint the moment the solver
+    // applies its limit force, so it must import as unlimited instead.
+    let xml = r#"
+    <robot name="no_limit">
+      <link name="a"/>
+      <link name="b"/>
+      <joint name="spin" type="revolute">
+        <parent link="a"/><child link="b"/>
+        <axis xyz="0 0 1"/>
+      </joint>
+    </robot>"#;
+
+    let r = load_str(xml, &opts()).unwrap();
+    let j = &r.model.joints[r.joint_index("spin").unwrap()];
+    assert_eq!(j.limits, None);
+    // And the solver agrees there is nothing to push against.
+    assert_eq!(j.limit_force(1.0, 0.0), 0.0);
 }

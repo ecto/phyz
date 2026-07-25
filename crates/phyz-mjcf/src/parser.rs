@@ -38,7 +38,12 @@ struct JointElement {
     pos: Vec3,
     axis: Vec3,
     range: Option<[f64; 2]>,
+    limited: Option<bool>,
     damping: f64,
+    armature: f64,
+    stiffness: f64,
+    spring_ref: f64,
+    friction_loss: f64,
 }
 
 /// Parsed geom element.
@@ -288,7 +293,12 @@ impl MjcfLoader {
         let mut pos = Vec3::zeros();
         let mut axis = Vec3::new(0.0, 0.0, 1.0);
         let mut range: Option<[f64; 2]> = None;
+        let mut limited: Option<bool> = None;
         let mut damping = 0.0;
+        let mut armature = 0.0;
+        let mut stiffness = 0.0;
+        let mut spring_ref = 0.0;
+        let mut friction_loss = 0.0;
 
         for attr in e.attributes() {
             let attr = attr.map_err(|e| MjcfError::InvalidMjcf(e.to_string()))?;
@@ -333,8 +343,27 @@ impl MjcfLoader {
                         range = Some([parts[0], parts[1]]);
                     }
                 }
+                "limited" => {
+                    limited = match value.as_str() {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None, // "auto": limited iff a range is given
+                    };
+                }
                 "damping" => {
                     damping = value.parse().unwrap_or(0.0);
+                }
+                "armature" => {
+                    armature = value.parse().unwrap_or(0.0);
+                }
+                "stiffness" => {
+                    stiffness = value.parse().unwrap_or(0.0);
+                }
+                "springref" => {
+                    spring_ref = value.parse().unwrap_or(0.0);
+                }
+                "frictionloss" => {
+                    friction_loss = value.parse().unwrap_or(0.0);
                 }
                 _ => {}
             }
@@ -346,7 +375,12 @@ impl MjcfLoader {
             pos,
             axis,
             range,
+            limited,
             damping,
+            armature,
+            stiffness,
+            spring_ref,
+            friction_loss,
         };
 
         self.bodies[body_idx].joints.push(joint);
@@ -556,7 +590,15 @@ impl MjcfLoader {
 
                     joint.axis = joint_elem.axis;
                     joint.damping = joint_elem.damping;
-                    joint.limits = joint_elem.range;
+                    // MuJoCo: limited="false" disables the range even if given.
+                    joint.limits = match joint_elem.limited {
+                        Some(false) => None,
+                        _ => joint_elem.range,
+                    };
+                    joint.armature = joint_elem.armature;
+                    joint.stiffness = joint_elem.stiffness;
+                    joint.spring_ref = joint_elem.spring_ref;
+                    joint.friction_loss = joint_elem.friction_loss;
 
                     let model_joint_idx = next_model_idx as usize;
                     joint_name_map.insert(joint_elem.name.clone(), model_joint_idx);

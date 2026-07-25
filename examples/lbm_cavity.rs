@@ -4,7 +4,7 @@
 //! At steady state, LBM should recover Navier-Stokes solution with characteristic
 //! primary vortex and secondary corner vortices.
 
-use phyz_lbm::LatticeBoltzmann2D;
+use phyz_lbm::{boundary, LatticeBoltzmann2D};
 
 fn main() {
     println!("Lid-driven cavity flow (2D LBM)");
@@ -15,7 +15,9 @@ fn main() {
     let nu = 0.01; // kinematic viscosity
     let u_lid = 0.1; // lid velocity
 
-    let mut lbm = LatticeBoltzmann2D::new(nx, ny, nu);
+    // Walls and lid are declared once; `step()` enforces them every iteration.
+    let mut lbm =
+        LatticeBoltzmann2D::new(nx, ny, nu).with_boundaries(boundary::cavity_2d([u_lid, 0.0]));
 
     // Initialize with uniform density, zero velocity
     lbm.initialize_uniform(1.0, [0.0, 0.0]);
@@ -31,20 +33,7 @@ fn main() {
     let print_every = 1000;
 
     for step in 0..=n_steps {
-        // Apply boundary conditions
-        for x in 0..nx {
-            // Top wall: moving lid
-            lbm.set_velocity_bc(x, ny - 1, [u_lid, 0.0]);
-            // Bottom wall: no-slip
-            lbm.set_no_slip_bc(x, 0);
-        }
-        for y in 0..ny {
-            // Left and right walls: no-slip
-            lbm.set_no_slip_bc(0, y);
-            lbm.set_no_slip_bc(nx - 1, y);
-        }
-
-        lbm.collide_and_stream();
+        lbm.step();
 
         if step % print_every == 0 {
             let u_max = lbm.max_velocity();

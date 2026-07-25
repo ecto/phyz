@@ -4,6 +4,9 @@ use crate::{Body, Joint, State};
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
 /// A motor actuator attached to a joint.
+///
+/// The generalized force an actuator produces is
+/// `gear * clamp(ctrl, ctrl_range)`, applied to the first DOF of `joint_idx`.
 #[derive(Debug, Clone)]
 pub struct Actuator {
     pub name: String,
@@ -11,6 +14,21 @@ pub struct Actuator {
     pub joint_idx: usize,
     pub gear: f64,
     pub ctrl_range: Option<[f64; 2]>,
+}
+
+impl Actuator {
+    /// Clamp a raw control value to this actuator's control range.
+    pub fn clamp_ctrl(&self, ctrl: f64) -> f64 {
+        match self.ctrl_range {
+            Some([lo, hi]) => ctrl.clamp(lo.min(hi), hi.max(lo)),
+            None => ctrl,
+        }
+    }
+
+    /// Generalized force produced by this actuator for a raw control value.
+    pub fn force(&self, ctrl: f64) -> f64 {
+        self.gear * self.clamp_ctrl(ctrl)
+    }
 }
 
 /// Static model describing the topology and parameters of a physical system.
@@ -39,7 +57,42 @@ pub struct Model {
 impl Model {
     /// Create a default empty state for this model.
     pub fn default_state(&self) -> State {
-        State::new(self.nq, self.nv, self.bodies.len())
+        State::new_with_nu(self.nq, self.nv, self.nu(), self.bodies.len())
+    }
+
+    /// Number of actuators (MuJoCo's `nu`).
+    pub fn nu(&self) -> usize {
+        self.actuators.len()
+    }
+
+    /// Map actuator-space controls to generalized forces of dimension `nv`.
+    ///
+    /// Each actuator's control is clamped to its `ctrl_range`, scaled by `gear`,
+    /// and added to the first velocity DOF of the joint it drives.
+    ///
+    /// When the model has no actuators, `ctrl` is interpreted as a raw per-DOF
+    /// generalized force and passed through unchanged — this keeps hand-built
+    /// models (which set `state.ctrl` per DOF) working.
+    pub fn actuator_forces(&self, ctrl: &phyz_math::DVec) -> phyz_math::DVec {
+        let mut qfrc = phyz_math::DVec::zeros(self.nv);
+        if self.actuators.is_empty() {
+            for i in 0..self.nv.min(ctrl.len()) {
+                qfrc[i] = ctrl[i];
+            }
+            return qfrc;
+        }
+        for (a, act) in self.actuators.iter().enumerate() {
+            if a >= ctrl.len() {
+                break;
+            }
+            let Some(&v_idx) = self.v_offsets.get(act.joint_idx) else {
+                continue;
+            };
+            if v_idx < self.nv {
+                qfrc[v_idx] += act.force(ctrl[a]);
+            }
+        }
+        qfrc
     }
 
     /// Number of bodies.

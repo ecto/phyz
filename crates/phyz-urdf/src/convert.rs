@@ -329,13 +329,13 @@ fn urdf_joint_type(uj: &urdf_rs::Joint) -> Result<Converted> {
             let mut j = Joint::revolute(origin);
             j.axis = axis;
             if uj.joint_type == T::Revolute {
-                j.limits = Some([uj.limit.lower, uj.limit.upper]);
+                j.limits = position_limits(uj);
             }
             j
         }
         T::Prismatic => {
             let mut j = Joint::prismatic(origin, axis);
-            j.limits = Some([uj.limit.lower, uj.limit.upper]);
+            j.limits = position_limits(uj);
             j
         }
         T::Fixed => Joint::fixed(origin),
@@ -352,11 +352,23 @@ fn urdf_joint_type(uj: &urdf_rs::Joint) -> Result<Converted> {
     Ok(Converted::Simple(joint))
 }
 
+/// Position limits from `<limit>`, or `None` if the element is absent.
+///
+/// The URDF spec requires `<limit>` on revolute and prismatic joints, but
+/// `urdf-rs` defaults a missing one to `lower = upper = 0`. Passing that
+/// through as a real limit would weld the joint shut once the solver applies
+/// its limit force, so an empty range is treated as "unspecified" instead.
+fn position_limits(uj: &urdf_rs::Joint) -> Option<[f64; 2]> {
+    (uj.limit.upper > uj.limit.lower).then_some([uj.limit.lower, uj.limit.upper])
+}
+
 /// Copy `<dynamics>` and the effort/velocity halves of `<limit>`.
 fn apply_dynamics(joint: &mut Joint, uj: &urdf_rs::Joint) {
     if let Some(d) = &uj.dynamics {
         joint.damping = d.damping;
-        joint.friction = d.friction;
+        // URDF's `<dynamics friction>` is dry Coulomb friction, which the
+        // solver applies through `friction_loss` (MuJoCo's `frictionloss`).
+        joint.friction_loss = d.friction;
     }
     // `<limit>` is required for revolute/prismatic and defaults to zeros
     // otherwise; a zero effort/velocity cap means "unspecified", not "locked".
