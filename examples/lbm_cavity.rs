@@ -4,7 +4,7 @@
 //! At steady state, LBM should recover Navier-Stokes solution with characteristic
 //! primary vortex and secondary corner vortices.
 
-use phyz_lbm::{boundary, LatticeBoltzmann2D};
+use phyz_lbm::{LatticeBoltzmann2D, boundary};
 
 fn main() {
     println!("Lid-driven cavity flow (2D LBM)");

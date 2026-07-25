@@ -129,11 +129,17 @@ impl Simplex {
 #[derive(Debug, Clone)]
 pub enum GjkOutcome {
     /// The shapes are disjoint; `distance` is the separation (> 0).
-    Separated { distance: f64 },
+    Separated {
+        /// Separation between the two surfaces (> 0).
+        distance: f64,
+    },
     /// The shapes overlap. `simplex` is the terminating simplex — a set of
     /// Minkowski-difference points enclosing the origin, which is exactly the
     /// seed EPA needs to be valid.
-    Penetrating { simplex: Vec<Vec3> },
+    Penetrating {
+        /// Minkowski-difference points enclosing the origin.
+        simplex: Vec<Vec3>,
+    },
     /// GJK could not decide within its iteration budget (near-tangential
     /// configurations on curved surfaces). Callers should treat this as "no
     /// contact" rather than guessing.
@@ -211,11 +217,17 @@ pub fn gjk_rot(
     for _ in 0..64 {
         let dir_norm = dir.norm();
         if dir_norm < 1e-10 {
-            // The origin lies on the current simplex — a touching
-            // configuration. Treat it as penetrating with zero depth so the
-            // caller still gets a normal out of EPA.
-            return GjkOutcome::Penetrating {
-                simplex: simplex.points.clone(),
+            // The search direction collapsed: the origin lies on the current
+            // simplex. With a single point that means the two surfaces touch
+            // exactly (distance 0). With two or more the origin is enclosed by
+            // the simplex, so the shapes are penetrating — reporting separation
+            // here would make deep overlaps invisible to `find_contacts`.
+            return if simplex.len() >= 2 {
+                GjkOutcome::Penetrating {
+                    simplex: simplex.points.clone(),
+                }
+            } else {
+                GjkOutcome::Separated { distance: 0.0 }
             };
         }
 

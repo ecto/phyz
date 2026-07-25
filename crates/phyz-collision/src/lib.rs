@@ -2,19 +2,29 @@
 //!
 //! Implements GJK (Gilbert-Johnson-Keerthi) for distance queries,
 //! EPA (Expanding Polytope Algorithm) for penetration depth,
-//! and broad-phase spatial hashing.
+//! analytic ray casting, and broad-phase spatial hashing.
+
+#![warn(missing_docs)]
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
 
 pub mod broad_phase;
 pub mod epa;
 pub mod geometry;
 pub mod gjk;
 pub mod manifold;
+pub mod raycast;
 
 pub use broad_phase::sweep_and_prune;
 pub use epa::{epa_from_simplex, epa_penetration, epa_penetration_rot};
 pub use geometry::{AABB, Geometry};
 pub use gjk::{GjkOutcome, gjk_distance, gjk_distance_rot, gjk_rot};
 pub use manifold::{MAX_MANIFOLD_POINTS, Manifold, ManifoldPoint, contact_manifold};
+pub use raycast::{Ray, RayHit, ray_cast, ray_intersect};
 
 use phyz_math::Vec3;
 

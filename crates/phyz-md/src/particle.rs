@@ -1,32 +1,45 @@
 //! Particle representation for molecular dynamics.
+//!
+//! [`MdSystem`](crate::system::MdSystem) stores its state as parallel arrays;
+//! `Particle` is the per-atom *view* used to add atoms to a system and to read
+//! them back out. It is not the system's storage.
 
 use phyz_math::Vec3;
 
 /// A single particle in the MD simulation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
-    /// Position (Å or nm).
+    /// Position (Å).
     pub x: Vec3,
-    /// Velocity (Å/fs or nm/ps).
+    /// Velocity (Å/fs).
     pub v: Vec3,
-    /// Force accumulator (eV/Å or similar).
+    /// Force (eV/Å).
     pub f: Vec3,
-    /// Mass (amu or kg).
+    /// Mass (amu).
     pub mass: f64,
+    /// Charge in units of the elementary charge.
+    pub charge: f64,
     /// Atom type for force field lookup.
     pub atom_type: u32,
 }
 
 impl Particle {
-    /// Create a new particle.
+    /// Create a new, uncharged particle.
     pub fn new(x: Vec3, v: Vec3, mass: f64, atom_type: u32) -> Self {
         Self {
             x,
             v,
             f: Vec3::zeros(),
             mass,
+            charge: 0.0,
             atom_type,
         }
+    }
+
+    /// Set the particle's charge (e).
+    pub fn with_charge(mut self, charge: f64) -> Self {
+        self.charge = charge;
+        self
     }
 
     /// Reset force accumulator.
@@ -39,9 +52,9 @@ impl Particle {
         self.f += f;
     }
 
-    /// Kinetic energy: 0.5 * m * v^2.
+    /// Kinetic energy in eV: `½ m v² / FORCE_TO_ACCEL`.
     pub fn kinetic_energy(&self) -> f64 {
-        0.5 * self.mass * self.v.norm_squared()
+        0.5 * self.mass * self.v.norm_squared() / crate::field::units::FORCE_TO_ACCEL
     }
 }
 
@@ -54,11 +67,19 @@ mod tests {
         let p = Particle::new(Vec3::new(1.0, 2.0, 3.0), Vec3::zeros(), 1.0, 0);
         assert_eq!(p.x, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(p.mass, 1.0);
+        assert_eq!(p.charge, 0.0);
     }
 
     #[test]
     fn test_kinetic_energy() {
         let p = Particle::new(Vec3::zeros(), Vec3::new(1.0, 0.0, 0.0), 2.0, 0);
-        assert!((p.kinetic_energy() - 1.0).abs() < 1e-10);
+        let want = 1.0 / crate::field::units::FORCE_TO_ACCEL;
+        assert!((p.kinetic_energy() - want).abs() < 1e-10);
+    }
+
+    #[test]
+    fn charge_is_carried_through() {
+        let p = Particle::new(Vec3::zeros(), Vec3::zeros(), 1.0, 0).with_charge(-0.834);
+        assert_eq!(p.charge, -0.834);
     }
 }

@@ -1,7 +1,55 @@
-//! Differentiation utilities for phyz: Jacobians of dynamics.
+//! Differentiation utilities for phyz: Jacobians of the equations of motion.
 //!
-//! Provides finite-difference, analytical (FD-on-ABA), and symbolic (exact)
-//! derivatives of the equations of motion.
+//! Three routines compute the same object — the Jacobians of one semi-implicit
+//! Euler step — by different means, trading accuracy against cost:
+//!
+//! | Function | Method | Exact? |
+//! | --- | --- | --- |
+//! | [`finite_diff_jacobians`] | central differences over the whole step | no |
+//! | [`semi_implicit_step_jacobians`] | chain rule through the integrator, central differences on ABA | no (ABA block is FD) |
+//! | [`symbolic::symbolic_step_jacobians`] | symbolic differentiation of the dynamics | yes |
+//!
+//! Only the symbolic path is derivative-exact. The other two are finite
+//! differences and inherit the usual step-size/round-off tradeoff. For exact
+//! *parameter* and contact-surface gradients over a whole trajectory, see the
+//! dual-number adjoint in [`phyz::diff`](https://docs.rs/phyz) instead.
+//!
+//! # Example
+//!
+//! ```
+//! use phyz_diff::semi_implicit_step_jacobians;
+//! use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+//! use phyz_model::ModelBuilder;
+//!
+//! let model = ModelBuilder::new()
+//!     .gravity(Vec3::new(0.0, -GRAVITY, 0.0))
+//!     .dt(0.002)
+//!     .add_revolute_body(
+//!         "pendulum",
+//!         -1,
+//!         SpatialTransform::identity(),
+//!         SpatialInertia::new(
+//!             1.0,
+//!             Vec3::new(0.0, -0.5, 0.0),
+//!             Mat3::from_diagonal(&Vec3::new(0.083, 0.0, 0.083)),
+//!         ),
+//!     )
+//!     .build();
+//!
+//! let mut state = model.default_state();
+//! state.q[0] = 0.3;
+//!
+//! let jac = semi_implicit_step_jacobians(&model, &state);
+//! assert_eq!(jac.dvnext_dq.nrows(), model.nv);
+//! ```
+
+#![warn(missing_docs)]
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
 
 pub mod rollout;
 pub mod symbolic;
@@ -28,10 +76,15 @@ use phyz_rigid::aba;
 /// - `dvnext_dctrl`: dv'/dctrl
 #[derive(Debug, Clone)]
 pub struct StepJacobians {
+    /// dq'/dq — sensitivity of next positions to current positions.
     pub dqnext_dq: DMat,
+    /// dq'/dv — sensitivity of next positions to current velocities.
     pub dqnext_dv: DMat,
+    /// dv'/dq — sensitivity of next velocities to current positions.
     pub dvnext_dq: DMat,
+    /// dv'/dv — sensitivity of next velocities to current velocities.
     pub dvnext_dv: DMat,
+    /// dv'/dctrl — sensitivity of next velocities to applied joint torques.
     pub dvnext_dctrl: DMat,
 }
 
@@ -112,16 +165,34 @@ pub fn finite_diff_jacobians(model: &Model, state: &State, eps: f64) -> StepJaco
     }
 }
 
-/// Compute analytical step Jacobians for semi-implicit Euler.
+/// Deprecated alias for [`semi_implicit_step_jacobians`].
+///
+/// The old name claimed the result was analytical; the ABA block is computed
+/// by finite differences.
+#[deprecated(
+    since = "0.1.0",
+    note = "this is not analytical — the ABA block uses finite differences; use `semi_implicit_step_jacobians`, or `symbolic::symbolic_step_jacobians` for exact derivatives"
+)]
+pub fn analytical_step_jacobians(model: &Model, state: &State) -> StepJacobians {
+    semi_implicit_step_jacobians(model, state)
+}
+
+/// Compute step Jacobians for semi-implicit Euler by chain rule through the
+/// integrator.
 ///
 /// Semi-implicit Euler:
 ///   qdd = ABA(q, v, ctrl)
 ///   v' = v + dt * qdd
 ///   q' = q + dt * v'
 ///
-/// Derivatives via chain rule through ABA.
-/// Uses finite differences on ABA itself for now (analytical ABA derivatives in future PR).
-pub fn analytical_step_jacobians(model: &Model, state: &State) -> StepJacobians {
+/// The integrator layer is differentiated exactly; the ABA block
+/// (∂qdd/∂q, ∂qdd/∂v, ∂qdd/∂ctrl) is still obtained by **central finite
+/// differences** on `aba`, so this routine is *not* derivative-exact. It is
+/// cheaper and better-conditioned than [`finite_diff_jacobians`], which
+/// perturbs the whole step, but it carries the same truncation/round-off
+/// tradeoff. For exact derivatives use
+/// [`symbolic::symbolic_step_jacobians`].
+pub fn semi_implicit_step_jacobians(model: &Model, state: &State) -> StepJacobians {
     let nq = model.nq;
     let nv = model.nv;
     let dt = model.dt;
@@ -238,7 +309,7 @@ mod tests {
         state.v[0] = 0.1;
 
         let fd = finite_diff_jacobians(&model, &state, 1e-6);
-        let an = analytical_step_jacobians(&model, &state);
+        let an = semi_implicit_step_jacobians(&model, &state);
 
         // Check that analytical matches finite-diff
         let eps = 1e-4;

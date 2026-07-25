@@ -6,23 +6,22 @@
 //! - Ensemble simulation with uncertainty propagation
 //! - Tracking mean ± std trajectories
 
-use rand_distr::{Distribution as RandDist, Normal, Uniform};
-use phyz::{
-    Model, ModelBuilder, State,
-    phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
-};
+use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::{Model, ModelBuilder, State};
 use phyz_prob::{ProbabilisticState, ensemble_step_with_params};
+use rand_distr::{Distribution as RandDist, Normal, Uniform};
 
 /// Simple solver adapter for ensemble simulation.
 struct SimpleSolver;
 
 impl phyz_prob::ensemble::EnsembleSolver for SimpleSolver {
     fn step(&self, model: &Model, state: &mut State) {
-        use phyz::aba;
+        use phyz_rigid::aba;
         let dt = model.dt;
         let qdd = aba(model, state);
-        state.v += &qdd * dt;
-        state.q += &state.v * dt;
+        state.v += &(&qdd * dt);
+        let dq = &state.v * dt;
+        state.q += &dq;
         state.time += dt;
     }
 }

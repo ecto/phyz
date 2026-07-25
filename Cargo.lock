@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "RustyXML"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b5ace29ee3216de37c0546865ad08edef58b0f9e76838ed8959a84a990e58c5"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1626,7 +1632,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -2822,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-collision"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -2830,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-compile"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "naga 23.1.0",
@@ -2840,7 +2846,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-contact"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-collision",
  "phyz-math",
@@ -2849,7 +2855,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-coupling"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-em",
@@ -2861,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-diff"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "criterion",
  "phyz-math",
@@ -2874,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-dream"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -2891,20 +2897,50 @@ dependencies = [
 
 [[package]]
 name = "phyz-em"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
 ]
 
 [[package]]
+name = "phyz-examples"
+version = "0.3.1"
+dependencies = [
+ "phyz",
+ "phyz-collision",
+ "phyz-compile",
+ "phyz-contact",
+ "phyz-coupling",
+ "phyz-diff",
+ "phyz-em",
+ "phyz-format",
+ "phyz-gpu",
+ "phyz-gravity",
+ "phyz-guardian",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-particle",
+ "phyz-prob",
+ "phyz-real2sim",
+ "phyz-rigid",
+ "phyz-world",
+ "rand 0.8.5",
+ "rand_distr",
+ "serde_json",
+]
+
+[[package]]
 name = "phyz-format"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
+ "phyz-urdf",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2912,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-gpu"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "bytemuck",
@@ -2926,14 +2962,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-gravity"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-guardian"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -2942,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-home"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -2955,14 +2991,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-lbm"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-math"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "proptest",
  "tang",
@@ -2971,18 +3007,19 @@ dependencies = [
 
 [[package]]
 name = "phyz-md"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rand_distr",
+ "rayon",
 ]
 
 [[package]]
 name = "phyz-mjcf"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -2993,14 +3030,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-model"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-particle"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3008,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-prob"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3018,7 +3055,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-qft"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3027,7 +3064,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-quantum"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "bytemuck",
  "num-complex",
@@ -3047,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-real2sim"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-diff",
  "phyz-format",
@@ -3060,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-regge"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3070,15 +3107,39 @@ dependencies = [
 
 [[package]]
 name = "phyz-rigid"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "phyz-math",
  "phyz-model",
 ]
 
 [[package]]
+name = "phyz-urdf"
+version = "0.3.1"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "thiserror 2.0.18",
+ "urdf-rs",
+]
+
+[[package]]
+name = "phyz-validate"
+version = "0.3.1"
+dependencies = [
+ "phyz-em",
+ "phyz-gravity",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-md",
+ "phyz-model",
+ "phyz-rigid",
+]
+
+[[package]]
 name = "phyz-wasm"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3097,10 +3158,12 @@ dependencies = [
 
 [[package]]
 name = "phyz-world"
-version = "0.1.0"
+version = "0.3.1"
 dependencies = [
+ "phyz-collision",
  "phyz-math",
  "phyz-model",
+ "phyz-rigid",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -3384,6 +3447,16 @@ checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-xml"
+version = "0.36.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7649a7b4df05aed9ea7ec6f628c67c9953a43869b8bc50929569b2999d443fe"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
 version = "0.37.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
@@ -3453,7 +3526,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3955,6 +4028,18 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-xml-rs"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb3aa78ecda1ebc9ec9847d5d3aba7d618823446a049ba2491940506da6e2782"
+dependencies = [
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "xml-rs",
 ]
 
 [[package]]
@@ -4870,6 +4955,20 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "urdf-rs"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "074515a3e6dc230bbbdcf35830fd71b67b55ae2ac22bc4ff69d89412fc84b830"
+dependencies = [
+ "RustyXML",
+ "quick-xml 0.36.2",
+ "regex",
+ "serde",
+ "serde-xml-rs",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "ureq"

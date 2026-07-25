@@ -37,6 +37,12 @@
 //! assert!(s.abs() < 1e-8);
 //! ```
 
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod action;
 pub mod complex;
 pub mod foliation;

@@ -40,6 +40,7 @@ fn main(
 }
 "#;
 
+/// Sparse matrix-vector product, `y = A x`, CSR, f32.
 pub const SPMV_F32: &str = r#"
 @group(0) @binding(0) var<storage, read> row_ptr: array<u32>;
 @group(0) @binding(1) var<storage, read> col_idx: array<u32>;
@@ -93,6 +94,7 @@ fn main(
 }
 "#;
 
+/// `y = a*x + y`, f32.
 pub const AXPY_F32: &str = r#"
 struct Params { dim: u32, alpha: f32 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -133,6 +135,7 @@ fn main(
 }
 "#;
 
+/// `x = a*x`, f32.
 pub const SCALE_F32: &str = r#"
 struct Params { dim: u32, alpha: f32 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -193,6 +196,7 @@ fn main(
 }
 "#;
 
+/// Dot product, pass 1: per-workgroup partial sums, f32.
 pub const DOT_PHASE1_F32: &str = r#"
 @group(0) @binding(0) var<storage, read> a: array<f32>;
 @group(0) @binding(1) var<storage, read> b: array<f32>;
@@ -266,6 +270,7 @@ fn main(
 }
 "#;
 
+/// Dot product, pass 2: reduce the partial sums, f32.
 pub const DOT_PHASE2_F32: &str = r#"
 @group(0) @binding(0) var<storage, read> partials: array<f32>;
 @group(0) @binding(1) var<storage, read_write> result: array<f32>;
@@ -297,7 +302,7 @@ fn main(
 }
 "#;
 
-/// Multi-dot: compute dot(q_bank[k], w) for k=0..n_vecs in one dispatch.
+/// Multi-dot: compute dot(q_bank`[k]`, w) for k=0..n_vecs in one dispatch.
 /// 2D dispatch: X = element workgroups, Y = vector index.
 /// Grid-stride over elements within each workgroup.
 pub const MULTI_DOT_PHASE1_F64: &str = r#"
@@ -346,6 +351,7 @@ fn main(
 }
 "#;
 
+/// Multi-dot, pass 1: per-workgroup partials for every bank vector, f32.
 pub const MULTI_DOT_PHASE1_F32: &str = r#"
 struct Params { dim: u32, n_vecs: u32, stride: u32, _pad: u32 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -431,6 +437,7 @@ fn main(
 }
 "#;
 
+/// Multi-dot, pass 2: reduce the partials into one overlap per vector, f32.
 pub const MULTI_DOT_PHASE2_F32: &str = r#"
 struct Params { n_partials_per_vec: u32, n_vecs: u32 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -468,7 +475,7 @@ fn main(
 }
 "#;
 
-/// Batch subtract: w -= sum_k overlaps[k] * q_bank[k*stride..k*stride+dim]
+/// Batch subtract: w -= sum_k overlaps`[k]` * q_bank[k*stride..k*stride+dim]
 pub const BATCH_SUBTRACT_F64: &str = r#"
 enable f64;
 
@@ -498,6 +505,7 @@ fn main(
 }
 "#;
 
+/// Batched Gram-Schmidt subtraction against a bank of vectors, f32.
 pub const BATCH_SUBTRACT_F32: &str = r#"
 struct Params { dim: u32, n_vecs: u32, stride: u32, _pad: u32 }
 @group(0) @binding(0) var<uniform> params: Params;

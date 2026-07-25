@@ -89,10 +89,13 @@ pub fn epa_from_simplex(
         Face::new(&points, [1, 3, 2])?,
     ];
 
-    // A curved surface needs a face per unit of angular resolution, so the cap
-    // has to be generous; 64 was not enough to resolve two overlapping
-    // spheres, which is how this bug stayed hidden behind a `None`.
-    const MAX_ITERATIONS: usize = 255;
+    // Smooth shapes converge linearly: each iteration shaves one facet off a
+    // curved surface, so a sphere-sphere pair needs roughly 100 expansions to
+    // reach TOLERANCE. The old cap of 64 bailed out just short of that and
+    // returned `None` for the most common contact pair there is. The face cap
+    // is raised in step so a deep overlap, which needs the most refinement,
+    // cannot hit it before the iteration cap.
+    const MAX_ITERATIONS: usize = 256;
     const MAX_POLYTOPE_FACES: usize = 4096;
     // Relative tolerance. An absolute 1e-8 is unreachable on a curved surface:
     // the polytope would have to approximate the sphere to that accuracy

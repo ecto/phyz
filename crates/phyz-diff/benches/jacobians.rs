@@ -2,7 +2,7 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use phyz_diff::symbolic::CompiledStepJacobians;
-use phyz_diff::{analytical_step_jacobians, finite_diff_jacobians};
+use phyz_diff::{finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Model, ModelBuilder};
 
@@ -131,7 +131,7 @@ fn bench_single_pendulum(c: &mut Criterion) {
     });
 
     group.bench_function("analytical_jacobians", |b| {
-        b.iter(|| analytical_step_jacobians(&model, &state));
+        b.iter(|| semi_implicit_step_jacobians(&model, &state));
     });
 
     group.bench_function("symbolic_build", |b| {
@@ -161,7 +161,7 @@ fn bench_double_pendulum(c: &mut Criterion) {
     });
 
     group.bench_function("analytical_jacobians", |b| {
-        b.iter(|| analytical_step_jacobians(&model, &state));
+        b.iter(|| semi_implicit_step_jacobians(&model, &state));
     });
 
     group.bench_function("symbolic_build", |b| {
@@ -198,7 +198,7 @@ fn bench_chain_scaling(c: &mut Criterion) {
         });
 
         group.bench_with_input(BenchmarkId::new("analytical_jacobians", n), &n, |b, _| {
-            b.iter(|| analytical_step_jacobians(&model, &state));
+            b.iter(|| semi_implicit_step_jacobians(&model, &state));
         });
 
         group.bench_with_input(BenchmarkId::new("symbolic_build", n), &n, |b, _| {

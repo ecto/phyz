@@ -3,6 +3,14 @@
 //! Implements parallel simulation of multiple independent environments
 //! using GPU compute shaders for ABA and integration.
 
+#![warn(missing_docs)]
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod contact_pipeline;
 pub mod gpu_batch_simulator;
 pub mod gpu_simulator;

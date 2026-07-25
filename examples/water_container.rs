@@ -2,7 +2,8 @@
 //!
 //! Demonstrates fluid MPM with water-like equation of state.
 
-use phyz::{Material, MpmSolver, Particle, Vec3, material::EquationOfState};
+use phyz_math::Vec3;
+use phyz_particle::{Material, MpmSolver, Particle, material::EquationOfState};
 
 fn main() {
     println!("Water filling container simulation");

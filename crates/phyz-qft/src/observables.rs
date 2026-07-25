@@ -15,7 +15,7 @@ pub struct Observables {
     pub polyakov_loop: Option<PolyakovLoop>,
 }
 
-/// Wilson loop observable W(R, T) = Tr[U_loop].
+/// Wilson loop observable W(R, T) = Tr`[U_loop]`.
 ///
 /// Measures confinement via area law: ⟨W(R,T)⟩ ~ exp(-σ RT)
 /// where σ is the string tension.

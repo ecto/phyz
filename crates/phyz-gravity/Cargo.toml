@@ -6,12 +6,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Layered gravity solver from constant-g to post-Newtonian corrections for phyz"
+keywords = ["gravity", "n-body", "astronomy", "physics", "orbital"]
+categories = ["science", "simulation", "aerospace"]
+readme = "README.md"
 
 [dependencies]
 phyz-math = { workspace = true }
 
-[[example]]
-name = "mercury_precession"
-path = "../../examples/mercury_precession.rs"
 
 [dev-dependencies]

@@ -445,7 +445,7 @@ pub fn apply_discrete_symmetry(
     }
 }
 
-/// Check how badly a discrete symmetry is broken: |S[T(φ)] - S[φ]|.
+/// Check how badly a discrete symmetry is broken: |S[T(φ)] - S`[φ]`|.
 pub fn check_discrete_symmetry(
     complex: &SimplicialComplex,
     fields: &Fields,

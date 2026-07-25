@@ -10,26 +10,39 @@ use std::sync::Arc;
 ///
 /// Stores state for `nworld` parallel environments on GPU memory.
 pub struct GpuState {
+    /// The wgpu device the buffers were allocated on.
     pub device: Arc<wgpu::Device>,
+    /// The queue uploads and readbacks are submitted to.
     pub queue: Arc<wgpu::Queue>,
+    /// Number of independent environments held in these buffers.
     pub nworld: usize,
+    /// Generalised position count per world.
     pub nq: usize,
+    /// Generalised velocity count per world.
     pub nv: usize,
 
     // State buffers (nworld × ndof)
+    /// Joint positions, `nworld * nq` f32.
     pub q_buffer: wgpu::Buffer,
+    /// Joint velocities, `nworld * nv` f32.
     pub v_buffer: wgpu::Buffer,
+    /// Control inputs, `nworld * nv` f32.
     pub ctrl_buffer: wgpu::Buffer,
 
     // Scratch buffers for computation
+    /// Joint accelerations written by the ABA pass.
     pub qdd_buffer: wgpu::Buffer,
 
     // External forces buffer (nbodies × 6 per env, spatial force per body)
+    /// Per-body external wrenches written by the contact pass.
     pub ext_forces_buffer: wgpu::Buffer,
+    /// Body count per world.
     pub nbodies: usize,
 
     // Staging buffers for CPU ↔ GPU transfer
+    /// Host-visible staging buffer for reading `q` back.
     pub q_staging: wgpu::Buffer,
+    /// Host-visible staging buffer for reading `v` back.
     pub v_staging: wgpu::Buffer,
 }
 

@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Inverse problems and parameter estimation for real-to-sim transfer in phyz"
+keywords = ["real2sim", "sysid", "optimization", "robotics", "physics"]
+categories = ["science::robotics", "simulation", "science"]
+readme = "README.md"
 
 [dependencies]
 serde.workspace = true
@@ -16,6 +19,3 @@ phyz-rigid.workspace = true
 phyz-diff.workspace = true
 phyz-format.workspace = true
 
-[[example]]
-name = "real2sim_pendulum"
-path = "../../examples/real2sim_pendulum.rs"

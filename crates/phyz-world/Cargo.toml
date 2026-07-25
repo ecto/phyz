@@ -5,7 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Procedural world generation for phyz physics engine"
+description = "Procedural world generation and sensor models for phyz physics engine"
+keywords = ["procedural", "worldgen", "terrain", "physics", "simulation"]
+categories = ["simulation", "game-development", "science"]
+readme = "README.md"
 
 [dependencies]
 rand = "0.8"
@@ -13,3 +16,5 @@ serde.workspace = true
 serde_json.workspace = true
 phyz-math.workspace = true
 phyz-model.workspace = true
+phyz-collision.workspace = true
+phyz-rigid.workspace = true

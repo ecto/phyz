@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 mod quantum;
 pub use quantum::*;
 
-use phyz_diff::analytical_step_jacobians;
+use phyz_diff::semi_implicit_step_jacobians;
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
@@ -3566,7 +3566,7 @@ impl WasmLbmSim {
         }
     }
 
-    /// Velocity magnitude field as flat array [nx*ny].
+    /// Velocity magnitude field as flat array `[nx*ny]`.
     pub fn velocity_field(&self) -> Vec<f64> {
         let (nx, ny) = (self.nx, self.ny);
         let mut out = vec![0.0; nx * ny];
@@ -4970,7 +4970,7 @@ impl WasmDiffJacobianSim {
         let dt = self.model.dt;
         for _ in 0..n {
             // Compute Jacobians
-            let j = analytical_step_jacobians(&self.model, &self.state);
+            let j = semi_implicit_step_jacobians(&self.model, &self.state);
             self.jac = [
                 j.dqnext_dq[(0, 0)],
                 j.dqnext_dv[(0, 0)],
@@ -5059,7 +5059,7 @@ impl WasmDiffSensitivitySim {
         let dt = self.model.dt;
         for _ in 0..n {
             // Compute Jacobian at state_a
-            let j = analytical_step_jacobians(&self.model, &self.state_a);
+            let j = semi_implicit_step_jacobians(&self.model, &self.state_a);
 
             // Update predicted divergence using Jacobian
             let prev_pred = self.predicted_divergence.last().copied().unwrap_or(0.01);

@@ -9,10 +9,15 @@ use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 /// `gear * clamp(ctrl, ctrl_range)`, applied to the first DOF of `joint_idx`.
 #[derive(Debug, Clone)]
 pub struct Actuator {
+    /// Actuator name, as declared in the source model.
     pub name: String,
+    /// Name of the joint this actuator drives.
     pub joint_name: String,
+    /// Index into [`Model::joints`] of the driven joint.
     pub joint_idx: usize,
+    /// Gear ratio applied to the control signal to produce joint torque.
     pub gear: f64,
+    /// Optional `[lo, hi]` clamp on the control signal, before `gear`.
     pub ctrl_range: Option<[f64; 2]>,
 }
 
@@ -99,6 +104,16 @@ impl Model {
     pub fn nbodies(&self) -> usize {
         self.bodies.len()
     }
+
+    /// Look up a body index by name.
+    pub fn body_index(&self, name: &str) -> Option<usize> {
+        self.bodies.iter().position(|b| b.name == name)
+    }
+
+    /// Look up a joint index by name.
+    pub fn joint_index(&self, name: &str) -> Option<usize> {
+        self.joints.iter().position(|j| j.name == name)
+    }
 }
 
 /// Builder for constructing models.
@@ -146,13 +161,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::revolute(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -167,13 +177,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::prismatic(parent_to_joint, axis));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -187,13 +192,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::spherical(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -207,13 +207,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::free(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -227,13 +222,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::fixed(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -247,13 +237,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(joint);
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -268,13 +253,11 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::free(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: geometry.geometry,
-        });
+        let mut body = Body::new(name, inertia, parent, joint_idx);
+        body.geometry = geometry.geometry;
+        body.collisions = geometry.collisions;
+        body.visuals = geometry.visuals;
+        self.bodies.push(body);
         self
     }
 
