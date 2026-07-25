@@ -426,11 +426,7 @@ impl MdSystem {
     /// been removed (which [`MdSystem::initialize_velocities`] does).
     pub fn n_dof(&self) -> usize {
         let n = 3 * self.particles.len();
-        if self.com_removed {
-            n.saturating_sub(3)
-        } else {
-            n
-        }
+        if self.com_removed { n.saturating_sub(3) } else { n }
     }
 
     /// Compute instantaneous temperature (K).
@@ -617,14 +613,8 @@ mod tests {
 
         assert_eq!(a.len(), b.len());
         for (i, ((xa, va), (xb, vb))) in a.iter().zip(&b).enumerate() {
-            assert_eq!(
-                xa, xb,
-                "position of particle {i} differs across equal seeds"
-            );
-            assert_eq!(
-                va, vb,
-                "velocity of particle {i} differs across equal seeds"
-            );
+            assert_eq!(xa, xb, "position of particle {i} differs across equal seeds");
+            assert_eq!(va, vb, "velocity of particle {i} differs across equal seeds");
         }
 
         let differs = a.iter().zip(&c).any(|((xa, _), (xc, _))| xa != xc);

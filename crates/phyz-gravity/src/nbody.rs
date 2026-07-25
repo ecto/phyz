@@ -346,10 +346,7 @@ impl BarnesHutTree {
     /// Compute forces on all particles using tree.
     pub fn compute_forces(&self, particles: &mut [GravityParticle], theta: f64) {
         let forces: Vec<Vec3> = (0..particles.len())
-            .map(|i| {
-                self.root
-                    .compute_force_on(i, particles, theta, self.softening)
-            })
+            .map(|i| self.root.compute_force_on(i, particles, theta, self.softening))
             .collect();
 
         for (p, f) in particles.iter_mut().zip(forces) {
@@ -433,8 +430,7 @@ mod tests {
 
         if expected > 0.0 {
             let mut com = Vec3::zeros();
-            let mut collect =
-                |n: &OctreeNode| n.particles.iter().for_each(|&i| com += all[i].x * all[i].m);
+            let mut collect = |n: &OctreeNode| n.particles.iter().for_each(|&i| com += all[i].x * all[i].m);
             walk_leaves(node, &mut collect);
             com = com / expected;
             assert!(
