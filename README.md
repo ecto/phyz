@@ -86,6 +86,20 @@ cargo clippy --workspace -- -D warnings
 wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg
 ```
 
+## Benchmarks
+
+[**BENCHMARKS.md**](BENCHMARKS.md) — throughput, gradient cost, energy drift,
+and a like-for-like comparison against Rapier, including the cases where phyz
+loses. Reproduce with `make bench`.
+
+Two numbers worth knowing before you adopt phyz:
+
+- The GPU path does not break even against a single CPU thread until roughly
+  **batch 128**. Below that it is slower, substantially so at batch 1.
+- Gradient rollouts cost 18–54× a forward rollout, and that ratio grows with
+  parameter count. The derivatives are *exact*, which is the real benefit —
+  they are not asymptotically cheaper than finite differences today.
+
 ## License
 
 [MIT](LICENSE)
