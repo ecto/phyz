@@ -161,8 +161,7 @@ pub fn build_model(scene: Scene, dt: f64) -> Model {
                                 BOX_HALF_EXTENT,
                             ),
                         };
-                        let mut body =
-                            Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
+                        let mut body = Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
                         // `geometry` mirrors the first centred entry in
                         // `collisions`; set both so single-shape and
                         // multi-shape consumers agree.
