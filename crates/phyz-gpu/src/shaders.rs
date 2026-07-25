@@ -298,19 +298,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-/// WGSL shader for semi-implicit Euler integration.
-///
-/// Each work item processes one DOF across all worlds in parallel.
-/// Joint-aware semi-implicit Euler.
-///
-/// Must match [`phyz_rigid::semi_implicit_euler`] exactly. A flat
-/// `q += dt * v` is wrong for ball and free joints because `q` and `v` use
-/// different parameterisations — for a free joint `q` is
-/// `[pos(3), exp-coords(3)]` while `v` is `[angular(3), linear(3)]`, so the
-/// naive update adds angular velocity into position.
-///
-/// One thread per (environment, joint) pair, so joints in the same environment
-/// touch disjoint `q`/`v` ranges and no synchronisation is needed.
 /// Flat semi-implicit Euler for single-DOF-only models.
 ///
 /// Correct only when every joint is revolute or prismatic, where `q` and `v`
@@ -341,6 +328,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+/// Joint-aware semi-implicit Euler.
+///
+/// Must match `phyz_rigid::semi_implicit_euler` exactly. A flat `q += dt * v`
+/// is wrong for ball and free joints because `q` and `v` use different
+/// parameterisations — for a free joint `q` is `[pos(3), exp-coords(3)]` while
+/// `v` is `[angular(3), linear(3)]`, so the naive update adds angular velocity
+/// into position.
+///
+/// One thread per (environment, joint) pair, so joints in the same environment
+/// touch disjoint `q`/`v` ranges and no synchronisation is needed.
 pub const INTEGRATE_SHADER: &str = r#"
 const BODY_STRIDE: u32 = 32u;
 

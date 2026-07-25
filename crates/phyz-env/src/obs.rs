@@ -1,6 +1,6 @@
 //! Declarative observation assembly.
 //!
-//! This deliberately does **not** go through [`phyz_world::sensor::Sensor`].
+//! This deliberately does **not** go through `phyz_world::sensor::Sensor`.
 //! That type returns hard-coded zeros for `BodyAccel`, `ForceTorque` and
 //! `Rangefinder` (see `crates/phyz-world/src/sensor.rs:59,90,98`), which would
 //! silently feed a policy dead channels. The terms below are restricted to

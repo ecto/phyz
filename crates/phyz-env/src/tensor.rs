@@ -7,9 +7,9 @@
 //! * **Rust → Python.** The Python binding wraps the same pointer in a numpy
 //!   array via `PyArray::borrow_from_array`, so `env.step()` hands the policy a
 //!   view of simulator memory (design-only in this pass).
-//! * **Rust → `tang::Tensor`.** [`Batch::into_tang`] *moves* the `Vec<f32>`
+//! * **Rust → `tang::Tensor`.** `Batch::into_tang` *moves* the `Vec<f32>`
 //!   into the tensor, which is copy-free but consumes the buffer.
-//!   [`BatchView::to_tang`] copies, because `tang_tensor::Tensor` owns its
+//!   `BatchView::to_tang` copies, because `tang_tensor::Tensor` owns its
 //!   `Vec<S>` and has no borrowed constructor
 //!   (`tang/crates/tang-tensor/src/tensor.rs:16`).
 //! * **GPU → GPU.** Not yet possible. `phyz-gpu` is on wgpu 23,
@@ -60,7 +60,7 @@ impl<'a> BatchView<'a> {
 
     /// Copy into an owned `tang` tensor.
     ///
-    /// This **copies**. Use [`Batch::into_tang`] when you can give up the
+    /// This **copies**. Use `Batch::into_tang` when you can give up the
     /// buffer, or wait for a borrowed-tensor constructor upstream.
     #[cfg(feature = "tang")]
     pub fn to_tang(&self) -> tang_tensor::Tensor<f32> {
