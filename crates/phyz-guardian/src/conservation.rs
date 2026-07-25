@@ -10,8 +10,11 @@ use phyz_rigid::{forward_kinematics, total_energy};
 /// Baseline conservation quantities to track drift.
 #[derive(Debug, Clone)]
 pub struct ConservationState {
+    /// Total energy at the reference state, in joules.
     pub baseline_energy: f64,
+    /// Total linear momentum at the reference state.
     pub baseline_momentum: Vec3,
+    /// Total angular momentum at the reference state.
     pub baseline_angular_momentum: Vec3,
 }
 

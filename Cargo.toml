@@ -25,6 +25,7 @@ members = [
     "crates/phyz-format",
     "crates/phyz",
     "crates/phyz-wasm",
+    "crates/phyz-examples",
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",
@@ -90,6 +91,12 @@ debug-assertions = false
 [profile.dev.package.phyz-wasm]
 opt-level = 2
 debug-assertions = false
+
+# phyz-dream's tests train a small network to convergence. Unoptimized that
+# takes tens of minutes and dominates `cargo test --workspace`; at opt-level 2
+# it is seconds. Same reasoning as phyz-lbm below.
+[profile.dev.package.phyz-dream]
+opt-level = 2
 
 # The LBM validation benchmarks run flows to steady state on real grids;
 # unoptimized they take tens of minutes instead of tens of seconds.

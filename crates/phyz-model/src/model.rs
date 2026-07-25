@@ -18,10 +18,15 @@ use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 /// this reduces to `gear * clamp(ctrl)`.
 #[derive(Debug, Clone)]
 pub struct Actuator {
+    /// Actuator name, as declared in the source model.
     pub name: String,
+    /// Name of the joint this actuator drives.
     pub joint_name: String,
+    /// Index into [`Model::joints`] of the driven joint.
     pub joint_idx: usize,
+    /// Gear ratio applied to the control signal to produce joint torque.
     pub gear: f64,
+    /// Optional `[lo, hi]` clamp on the control signal, before `gear`.
     pub ctrl_range: Option<[f64; 2]>,
     /// Coefficient on `ctrl`. 1 for a motor, `kp` for a position servo.
     pub gain: f64,

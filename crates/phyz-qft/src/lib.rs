@@ -31,6 +31,12 @@
 //! println!("⟨Tr U_plaq⟩ = {:.4}", plaq);
 //! ```
 
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod group;
 pub mod hmc;
 pub mod lattice;

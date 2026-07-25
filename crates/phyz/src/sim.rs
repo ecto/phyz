@@ -9,7 +9,7 @@
 //! Requires the `contact` and `diff` features (both on by default).
 
 use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
-use phyz_diff::{StepJacobians, analytical_step_jacobians, finite_diff_jacobians};
+use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
 use phyz_model::{Geometry, Model, State};
 use phyz_rigid::{aba, aba_with_external_forces, forward_kinematics};
@@ -45,7 +45,7 @@ impl Solver for SemiImplicitEulerSolver {
     }
 
     fn step_with_jacobians(&self, model: &Model, state: &mut State) -> StepJacobians {
-        let jac = analytical_step_jacobians(model, state);
+        let jac = semi_implicit_step_jacobians(model, state);
         self.step(model, state);
         jac
     }

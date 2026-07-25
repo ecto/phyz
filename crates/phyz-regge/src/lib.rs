@@ -1,3 +1,4 @@
+
 #![allow(clippy::needless_range_loop)]
 //! 4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory.
 //!
@@ -36,6 +37,12 @@
 //! // Flat vacuum → zero action.
 //! assert!(s.abs() < 1e-8);
 //! ```
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
 
 pub mod action;
 pub mod complex;

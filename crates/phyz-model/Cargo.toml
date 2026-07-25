@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Model and state types for phyz physics engine"
+keywords = ["physics", "robotics", "kinematics", "simulation", "urdf"]
+categories = ["simulation", "science::robotics", "science"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

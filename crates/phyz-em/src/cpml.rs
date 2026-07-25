@@ -136,8 +136,7 @@ impl AxisCoeffs {
         // σ_max from the analytic normal-incidence reflection of a graded layer:
         //   R(0) = exp(-2 η₀ ∫σ dw)  with σ(u) = σ_max u^m over depth d_pml
         let d_pml = thk * d;
-        let sigma_max = -(cfg.order + 1.0) * cfg.target_reflection.ln()
-            / (2.0 * eta0 * d_pml)
+        let sigma_max = -(cfg.order + 1.0) * cfg.target_reflection.ln() / (2.0 * eta0 * d_pml)
             * cfg.sigma_scale;
         let c0 = 1.0 / (EPS0 * MU0).sqrt();
         let alpha_max = cfg.alpha_factor * EPS0 * c0 / d_pml;

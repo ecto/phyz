@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Probabilistic simulation and uncertainty quantification for phyz"
+keywords = ["bayesian", "svgd", "hmc", "uncertainty", "physics"]
+categories = ["science", "simulation", "mathematics"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

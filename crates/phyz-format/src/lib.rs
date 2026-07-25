@@ -10,6 +10,14 @@
 //! USD and SDF import are *not* implemented; [`from_usd`] and [`from_sdf`]
 //! return [`TauFormatError::UnsupportedImportFormat`] rather than a stub.
 
+#![warn(missing_docs)]
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod coupling;
 pub mod domain;
 pub mod error;

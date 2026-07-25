@@ -238,10 +238,12 @@ mod tests {
             for step in 0..100 {
                 solver.step();
                 let t = step as f64 * dt;
-                solver
-                    .grid
-                    .ez
-                    .add(n / 2, n / 2, n / 2, crate::analysis::ricker_pulse(t, t0, spread));
+                solver.grid.ez.add(
+                    n / 2,
+                    n / 2,
+                    n / 2,
+                    crate::analysis::ricker_pulse(t, t0, spread),
+                );
                 peak = peak.max(solver.total_energy());
             }
             solver.run(300);

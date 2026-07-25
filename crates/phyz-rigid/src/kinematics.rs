@@ -79,7 +79,7 @@ impl BodyKinematics {
 /// Forward kinematics extended with accelerations, for a given `qdd`.
 ///
 /// Gravity is deliberately not folded into the base acceleration here (unlike
-/// [`crate::rnea`], which uses that trick), so the results are true kinematic
+/// [`crate::rnea()`], which uses that trick), so the results are true kinematic
 /// accelerations in an inertial frame.
 pub fn forward_kinematics_acc(
     model: &Model,

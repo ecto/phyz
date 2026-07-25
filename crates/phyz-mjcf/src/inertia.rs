@@ -21,14 +21,30 @@ pub struct MassProps {
 /// The shapes we can derive inertia for.
 #[derive(Debug, Clone, Copy)]
 pub enum Shape {
-    /// Radius.
-    Sphere { radius: f64 },
-    /// Radius and half-length of the cylindrical section (MJCF `size` order).
-    Capsule { radius: f64, half_len: f64 },
-    /// Radius and half-height.
-    Cylinder { radius: f64, half_height: f64 },
-    /// Half-extents.
-    Box { half: Vec3 },
+    /// A sphere.
+    Sphere {
+        /// Sphere radius.
+        radius: f64,
+    },
+    /// A capsule: a segment along local Z swept by a sphere.
+    Capsule {
+        /// Cap radius.
+        radius: f64,
+        /// Half-length of the cylindrical section (MJCF `size` order).
+        half_len: f64,
+    },
+    /// A cylinder along local Z.
+    Cylinder {
+        /// Cylinder radius.
+        radius: f64,
+        /// Half-height along local Z.
+        half_height: f64,
+    },
+    /// An axis-aligned box.
+    Box {
+        /// Half-extents along local X, Y and Z.
+        half: Vec3,
+    },
 }
 
 impl Shape {

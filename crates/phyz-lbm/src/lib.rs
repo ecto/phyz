@@ -38,6 +38,12 @@
 // rest is strictly less readable than the shared index, so the lint is off here.
 #![allow(clippy::needless_range_loop)]
 
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod analytic;
 pub mod boundary;
 pub mod collision;

@@ -225,15 +225,7 @@ impl YeeGrid {
 
     /// Create a new Yee grid with independent cell dimensions.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_rect(
-        nx: usize,
-        ny: usize,
-        nz: usize,
-        dx: f64,
-        dy: f64,
-        dz: f64,
-        dt: f64,
-    ) -> Self {
+    pub fn new_rect(nx: usize, ny: usize, nz: usize, dx: f64, dy: f64, dz: f64, dt: f64) -> Self {
         let eps0 = EPS0;
         let mu0 = MU0;
         let c0 = 1.0 / (eps0 * mu0).sqrt(); // ~3e8 m/s
@@ -451,8 +443,7 @@ impl YeeGrid {
     /// A no-op if no registered material has poles. Must be called after all
     /// [`YeeGrid::add_material`] calls and before stepping.
     pub fn build_dispersion(&mut self) {
-        self.dispersion =
-            DispersiveState::new(self.nx, self.ny, self.nz, self.dt, &self.materials);
+        self.dispersion = DispersiveState::new(self.nx, self.ny, self.nz, self.dt, &self.materials);
     }
 
     /// Zero every field and all auxiliary (CPML, ADE) state.

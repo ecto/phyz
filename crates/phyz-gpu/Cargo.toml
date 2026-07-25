@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "GPU-accelerated batch simulation using wgpu compute shaders for phyz"
+keywords = ["gpu", "wgpu", "physics", "simulation", "compute"]
+categories = ["simulation", "science", "graphics"]
+readme = "README.md"
 
 [dependencies]
 phyz-math = { workspace = true }
