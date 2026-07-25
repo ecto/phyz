@@ -32,6 +32,7 @@ members = [
     "crates/phyz-dream",
     "crates/phyz-env",
     "crates/phyz-validate",
+    "crates/phyz-bench",
 ]
 
 [workspace.package]
