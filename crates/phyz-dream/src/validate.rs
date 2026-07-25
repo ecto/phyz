@@ -64,8 +64,8 @@ pub fn validate(
 mod tests {
     use super::*;
     use crate::data::SampleConfig;
-    use crate::train::{TrainConfig, train};
     use crate::tests::make_double_pendulum;
+    use crate::train::{TrainConfig, train};
 
     #[test]
     fn validate_trained_model() {
