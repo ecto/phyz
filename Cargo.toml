@@ -82,3 +82,18 @@ debug-assertions = false
 [profile.dev.package.phyz-wasm]
 opt-level = 2
 debug-assertions = false
+
+# phyz-dream's tests train a small network. Unoptimized that takes >10 minutes;
+# at opt-level 2 the crate's suite runs in ~25s. Optimize it and the tang
+# numerics it leans on so `cargo test` stays viable in CI.
+[profile.dev.package.phyz-dream]
+opt-level = 2
+
+[profile.dev.package.tang]
+opt-level = 2
+
+[profile.dev.package.tang-tensor]
+opt-level = 2
+
+[profile.dev.package.tang-train]
+opt-level = 2
