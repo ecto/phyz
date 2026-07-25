@@ -8,6 +8,7 @@
 //! - Semi-implicit Euler integration
 
 pub mod aba;
+pub mod actuation;
 pub mod crba;
 pub mod energy;
 pub mod kinematics;

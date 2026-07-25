@@ -32,11 +32,60 @@ pub struct Joint {
     pub parent_to_joint: SpatialTransform,
     /// Joint axis in local frame (for revolute: typically Z).
     pub axis: Vec3,
-    /// Damping coefficient.
+    /// Damping coefficient (force = -damping * qd).
     pub damping: f64,
     /// Joint position limits [lower, upper] (None = unlimited).
+    ///
+    /// Only meaningful for single-DOF joints (revolute/prismatic). Limits on
+    /// ball and free joints are ignored — MuJoCo expresses those as a cone
+    /// limit, which this model does not represent yet.
     pub limits: Option<[f64; 2]>,
+    /// Stiffness of the soft joint-limit force (force per unit of violation).
+    pub limit_stiffness: f64,
+    /// Damping of the soft joint-limit force (force per unit of inward velocity).
+    pub limit_damping: f64,
+    /// Rotor / armature inertia added to this joint's diagonal of the mass matrix.
+    ///
+    /// MuJoCo's `armature`. Physically it is the reflected inertia of the motor
+    /// rotor; numerically it also regularises the mass matrix.
+    pub armature: f64,
+    /// Passive spring stiffness (force = -stiffness * (q - spring_ref)).
+    pub stiffness: f64,
+    /// Rest position of the passive spring (MuJoCo's `springref`).
+    pub spring_ref: f64,
+    /// Dry (Coulomb) friction magnitude — MuJoCo's `frictionloss`.
+    pub friction_loss: f64,
 }
+
+impl Default for Joint {
+    fn default() -> Self {
+        Self {
+            joint_type: JointType::Fixed,
+            parent_to_joint: SpatialTransform::identity(),
+            axis: Vec3::zeros(),
+            damping: 0.0,
+            limits: None,
+            limit_stiffness: DEFAULT_LIMIT_STIFFNESS,
+            limit_damping: DEFAULT_LIMIT_DAMPING,
+            armature: 0.0,
+            stiffness: 0.0,
+            spring_ref: 0.0,
+            friction_loss: 0.0,
+        }
+    }
+}
+
+/// Default stiffness of the soft joint-limit force.
+///
+/// Chosen to be stiff enough that a limit is visibly hard at the ~1 ms
+/// timesteps this engine targets, but soft enough to stay explicit-integrator
+/// stable for unit-scale inertias. Models with very different scales should set
+/// [`Joint::limit_stiffness`] explicitly.
+pub const DEFAULT_LIMIT_STIFFNESS: f64 = 1000.0;
+
+/// Default damping of the soft joint-limit force. Critical-ish for a unit
+/// inertia against [`DEFAULT_LIMIT_STIFFNESS`], which kills limit chatter.
+pub const DEFAULT_LIMIT_DAMPING: f64 = 60.0;
 
 impl Joint {
     /// Create a revolute joint with the given parent-to-joint transform.
@@ -45,8 +94,7 @@ impl Joint {
             joint_type: JointType::Revolute,
             parent_to_joint,
             axis: Vec3::new(0.0, 0.0, 1.0), // revolute about Z
-            damping: 0.0,
-            limits: None,
+            ..Default::default()
         }
     }
 
@@ -56,8 +104,7 @@ impl Joint {
             joint_type: JointType::Prismatic,
             parent_to_joint,
             axis,
-            damping: 0.0,
-            limits: None,
+            ..Default::default()
         }
     }
 
@@ -67,8 +114,7 @@ impl Joint {
             joint_type: JointType::Spherical,
             parent_to_joint,
             axis: Vec3::zeros(), // not used for spherical
-            damping: 0.0,
-            limits: None,
+            ..Default::default()
         }
     }
 
@@ -78,8 +124,7 @@ impl Joint {
             joint_type: JointType::Free,
             parent_to_joint,
             axis: Vec3::zeros(), // not used for free
-            damping: 0.0,
-            limits: None,
+            ..Default::default()
         }
     }
 
@@ -89,8 +134,7 @@ impl Joint {
             joint_type: JointType::Fixed,
             parent_to_joint,
             axis: Vec3::zeros(),
-            damping: 0.0,
-            limits: None,
+            ..Default::default()
         }
     }
 
@@ -103,6 +147,81 @@ impl Joint {
             JointType::Free => 6,
             JointType::Fixed => 0,
         }
+    }
+
+    /// Soft joint-limit force for a single-DOF joint at position `q`, velocity `qd`.
+    ///
+    /// Returns a generalized force along the joint's DOF (positive = pushes `q`
+    /// up). Zero when the joint is unlimited, multi-DOF, or inside its range.
+    ///
+    /// # Why a penalty force
+    ///
+    /// The contact layer is currently a penalty method, so limits are modelled
+    /// the same way for consistency: a one-sided spring-damper on the violation
+    /// depth. The damping term is *gated* — it only ever resists motion deeper
+    /// into the limit, never pulls the joint back toward the violation — so this
+    /// force is strictly dissipative and cannot inject energy at the boundary
+    /// (which is what makes naive `-d * qd` limit damping oscillate).
+    ///
+    /// # Migration to a constraint
+    ///
+    /// This is deliberately expressed as a pure function of `(q, qd)` returning
+    /// a force, with the violation depth and its sign computed by
+    /// [`Joint::limit_violation`]. When the solver gains unilateral constraints,
+    /// `limit_violation` becomes the constraint function `g(q) >= 0` and its
+    /// Jacobian row is the joint's motion subspace; only the force assembly here
+    /// is replaced, not the model or the parsing that feeds it.
+    pub fn limit_force(&self, q: f64, qd: f64) -> f64 {
+        let Some((depth, sign)) = self.limit_violation(q) else {
+            return 0.0;
+        };
+        // `sign` is the direction the restoring force must push (+1 at the lower
+        // limit, -1 at the upper). Damping engages only while the joint is still
+        // moving into the limit, i.e. when qd opposes `sign`.
+        let inward_speed = (-sign * qd).max(0.0);
+        sign * (self.limit_stiffness * depth + self.limit_damping * inward_speed)
+    }
+
+    /// Limit violation at position `q`, as `(depth, restoring_direction)`.
+    ///
+    /// `depth` is a non-negative penetration past the limit; the direction is
+    /// `+1.0` past the lower bound and `-1.0` past the upper bound. Returns
+    /// `None` when the joint is unlimited, multi-DOF, or within range.
+    ///
+    /// This is the constraint function a future unilateral solver would use.
+    pub fn limit_violation(&self, q: f64) -> Option<(f64, f64)> {
+        if self.ndof() != 1 {
+            return None;
+        }
+        let [lo, hi] = self.limits?;
+        if q < lo {
+            Some((lo - q, 1.0))
+        } else if q > hi {
+            Some((q - hi, -1.0))
+        } else {
+            None
+        }
+    }
+
+    /// Total passive generalized force on DOF `k` of this joint.
+    ///
+    /// Combines viscous damping, the passive spring, dry friction and the soft
+    /// joint limit. `q`/`qd` are this DOF's position and velocity.
+    pub fn passive_force(&self, k: usize, q: f64, qd: f64) -> f64 {
+        let mut f = -self.damping * qd;
+        if self.ndof() == 1 && k == 0 {
+            f += -self.stiffness * (q - self.spring_ref);
+            f += self.limit_force(q, qd);
+            if self.friction_loss > 0.0 {
+                // Smoothed Coulomb friction: -mu * sign(qd), regularised so a
+                // joint at rest does not chatter under an explicit integrator.
+                // A proper implementation is a box constraint on the friction
+                // force, which lands with the constraint solver.
+                const FRICTION_VEL_SCALE: f64 = 1e-3;
+                f += -self.friction_loss * (qd / FRICTION_VEL_SCALE).tanh();
+            }
+        }
+        f
     }
 
     /// Compute the joint transform for the given joint position(s).

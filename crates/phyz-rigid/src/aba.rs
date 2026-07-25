@@ -122,6 +122,11 @@ pub fn aba_with_external_forces(
     let nb = model.nbodies();
     let mut qdd = DVec::zeros(model.nv);
 
+    // Generalized forces: actuator controls mapped through gear/ctrlrange, plus
+    // passive joint terms (damping, spring, dry friction, soft limits).
+    let qfrc = crate::actuation::generalized_forces(model, state);
+    let armature = crate::actuation::armature_diag(model);
+
     // Per-body storage
     let mut x_tree = vec![SpatialTransform::identity(); nb];
     let mut vel = vec![SpatialVec::zero(); nb];
@@ -195,11 +200,11 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             // Single-DOF: scalar operations (faster path)
             let s_i = joint.motion_subspace();
-            let phyz_i = state.ctrl[v_idx] - joint.damping * state.v[v_idx];
+            let phyz_i = qfrc[v_idx];
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i));
+            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx];
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -230,14 +235,17 @@ pub fn aba_with_external_forces(
             // tau vector for this joint
             let mut phyz_vec = DVec::zeros(ndof);
             for k in 0..ndof {
-                phyz_vec[k] = state.ctrl[v_idx + k] - joint.damping * state.v[v_idx + k];
+                phyz_vec[k] = qfrc[v_idx + k];
             }
 
             // U = I_a * S  (6 x ndof)
             let u_mat = ia_dmat.mul_mat(&s_mat); // 6 x ndof
 
             // D = S^T * I_a * S  (ndof x ndof)
-            let d_mat = s_mat.transpose().mul_mat(&u_mat); // ndof x ndof
+            let mut d_mat = s_mat.transpose().mul_mat(&u_mat); // ndof x ndof
+            for k in 0..ndof {
+                d_mat[(k, k)] += armature[v_idx + k];
+            }
 
             // u_vec = tau - S^T * p_a  (ndof x 1)
             let pa_vec = sv_to_dvec(&p_a[i]);
@@ -299,14 +307,14 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i));
+            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx];
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
                 continue;
             }
 
-            let phyz_i = state.ctrl[v_idx] - joint.damping * state.v[v_idx];
+            let phyz_i = qfrc[v_idx];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
             let qdd_i = (u_i - ia.mul_vec(&(a_parent + c_bias[i])).dot(&s_i)) / d_i;
             qdd[v_idx] = qdd_i;
@@ -318,11 +326,14 @@ pub fn aba_with_external_forces(
 
             let mut phyz_vec = DVec::zeros(ndof);
             for k in 0..ndof {
-                phyz_vec[k] = state.ctrl[v_idx + k] - joint.damping * state.v[v_idx + k];
+                phyz_vec[k] = qfrc[v_idx + k];
             }
 
             let u_mat = ia_dmat.mul_mat(&s_mat);
-            let d_mat = s_mat.transpose().mul_mat(&u_mat);
+            let mut d_mat = s_mat.transpose().mul_mat(&u_mat);
+            for k in 0..ndof {
+                d_mat[(k, k)] += armature[v_idx + k];
+            }
 
             let d_inv = match d_mat.try_inverse() {
                 Some(inv) => inv,
