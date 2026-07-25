@@ -3093,9 +3093,9 @@ dependencies = [
  "phyz-math",
  "phyz-model",
  "phyz-rigid",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-expr",
- "tang-la",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -3107,11 +3107,11 @@ dependencies = [
  "phyz-rigid",
  "serde",
  "serde_json",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-compute",
  "tang-expr",
  "tang-safetensors",
- "tang-tensor",
+ "tang-tensor 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-train",
 ]
 
@@ -3132,7 +3132,7 @@ dependencies = [
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
- "tang-tensor",
+ "tang-tensor 0.1.0",
  "thiserror 2.0.18",
 ]
 
@@ -3235,8 +3235,8 @@ name = "phyz-math"
 version = "0.3.1"
 dependencies = [
  "proptest",
- "tang",
- "tang-la",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -3308,9 +3308,9 @@ dependencies = [
  "pollster",
  "rand 0.8.5",
  "serde_json",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-expr",
- "tang-la",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-mesh",
  "ureq",
  "wgpu 23.0.1",
@@ -4694,6 +4694,13 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 [[package]]
 name = "tang"
 version = "0.2.0"
+dependencies = [
+ "paste",
+]
+
+[[package]]
+name = "tang"
+version = "0.2.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "paste",
@@ -4704,8 +4711,8 @@ name = "tang-ad"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
- "tang-la",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -4714,7 +4721,7 @@ version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "bytemuck",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-expr",
 ]
 
@@ -4723,7 +4730,7 @@ name = "tang-expr"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -4734,7 +4741,7 @@ dependencies = [
  "bytemuck",
  "pollster",
  "safetensors",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-expr",
  "wgpu 24.0.5",
 ]
@@ -4742,9 +4749,16 @@ dependencies = [
 [[package]]
 name = "tang-la"
 version = "0.1.0"
+dependencies = [
+ "tang 0.2.0",
+]
+
+[[package]]
+name = "tang-la"
+version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -4758,10 +4772,10 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-expr",
  "tang-gpu",
- "tang-tensor",
+ "tang-tensor 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tarpc",
  "tokio",
  "tokio-serde",
@@ -4774,9 +4788,9 @@ name = "tang-optim"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-ad",
- "tang-la",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -4786,9 +4800,17 @@ source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f
 dependencies = [
  "safetensors",
  "serde_json",
- "tang",
- "tang-la",
- "tang-tensor",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+ "tang-tensor 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+]
+
+[[package]]
+name = "tang-tensor"
+version = "0.1.0"
+dependencies = [
+ "tang 0.2.0",
+ "tang-la 0.1.0",
 ]
 
 [[package]]
@@ -4796,8 +4818,8 @@ name = "tang-tensor"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
- "tang-la",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]
@@ -4805,11 +4827,11 @@ name = "tang-train"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
- "tang",
+ "tang 0.2.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-ad",
- "tang-la",
+ "tang-la 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
  "tang-optim",
- "tang-tensor",
+ "tang-tensor 0.1.0 (git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34)",
 ]
 
 [[package]]

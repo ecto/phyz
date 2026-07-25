@@ -13,9 +13,9 @@ pub struct ReadmeDocTests;
 
 pub mod contact_pipeline;
 pub mod gpu_batch_simulator;
-pub mod interop;
 pub mod gpu_simulator;
 pub mod gpu_state;
+pub mod interop;
 pub mod shaders;
 pub mod sparse;
 pub mod sparse_shaders;

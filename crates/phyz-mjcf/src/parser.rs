@@ -471,11 +471,9 @@ impl MjcfLoader {
 
         // `fullinertia` is [xx, yy, zz, xy, xz, yz].
         let tensor = match a.floats("fullinertia") {
-            Some(v) if v.len() == 6 => Mat3::new(
-                v[0], v[3], v[4],
-                v[3], v[1], v[5],
-                v[4], v[5], v[2],
-            ),
+            Some(v) if v.len() == 6 => {
+                Mat3::new(v[0], v[3], v[4], v[3], v[1], v[5], v[4], v[5], v[2])
+            }
             _ => {
                 let d = a.vec3_or("diaginertia", Vec3::new(0.001, 0.001, 0.001));
                 let local = Mat3::from_diagonal(&d);
@@ -637,7 +635,8 @@ impl MjcfLoader {
                 .and_then(|p| body_map.get(&p).copied())
                 .unwrap_or(-1);
 
-            let quat = Quat::new(body.quat[0], body.quat[1], body.quat[2], body.quat[3]).normalize();
+            let quat =
+                Quat::new(body.quat[0], body.quat[1], body.quat[2], body.quat[3]).normalize();
             let parent_to_body = SpatialTransform::new(quat.to_matrix(), body.pos);
 
             let inertia = self.body_inertia(body);
@@ -982,7 +981,10 @@ mod tests {
         </mujoco>
         "#;
         let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
-        assert!((model.joints[0].damping - 0.5).abs() < 1e-12, "root default");
+        assert!(
+            (model.joints[0].damping - 0.5).abs() < 1e-12,
+            "root default"
+        );
         assert!((model.joints[1].damping - 9.0).abs() < 1e-12, "childclass");
         // Root default supplied `type=capsule`, so the geom is a capsule with
         // full length 2 * 0.2.
@@ -1067,7 +1069,11 @@ mod tests {
         </mujoco>
         "#;
         let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
-        let tags: Vec<&str> = loader.unsupported().iter().map(|u| u.tag.as_str()).collect();
+        let tags: Vec<&str> = loader
+            .unsupported()
+            .iter()
+            .map(|u| u.tag.as_str())
+            .collect();
         assert!(tags.contains(&"mesh"), "{tags:?}");
         assert!(tags.contains(&"tendon"), "{tags:?}");
         assert!(tags.contains(&"equality"), "{tags:?}");

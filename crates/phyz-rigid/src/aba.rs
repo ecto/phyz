@@ -204,9 +204,8 @@ pub fn aba_with_external_forces(
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt);
+            let d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -309,9 +308,8 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt);
+            let d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
@@ -368,7 +366,6 @@ pub fn aba_with_external_forces(
 
     qdd
 }
-
 
 /// Implicit-damping contribution to a joint's effective inertia.
 ///

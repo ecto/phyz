@@ -106,7 +106,13 @@ impl ObsSpec {
     }
 
     /// Write one environment's observation into `out` (length == [`Self::dim`]).
-    pub fn write(&self, model: &Model, view: &Kinematics<'_>, last_action: &[f32], out: &mut [f32]) {
+    pub fn write(
+        &self,
+        model: &Model,
+        view: &Kinematics<'_>,
+        last_action: &[f32],
+        out: &mut [f32],
+    ) {
         let mut off = 0;
         for term in &self.terms {
             let n = term.dim(model);
