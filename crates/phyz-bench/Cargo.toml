@@ -1,0 +1,44 @@
+[package]
+name = "phyz-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Benchmark harness for phyz: throughput, gradients, energy drift, and cross-library comparison"
+publish = false
+
+[lib]
+name = "phyz_bench"
+
+[[bin]]
+name = "phyz-bench"
+path = "src/bin/phyz_bench.rs"
+
+[[bench]]
+name = "single_sim"
+harness = false
+
+[features]
+default = ["rapier"]
+# Cross-library comparison against rapier3d (f64 build).
+rapier = ["dep:rapier3d-f64"]
+# GPU batch suite. Requires a working wgpu adapter at runtime; the suite
+# reports `skipped` rather than failing when none is available.
+gpu = ["dep:phyz-gpu"]
+
+[dependencies]
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+phyz-diff.workspace = true
+phyz-mjcf.workspace = true
+phyz-collision.workspace = true
+phyz-contact.workspace = true
+phyz-gpu = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+rapier3d-f64 = { version = "0.34", optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }

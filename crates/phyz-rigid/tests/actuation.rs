@@ -29,10 +29,14 @@ fn pendulum() -> Model {
 }
 
 fn motor(model: &mut Model, gear: f64, ctrl_range: Option<[f64; 2]>) {
-    let mut act = Actuator::motor("m", "link", 0);
-    act.gear = gear;
-    act.ctrl_range = ctrl_range;
-    model.actuators.push(act);
+    model.actuators.push(Actuator {
+        name: "m".to_string(),
+        joint_name: "link".to_string(),
+        joint_idx: 0,
+        gear,
+        ctrl_range,
+        ..Default::default()
+    });
 }
 
 /// Semi-implicit Euler for the duration, returning (q, qd) history extremes.

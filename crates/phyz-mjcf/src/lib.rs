@@ -1,22 +1,6 @@
 //! MuJoCo MJCF XML parser for phyz physics engine.
 //!
 //! Supports loading models from MJCF XML format and converting them to phyz Model.
-//!
-//! # Supported subset
-//!
-//! - `<compiler>`: `angle`, `coordinate`, `eulerseq`, `meshdir`, `assetdir`
-//! - `<option>`: `gravity`, `timestep`
-//! - `<default>`: class definitions with nesting/inheritance, plus `class` and `childclass`
-//!   references on elements
-//! - `<worldbody>`/`<body>`/`<joint>`/`<freejoint>`/`<inertial>`/`<geom>`/`<site>`
-//! - Orientations: `quat`, `euler`, `axisangle`, `xyaxes`, `zaxis`, and `fromto` on geoms
-//! - `<actuator>`: `motor`, `position`, `velocity`, `general`
-//! - `<asset>`: `mesh`, `texture`, `material`, `hfield` (records; STL/OBJ meshes are loaded)
-//! - `<include>` file inclusion
-//!
-//! Parsed-but-not-simulated (recorded on [`MjcfLoader`] for inspection, see
-//! [`MjcfLoader::unsupported`]): `<equality>`, `<tendon>`, `<sensor>`, `<contact>`,
-//! `<keyframe>`.
 
 #![warn(missing_docs)]
 
@@ -28,43 +12,37 @@ pub struct ReadmeDocTests;
 
 mod assets;
 mod attrs;
-mod defaults;
+pub mod defaults;
+mod include;
+pub mod inertia;
 mod orientation;
 mod parser;
 
-pub use assets::{HFieldAsset, MaterialAsset, MeshAsset, MeshData, TextureAsset};
-pub use defaults::{ClassDefaults, DefaultsManager, MAIN_CLASS};
-pub use parser::{MjcfLoader, SiteElement, UnsupportedFeature};
+pub use assets::{MeshAsset, MeshData};
+pub use attrs::Attrs;
+pub use defaults::DefaultsManager;
+pub use parser::{MjcfLoader, SensorElement, UnsupportedFeature};
 
 use thiserror::Error;
 
-/// Anything that can go wrong loading an MJCF model.
 #[derive(Debug, Error)]
+/// Anything that can go wrong loading an MJCF model.
 pub enum MjcfError {
-    /// The document is not well-formed XML.
     #[error("XML parse error: {0}")]
+    /// The document is not well-formed XML.
     XmlError(#[from] quick_xml::Error),
 
-    /// An element's attribute list could not be read.
-    #[error("XML attribute error in <{element}>: {source}")]
-    AttrError {
-        /// The element whose attributes failed to parse.
-        element: String,
-        /// The underlying quick-xml error.
-        #[source]
-        source: quick_xml::events::attributes::AttrError,
-    },
-
-    /// The model file could not be read.
     #[error("IO error: {0}")]
+    /// The model file could not be read.
     IoError(#[from] std::io::Error),
 
-    /// The document is valid XML but not a valid MJCF model.
     #[error("Invalid MJCF: {0}")]
+    /// The document is valid XML but not a valid MJCF model.
     InvalidMjcf(String),
 
-    /// An attribute was present but could not be interpreted.
     #[error("<{element}> attribute '{attribute}' has invalid value {value:?}: {reason}")]
+    /// An attribute was present but could not be interpreted. Carries the
+    /// element and attribute names so the offending line is findable.
     InvalidAttribute {
         /// The element carrying the attribute.
         element: String,
@@ -76,8 +54,8 @@ pub enum MjcfError {
         reason: String,
     },
 
-    /// A required attribute was absent.
     #[error("<{element}> is missing required attribute '{attribute}'")]
+    /// A required attribute was absent.
     MissingAttribute {
         /// The element missing the attribute.
         element: String,
@@ -85,21 +63,14 @@ pub enum MjcfError {
         attribute: String,
     },
 
-    /// An element named a `<default>` class that was never declared.
-    #[error("<{element}> references undefined default class '{class}'")]
-    UnknownClass {
-        /// The element naming the class.
-        element: String,
-        /// The undefined class name.
-        class: String,
-    },
-
-    /// A valid MJCF construct this parser does not implement.
     #[error("Unsupported feature: {0}")]
+    /// A valid MJCF construct this parser does not implement.
     Unsupported(String),
 }
 
 impl MjcfError {
+    /// Build an [`MjcfError::InvalidAttribute`] naming the offending element,
+    /// attribute and value.
     pub(crate) fn invalid_attr(
         element: &str,
         attribute: &str,

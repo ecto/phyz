@@ -1,44 +1,45 @@
 //! MJCF XML parser implementation.
 
-use crate::assets::{
-    HFieldAsset, MaterialAsset, MeshAsset, TextureAsset, parse_hfield, parse_material, parse_mesh,
-    parse_texture,
-};
+use crate::assets::{MeshAsset, parse_mesh};
 use crate::attrs::Attrs;
-use crate::defaults::{DefaultsManager, MAIN_CLASS};
-use crate::orientation::{AngleConfig, parse_fromto, parse_orientation};
+use crate::defaults::{DefaultsManager, ROOT_CLASS};
+use crate::inertia::{self, MassProps, Shape};
+use crate::orientation::{AngleConfig, parse_orientation, rotation_z_to};
 use crate::{MjcfError, Result};
 use phyz_math::{GRAVITY, Mat3, Quat, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{
-    Actuator, ActuatorType, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder,
-};
+use phyz_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Elements we parse for reporting but cannot yet simulate.
-const RECORD_ONLY_SECTIONS: [&str; 5] = ["equality", "tendon", "sensor", "contact", "keyframe"];
+/// An MJCF feature present in the file that this parser does not implement.
+///
+/// Collected rather than ignored: a model that silently loses its tendons is
+/// far more damaging than one that refuses to load, and callers building RL
+/// environments need to know before they train on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsupportedFeature {
+    /// The XML tag that triggered it.
+    pub tag: String,
+    /// What the omission means for the resulting model.
+    pub detail: String,
+}
 
 /// Parsed body element from MJCF.
 #[derive(Debug, Clone)]
 struct BodyElement {
     name: String,
     pos: Vec3,
-    quat: Quat,
+    /// Orientation in the parent frame, from any of MJCF's five spellings.
+    rot: Mat3,
     parent_idx: Option<usize>,
-    inertial: Option<InertialElement>,
+    inertial: Option<SpatialInertia>,
     joints: Vec<JointElement>,
     geoms: Vec<GeomElement>,
-}
-
-/// Parsed inertial element.
-#[derive(Debug, Clone)]
-struct InertialElement {
-    pos: Vec3,
-    mass: f64,
-    inertia: Mat3,
+    /// Class inherited by descendants, from `childclass`.
+    childclass: Option<String>,
 }
 
 /// Parsed joint element.
@@ -49,6 +50,7 @@ struct JointElement {
     pos: Vec3,
     axis: Vec3,
     range: Option<[f64; 2]>,
+    limited: Option<bool>,
     damping: f64,
     armature: f64,
     stiffness: f64,
@@ -59,36 +61,57 @@ struct JointElement {
 /// Parsed geom element.
 #[derive(Debug, Clone)]
 struct GeomElement {
+    #[allow(dead_code)]
     name: String,
     geom_type: String,
     size: Vec<f64>,
-    /// Pose relative to the owning body.
     pos: Vec3,
-    quat: Quat,
-    /// Referenced `<mesh>` asset name, for `type="mesh"`.
+    rot: Mat3,
+    density: f64,
+    mass: Option<f64>,
+    /// Set when the geom is `contype="0" conaffinity="0"` — visual only, so it
+    /// contributes inertia but never collides.
+    collides: bool,
+    /// Name of the `<mesh>` asset this geom draws its shape from.
     mesh: Option<String>,
-    /// Referenced `<hfield>` asset name, for `type="hfield"`.
-    hfield: Option<String>,
 }
 
-/// A `<site>`: a named massless frame. Recorded for sensors/tendons/tooling.
-#[derive(Debug, Clone)]
-pub struct SiteElement {
-    /// Site name, or a generated one if the document omitted it.
-    pub name: String,
-    /// Name of the body the site is attached to.
-    pub body: String,
-    /// Position in the owning body's frame.
-    pub pos: Vec3,
-    /// Orientation in the owning body's frame.
-    pub quat: Quat,
-    /// `size` attribute, interpreted per `site_type`.
-    pub size: Vec<f64>,
-    /// `type` attribute, e.g. `"sphere"` or `"box"`.
-    pub site_type: String,
+impl GeomElement {
+    /// The inertial shape, or `None` for geoms we cannot integrate (meshes,
+    /// planes — a plane has infinite extent and contributes no mass).
+    fn shape(&self) -> Option<Shape> {
+        let s = &self.size;
+        match self.geom_type.as_str() {
+            "sphere" => Some(Shape::Sphere {
+                radius: *s.first()?,
+            }),
+            "capsule" => Some(Shape::Capsule {
+                radius: *s.first()?,
+                half_len: *s.get(1)?,
+            }),
+            "cylinder" => Some(Shape::Cylinder {
+                radius: *s.first()?,
+                half_height: *s.get(1)?,
+            }),
+            "box" => Some(Shape::Box {
+                half: Vec3::new(*s.first()?, *s.get(1)?, *s.get(2)?),
+            }),
+            _ => None,
+        }
+    }
+
+    fn mass_props(&self) -> Option<MassProps> {
+        Some(inertia::mass_props(
+            self.shape()?,
+            self.pos,
+            self.rot,
+            self.density,
+            self.mass,
+        ))
+    }
 }
 
-/// Parsed actuator element (any of motor/position/velocity/general).
+/// Parsed actuator element, before joint resolution.
 #[derive(Debug, Clone)]
 struct ActuatorElement {
     name: String,
@@ -96,164 +119,86 @@ struct ActuatorElement {
     gear: f64,
     ctrl_range: Option<[f64; 2]>,
     force_range: Option<[f64; 2]>,
-    actuator_type: ActuatorType,
     gain: f64,
-    bias: [f64; 3],
+    bias_q: f64,
+    bias_v: f64,
 }
 
-/// A model feature that was parsed but is not carried into the built [`Model`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsupportedFeature {
-    /// The XML element, e.g. `"equality"` or `"hfield"`.
-    pub element: String,
-    /// What the limitation is.
-    pub detail: String,
+/// A parsed `<sensor>` entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SensorElement {
+    /// Sensor name, or a generated one.
+    pub name: String,
+    /// MJCF sensor tag (`jointpos`, `framepos`, `accelerometer`, …).
+    pub kind: String,
+    /// The `joint`, `site`, or `body` attribute this sensor targets.
+    pub target: String,
 }
 
 /// MJCF loader.
-#[derive(Debug)]
 pub struct MjcfLoader {
     defaults: DefaultsManager,
     bodies: Vec<BodyElement>,
     actuators: Vec<ActuatorElement>,
-    sites: Vec<SiteElement>,
+    sensors: Vec<SensorElement>,
     meshes: Vec<MeshAsset>,
-    textures: Vec<TextureAsset>,
-    materials: Vec<MaterialAsset>,
-    hfields: Vec<HFieldAsset>,
     unsupported: Vec<UnsupportedFeature>,
     gravity_vec: Vec3,
     timestep: f64,
     angles: AngleConfig,
     #[allow(dead_code)]
     coordinate: String,
-    /// Directory of the model file, used to resolve `<include>` and assets.
+    /// Directory of the model file, for resolving asset paths.
     model_dir: Option<PathBuf>,
     /// `compiler/meshdir` (or `assetdir`), relative to `model_dir`.
     meshdir: Option<String>,
 }
 
-/// Mutable state threaded through the recursive XML walk.
-struct ParseCtx {
-    in_worldbody: bool,
-    /// Stack of (body index, class inherited from `childclass`).
-    body_stack: Vec<(usize, String)>,
-    /// Nesting stack of `<default>` class names.
-    default_stack: Vec<String>,
-    in_default: bool,
-    in_actuator: bool,
-    in_asset: bool,
-    /// Name of the record-only section currently open, if any.
-    record_section: Option<String>,
-    /// Depth of nested `<include>` expansion, to bound recursion.
-    include_depth: usize,
-}
-
-impl ParseCtx {
-    fn new(include_depth: usize) -> Self {
-        Self {
-            in_worldbody: false,
-            body_stack: Vec::new(),
-            default_stack: Vec::new(),
-            in_default: false,
-            in_actuator: false,
-            in_asset: false,
-            record_section: None,
-            include_depth,
-        }
-    }
-
-    /// Class an element inherits when it names none itself: the nearest enclosing
-    /// body's `childclass`, else `main`.
-    fn inherited_class(&self) -> &str {
-        self.body_stack
-            .last()
-            .map(|(_, c)| c.as_str())
-            .unwrap_or(MAIN_CLASS)
-    }
-}
-
-const MAX_INCLUDE_DEPTH: usize = 16;
-
 impl MjcfLoader {
-    /// Load MJCF from a file path. `<include>` and asset paths resolve relative to it.
+    /// Load MJCF from file path.
+    ///
+    /// `<include>` and asset paths resolve relative to this file's directory.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let xml_content = fs::read_to_string(path)?;
-        let mut loader = Self::empty();
-        loader.model_dir = path.parent().map(Path::to_path_buf);
-        loader.parse_xml(&xml_content, &mut ParseCtx::new(0))?;
-        loader.finish();
-        Ok(loader)
+        Self::load(&xml_content, path.parent())
     }
 
-    /// Load MJCF from an XML string. `<include>` resolves relative to the process
-    /// working directory; use [`MjcfLoader::from_file`] when paths matter.
+    /// Load MJCF from XML string.
+    ///
+    /// `<include>` resolves against the process working directory; use
+    /// [`MjcfLoader::from_file`] when a model refers to sibling files.
     pub fn from_xml_str(xml: &str) -> Result<Self> {
-        let mut loader = Self::empty();
-        loader.parse_xml(xml, &mut ParseCtx::new(0))?;
-        loader.finish();
-        Ok(loader)
+        Self::load(xml, None)
     }
 
-    fn empty() -> Self {
-        Self {
+    fn load(xml: &str, dir: Option<&Path>) -> Result<Self> {
+        // Includes are spliced in before parsing, so the parser below never has
+        // to know they exist.
+        let xml = crate::include::expand(xml, dir)?;
+        let xml = xml.as_str();
+        let mut loader = Self {
             defaults: DefaultsManager::new(),
             bodies: Vec::new(),
             actuators: Vec::new(),
-            sites: Vec::new(),
+            sensors: Vec::new(),
             meshes: Vec::new(),
-            textures: Vec::new(),
-            materials: Vec::new(),
-            hfields: Vec::new(),
             unsupported: Vec::new(),
             gravity_vec: Vec3::new(0.0, 0.0, -GRAVITY),
             timestep: 0.002,
             angles: AngleConfig::default(),
             coordinate: "local".to_string(),
-            model_dir: None,
+            model_dir: dir.map(Path::to_path_buf),
             meshdir: None,
-        }
-    }
+        };
 
-    /// Features that were parsed but are not represented in the built [`Model`].
-    pub fn unsupported(&self) -> &[UnsupportedFeature] {
-        &self.unsupported
-    }
-
-    /// `<site>` elements, in document order.
-    pub fn sites(&self) -> &[SiteElement] {
-        &self.sites
+        loader.parse_xml(xml)?;
+        Ok(loader)
     }
 
     /// `<mesh>` assets, in document order.
     pub fn meshes(&self) -> &[MeshAsset] {
         &self.meshes
-    }
-
-    /// `<texture>` assets, in document order.
-    pub fn textures(&self) -> &[TextureAsset] {
-        &self.textures
-    }
-
-    /// `<material>` assets, in document order.
-    pub fn materials(&self) -> &[MaterialAsset] {
-        &self.materials
-    }
-
-    /// `<hfield>` assets, in document order.
-    pub fn hfields(&self) -> &[HFieldAsset] {
-        &self.hfields
-    }
-
-    /// The parsed default classes.
-    pub fn defaults(&self) -> &DefaultsManager {
-        &self.defaults
-    }
-
-    /// Whether `compiler/angle="degree"` was set.
-    pub fn angle_in_degrees(&self) -> bool {
-        self.angles.degrees
     }
 
     /// Directory that asset `file` attributes resolve against.
@@ -266,55 +211,151 @@ impl MjcfLoader {
         }
     }
 
-    fn note_unsupported(&mut self, element: &str, detail: impl Into<String>) {
-        let feature = UnsupportedFeature {
-            element: element.to_string(),
-            detail: detail.into(),
+    fn parse_mesh_asset(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        let a = Attrs::read(e, Default::default())?;
+        let dir = self.asset_dir();
+        let mesh = parse_mesh(&a, dir.as_deref())?;
+        if let Some(err) = mesh.load_error.clone() {
+            self.note_unsupported("mesh", &format!("mesh '{}' not loaded: {err}", mesh.name));
+        }
+        self.meshes.push(mesh);
+        Ok(())
+    }
+
+    /// MJCF features present in the file that this parser dropped.
+    ///
+    /// Check this before trusting a model for anything quantitative.
+    pub fn unsupported(&self) -> &[UnsupportedFeature] {
+        &self.unsupported
+    }
+
+    /// Parsed `<sensor>` entries. Not yet wired into the model — exposed so
+    /// callers can see what the file asked for.
+    pub fn sensors(&self) -> &[SensorElement] {
+        &self.sensors
+    }
+
+    fn note_unsupported(&mut self, tag: &str, detail: &str) {
+        let f = UnsupportedFeature {
+            tag: tag.to_string(),
+            detail: detail.to_string(),
         };
-        if !self.unsupported.contains(&feature) {
-            self.unsupported.push(feature);
+        if !self.unsupported.contains(&f) {
+            self.unsupported.push(f);
         }
     }
 
-    /// Post-parse work that needs the whole document.
-    fn finish(&mut self) {
-        if !self.angles.degrees {
-            return;
-        }
-        for body in &mut self.bodies {
-            for joint in &mut body.joints {
-                // Slide joints are lengths even when angle="degree".
-                if joint.joint_type == JointType::Slide {
-                    continue;
-                }
-                if let Some(range) = joint.range.as_mut() {
-                    range[0] = range[0].to_radians();
-                    range[1] = range[1].to_radians();
-                }
-            }
-        }
-    }
-
-    fn parse_xml(&mut self, xml: &str, ctx: &mut ParseCtx) -> Result<()> {
+    fn parse_xml(&mut self, xml: &str) -> Result<()> {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
+
         let mut buf = Vec::new();
+        let mut in_worldbody = false;
+        let mut in_actuator = false;
+        let mut in_sensor = false;
+        let mut in_asset = false;
+        let mut body_stack: Vec<usize> = Vec::new();
+        // Stack of `<default>` class names; the outermost is the root class.
+        let mut default_stack: Vec<String> = Vec::new();
 
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
+            let event = reader.read_event_into(&mut buf);
+            match event {
+                Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    self.handle_start(&tag, &e, ctx)?;
+                    let is_empty = matches!(event, Ok(Event::Empty(_)));
+
+                    // Inside <default>, elements *declare* defaults rather than
+                    // instantiate anything.
+                    if tag == "default" {
+                        let a = Attrs::read(e, Default::default())?;
+                        let name = a.str_or("class", ROOT_CLASS);
+                        let parent = default_stack.last().cloned();
+                        self.defaults.declare(&name, parent.as_deref());
+                        if !is_empty {
+                            default_stack.push(name);
+                        }
+                        buf.clear();
+                        continue;
+                    }
+                    if let Some(class) = default_stack.last().cloned() {
+                        let a = Attrs::read(e, Default::default())?;
+                        self.defaults.set(&class, &tag, a.into_own());
+                        buf.clear();
+                        continue;
+                    }
+
+                    match tag.as_str() {
+                        "compiler" => self.parse_compiler(e)?,
+                        "option" => self.parse_option(e)?,
+                        "worldbody" => in_worldbody = true,
+                        "actuator" => in_actuator = true,
+                        "sensor" => in_sensor = true,
+                        "asset" => in_asset = true,
+                        "mesh" if in_asset => self.parse_mesh_asset(e)?,
+                        "hfield" if in_asset => {
+                            self.note_unsupported(
+                                "hfield",
+                                "heightfields are parsed but phyz-collision has no heightfield \
+                                 shape, so the geom is dropped",
+                            );
+                        }
+                        "equality" => self.note_unsupported(
+                            "equality",
+                            "equality constraints are ignored; closed kinematic loops will \
+                             behave as open chains",
+                        ),
+                        "tendon" => self.note_unsupported(
+                            "tendon",
+                            "tendons are ignored; coupled joints move independently",
+                        ),
+                        "body" if in_worldbody => {
+                            let idx = self.parse_body(e, body_stack.last().copied())?;
+                            body_stack.push(idx);
+                            if is_empty {
+                                body_stack.pop();
+                            }
+                        }
+                        "joint" | "freejoint" if in_worldbody && !body_stack.is_empty() => {
+                            let idx = *body_stack.last().unwrap();
+                            self.parse_joint(e, idx, &tag)?;
+                        }
+                        "inertial" if in_worldbody && !body_stack.is_empty() => {
+                            let idx = *body_stack.last().unwrap();
+                            self.parse_inertial(e, idx)?;
+                        }
+                        "geom" if in_worldbody && !body_stack.is_empty() => {
+                            let idx = *body_stack.last().unwrap();
+                            self.parse_geom(e, idx)?;
+                        }
+                        "motor" | "position" | "velocity" | "general" if in_actuator => {
+                            self.parse_actuator(e, &tag)?;
+                        }
+                        "site" if in_worldbody => {
+                            // Sites carry no dynamics; only sensors reference
+                            // them, and those are unresolved anyway.
+                        }
+                        _ if in_sensor && !tag.is_empty() && tag != "sensor" => {
+                            self.parse_sensor(e, &tag)?;
+                        }
+                        _ => {}
+                    }
                 }
-                Ok(Event::Empty(e)) => {
-                    // A self-closing element opens and closes in one event.
+                Ok(Event::End(ref e)) => {
                     let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    self.handle_start(&tag, &e, ctx)?;
-                    self.handle_end(&tag, ctx);
-                }
-                Ok(Event::End(e)) => {
-                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    self.handle_end(&tag, ctx);
+                    match tag.as_str() {
+                        "default" => {
+                            default_stack.pop();
+                        }
+                        "body" if in_worldbody && default_stack.is_empty() => {
+                            body_stack.pop();
+                        }
+                        "worldbody" => in_worldbody = false,
+                        "actuator" => in_actuator = false,
+                        "sensor" => in_sensor = false,
+                        "asset" => in_asset = false,
+                        _ => {}
+                    }
                 }
                 Ok(Event::Eof) => break,
                 Err(e) => return Err(MjcfError::XmlError(e)),
@@ -322,668 +363,377 @@ impl MjcfLoader {
             }
             buf.clear();
         }
-        Ok(())
-    }
 
-    fn handle_start(
-        &mut self,
-        tag: &str,
-        e: &quick_xml::events::BytesStart,
-        ctx: &mut ParseCtx,
-    ) -> Result<()> {
-        // Inside a <default> block, elements declare defaults rather than model content.
-        if ctx.in_default && tag != "default" {
-            let attrs = Attrs::from_event(tag, e)?;
-            let class = ctx
-                .default_stack
-                .last()
-                .cloned()
-                .unwrap_or_else(|| MAIN_CLASS.to_string());
-            self.defaults.set_element_defaults(&class, tag, attrs.raw());
-            return Ok(());
-        }
-
-        // Record-only sections are noted once when opened; skip their contents.
-        if ctx.record_section.is_some() {
-            return Ok(());
-        }
-
-        match tag {
-            "include" => {
-                let attrs = Attrs::from_event(tag, e)?;
-                let file = attrs.required("file")?.to_string();
-                self.parse_include(&file, ctx)?;
-            }
-            "compiler" => self.parse_compiler(&Attrs::from_event(tag, e)?)?,
-            "option" => self.parse_option(&Attrs::from_event(tag, e)?)?,
-            "default" => {
-                let attrs = Attrs::from_event(tag, e)?;
-                let parent = ctx.default_stack.last().cloned();
-                let class = attrs
-                    .string("class")
-                    .unwrap_or_else(|| parent.clone().unwrap_or_else(|| MAIN_CLASS.to_string()));
-                self.defaults
-                    .declare_class(&class, parent.as_deref().or(Some(MAIN_CLASS)));
-                ctx.default_stack.push(class);
-                ctx.in_default = true;
-            }
-            "asset" => ctx.in_asset = true,
-            "mesh" if ctx.in_asset => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let asset_dir = self.asset_dir();
-                let mesh = parse_mesh(&attrs, asset_dir.as_deref())?;
-                if let Some(err) = mesh.load_error.clone() {
-                    self.note_unsupported(
-                        "mesh",
-                        format!("mesh '{}' not loaded: {err}", mesh.name),
-                    );
-                }
-                self.meshes.push(mesh);
-            }
-            "texture" if ctx.in_asset => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                self.textures.push(parse_texture(&attrs)?);
-                self.note_unsupported("texture", "textures are recorded but phyz has no renderer");
-            }
-            "material" if ctx.in_asset => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                self.materials.push(parse_material(&attrs)?);
-            }
-            "hfield" if ctx.in_asset => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let hf = parse_hfield(&attrs)?;
-                self.note_unsupported(
-                    "hfield",
-                    format!(
-                        "heightfield '{}' parsed but phyz-collision has no heightfield support",
-                        hf.name
-                    ),
-                );
-                self.hfields.push(hf);
-            }
-            "worldbody" => ctx.in_worldbody = true,
-            "actuator" => ctx.in_actuator = true,
-            "body" if ctx.in_worldbody => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let idx = self.parse_body(&attrs, ctx.body_stack.last().map(|(i, _)| *i))?;
-                // childclass propagates down the subtree unless a body overrides it.
-                let childclass = match attrs.string("childclass") {
-                    Some(c) => {
-                        if !self.defaults.has_class(&c) {
-                            return Err(MjcfError::UnknownClass {
-                                element: "body".to_string(),
-                                class: c,
-                            });
-                        }
-                        c
+        if self.angles.degrees {
+            for body in &mut self.bodies {
+                for joint in &mut body.joints {
+                    if let Some(ref mut range) = joint.range {
+                        range[0] = range[0].to_radians();
+                        range[1] = range[1].to_radians();
                     }
-                    None => ctx.inherited_class().to_string(),
-                };
-                ctx.body_stack.push((idx, childclass));
+                }
             }
-            "joint" if ctx.in_worldbody && !ctx.body_stack.is_empty() => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let body_idx = ctx.body_stack.last().map(|(i, _)| *i).unwrap_or(0);
-                self.parse_joint(&attrs, body_idx)?;
-            }
-            "freejoint" if ctx.in_worldbody && !ctx.body_stack.is_empty() => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let body_idx = ctx.body_stack.last().map(|(i, _)| *i).unwrap_or(0);
-                self.parse_freejoint(&attrs, body_idx)?;
-            }
-            "inertial" if ctx.in_worldbody && !ctx.body_stack.is_empty() => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let body_idx = ctx.body_stack.last().map(|(i, _)| *i).unwrap_or(0);
-                self.parse_inertial(&attrs, body_idx)?;
-            }
-            "geom" if ctx.in_worldbody && !ctx.body_stack.is_empty() => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let body_idx = ctx.body_stack.last().map(|(i, _)| *i).unwrap_or(0);
-                self.parse_geom(&attrs, body_idx)?;
-            }
-            "site" if ctx.in_worldbody && !ctx.body_stack.is_empty() => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                let body_idx = ctx.body_stack.last().map(|(i, _)| *i).unwrap_or(0);
-                self.parse_site(&attrs, body_idx)?;
-            }
-            "motor" | "position" | "velocity" | "general" if ctx.in_actuator => {
-                let attrs = self.resolve(tag, e, ctx)?;
-                self.parse_actuator(tag, &attrs)?;
-            }
-            other if ctx.in_actuator && !other.is_empty() && other != "actuator" => {
-                self.note_unsupported(
-                    other,
-                    format!("actuator type <{other}> is not supported; it is ignored"),
-                );
-            }
-            other if RECORD_ONLY_SECTIONS.contains(&other) => {
-                ctx.record_section = Some(other.to_string());
-                self.note_unsupported(other, format!("<{other}> parsed but not simulated"));
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_end(&mut self, tag: &str, ctx: &mut ParseCtx) {
-        match tag {
-            "body" if ctx.in_worldbody => {
-                ctx.body_stack.pop();
-            }
-            "worldbody" => ctx.in_worldbody = false,
-            "actuator" => ctx.in_actuator = false,
-            "asset" => ctx.in_asset = false,
-            "default" => {
-                ctx.default_stack.pop();
-                ctx.in_default = !ctx.default_stack.is_empty();
-            }
-            other => {
-                if ctx.record_section.as_deref() == Some(other) {
-                    ctx.record_section = None;
+            for act in &mut self.actuators {
+                if let Some(ref mut range) = act.ctrl_range {
+                    range[0] = range[0].to_radians();
+                    range[1] = range[1].to_radians();
                 }
             }
         }
+
+        Ok(())
     }
 
-    /// Read an element's attributes and fill in whatever its default class provides.
-    fn resolve(
+    /// Resolve defaults for `tag` using the element's own `class` attribute if
+    /// present, otherwise the enclosing body's `childclass`.
+    fn attrs_for(
         &self,
-        tag: &str,
         e: &quick_xml::events::BytesStart,
-        ctx: &ParseCtx,
+        tag: &str,
+        body_idx: Option<usize>,
     ) -> Result<Attrs> {
-        let mut attrs = Attrs::from_event(tag, e)?;
-        let class = match attrs.get("class") {
-            Some(c) => c.to_string(),
-            None => ctx.inherited_class().to_string(),
-        };
-        let defaults = self.defaults.resolve(&class, tag)?;
-        attrs.merge_defaults(&defaults);
-        Ok(attrs)
+        let bare = Attrs::read(e, Default::default())?;
+        let explicit = bare.get("class").map(str::to_string);
+        let inherited = body_idx.and_then(|i| self.inherited_class(i));
+        let class = explicit.or(inherited);
+        let defaults = self.defaults.resolve(tag, class.as_deref());
+        Attrs::read(e, defaults)
     }
 
-    fn parse_include(&mut self, file: &str, ctx: &mut ParseCtx) -> Result<()> {
-        if ctx.include_depth >= MAX_INCLUDE_DEPTH {
-            return Err(MjcfError::InvalidMjcf(format!(
-                "<include> nesting exceeded {MAX_INCLUDE_DEPTH} levels at '{file}'; \
-                 the includes are probably cyclic"
-            )));
+    /// Walk up the body tree for the nearest `childclass`.
+    fn inherited_class(&self, body_idx: usize) -> Option<String> {
+        let mut cursor = Some(body_idx);
+        while let Some(i) = cursor {
+            let b = &self.bodies[i];
+            if let Some(c) = &b.childclass {
+                return Some(c.clone());
+            }
+            cursor = b.parent_idx;
         }
-        let path = match &self.model_dir {
-            Some(dir) => dir.join(file),
-            None => PathBuf::from(file),
-        };
-        let content = fs::read_to_string(&path).map_err(|e| {
-            MjcfError::InvalidMjcf(format!("<include file=\"{file}\"> could not be read: {e}"))
-        })?;
-
-        // The included file is spliced in at this point, sharing the enclosing
-        // context so it can contribute bodies to the current subtree.
-        let mut nested = ParseCtx {
-            in_worldbody: ctx.in_worldbody,
-            body_stack: ctx.body_stack.clone(),
-            default_stack: ctx.default_stack.clone(),
-            in_default: ctx.in_default,
-            in_actuator: ctx.in_actuator,
-            in_asset: ctx.in_asset,
-            record_section: ctx.record_section.clone(),
-            include_depth: ctx.include_depth + 1,
-        };
-        self.parse_xml(&content, &mut nested)?;
-        Ok(())
+        None
     }
 
-    fn parse_compiler(&mut self, attrs: &Attrs) -> Result<()> {
-        if let Some(angle) = attrs.get("angle") {
-            self.angles.degrees = match angle {
-                "degree" => true,
-                "radian" => false,
-                other => {
-                    return Err(MjcfError::invalid_attr(
-                        "compiler",
-                        "angle",
-                        other,
-                        "expected 'degree' or 'radian'",
-                    ));
-                }
-            };
+    fn parse_compiler(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        let a = Attrs::read(e, Default::default())?;
+        if let Some(angle) = a.get("angle") {
+            self.angles.degrees = angle == "degree";
         }
-        if let Some(seq) = attrs.string("eulerseq") {
+        if let Some(seq) = a.get("eulerseq") {
             if seq.chars().count() != 3 || !seq.chars().all(|c| "xyzXYZ".contains(c)) {
                 return Err(MjcfError::invalid_attr(
                     "compiler",
                     "eulerseq",
-                    &seq,
+                    seq,
                     "expected exactly 3 characters from x/y/z/X/Y/Z",
                 ));
             }
-            self.angles.eulerseq = seq;
+            self.angles.eulerseq = seq.to_string();
         }
-        if let Some(c) = attrs.string("coordinate") {
-            if c == "global" {
-                return Err(MjcfError::Unsupported(
-                    "compiler coordinate=\"global\" (only local coordinates are supported)"
-                        .to_string(),
-                ));
-            }
-            self.coordinate = c;
+        if let Some(c) = a.get("coordinate") {
+            self.coordinate = c.to_string();
         }
         // meshdir wins over the more general assetdir, matching MuJoCo.
-        if let Some(dir) = attrs.string("assetdir") {
-            self.meshdir = Some(dir);
+        if let Some(d) = a.get("assetdir") {
+            self.meshdir = Some(d.to_string());
         }
-        if let Some(dir) = attrs.string("meshdir") {
-            self.meshdir = Some(dir);
+        if let Some(d) = a.get("meshdir") {
+            self.meshdir = Some(d.to_string());
         }
         Ok(())
     }
 
-    fn parse_option(&mut self, attrs: &Attrs) -> Result<()> {
-        if let Some(g) = attrs.vec3("gravity")? {
+    fn parse_option(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        let a = Attrs::read(e, Default::default())?;
+        if let Some(g) = a.vec3("gravity") {
             self.gravity_vec = g;
         }
-        if let Some(dt) = attrs.f64("timestep")? {
-            if dt <= 0.0 {
-                return Err(MjcfError::invalid_attr(
-                    "option",
-                    "timestep",
-                    &dt.to_string(),
-                    "timestep must be positive",
-                ));
-            }
-            self.timestep = dt;
-        }
+        self.timestep = a.f64_or("timestep", self.timestep);
         Ok(())
     }
 
-    fn parse_body(&mut self, attrs: &Attrs, parent_idx: Option<usize>) -> Result<usize> {
-        let name = attrs
-            .string("name")
-            .unwrap_or_else(|| format!("body_{}", self.bodies.len()));
-        let pos = attrs.vec3_or("pos", Vec3::zeros())?;
-        let quat = parse_orientation(attrs, &self.angles)?.unwrap_or_else(Quat::identity);
+    fn parse_body(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+        parent_idx: Option<usize>,
+    ) -> Result<usize> {
+        let a = self.attrs_for(e, "body", parent_idx)?;
+        let name = a.str_or("name", &format!("body_{}", self.bodies.len()));
+        let pos = a.vec3_or("pos", Vec3::zeros());
+        let rot = parse_orientation(&a, "body", &self.angles)?.unwrap_or_else(Mat3::identity);
+        let childclass = a.get("childclass").map(str::to_string);
 
         let idx = self.bodies.len();
         self.bodies.push(BodyElement {
             name,
             pos,
-            quat,
+            rot,
             parent_idx,
             inertial: None,
             joints: Vec::new(),
             geoms: Vec::new(),
+            childclass,
         });
         Ok(idx)
     }
 
-    fn parse_joint(&mut self, attrs: &Attrs, body_idx: usize) -> Result<()> {
-        let name = attrs.string("name").unwrap_or_else(|| {
-            format!("joint_{}_{}", body_idx, self.bodies[body_idx].joints.len())
-        });
+    fn parse_joint(
+        &mut self,
+        e: &quick_xml::events::BytesStart,
+        body_idx: usize,
+        tag: &str,
+    ) -> Result<()> {
+        let a = self.attrs_for(e, tag, Some(body_idx))?;
+        let name = a.str_or("name", &format!("joint_{body_idx}"));
 
-        let joint_type = match attrs.get("type").unwrap_or("hinge") {
-            "hinge" => JointType::Hinge,
-            "slide" => JointType::Slide,
-            "ball" => JointType::Ball,
-            "free" => JointType::Free,
-            other => {
-                return Err(MjcfError::invalid_attr(
-                    "joint",
-                    "type",
-                    other,
-                    "expected one of hinge/slide/ball/free",
-                ));
+        // `<freejoint>` is sugar for `<joint type="free">`.
+        let joint_type = if tag == "freejoint" {
+            JointType::Free
+        } else {
+            match a.get("type").unwrap_or("hinge") {
+                "hinge" => JointType::Hinge,
+                "slide" => JointType::Slide,
+                "ball" => JointType::Ball,
+                "free" => JointType::Free,
+                other => {
+                    self.note_unsupported(
+                        "joint",
+                        &format!("joint type '{other}' is unknown; treated as hinge"),
+                    );
+                    JointType::Hinge
+                }
             }
         };
 
-        let pos = attrs.vec3_or("pos", Vec3::zeros())?;
-        let axis = match attrs.vec3("axis")? {
-            Some(a) => {
-                if a.norm() < 1e-12 {
-                    return Err(MjcfError::invalid_attr(
-                        "joint",
-                        "axis",
-                        attrs.get("axis").unwrap_or_default(),
-                        "joint axis is the zero vector",
-                    ));
-                }
-                a.normalize()
-            }
-            None => Vec3::new(0.0, 0.0, 1.0),
-        };
+        let axis = a
+            .vec3("axis")
+            .map(|v| v.normalize())
+            .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
 
-        // `limited` gates `range`; MuJoCo's "auto" means "limited iff range is given".
-        let range = match attrs.fixed::<2>("range")? {
-            Some(r) => {
-                if r[0] > r[1] {
-                    return Err(MjcfError::invalid_attr(
-                        "joint",
-                        "range",
-                        attrs.get("range").unwrap_or_default(),
-                        "lower limit exceeds upper limit",
-                    ));
-                }
-                match attrs.tri_bool("limited")? {
-                    Some(Some(false)) => None,
-                    _ => Some(r),
-                }
-            }
-            None => None,
+        // MuJoCo only applies `range` when `limited` is true (or "auto" with a
+        // range present). Honouring that avoids inventing limits.
+        let limited = a.bool("limited");
+        let range = match limited {
+            Some(false) => None,
+            _ => a.range("range"),
         };
 
         self.bodies[body_idx].joints.push(JointElement {
             name,
             joint_type,
-            pos,
+            pos: a.vec3_or("pos", Vec3::zeros()),
             axis,
             range,
-            damping: attrs.f64_or("damping", 0.0)?,
-            armature: attrs.f64_or("armature", 0.0)?,
-            stiffness: attrs.f64_or("stiffness", 0.0)?,
-            spring_ref: attrs.f64_or("springref", 0.0)?,
-            friction_loss: attrs.f64_or("frictionloss", 0.0)?,
+            limited,
+            damping: a.f64_or("damping", 0.0),
+            armature: a.f64_or("armature", 0.0),
+            stiffness: a.f64_or("stiffness", 0.0),
+            spring_ref: a.f64_or("springref", 0.0),
+            friction_loss: a.f64_or("frictionloss", 0.0),
         });
         Ok(())
     }
 
-    /// `<freejoint>` is `<joint type="free">` with no axis/range/damping attributes.
-    fn parse_freejoint(&mut self, attrs: &Attrs, body_idx: usize) -> Result<()> {
-        let name = attrs
-            .string("name")
-            .unwrap_or_else(|| format!("freejoint_{body_idx}"));
-        self.bodies[body_idx].joints.push(JointElement {
-            name,
-            joint_type: JointType::Free,
-            pos: Vec3::zeros(),
-            axis: Vec3::new(0.0, 0.0, 1.0),
-            range: None,
-            damping: 0.0,
-            armature: 0.0,
-            stiffness: 0.0,
-            spring_ref: 0.0,
-            friction_loss: 0.0,
-        });
-        Ok(())
-    }
+    fn parse_inertial(&mut self, e: &quick_xml::events::BytesStart, body_idx: usize) -> Result<()> {
+        let a = self.attrs_for(e, "inertial", Some(body_idx))?;
+        let pos = a.vec3_or("pos", Vec3::zeros());
+        let mass = a.f64_or("mass", 1.0);
 
-    fn parse_inertial(&mut self, attrs: &Attrs, body_idx: usize) -> Result<()> {
-        let pos = attrs.vec3_or("pos", Vec3::zeros())?;
-        let mass = attrs.f64_or("mass", 1.0)?;
-        if mass < 0.0 {
-            return Err(MjcfError::invalid_attr(
-                "inertial",
-                "mass",
-                &mass.to_string(),
-                "mass must be non-negative",
-            ));
-        }
-
-        let inertia = if let Some(d) = attrs.vec3("diaginertia")? {
-            Mat3::from_diagonal(&d)
-        } else if let Some(f) = attrs.fixed::<6>("fullinertia")? {
-            // MuJoCo order: M(1,1) M(2,2) M(3,3) M(1,2) M(1,3) M(2,3)
-            Mat3::new(f[0], f[3], f[4], f[3], f[1], f[5], f[4], f[5], f[2])
-        } else {
-            Mat3::from_diagonal(&Vec3::new(0.001, 0.001, 0.001))
+        // `fullinertia` is [xx, yy, zz, xy, xz, yz].
+        let tensor = match a.floats("fullinertia") {
+            Some(v) if v.len() == 6 => {
+                Mat3::new(v[0], v[3], v[4], v[3], v[1], v[5], v[4], v[5], v[2])
+            }
+            _ => {
+                let d = a.vec3_or("diaginertia", Vec3::new(0.001, 0.001, 0.001));
+                let local = Mat3::from_diagonal(&d);
+                match a.floats("quat") {
+                    Some(v) if v.len() == 4 => {
+                        let r = Quat::new(v[0], v[1], v[2], v[3]).normalize().to_matrix();
+                        r * local * r.transpose()
+                    }
+                    _ => local,
+                }
+            }
         };
 
-        self.bodies[body_idx].inertial = Some(InertialElement { pos, mass, inertia });
+        self.bodies[body_idx].inertial = Some(SpatialInertia::new(mass, pos, tensor));
         Ok(())
     }
 
-    fn parse_geom(&mut self, attrs: &Attrs, body_idx: usize) -> Result<()> {
-        let name = attrs
-            .string("name")
-            .unwrap_or_else(|| format!("geom_{}_{}", body_idx, self.bodies[body_idx].geoms.len()));
-        let geom_type = attrs.string("type").unwrap_or_else(|| "sphere".to_string());
-        let mut size = attrs.floats("size")?.unwrap_or_default();
-        let mut pos = attrs.vec3_or("pos", Vec3::zeros())?;
-        let mut quat = parse_orientation(attrs, &self.angles)?.unwrap_or_else(Quat::identity);
+    fn parse_geom(&mut self, e: &quick_xml::events::BytesStart, body_idx: usize) -> Result<()> {
+        let a = self.attrs_for(e, "geom", Some(body_idx))?;
+        let name = a.str_or("name", &format!("geom_{body_idx}"));
+        let geom_type = a.str_or("type", "sphere");
 
-        // `fromto` sets position, orientation, and the length component of `size`
-        // from two endpoints, overriding pos/quat. Ubiquitous for capsules.
-        if let Some(ft) = attrs.fixed::<6>("fromto")? {
-            let frame = parse_fromto("geom", &ft)?;
-            pos = frame.center;
-            quat = frame.quat;
-            match size.len() {
-                0 => {
-                    return Err(MjcfError::InvalidMjcf(format!(
-                        "<geom name=\"{name}\"> uses fromto but gives no size (radius)"
-                    )));
-                }
-                1 => size.push(frame.half_length),
-                _ => size[1] = frame.half_length,
+        // A mesh geom is kept when its asset loaded; otherwise it is dropped and
+        // reported, since an unresolvable mesh has no shape to stand in for it.
+        let mesh = a.get("mesh").map(str::to_string);
+        if geom_type == "mesh" || mesh.is_some() {
+            let named = mesh.as_deref().unwrap_or_default();
+            if !self
+                .meshes
+                .iter()
+                .any(|m| m.name == named && m.data.is_some())
+            {
+                self.note_unsupported(
+                    "geom",
+                    "mesh geoms whose asset could not be loaded are dropped; the body loses \
+                     that collision shape and its inertia contribution",
+                );
+                return Ok(());
             }
         }
 
-        if size.is_empty() {
-            // Match MuJoCo's small default rather than failing: many models rely on
-            // defaults classes for size, which we have already merged in by now.
-            size.push(0.05);
+        let mut size = a.floats("size").unwrap_or_else(|| vec![0.05]);
+        let mut pos = a.vec3_or("pos", Vec3::zeros());
+        let mut rot = parse_orientation(&a, "geom", &self.angles)?.unwrap_or_else(Mat3::identity);
+
+        // `fromto` gives the two endpoints of a capsule/cylinder axis; it
+        // overrides pos/quat and supplies the half-length. Cheetah and humanoid
+        // are written almost entirely this way.
+        if let Some(ft) = a.floats("fromto").filter(|v| v.len() == 6) {
+            {
+                let p0 = Vec3::new(ft[0], ft[1], ft[2]);
+                let p1 = Vec3::new(ft[3], ft[4], ft[5]);
+                let axis = p1 - p0;
+                let len = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
+                pos = (p0 + p1) * 0.5;
+                let radius = size.first().copied().unwrap_or(0.05);
+                size = vec![radius, len * 0.5];
+                if len > 1e-12 {
+                    rot = rotation_z_to(axis / len);
+                }
+            }
         }
+
+        let collides = !(a.f64_or("contype", 1.0) == 0.0 && a.f64_or("conaffinity", 1.0) == 0.0);
 
         self.bodies[body_idx].geoms.push(GeomElement {
             name,
             geom_type,
             size,
             pos,
-            quat,
-            mesh: attrs.string("mesh"),
-            hfield: attrs.string("hfield"),
+            rot,
+            density: a.f64_or("density", 1000.0),
+            mass: a.f64("mass"),
+            collides,
+            mesh,
         });
         Ok(())
     }
 
-    fn parse_site(&mut self, attrs: &Attrs, body_idx: usize) -> Result<()> {
-        let name = attrs
-            .string("name")
-            .unwrap_or_else(|| format!("site_{}", self.sites.len()));
-        self.sites.push(SiteElement {
-            name,
-            body: self.bodies[body_idx].name.clone(),
-            pos: attrs.vec3_or("pos", Vec3::zeros())?,
-            quat: parse_orientation(attrs, &self.angles)?.unwrap_or_else(Quat::identity),
-            size: attrs.floats("size")?.unwrap_or_else(|| vec![0.005]),
-            site_type: attrs.string("type").unwrap_or_else(|| "sphere".to_string()),
-        });
-        Ok(())
-    }
-
-    /// Parse `motor`, `position`, `velocity`, or `general` into the shared affine
-    /// actuator model.
-    fn parse_actuator(&mut self, tag: &str, attrs: &Attrs) -> Result<()> {
-        let joint_name = match attrs.string("joint") {
-            Some(j) => j,
-            None => {
-                // Tendon/site/body transmissions exist but phyz only drives joints.
-                let target = ["tendon", "site", "body", "cranksite", "slidersite"]
-                    .iter()
-                    .find(|k| attrs.has(k))
-                    .copied();
-                match target {
-                    Some(kind) => {
-                        self.note_unsupported(
-                            tag,
-                            format!(
-                                "<{tag}> with a '{kind}' transmission is ignored; \
-                                 only joint transmissions are supported"
-                            ),
-                        );
-                        return Ok(());
-                    }
-                    None => {
-                        return Err(MjcfError::MissingAttribute {
-                            element: tag.to_string(),
-                            attribute: "joint".to_string(),
-                        });
-                    }
-                }
-            }
-        };
-
-        let name = attrs
-            .string("name")
-            .unwrap_or_else(|| format!("{tag}_{joint_name}"));
-
-        // `gear` is a 6-vector in general; for a joint transmission only the first
-        // component is meaningful.
-        let gear = match attrs.floats("gear")? {
-            Some(g) if !g.is_empty() => g[0],
-            Some(_) => 1.0,
-            None => 1.0,
-        };
-
-        let range_pair = |key: &str| -> Result<Option<[f64; 2]>> {
-            match attrs.fixed::<2>(key)? {
-                Some(r) if r[0] > r[1] => Err(MjcfError::invalid_attr(
-                    tag,
-                    key,
-                    attrs.get(key).unwrap_or_default(),
-                    "lower limit exceeds upper limit",
-                )),
-                other => Ok(other),
-            }
-        };
-        let mut ctrl_range = range_pair("ctrlrange")?;
-        if matches!(attrs.tri_bool("ctrllimited")?, Some(Some(false))) {
-            ctrl_range = None;
-        }
-        let mut force_range = range_pair("forcerange")?;
-        if matches!(attrs.tri_bool("forcelimited")?, Some(Some(false))) {
-            force_range = None;
+    fn parse_actuator(&mut self, e: &quick_xml::events::BytesStart, tag: &str) -> Result<()> {
+        let a = self.attrs_for(e, tag, None)?;
+        let joint_name = a.str_or("joint", "");
+        if joint_name.is_empty() {
+            self.note_unsupported(
+                tag,
+                "actuator without a `joint` target (site/tendon actuators are not supported)",
+            );
+            return Ok(());
         }
 
-        let (actuator_type, gain, bias) = match tag {
-            "motor" => (ActuatorType::Motor, 1.0, [0.0; 3]),
-            "position" => {
-                let kp = attrs.f64_or("kp", 1.0)?;
-                // MuJoCo >= 2.3 supports an explicit damping term on position servos.
-                let kv = attrs.f64_or("kv", 0.0)?;
-                (ActuatorType::Position, kp, [0.0, -kp, -kv])
-            }
-            "velocity" => {
-                let kv = attrs.f64_or("kv", 1.0)?;
-                (ActuatorType::Velocity, kv, [0.0, 0.0, -kv])
-            }
+        let gear = a
+            .floats("gear")
+            .and_then(|v| v.first().copied())
+            .unwrap_or(1.0);
+        let kp = a.f64_or("kp", 1.0);
+        let kv = a.f64_or("kv", 0.0);
+
+        // MuJoCo's affine law: f = gear * (gain*ctrl + bias_q*q + bias_v*v).
+        let (gain, bias_q, bias_v) = match tag {
+            "position" => (kp, -kp, -kv),
+            "velocity" => (kv.max(1.0), 0.0, -kv.max(1.0)),
             "general" => {
-                let gainprm = attrs.floats("gainprm")?.unwrap_or_else(|| vec![1.0]);
-                let biasprm = attrs.floats("biasprm")?.unwrap_or_default();
-                let gain = gainprm.first().copied().unwrap_or(1.0);
-                let mut bias = [0.0; 3];
-                for (i, slot) in bias.iter_mut().enumerate() {
-                    *slot = biasprm.get(i).copied().unwrap_or(0.0);
+                let gp = a.floats("gainprm").unwrap_or_default();
+                let bp = a.floats("biasprm").unwrap_or_default();
+                if !gp.is_empty() || !bp.is_empty() {
+                    (
+                        gp.first().copied().unwrap_or(1.0),
+                        bp.get(1).copied().unwrap_or(0.0),
+                        bp.get(2).copied().unwrap_or(0.0),
+                    )
+                } else {
+                    (1.0, 0.0, 0.0)
                 }
-                if let Some(t) = attrs.get("gaintype")
-                    && t != "fixed"
-                {
-                    self.note_unsupported(
-                        "general",
-                        format!("gaintype='{t}' is not modelled; treated as 'fixed'"),
-                    );
-                }
-                if let Some(t) = attrs.get("biastype")
-                    && t != "none"
-                    && t != "affine"
-                {
-                    self.note_unsupported(
-                        "general",
-                        format!("biastype='{t}' is not modelled; treated as 'affine'"),
-                    );
-                }
-                if let Some(t) = attrs.get("dyntype")
-                    && t != "none"
-                {
-                    self.note_unsupported(
-                        "general",
-                        format!(
-                            "dyntype='{t}' needs actuator state integration, which phyz \
-                                 does not have; the actuator acts as if dyntype='none'"
-                        ),
-                    );
-                }
-                (ActuatorType::General, gain, bias)
             }
-            other => {
-                return Err(MjcfError::Unsupported(format!("actuator type <{other}>")));
-            }
+            _ => (1.0, 0.0, 0.0),
+        };
+
+        let name = match a.get("name") {
+            Some(n) => n.to_string(),
+            None => format!("{tag}_{joint_name}"),
         };
 
         self.actuators.push(ActuatorElement {
             name,
             joint_name,
             gear,
-            ctrl_range,
-            force_range,
-            actuator_type,
+            ctrl_range: a.range("ctrlrange"),
+            force_range: a.range("forcerange"),
             gain,
-            bias,
+            bias_q,
+            bias_v,
+        });
+        Ok(())
+    }
+
+    fn parse_sensor(&mut self, e: &quick_xml::events::BytesStart, tag: &str) -> Result<()> {
+        let a = Attrs::read(e, Default::default())?;
+        let target = a
+            .get("joint")
+            .or_else(|| a.get("site"))
+            .or_else(|| a.get("body"))
+            .or_else(|| a.get("objname"))
+            .unwrap_or("")
+            .to_string();
+        let name = a.str_or("name", &format!("{tag}_{target}"));
+        self.sensors.push(SensorElement {
+            name,
+            kind: tag.to_string(),
+            target,
         });
         Ok(())
     }
 
     /// Build a phyz Model from the parsed MJCF.
     pub fn build_model(&self) -> Model {
-        /// Inertia for the intermediate links of a compound joint. Not exactly
-        /// zero: a strictly massless link makes the articulated-body inertia
-        /// singular if it ever ends up without children.
-        const EPS: f64 = 1e-9;
-        let massless_link = SpatialInertia::new(
-            EPS,
-            Vec3::zeros(),
-            Mat3::from_diagonal(&Vec3::new(EPS, EPS, EPS)),
-        );
-
         let mut builder = ModelBuilder::new()
             .gravity(self.gravity_vec)
             .dt(self.timestep);
 
-        // Map from body index to model body index
         let mut body_map: HashMap<usize, i32> = HashMap::new();
         let mut next_model_idx: i32 = 0;
-        // Map from joint name to model joint index
         let mut joint_name_map: HashMap<String, usize> = HashMap::new();
 
-        // Process bodies in order (assumes parent comes before child in list)
         for (body_idx, body) in self.bodies.iter().enumerate() {
             let parent = body
                 .parent_idx
                 .and_then(|p| body_map.get(&p).copied())
                 .unwrap_or(-1);
 
-            let parent_to_body = SpatialTransform::new(body.quat.to_matrix(), body.pos);
+            let parent_to_body = SpatialTransform::new(body.rot, body.pos);
 
-            let inertia = if let Some(ref inertial) = body.inertial {
-                SpatialInertia::new(inertial.mass, inertial.pos, inertial.inertia)
-            } else {
-                // Default: 1kg point mass at origin
-                SpatialInertia::new(
-                    1.0,
-                    Vec3::zeros(),
-                    Mat3::from_diagonal(&Vec3::new(0.001, 0.001, 0.001)),
-                )
-            };
+            let inertia = self.body_inertia(body);
 
-            // If body has no joints, add a fixed joint
             if body.joints.is_empty() {
                 builder = builder.add_fixed_body(&body.name, parent, parent_to_body, inertia);
                 body_map.insert(body_idx, next_model_idx);
                 next_model_idx += 1;
             } else {
-                // MJCF allows several joints on one body, which together form a
-                // single compound joint between parent and body. Model that as a
-                // serial chain of massless links, with the real inertia on the last
-                // one so the body's mass is not counted more than once.
-                let last_joint = body.joints.len() - 1;
+                // MJCF allows several joints per body; phyz models each as its
+                // own single-joint link, with all but the last massless so the
+                // body's inertia is not counted more than once.
+                let last = body.joints.len() - 1;
                 for (joint_idx, joint_elem) in body.joints.iter().enumerate() {
-                    let joint_name = if body.joints.len() == 1 {
+                    let link_name = if body.joints.len() == 1 {
                         body.name.clone()
                     } else {
                         format!("{}_{}", body.name, joint_idx)
                     };
 
-                    // Only the first link in the chain carries the body transform;
-                    // the rest are zero-length links carrying extra DOFs.
+                    // Only the first link carries the body's placement; the
+                    // rest are coincident.
                     let base = if joint_idx == 0 {
                         parent_to_body
                     } else {
@@ -993,41 +743,42 @@ impl MjcfLoader {
                     let parent_to_joint = base.compose(&joint_offset);
 
                     let mut joint = match joint_elem.joint_type {
-                        JointType::Hinge | JointType::Revolute => Joint::revolute(parent_to_joint),
-                        JointType::Slide | JointType::Prismatic => {
-                            Joint::prismatic(parent_to_joint, joint_elem.axis)
-                        }
-                        JointType::Ball | JointType::Spherical => Joint::spherical(parent_to_joint),
+                        JointType::Hinge => Joint::revolute(parent_to_joint),
+                        JointType::Slide => Joint::prismatic(parent_to_joint, joint_elem.axis),
+                        JointType::Ball => Joint::spherical(parent_to_joint),
                         JointType::Free => Joint::free(parent_to_joint),
-                        JointType::Fixed => Joint::revolute(parent_to_joint),
+                        _ => Joint::revolute(parent_to_joint),
                     };
-
                     joint.axis = joint_elem.axis;
+                    joint.name = joint_elem.name.clone();
                     joint.damping = joint_elem.damping;
-                    // `limited="false"` was already folded into `range` at parse time.
-                    joint.limits = joint_elem.range;
+                    // MuJoCo: limited="false" disables the range even if given.
+                    joint.limits = match joint_elem.limited {
+                        Some(false) => None,
+                        _ => joint_elem.range,
+                    };
                     joint.armature = joint_elem.armature;
                     joint.stiffness = joint_elem.stiffness;
                     joint.spring_ref = joint_elem.spring_ref;
                     joint.friction_loss = joint_elem.friction_loss;
 
-                    let model_joint_idx = next_model_idx as usize;
-                    joint_name_map.insert(joint_elem.name.clone(), model_joint_idx);
+                    let link_inertia = if joint_idx == last {
+                        inertia
+                    } else {
+                        SpatialInertia::new(1e-9, Vec3::zeros(), Mat3::identity() * 1e-9)
+                    };
 
-                    // Chain extra joints off the previous one so the DOFs compose.
-                    let attach_to = if joint_idx == 0 {
+                    joint_name_map.insert(joint_elem.name.clone(), next_model_idx as usize);
+                    let link_parent = if joint_idx == 0 {
                         parent
                     } else {
                         next_model_idx - 1
                     };
-                    let link_inertia = if joint_idx == last_joint {
-                        inertia
-                    } else {
-                        massless_link
-                    };
-                    builder = builder.add_body(&joint_name, attach_to, joint, link_inertia);
+                    builder = builder.add_body(&link_name, link_parent, joint, link_inertia);
 
-                    body_map.insert(body_idx, next_model_idx);
+                    if joint_idx == last {
+                        body_map.insert(body_idx, next_model_idx);
+                    }
                     next_model_idx += 1;
                 }
             }
@@ -1035,36 +786,42 @@ impl MjcfLoader {
 
         let mut model = builder.build();
 
-        // Attach geometry post-build. Every geom is carried with its own
-        // body-relative pose; `geometry` mirrors the first centred shape so the
-        // single-shape contact path keeps working.
+        // Attach every geom to its body, split into collision and visual sets.
+        // Geoms are rarely at the body origin — a `fromto` capsule sits at its
+        // midpoint — so each carries its own placement.
         for (body_idx, body) in self.bodies.iter().enumerate() {
             let Some(&model_idx) = body_map.get(&body_idx) else {
                 continue;
             };
-            let target = &mut model.bodies[model_idx as usize];
+            let b = &mut model.bodies[model_idx as usize];
             for geom in &body.geoms {
-                let Some(geometry) = self.geom_to_geometry(geom) else {
+                let Some(geometry) = geom_to_geometry(geom, &self.meshes) else {
                     continue;
                 };
-                // GeomInstance::origin.rot is the body -> shape coordinate
-                // transform, i.e. the transpose of the shape's orientation in
-                // the body frame.
-                let origin = SpatialTransform::new(geom.quat.to_matrix().transpose(), geom.pos);
-                target.collisions.push(GeomInstance {
+                // `GeomInstance::origin` follows the `parent_to_joint`
+                // convention: `rot` is the body → shape transform, so a
+                // shape→body rotation goes in transposed.
+                let instance = phyz_model::GeomInstance {
                     name: Some(geom.name.clone()),
-                    origin,
+                    origin: SpatialTransform::new(geom.rot.transpose(), geom.pos),
                     geometry,
-                });
+                };
+                if geom.collides {
+                    b.collisions.push(instance);
+                } else {
+                    b.visuals.push(instance);
+                }
             }
-            target.geometry = target
+            // `geometry` mirrors the first centred collision shape so existing
+            // single-shape consumers keep working.
+            b.geometry = b
                 .collisions
                 .iter()
                 .find(|g| g.is_centered())
+                .or_else(|| b.collisions.first())
                 .map(|g| g.geometry.clone());
         }
 
-        // Build actuators
         for act_elem in &self.actuators {
             if let Some(&joint_idx) = joint_name_map.get(&act_elem.joint_name) {
                 model.actuators.push(Actuator {
@@ -1073,9 +830,9 @@ impl MjcfLoader {
                     joint_idx,
                     gear: act_elem.gear,
                     ctrl_range: act_elem.ctrl_range,
-                    actuator_type: act_elem.actuator_type,
                     gain: act_elem.gain,
-                    bias: act_elem.bias,
+                    bias_q: act_elem.bias_q,
+                    bias_v: act_elem.bias_v,
                     force_range: act_elem.force_range,
                 });
             }
@@ -1084,48 +841,362 @@ impl MjcfLoader {
         model
     }
 
-    /// Convert a parsed GeomElement to a phyz_model Geometry.
-    fn geom_to_geometry(&self, geom: &GeomElement) -> Option<Geometry> {
-        match geom.geom_type.as_str() {
-            "sphere" => Some(Geometry::Sphere {
-                radius: geom.size.first().copied()?,
-            }),
-            "capsule" => Some(Geometry::Capsule {
-                radius: geom.size.first().copied()?,
-                // MJCF stores the half-length; phyz's Capsule takes full length.
-                length: geom.size.get(1).copied().unwrap_or(0.05) * 2.0,
-            }),
-            "box" => {
-                if geom.size.len() >= 3 {
-                    Some(Geometry::Box {
-                        half_extents: Vec3::new(geom.size[0], geom.size[1], geom.size[2]),
-                    })
-                } else {
-                    None
-                }
-            }
-            "cylinder" => Some(Geometry::Cylinder {
-                radius: geom.size.first().copied()?,
-                height: geom.size.get(1).copied().unwrap_or(0.05) * 2.0,
-            }),
-            "plane" => Some(Geometry::Plane {
-                normal: Vec3::new(0.0, 0.0, 1.0),
-            }),
-            "ellipsoid" => None,
-            "mesh" => {
-                let name = geom.mesh.as_deref()?;
-                let asset = self.meshes.iter().find(|m| m.name == name)?;
-                let data = asset.data.as_ref()?;
-                Some(Geometry::Mesh {
-                    vertices: data.vertices.clone(),
-                    faces: data.faces.clone(),
-                })
-            }
-            "hfield" => {
-                let _ = &geom.hfield;
-                None
-            }
-            _ => None,
+    /// The body's inertia: explicit `<inertial>` if present, else derived from
+    /// its geoms, else a small placeholder.
+    fn body_inertia(&self, body: &BodyElement) -> SpatialInertia {
+        if let Some(i) = body.inertial {
+            return i;
         }
+        let parts: Vec<MassProps> = body.geoms.iter().filter_map(|g| g.mass_props()).collect();
+        if let Some(i) = inertia::combine(&parts) {
+            return i;
+        }
+        SpatialInertia::new(
+            1.0,
+            Vec3::zeros(),
+            Mat3::from_diagonal(&Vec3::new(0.001, 0.001, 0.001)),
+        )
+    }
+
+    /// Joints declaring a non-zero `armature`.
+    pub fn armature_joints(&self) -> Vec<String> {
+        self.bodies
+            .iter()
+            .flat_map(|b| b.joints.iter())
+            .filter(|j| j.armature != 0.0)
+            .map(|j| j.name.clone())
+            .collect()
+    }
+}
+
+/// Convert a parsed GeomElement to a phyz_model Geometry.
+///
+/// Note the capsule/cylinder unit change: MJCF `size` carries the **half**
+/// length, while `Geometry::Capsule::length` is the **full** length (downstream
+/// contact code computes `pos.z - length * 0.5 - radius`).
+fn geom_to_geometry(geom: &GeomElement, meshes: &[MeshAsset]) -> Option<Geometry> {
+    if geom.geom_type == "mesh" || geom.mesh.is_some() {
+        let name = geom.mesh.as_deref()?;
+        let data = meshes.iter().find(|m| m.name == name)?.data.as_ref()?;
+        return Some(Geometry::Mesh {
+            vertices: data.vertices.clone(),
+            faces: data.faces.clone(),
+        });
+    }
+    let s = &geom.size;
+    match geom.geom_type.as_str() {
+        "sphere" => Some(Geometry::Sphere {
+            radius: s.first().copied().unwrap_or(0.05),
+        }),
+        "capsule" => Some(Geometry::Capsule {
+            radius: s.first().copied().unwrap_or(0.05),
+            length: s.get(1).copied().unwrap_or(0.05) * 2.0,
+        }),
+        "cylinder" => Some(Geometry::Cylinder {
+            radius: s.first().copied().unwrap_or(0.05),
+            height: s.get(1).copied().unwrap_or(0.05) * 2.0,
+        }),
+        "box" => Some(Geometry::Box {
+            half_extents: if s.len() >= 3 {
+                Vec3::new(s[0], s[1], s[2])
+            } else {
+                Vec3::new(0.05, 0.05, 0.05)
+            },
+        }),
+        "plane" => Some(Geometry::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_mjcf() {
+        let mjcf = r#"
+        <mujoco>
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert_eq!(model.nbodies(), 1);
+        assert_eq!(model.nv, 1);
+    }
+
+    #[test]
+    fn test_multi_joint_mjcf() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <joint type="hinge" axis="0 0 1"/>
+                    <body name="link2" pos="1 0 0">
+                        <inertial mass="0.5" diaginertia="0.05 0.05 0.05"/>
+                        <joint type="slide" axis="1 0 0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert_eq!(model.nbodies(), 2);
+        assert_eq!(model.nv, 2);
+    }
+
+    #[test]
+    fn test_geom_parsing() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <joint type="free"/>
+                    <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert_eq!(model.nbodies(), 1);
+        match &model.bodies[0].geometry {
+            Some(Geometry::Sphere { radius }) => assert!((*radius - 0.1).abs() < 1e-10),
+            other => panic!("expected sphere, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_actuator_parsing() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="link1"><inertial mass="1" diaginertia=".1 .1 .1"/>
+                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                </body>
+            </worldbody>
+            <actuator><motor name="m1" joint="j1" gear="100" ctrlrange="-1 1"/></actuator>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert_eq!(model.actuators.len(), 1);
+        assert_eq!(model.actuators[0].ctrl_range, Some([-1.0, 1.0]));
+        // Motor: f = gear * ctrl
+        assert!((model.actuators[0].force_at(0.5, 1.0, 2.0) - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn position_and_velocity_actuators_use_the_affine_law() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="b"><inertial mass="1" diaginertia=".1 .1 .1"/>
+                    <joint name="j1" type="hinge"/>
+                </body>
+                <body name="c"><inertial mass="1" diaginertia=".1 .1 .1"/>
+                    <joint name="j2" type="hinge"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position name="p" joint="j1" kp="10" kv="2"/>
+                <velocity name="v" joint="j2" kv="5"/>
+            </actuator>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        let p = &model.actuators[0];
+        // kp*(ctrl - q) - kv*v = 10*(1 - 0.5) - 2*0.25 = 4.5
+        assert!((p.force_at(1.0, 0.5, 0.25) - 4.5).abs() < 1e-9);
+        let v = &model.actuators[1];
+        // kv*(ctrl - v) = 5*(2 - 0.5) = 7.5
+        assert!((v.force_at(2.0, 0.0, 0.5) - 7.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn defaults_classes_are_applied_and_inherited() {
+        let mjcf = r#"
+        <mujoco>
+            <default>
+                <joint damping="0.5" limited="true"/>
+                <geom density="500" type="capsule"/>
+                <default class="stiff">
+                    <joint damping="9"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <joint name="ja" range="-1 1"/>
+                    <geom size="0.05 0.2"/>
+                </body>
+                <body name="b" childclass="stiff">
+                    <joint name="jb" range="-1 1"/>
+                    <geom size="0.05 0.2"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert!(
+            (model.joints[0].damping - 0.5).abs() < 1e-12,
+            "root default"
+        );
+        assert!((model.joints[1].damping - 9.0).abs() < 1e-12, "childclass");
+        // Root default supplied `type=capsule`, so the geom is a capsule with
+        // full length 2 * 0.2.
+        match &model.bodies[0].geometry {
+            Some(Geometry::Capsule { radius, length }) => {
+                assert!((*radius - 0.05).abs() < 1e-12);
+                assert!((*length - 0.4).abs() < 1e-12);
+            }
+            other => panic!("expected capsule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inertia_is_derived_from_geoms_when_inertial_is_absent() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody>
+                <body name="a">
+                    <joint type="hinge"/>
+                    <geom type="sphere" size="0.5" density="1000"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        let expect = 1000.0 * 4.0 / 3.0 * std::f64::consts::PI * 0.125;
+        assert!(
+            (model.bodies[0].inertia.mass - expect).abs() < 1e-6,
+            "got {}",
+            model.bodies[0].inertia.mass
+        );
+    }
+
+    #[test]
+    fn explicit_geom_mass_beats_density() {
+        let mjcf = r#"
+        <mujoco><worldbody><body name="a">
+            <joint type="hinge"/>
+            <geom type="box" size="1 1 1" mass="7"/>
+        </body></worldbody></mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert!((model.bodies[0].inertia.mass - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fromto_sets_capsule_length_and_centre() {
+        let mjcf = r#"
+        <mujoco><worldbody><body name="a">
+            <joint type="hinge"/>
+            <geom type="capsule" fromto="0 0 0  0 0 -1" size="0.05"/>
+        </body></worldbody></mujoco>
+        "#;
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        let g = &loader.bodies[0].geoms[0];
+        assert!((g.size[1] - 0.5).abs() < 1e-12, "half-length from fromto");
+        assert!((g.pos.z + 0.5).abs() < 1e-12, "midpoint");
+    }
+
+    #[test]
+    fn freejoint_tag_is_a_free_joint() {
+        let mjcf = r#"
+        <mujoco><worldbody><body name="a">
+            <freejoint/>
+            <geom type="sphere" size="0.1"/>
+        </body></worldbody></mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        assert_eq!(model.nv, 6);
+    }
+
+    #[test]
+    fn unsupported_features_are_reported_not_swallowed() {
+        let mjcf = r#"
+        <mujoco>
+            <asset><mesh name="m" file="x.stl"/></asset>
+            <worldbody><body name="a"><joint type="hinge"/>
+                <geom type="sphere" size="0.1"/>
+            </body></worldbody>
+            <tendon><fixed name="t"/></tendon>
+            <equality><connect body1="a" body2="a"/></equality>
+        </mujoco>
+        "#;
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        let tags: Vec<&str> = loader
+            .unsupported()
+            .iter()
+            .map(|u| u.tag.as_str())
+            .collect();
+        assert!(tags.contains(&"mesh"), "{tags:?}");
+        assert!(tags.contains(&"tendon"), "{tags:?}");
+        assert!(tags.contains(&"equality"), "{tags:?}");
+    }
+
+    #[test]
+    fn sensors_are_recorded() {
+        let mjcf = r#"
+        <mujoco>
+            <worldbody><body name="a"><joint name="j" type="hinge"/>
+                <geom type="sphere" size="0.1"/></body></worldbody>
+            <sensor><jointpos name="jp" joint="j"/><jointvel joint="j"/></sensor>
+        </mujoco>
+        "#;
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        assert_eq!(loader.sensors().len(), 2);
+        assert_eq!(loader.sensors()[0].kind, "jointpos");
+        assert_eq!(loader.sensors()[0].target, "j");
+    }
+
+    #[test]
+    fn visual_only_geoms_do_not_become_collision_shapes() {
+        let mjcf = r#"
+        <mujoco><worldbody><body name="a"><joint type="hinge"/>
+            <geom name="visual" type="box" size="1 1 1" contype="0" conaffinity="0"/>
+            <geom name="collider" type="sphere" size="0.2"/>
+        </body></worldbody></mujoco>
+        "#;
+        let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+        match &model.bodies[0].geometry {
+            Some(Geometry::Sphere { .. }) => {}
+            other => panic!("expected the colliding sphere, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_compiler_degree() {
+        let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <worldbody><body name="link1">
+                <inertial mass="1.0" diaginertia="0.1 0.1 0.1"/>
+                <joint name="j1" type="hinge" axis="0 0 1" range="-90 90"/>
+            </body></worldbody>
+        </mujoco>
+        "#;
+        let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
+        assert!(loader.angles.degrees);
+        let model = loader.build_model();
+        let range = model.joints[0].limits.unwrap();
+        assert!((range[0] + std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ant_model() {
+        let loader = MjcfLoader::from_file("../../models/ant.xml").unwrap();
+        let model = loader.build_model();
+        assert_eq!(model.nbodies(), 9);
+        assert_eq!(model.nv, 14);
+        assert!((model.gravity.z + 9.81).abs() < 1e-10);
+        assert_eq!(model.actuators.len(), 8, "ant needs 8 leg motors");
     }
 }

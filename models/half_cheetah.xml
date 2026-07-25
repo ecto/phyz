@@ -1,0 +1,65 @@
+<!--
+  Half-cheetah: a planar runner. The root is a free joint restricted in
+  practice to the x–z plane by the model's geometry and initial conditions.
+
+  Re-authored for phyz with the standard topology and action space (6 motors:
+  back thigh/shin/foot, front thigh/shin/foot). nq = nv = 12 (6 free + 6
+  hinge). Not bit-identical to Gym's HalfCheetah, so returns are not directly
+  comparable.
+
+  Exercises: <default> classes, capsule fromto chains, geom-derived inertia,
+  per-joint gear overrides.
+-->
+<mujoco model="half_cheetah">
+    <compiler angle="degree"/>
+    <option gravity="0 0 -9.81" timestep="0.005"/>
+
+    <default>
+        <joint limited="true" damping="0.5" armature="0.1" axis="0 1 0"/>
+        <geom type="capsule" density="1000" friction="0.4 0.1 0.1"/>
+        <motor ctrlrange="-1 1" gear="120"/>
+    </default>
+
+    <worldbody>
+        <body name="torso" pos="0 0 0.7">
+            <freejoint name="root"/>
+            <geom name="torso_geom" fromto="-0.5 0 0  0.5 0 0" size="0.046"/>
+            <geom name="head_geom" fromto="0.5 0 0  0.7 0 0.1" size="0.046"/>
+
+            <body name="bthigh" pos="-0.5 0 0">
+                <joint name="bthigh" type="hinge" range="-30 60"/>
+                <geom name="bthigh_geom" fromto="0 0 0  0.1 0 -0.13" size="0.046"/>
+                <body name="bshin" pos="0.1 0 -0.13">
+                    <joint name="bshin" type="hinge" range="-50 50"/>
+                    <geom name="bshin_geom" fromto="0 0 0  -0.14 0 -0.24" size="0.046"/>
+                    <body name="bfoot" pos="-0.14 0 -0.24">
+                        <joint name="bfoot" type="hinge" range="-70 70"/>
+                        <geom name="bfoot_geom" fromto="0 0 0  0.03 0 -0.10" size="0.046"/>
+                    </body>
+                </body>
+            </body>
+
+            <body name="fthigh" pos="0.5 0 0">
+                <joint name="fthigh" type="hinge" range="-57 40"/>
+                <geom name="fthigh_geom" fromto="0 0 0  -0.07 0 -0.12" size="0.046"/>
+                <body name="fshin" pos="-0.07 0 -0.12">
+                    <joint name="fshin" type="hinge" range="-70 50"/>
+                    <geom name="fshin_geom" fromto="0 0 0  0.065 0 -0.09" size="0.046"/>
+                    <body name="ffoot" pos="0.065 0 -0.09">
+                        <joint name="ffoot" type="hinge" range="-30 30"/>
+                        <geom name="ffoot_geom" fromto="0 0 0  0.045 0 -0.07" size="0.046"/>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <motor name="bthigh_motor" joint="bthigh" gear="120"/>
+        <motor name="bshin_motor"  joint="bshin"  gear="90"/>
+        <motor name="bfoot_motor"  joint="bfoot"  gear="60"/>
+        <motor name="fthigh_motor" joint="fthigh" gear="120"/>
+        <motor name="fshin_motor"  joint="fshin"  gear="60"/>
+        <motor name="ffoot_motor"  joint="ffoot"  gear="30"/>
+    </actuator>
+</mujoco>

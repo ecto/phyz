@@ -663,3 +663,119 @@ fn tilting_paddle_vertex_gradient_matches_fd() {
         "only {live} live samples — rotation chain not exercised"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Gate 6 — mixed joint types: the analytic inertia regressor on prismatic and
+// fixed links, not just revolute chains (1e-5).
+// ---------------------------------------------------------------------------
+
+/// Revolute → prismatic → fixed. The fixed link carries mass but no DOF, and
+/// the prismatic link's motion subspace is linear rather than angular, so this
+/// exercises the two branches of the acceleration sweep that a pure revolute
+/// chain never reaches. All 30 π-scalars gated against central FD.
+#[test]
+fn mixed_joint_chain_inertia_gradient_matches_fd() {
+    const DT: f64 = 1e-3;
+    const STEPS: usize = 200;
+    const GATE: f64 = 1e-5;
+
+    let p: [[f64; 10]; 3] = [
+        [
+            1.1, 0.25, 0.05, -0.03, 0.02, 0.025, 0.03, 0.004, 0.001, 0.002,
+        ],
+        [
+            0.7, 0.15, -0.04, 0.06, 0.01, 0.012, 0.014, 0.002, 0.001, 0.0015,
+        ],
+        [
+            0.4, -0.1, 0.08, 0.02, 0.008, 0.006, 0.009, 0.001, 0.0005, 0.0008,
+        ],
+    ];
+
+    let build = |p: [[f64; 10]; 3]| -> Model {
+        let slide = Joint {
+            joint_type: JointType::Prismatic,
+            parent_to_joint: SpatialTransform::from_translation(Vec3::new(0.4, 0.0, 0.0)),
+            axis: Vec3::new(0.0, 1.0, 0.0),
+            damping: 0.01,
+            limits: None,
+            ..Default::default()
+        };
+        let welded = Joint {
+            joint_type: JointType::Fixed,
+            parent_to_joint: SpatialTransform::from_translation(Vec3::new(0.0, 0.3, 0.1)),
+            ..Default::default()
+        };
+        ModelBuilder::new()
+            .gravity(Vec3::new(0.0, 0.0, -9.81))
+            .dt(DT)
+            .add_revolute_body("link1", -1, SpatialTransform::identity(), si_from(p[0]))
+            .add_body("link2", 0, slide, si_from(p[1]))
+            .add_body("link3", 1, welded, si_from(p[2]))
+            .build()
+    };
+
+    let ctrl = |_t: usize| DVec::from_slice(&[0.02, -0.05]);
+    let obj = q0_objective();
+    let (q0, v0) = (vec![0.2, 0.1], vec![0.15, -0.05]);
+
+    let j_at = |pp: [[f64; 10]; 3]| -> f64 {
+        let m = build(pp);
+        rollout_objective(
+            &AdjointRollout {
+                model: &m,
+                contact: None,
+                q0: q0.clone(),
+                v0: v0.clone(),
+                steps: STEPS,
+                ctrl: &ctrl,
+            },
+            &obj,
+        )
+    };
+
+    let model = build(p);
+    let g = adjoint_rollout_gradient(
+        &AdjointRollout {
+            model: &model,
+            contact: None,
+            q0: q0.clone(),
+            v0: v0.clone(),
+            steps: STEPS,
+            ctrl: &ctrl,
+        },
+        &obj,
+    );
+
+    let mut live = 0;
+    for b in 0..3 {
+        for k in 0..10 {
+            let h = match k {
+                0 => 1e-5,
+                1..=3 => 1e-6,
+                _ => 1e-7,
+            };
+            let (mut pp, mut pm) = (p, p);
+            pp[b][k] += h;
+            pm[b][k] -= h;
+            let fd = (j_at(pp) - j_at(pm)) / (2.0 * h);
+            let adj = g.d_inertia[b][k];
+            if fd.abs() > 1e-7 {
+                live += 1;
+                let rel = (adj - fd).abs() / fd.abs();
+                assert!(
+                    rel <= GATE,
+                    "dJ/dπ[{b}][{k}]: adjoint {adj} vs fd {fd} (rel {rel:.3e})"
+                );
+            } else {
+                assert!(
+                    adj.abs() <= 1e-6,
+                    "dJ/dπ[{b}][{k}]: fd is dead ({fd}) but adjoint says {adj}"
+                );
+            }
+        }
+    }
+    assert!(
+        live >= 8,
+        "only {live} live channels — gate under-constrained"
+    );
+}

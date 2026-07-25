@@ -37,7 +37,7 @@ use phyz_mjcf::MjcfLoader;
 
 let loader = MjcfLoader::from_xml_str("<mujoco><worldbody/></mujoco>").unwrap();
 for note in loader.unsupported() {
-    eprintln!("{}: {}", note.element, note.detail);
+    eprintln!("{}: {}", note.tag, note.detail);
 }
 ```
 
@@ -45,8 +45,8 @@ Malformed input is always an error, never a panic and never a silently
 substituted default. Errors name the element and attribute they came from:
 
 ```text
-<body> attribute 'pos' has invalid value "1 2": expected 3 numbers, found 2
-<geom> references undefined default class 'leg_'
+<body> attribute 'euler' has invalid value "1 2": expected 3 numbers, found 2
+<include file="scene.xml"> could not be read: No such file or directory (os error 2)
 ```
 
 ## Coverage
@@ -59,28 +59,30 @@ rigid-body models.
 | `<compiler>` | `angle`, `coordinate` (local only), `eulerseq`, `meshdir`, `assetdir` |
 | `<option>` | `gravity`, `timestep` |
 | `<default>` | named classes, arbitrary nesting with inheritance, `class` and `childclass` |
-| Bodies | `<body>`, `<inertial>` (`diaginertia` and `fullinertia`), `<site>` |
+| Bodies | `<body>`, `<inertial>` (`diaginertia` and `fullinertia`); inertia is derived from geoms + `density` when `<inertial>` is absent |
 | Joints | `hinge`, `slide`, `ball`, `free`, `<freejoint>`, `range`/`limited`, `damping`, `armature`, `stiffness`, `springref`, `frictionloss` |
 | Orientation | `quat`, `euler` (with `eulerseq` case rules), `axisangle`, `xyaxes`, `zaxis`, `fromto` |
 | Geoms | `sphere`, `capsule`, `box`, `cylinder`, `plane`, `mesh` |
 | Actuators | `motor`, `position`, `velocity`, `general` (joint transmissions) |
-| Assets | `<mesh>` (STL binary/ASCII, OBJ), `<texture>`, `<material>`, `<hfield>` |
+| Sensors | `<sensor>` elements recorded as `SensorElement` |
+| Assets | `<mesh>` (STL binary/ASCII, OBJ) |
 | Files | `<include>`, with cycle detection |
 
 `DefaultsManager` implements MJCF's `<default>` class inheritance, so attributes
 resolve the way MuJoCo resolves them rather than being read literally off each
 element.
 
-Every geom on a body is carried into `Body::collisions` as a `GeomInstance` with
-its own body-relative pose. `Body::geometry` mirrors the first shape that is
-actually centred on the body frame, so the single-shape contact path is
-unchanged.
+Every geom is carried into `Body::collisions` (or `Body::visuals`, for
+`contype="0" conaffinity="0"`) as a `GeomInstance` with its own body-relative
+pose, since a `fromto` capsule sits at its midpoint rather than the body origin.
+`Body::geometry` mirrors the first centred collision shape so single-shape
+consumers keep working.
 
 Actuators use MuJoCo's affine model, so `position` and `velocity` servos are
 special cases of `general` rather than separate code paths:
 
 ```text
-force = gear * (gain * ctrl + bias[0] + bias[1] * q + bias[2] * qdot)
+force = gear * (gain * ctrl + bias_q * q + bias_v * v)
 ```
 
 ## Known gaps
@@ -90,33 +92,21 @@ it.
 
 **Blocked on `phyz-collision`:**
 
-- `<hfield>`: parsed and exposed via `MjcfLoader::hfields()`, but there is no
-  heightfield collision shape.
+- `<hfield>`: there is no heightfield collision shape, so heightfield geoms are
+  dropped.
 - Meshes are loaded and become `Geometry::Mesh`, which phyz-collision treats as
   a convex hull. Non-convex meshes will collide as their hull.
 - `ellipsoid` geoms have no phyz equivalent.
 
 **Parsed and recorded, but not simulated** — phyz has no representation for
-these, so they are noted and skipped: `<equality>`, `<tendon>`, `<sensor>`,
-`<contact>` (pairs and excludes), `<keyframe>`.
+these, so they are noted and skipped: `<equality>`, `<tendon>`, `<contact>`,
+`<keyframe>`.
 
 **Not modelled:**
 
 - Actuators with tendon/site/body transmissions (only joint transmissions are
   carried into the `Model`).
-- `general` actuators with a non-`fixed` gain type, non-`affine` bias type, or
-  any `dyntype` — actuator state integration does not exist in phyz.
-- `compiler coordinate="global"`, which is rejected outright rather than
-  misinterpreted as local coordinates.
-- `inertiafromgeom`: a body with geoms but no `<inertial>` gets a 1 kg
-  placeholder rather than an inertia computed from its geometry.
-
-## Compound joints
-
-MJCF allows several `<joint>` elements on one body, which together form a single
-compound joint. These are expanded into a serial chain of links, with the body's
-inertia on the last one so its mass is counted once. A body with three hinges
-therefore appears as three entries in `Model::bodies` contributing 3 DOFs.
+- `<texture>` and `<material>`, since phyz has no renderer to hand them to.
 
 ## Measuring coverage
 

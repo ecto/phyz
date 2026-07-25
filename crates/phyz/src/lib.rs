@@ -106,8 +106,7 @@ pub use contact::{
 pub use math::{DMat, DVec, GRAVITY, Mat3, Mat4, Vec3, skew};
 pub use math::{Quat, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
 pub use model::{
-    Actuator, ActuatorType, Body, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder,
-    State,
+    Actuator, Body, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder, State,
 };
 pub use rigid::{
     BodyKinematics, aba, aba_with_external_forces, body_wrenches, crba, forward_kinematics,

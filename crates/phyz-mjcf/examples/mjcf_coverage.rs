@@ -24,21 +24,16 @@ fn main() {
             Ok(loader) => {
                 ok += 1;
                 let model = loader.build_model();
-                let shapes: usize = model.bodies.iter().map(|b| b.collisions.len()).sum();
-                let offset: usize = model
-                    .bodies
-                    .iter()
-                    .flat_map(|b| b.collisions.iter())
-                    .filter(|g| !g.is_centered())
-                    .count();
+                let with_geom = model.bodies.iter().filter(|b| b.geometry.is_some()).count();
+                let loaded = loader.meshes().iter().filter(|m| m.data.is_some()).count();
                 println!(
-                    "PASS {:<48} bodies={:<4} nv={:<4} actuators={:<4} shapes={:<4} (offset {:<4}) meshes={}",
+                    "PASS {:<44} bodies={:<4} nv={:<4} act={:<4} geoms={:<4} meshes={}/{}",
                     short(path),
                     model.nbodies(),
                     model.nv,
                     model.actuators.len(),
-                    shapes,
-                    offset,
+                    with_geom,
+                    loaded,
                     loader.meshes().len()
                 );
                 for note in loader.unsupported() {

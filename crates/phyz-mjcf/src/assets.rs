@@ -1,8 +1,12 @@
-//! `<asset>` records: meshes, textures, materials, height fields.
+//! `<asset><mesh>` loading.
 //!
-//! Mesh files are loaded when they are STL or OBJ and present on disk; anything
-//! else is recorded with `data: None` so the caller can see what was referenced
-//! but not resolved.
+//! Reference models ship their real geometry as STL or OBJ files and reference
+//! it with `<geom type="mesh" mesh="..."/>`. Without loading them the geom has
+//! no shape at all, so the body silently loses both its collision volume and
+//! its inertia contribution.
+//!
+//! `<texture>` and `<material>` are not parsed: phyz has no renderer, so there
+//! is nothing to hand them to.
 
 use crate::attrs::Attrs;
 use crate::{MjcfError, Result};
@@ -12,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// Triangle soup loaded from a mesh file.
 #[derive(Debug, Clone, Default)]
 pub struct MeshData {
-    /// Vertex positions, already scaled by the asset's `scale`.
+    /// Vertex positions, already multiplied by the asset's `scale`.
     pub vertices: Vec<Vec3>,
     /// Triangles, as indices into `vertices`.
     pub faces: Vec<[usize; 3]>,
@@ -35,57 +39,14 @@ pub struct MeshAsset {
     pub load_error: Option<String>,
 }
 
-/// A `<texture>` asset. Recorded only; phyz has no renderer-side use for it yet.
-#[derive(Debug, Clone)]
-pub struct TextureAsset {
-    /// Asset name, if given.
-    pub name: Option<String>,
-    /// `type` attribute, e.g. `"2d"` or `"cube"`.
-    pub texture_type: String,
-    /// Source file, if the texture is loaded rather than generated.
-    pub file: Option<String>,
-    /// `builtin` generator name, e.g. `"checker"`.
-    pub builtin: Option<String>,
-    /// Primary colour for a builtin texture.
-    pub rgb1: Option<[f64; 3]>,
-    /// Secondary colour for a builtin texture.
-    pub rgb2: Option<[f64; 3]>,
-}
-
-/// A `<material>` asset.
-#[derive(Debug, Clone)]
-pub struct MaterialAsset {
-    /// Asset name.
-    pub name: String,
-    /// Name of the `<texture>` this material references, if any.
-    pub texture: Option<String>,
-    /// Base colour.
-    pub rgba: Option<[f64; 4]>,
-    /// Specular reflectance.
-    pub specular: Option<f64>,
-    /// Specular exponent.
-    pub shininess: Option<f64>,
-}
-
-/// An `<hfield>` asset. Recorded only: phyz-collision has no heightfield support.
-#[derive(Debug, Clone)]
-pub struct HFieldAsset {
-    /// Asset name.
-    pub name: String,
-    /// Elevation data file, if the field is loaded rather than declared.
-    pub file: Option<String>,
-    /// Number of rows in the elevation grid.
-    pub nrow: Option<usize>,
-    /// Number of columns in the elevation grid.
-    pub ncol: Option<usize>,
-    /// `size` = [radius_x, radius_y, elevation_z, base_z].
-    pub size: Option<[f64; 4]>,
-}
-
-pub(crate) fn parse_mesh(attrs: &Attrs, asset_dir: Option<&Path>) -> Result<MeshAsset> {
-    let file = attrs.string("file");
-    let name = match attrs.string("name") {
-        Some(n) => n,
+/// Read a `<mesh>` element and load its file if possible.
+///
+/// A missing or unreadable mesh is recorded in `load_error` rather than failing
+/// the whole model: the rest of the file is still worth having.
+pub(crate) fn parse_mesh(a: &Attrs, asset_dir: Option<&Path>) -> Result<MeshAsset> {
+    let file = a.get("file").map(str::to_string);
+    let name = match a.get("name") {
+        Some(n) => n.to_string(),
         // MuJoCo defaults a mesh's name to its file stem.
         None => file
             .as_deref()
@@ -97,7 +58,7 @@ pub(crate) fn parse_mesh(attrs: &Attrs, asset_dir: Option<&Path>) -> Result<Mesh
             })?,
     };
 
-    let scale = attrs.vec3_or("scale", Vec3::new(1.0, 1.0, 1.0))?;
+    let scale = a.vec3_or("scale", Vec3::new(1.0, 1.0, 1.0));
 
     let resolved_path = file.as_deref().map(|f| match asset_dir {
         Some(dir) => dir.join(f),
@@ -126,49 +87,6 @@ pub(crate) fn parse_mesh(attrs: &Attrs, asset_dir: Option<&Path>) -> Result<Mesh
         scale,
         data,
         load_error,
-    })
-}
-
-pub(crate) fn parse_texture(attrs: &Attrs) -> Result<TextureAsset> {
-    Ok(TextureAsset {
-        name: attrs.string("name"),
-        texture_type: attrs.string("type").unwrap_or_else(|| "cube".to_string()),
-        file: attrs.string("file"),
-        builtin: attrs.string("builtin"),
-        rgb1: attrs.fixed::<3>("rgb1")?,
-        rgb2: attrs.fixed::<3>("rgb2")?,
-    })
-}
-
-pub(crate) fn parse_material(attrs: &Attrs) -> Result<MaterialAsset> {
-    Ok(MaterialAsset {
-        name: attrs.required("name")?.to_string(),
-        texture: attrs.string("texture"),
-        rgba: attrs.fixed::<4>("rgba")?,
-        specular: attrs.f64("specular")?,
-        shininess: attrs.f64("shininess")?,
-    })
-}
-
-pub(crate) fn parse_hfield(attrs: &Attrs) -> Result<HFieldAsset> {
-    let usize_attr = |key: &str| -> Result<Option<usize>> {
-        match attrs.f64(key)? {
-            None => Ok(None),
-            Some(v) if v >= 0.0 && v.fract() == 0.0 => Ok(Some(v as usize)),
-            Some(v) => Err(MjcfError::invalid_attr(
-                "hfield",
-                key,
-                &v.to_string(),
-                "expected a non-negative integer",
-            )),
-        }
-    };
-    Ok(HFieldAsset {
-        name: attrs.required("name")?.to_string(),
-        file: attrs.string("file"),
-        nrow: usize_attr("nrow")?,
-        ncol: usize_attr("ncol")?,
-        size: attrs.fixed::<4>("size")?,
     })
 }
 
