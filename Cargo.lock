@@ -2904,6 +2904,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-env"
+version = "0.3.1"
+dependencies = [
+ "phyz-gpu",
+ "phyz-math",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-rigid",
+ "tang-tensor",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "phyz-examples"
 version = "0.3.1"
 dependencies = [
@@ -2954,6 +2967,7 @@ dependencies = [
  "bytemuck",
  "futures-intrusive",
  "phyz-math",
+ "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
  "pollster",

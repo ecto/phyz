@@ -35,6 +35,7 @@ fn motor(model: &mut Model, gear: f64, ctrl_range: Option<[f64; 2]>) {
         joint_idx: 0,
         gear,
         ctrl_range,
+        ..Default::default()
     });
 }
 
