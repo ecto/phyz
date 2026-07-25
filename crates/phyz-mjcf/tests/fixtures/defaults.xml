@@ -1,0 +1,56 @@
+<mujoco model="defaults_test">
+  <compiler angle="degree"/>
+
+  <default>
+    <geom type="capsule" size="0.02 0.1"/>
+    <joint type="hinge" damping="1.0" range="-90 90"/>
+    <motor gear="50" ctrlrange="-1 1"/>
+
+    <default class="heavy">
+      <geom size="0.2 0.5"/>
+      <joint damping="7.5"/>
+
+      <default class="heavy_limited">
+        <joint range="-30 30"/>
+      </default>
+    </default>
+
+    <default class="light">
+      <geom type="sphere" size="0.01"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!-- inherits the root class -->
+    <body name="plain" pos="0 0 1">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="j_plain"/>
+      <geom name="g_plain"/>
+    </body>
+
+    <!-- explicit class on each element -->
+    <body name="explicit" pos="0 0 2">
+      <inertial mass="2" diaginertia="0.2 0.2 0.2"/>
+      <joint name="j_explicit" class="heavy"/>
+      <geom name="g_explicit" class="light"/>
+    </body>
+
+    <!-- childclass applies to every descendant that names no class -->
+    <body name="parent" pos="0 0 3" childclass="heavy">
+      <inertial mass="3" diaginertia="0.3 0.3 0.3"/>
+      <joint name="j_parent"/>
+      <geom name="g_parent"/>
+
+      <body name="child" pos="0 0 1">
+        <inertial mass="4" diaginertia="0.4 0.4 0.4"/>
+        <joint name="j_child" class="heavy_limited"/>
+        <geom name="g_child"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="m_default" joint="j_plain"/>
+    <motor name="m_override" joint="j_explicit" gear="200"/>
+  </actuator>
+</mujoco>

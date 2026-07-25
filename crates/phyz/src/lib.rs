@@ -15,5 +15,7 @@ pub use collision::{
 pub use contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
 pub use math::{DMat, DVec, GRAVITY, Mat3, Mat4, Vec3, skew};
 pub use math::{Quat, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
-pub use model::{Actuator, Body, Geometry, Joint, JointType, Model, ModelBuilder, State};
+pub use model::{
+    Actuator, ActuatorType, Body, Geometry, Joint, JointType, Model, ModelBuilder, State,
+};
 pub use rigid::{aba, aba_with_external_forces, crba, forward_kinematics, rnea};

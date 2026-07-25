@@ -1,0 +1,45 @@
+<!-- Shaped like a Menagerie quadruped (go1/anymal): a free-jointed trunk, four
+     legs whose parameters come entirely from default classes, and position
+     actuators. Every one of these features was silently dropped before. -->
+<mujoco model="quadruped_shape">
+  <compiler angle="radian"/>
+
+  <default>
+    <default class="robot">
+      <joint damping="0.5" armature="0.01" range="-1.5 1.5"/>
+      <geom type="capsule" size="0.02"/>
+      <default class="abduction">
+        <joint axis="1 0 0" range="-0.8 0.8"/>
+      </default>
+      <default class="knee">
+        <joint axis="0 1 0" range="-2.7 -0.9"/>
+      </default>
+      <position class="robot" kp="60" kv="2" ctrlrange="-1.5 1.5"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <body name="trunk" pos="0 0 0.4" childclass="robot">
+      <freejoint name="root"/>
+      <inertial pos="0 0 0" mass="5.0" diaginertia="0.05 0.2 0.2"/>
+      <geom name="trunk_geom" type="box" size="0.2 0.08 0.05"/>
+
+      <body name="fl_hip" pos="0.18 0.05 0">
+        <inertial pos="0 0.02 0" mass="0.6" diaginertia="0.001 0.001 0.001"/>
+        <joint name="fl_abduct" class="abduction"/>
+        <geom name="fl_hip_geom" fromto="0 0 0 0 0.08 0"/>
+
+        <body name="fl_knee_link" pos="0 0.08 0">
+          <inertial pos="0 0 -0.1" mass="0.4" diaginertia="0.001 0.001 0.001"/>
+          <joint name="fl_knee" class="knee"/>
+          <geom name="fl_shank" fromto="0 0 0 0 0 -0.2"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="fl_abduct_act" joint="fl_abduct" class="robot"/>
+    <position name="fl_knee_act" joint="fl_knee" class="robot" kp="120"/>
+  </actuator>
+</mujoco>

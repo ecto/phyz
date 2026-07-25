@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -2975,6 +2975,7 @@ version = "0.1.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
+ "phyz-rigid",
  "quick-xml 0.37.5",
  "thiserror 2.0.18",
 ]

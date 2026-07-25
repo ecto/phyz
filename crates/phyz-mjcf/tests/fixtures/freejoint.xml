@@ -1,0 +1,13 @@
+<mujoco model="freejoint">
+  <worldbody>
+    <body name="floater" pos="0 0 1">
+      <freejoint name="root"/>
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <geom name="g" type="sphere" size="0.1"/>
+    </body>
+    <body name="also_free" pos="1 0 1">
+      <freejoint/>
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
