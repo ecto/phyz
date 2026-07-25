@@ -1,0 +1,196 @@
+//! Jacobians of a single simulation step.
+//!
+//! Finite-difference and chain-rule-through-ABA forms for semi-implicit Euler.
+
+use crate::math::{DMat, DVec};
+use crate::model::{Model, State};
+use crate::rigid::aba;
+
+/// Jacobians of a single simulation step.
+///
+/// For state (q, v) -> (q', v') after one step:
+/// - `dqnext_dq`: dq'/dq
+/// - `dqnext_dv`: dq'/dv
+/// - `dvnext_dq`: dv'/dq
+/// - `dvnext_dv`: dv'/dv
+/// - `dvnext_dctrl`: dv'/dctrl
+#[derive(Debug, Clone)]
+pub struct StepJacobians {
+    pub dqnext_dq: DMat,
+    pub dqnext_dv: DMat,
+    pub dvnext_dq: DMat,
+    pub dvnext_dv: DMat,
+    pub dvnext_dctrl: DMat,
+}
+
+/// Set column `j` of matrix `m` from DVec `col`.
+fn set_col(m: &mut DMat, j: usize, col: &DVec) {
+    for i in 0..col.len() {
+        m[(i, j)] = col[i];
+    }
+}
+
+/// Compute step Jacobians via finite differences.
+///
+/// Perturbs each component of (q, v, ctrl) and measures the change in (q', v')
+/// after a semi-implicit Euler step.
+pub fn finite_diff_jacobians(model: &Model, state: &State, eps: f64) -> StepJacobians {
+    let nq = model.nq;
+    let nv = model.nv;
+    let dt = model.dt;
+
+    // Nominal step (used as reference for central differences)
+    let (_q_nom, _v_nom) = semi_implicit_euler_step(model, state, dt);
+
+    let mut dqnext_dq = DMat::zeros(nq, nq);
+    let mut dqnext_dv = DMat::zeros(nq, nv);
+    let mut dvnext_dq = DMat::zeros(nv, nq);
+    let mut dvnext_dv = DMat::zeros(nv, nv);
+    let mut dvnext_dctrl = DMat::zeros(nv, nv);
+
+    let inv_2eps = 1.0 / (2.0 * eps);
+
+    // Perturb q
+    for j in 0..nq {
+        let mut s_plus = state.clone();
+        s_plus.q[j] += eps;
+        let (qp, vp) = semi_implicit_euler_step(model, &s_plus, dt);
+
+        let mut s_minus = state.clone();
+        s_minus.q[j] -= eps;
+        let (qm, vm) = semi_implicit_euler_step(model, &s_minus, dt);
+
+        set_col(&mut dqnext_dq, j, &(&(&qp - &qm) * inv_2eps));
+        set_col(&mut dvnext_dq, j, &(&(&vp - &vm) * inv_2eps));
+    }
+
+    // Perturb v
+    for j in 0..nv {
+        let mut s_plus = state.clone();
+        s_plus.v[j] += eps;
+        let (qp, vp) = semi_implicit_euler_step(model, &s_plus, dt);
+
+        let mut s_minus = state.clone();
+        s_minus.v[j] -= eps;
+        let (qm, vm) = semi_implicit_euler_step(model, &s_minus, dt);
+
+        set_col(&mut dqnext_dv, j, &(&(&qp - &qm) * inv_2eps));
+        set_col(&mut dvnext_dv, j, &(&(&vp - &vm) * inv_2eps));
+    }
+
+    // Perturb ctrl
+    for j in 0..nv {
+        let mut s_plus = state.clone();
+        s_plus.ctrl[j] += eps;
+        let (_, vp) = semi_implicit_euler_step(model, &s_plus, dt);
+
+        let mut s_minus = state.clone();
+        s_minus.ctrl[j] -= eps;
+        let (_, vm) = semi_implicit_euler_step(model, &s_minus, dt);
+
+        set_col(&mut dvnext_dctrl, j, &(&(&vp - &vm) * inv_2eps));
+    }
+
+    StepJacobians {
+        dqnext_dq,
+        dqnext_dv,
+        dvnext_dq,
+        dvnext_dv,
+        dvnext_dctrl,
+    }
+}
+
+/// Compute analytical step Jacobians for semi-implicit Euler.
+///
+/// Semi-implicit Euler:
+///   qdd = ABA(q, v, ctrl)
+///   v' = v + dt * qdd
+///   q' = q + dt * v'
+///
+/// Derivatives via chain rule through ABA.
+/// Uses finite differences on ABA itself for now (analytical ABA derivatives in future PR).
+pub fn analytical_step_jacobians(model: &Model, state: &State) -> StepJacobians {
+    let nq = model.nq;
+    let nv = model.nv;
+    let dt = model.dt;
+    let eps = 1e-7;
+    let inv_2eps = 1.0 / (2.0 * eps);
+
+    // Compute ABA Jacobians via finite differences on the acceleration function
+    let _qdd_nom = aba(model, state);
+
+    let mut dqdd_dq = DMat::zeros(nv, nq);
+    let mut dqdd_dv = DMat::zeros(nv, nv);
+    let mut dqdd_dctrl = DMat::zeros(nv, nv);
+
+    for j in 0..nq {
+        let mut sp = state.clone();
+        sp.q[j] += eps;
+        let qddp = aba(model, &sp);
+
+        let mut sm = state.clone();
+        sm.q[j] -= eps;
+        let qddm = aba(model, &sm);
+
+        set_col(&mut dqdd_dq, j, &(&(&qddp - &qddm) * inv_2eps));
+    }
+
+    for j in 0..nv {
+        let mut sp = state.clone();
+        sp.v[j] += eps;
+        let qddp = aba(model, &sp);
+
+        let mut sm = state.clone();
+        sm.v[j] -= eps;
+        let qddm = aba(model, &sm);
+
+        set_col(&mut dqdd_dv, j, &(&(&qddp - &qddm) * inv_2eps));
+    }
+
+    for j in 0..nv {
+        let mut sp = state.clone();
+        sp.ctrl[j] += eps;
+        let qddp = aba(model, &sp);
+
+        let mut sm = state.clone();
+        sm.ctrl[j] -= eps;
+        let qddm = aba(model, &sm);
+
+        set_col(&mut dqdd_dctrl, j, &(&(&qddp - &qddm) * inv_2eps));
+    }
+
+    // Semi-implicit Euler derivatives:
+    // v' = v + dt * qdd(q, v, ctrl)
+    // q' = q + dt * v'
+    //
+    // dv'/dq = dt * dqdd/dq
+    // dv'/dv = I + dt * dqdd/dv
+    // dv'/dctrl = dt * dqdd/dctrl
+    //
+    // dq'/dq = I + dt * dv'/dq = I + dt^2 * dqdd/dq
+    // dq'/dv = dt * (I + dt * dqdd/dv) = dt * dv'/dv
+    let i_nv = DMat::identity(nv);
+    let i_nq = DMat::identity(nq);
+
+    let dvnext_dq = dqdd_dq.scale(dt);
+    let dvnext_dv = &i_nv + &dqdd_dv.scale(dt);
+    let dvnext_dctrl = dqdd_dctrl.scale(dt);
+    let dqnext_dq = &i_nq + &dvnext_dq.scale(dt);
+    let dqnext_dv = dvnext_dv.scale(dt);
+
+    StepJacobians {
+        dqnext_dq,
+        dqnext_dv,
+        dvnext_dq,
+        dvnext_dv,
+        dvnext_dctrl,
+    }
+}
+
+/// Semi-implicit Euler step (returns new q, v).
+fn semi_implicit_euler_step(model: &Model, state: &State, dt: f64) -> (DVec, DVec) {
+    let qdd = aba(model, state);
+    let v_new = &state.v + &(&qdd * dt);
+    let q_new = &state.q + &(&v_new * dt);
+    (q_new, v_new)
+}

@@ -21,10 +21,12 @@
 //! forward-model and contract details.
 
 pub mod adjoint;
+pub mod jacobians;
 pub mod step;
 
 pub use adjoint::{
     AdjointGradients, AdjointRollout, ContactSetup, FinalStateObjective, adjoint_rollout_gradient,
     rollout_objective,
 };
+pub use jacobians::{StepJacobians, analytical_step_jacobians, finite_diff_jacobians};
 pub use step::{CollisionMesh, GroundContact, N_INERTIA_PARAMS, inertia_params};
