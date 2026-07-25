@@ -16,12 +16,14 @@ pub mod broad_phase;
 pub mod epa;
 pub mod geometry;
 pub mod gjk;
+pub mod manifold;
 pub mod raycast;
 
 pub use broad_phase::sweep_and_prune;
-pub use epa::{epa_penetration, epa_penetration_rot};
+pub use epa::{epa_from_simplex, epa_penetration, epa_penetration_rot};
 pub use geometry::{AABB, Geometry};
-pub use gjk::{gjk_distance, gjk_distance_rot};
+pub use gjk::{GjkOutcome, gjk_distance, gjk_distance_rot, gjk_rot};
+pub use manifold::{MAX_MANIFOLD_POINTS, Manifold, ManifoldPoint, contact_manifold};
 pub use raycast::{Ray, RayHit, ray_cast, ray_intersect};
 
 use phyz_math::Vec3;

@@ -10,16 +10,32 @@
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDocTests;
 
+pub mod assemble;
+pub mod cone;
+pub mod convex;
+pub mod gradient;
 pub mod material;
 pub mod solver;
 
+pub use assemble::{ContactAssembly, assemble, contact_wrenches, generalized_impulse};
+pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
+pub use convex::{
+    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, solve_contacts,
+};
 pub use material::ContactMaterial;
-pub use solver::{contact_forces, contact_forces_implicit, find_contacts, find_ground_contacts};
+#[allow(deprecated)]
+pub use solver::{contact_forces, contact_forces_implicit};
+pub use solver::{find_contacts, find_ground_contacts};
 
 use phyz_collision::Collision;
 use phyz_math::{SpatialVec, Vec3};
 
 /// Compute contact force for a single collision.
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`); its friction law makes friction vanish at low \
+            sliding speed regardless of normal load, so nothing ever sticks"
+)]
 pub fn compute_contact_force(
     collision: &Collision,
     material: &ContactMaterial,
@@ -86,6 +102,11 @@ pub fn compute_contact_force(
 /// `mass_i` / `mass_j` are the effective masses of the bodies on either side
 /// of the contact. Use `f64::INFINITY` for the world (ground) or any body
 /// that cannot translate (fixed joint).
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`); its friction law makes friction vanish at low \
+            sliding speed regardless of normal load, so nothing ever sticks"
+)]
 pub fn compute_contact_force_implicit(
     collision: &Collision,
     material: &ContactMaterial,
@@ -167,6 +188,9 @@ mod tests {
     use super::*;
 
     #[test]
+    // Exercises the deprecated penalty path on purpose: it is still shipped, so
+    // it still needs coverage.
+    #[allow(deprecated)]
     fn test_contact_force_zero_depth() {
         let collision = Collision {
             body_i: 0,
@@ -181,6 +205,9 @@ mod tests {
     }
 
     #[test]
+    // Exercises the deprecated penalty path on purpose: it is still shipped, so
+    // it still needs coverage.
+    #[allow(deprecated)]
     fn test_contact_force_penetration() {
         let collision = Collision {
             body_i: 0,

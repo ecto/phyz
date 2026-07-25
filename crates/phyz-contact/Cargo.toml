@@ -14,4 +14,5 @@ readme = "README.md"
 [dependencies]
 phyz-math.workspace = true
 phyz-model.workspace = true
+phyz-rigid.workspace = true
 phyz-collision.workspace = true
