@@ -36,6 +36,16 @@ pub struct Joint {
     pub damping: f64,
     /// Joint position limits [lower, upper] (None = unlimited).
     pub limits: Option<[f64; 2]>,
+    /// Rotor inertia added to this joint's diagonal of the mass matrix
+    /// (MJCF `armature`).
+    ///
+    /// Physically this is the reflected inertia of the motor and gearbox. It
+    /// matters far beyond fidelity: a light distal link driven by a stiff
+    /// position servo has an effective natural frequency of `sqrt(kp / I)`,
+    /// and with `I` tiny that exceeds what an explicit integrator can follow.
+    /// Armature raises `I` and is the standard cure — which is why reference
+    /// MJCF models set it on essentially every joint.
+    pub armature: f64,
 }
 
 impl Joint {
@@ -47,6 +57,7 @@ impl Joint {
             axis: Vec3::new(0.0, 0.0, 1.0), // revolute about Z
             damping: 0.0,
             limits: None,
+            armature: 0.0,
         }
     }
 
@@ -58,6 +69,7 @@ impl Joint {
             axis,
             damping: 0.0,
             limits: None,
+            armature: 0.0,
         }
     }
 
@@ -69,6 +81,7 @@ impl Joint {
             axis: Vec3::zeros(), // not used for spherical
             damping: 0.0,
             limits: None,
+            armature: 0.0,
         }
     }
 
@@ -80,6 +93,7 @@ impl Joint {
             axis: Vec3::zeros(), // not used for free
             damping: 0.0,
             limits: None,
+            armature: 0.0,
         }
     }
 
@@ -91,6 +105,7 @@ impl Joint {
             axis: Vec3::zeros(),
             damping: 0.0,
             limits: None,
+            armature: 0.0,
         }
     }
 

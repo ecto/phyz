@@ -3,7 +3,7 @@
 //! Orchestrates compute pipelines for parallel simulation of multiple environments.
 
 use crate::gpu_state::GpuState;
-use crate::shaders::{ABA_SIMPLE_SHADER, INTEGRATE_SHADER};
+use crate::shaders::{ABA_SIMPLE_SHADER, INTEGRATE_SIMPLE_SHADER};
 use bytemuck::{Pod, Zeroable};
 use phyz_model::{Model, State};
 use std::sync::Arc;
@@ -147,7 +147,7 @@ impl GpuSimulator {
 
         let integrate_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("integrate_shader"),
-            source: wgpu::ShaderSource::Wgsl(INTEGRATE_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(INTEGRATE_SIMPLE_SHADER.into()),
         });
 
         // Create bind group layouts

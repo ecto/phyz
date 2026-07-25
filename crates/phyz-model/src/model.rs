@@ -3,14 +3,96 @@
 use crate::{Body, Joint, State};
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
-/// A motor actuator attached to a joint.
+/// An actuator attached to a joint.
+///
+/// Follows MuJoCo's affine actuator model: the generalized force applied to the
+/// joint's DOF is
+///
+/// ```text
+/// f = gear * (gain * ctrl + bias_q * q + bias_v * v)
+/// ```
+///
+/// which expresses `<motor>`, `<position>`, `<velocity>` and the affine subset
+/// of `<general>` with one set of parameters, so downstream code (and the GPU
+/// kernel) never branches on actuator type.
 #[derive(Debug, Clone)]
 pub struct Actuator {
+    /// Actuator name.
     pub name: String,
+    /// Name of the joint it drives.
     pub joint_name: String,
+    /// Index into `Model::joints`.
     pub joint_idx: usize,
+    /// Force multiplier.
     pub gear: f64,
+    /// Control input limits, or `None` if unlimited.
     pub ctrl_range: Option<[f64; 2]>,
+    /// Coefficient on `ctrl`. 1 for a motor, `kp` for a position servo.
+    pub gain: f64,
+    /// Coefficient on joint position. `-kp` for a position servo, else 0.
+    pub bias_q: f64,
+    /// Coefficient on joint velocity. `-kv` for a servo, else 0.
+    pub bias_v: f64,
+    /// Force limits applied after the affine law, or `None` if unlimited.
+    pub force_range: Option<[f64; 2]>,
+}
+
+impl Actuator {
+    /// A direct-torque motor: `f = gear * ctrl`.
+    pub fn motor(name: &str, joint_name: &str, joint_idx: usize, gear: f64) -> Self {
+        Self {
+            name: name.to_string(),
+            joint_name: joint_name.to_string(),
+            joint_idx,
+            gear,
+            ctrl_range: None,
+            gain: 1.0,
+            bias_q: 0.0,
+            bias_v: 0.0,
+            force_range: None,
+        }
+    }
+
+    /// A position servo: `f = gear * (kp * ctrl - kp * q - kv * v)`.
+    pub fn position(
+        name: &str,
+        joint_name: &str,
+        joint_idx: usize,
+        gear: f64,
+        kp: f64,
+        kv: f64,
+    ) -> Self {
+        Self {
+            gain: kp,
+            bias_q: -kp,
+            bias_v: -kv,
+            ..Self::motor(name, joint_name, joint_idx, gear)
+        }
+    }
+
+    /// A velocity servo: `f = gear * kv * (ctrl - v)`.
+    pub fn velocity(name: &str, joint_name: &str, joint_idx: usize, gear: f64, kv: f64) -> Self {
+        Self {
+            gain: kv,
+            bias_q: 0.0,
+            bias_v: -kv,
+            ..Self::motor(name, joint_name, joint_idx, gear)
+        }
+    }
+
+    /// Evaluate the affine actuator law, applying `ctrl_range` and
+    /// `force_range` clamps.
+    pub fn force(&self, ctrl: f64, q: f64, v: f64) -> f64 {
+        let c = match self.ctrl_range {
+            Some([lo, hi]) => ctrl.clamp(lo, hi),
+            None => ctrl,
+        };
+        let f = self.gear * (self.gain * c + self.bias_q * q + self.bias_v * v);
+        match self.force_range {
+            Some([lo, hi]) => f.clamp(lo, hi),
+            None => f,
+        }
+    }
 }
 
 /// Static model describing the topology and parameters of a physical system.
@@ -99,6 +181,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -120,6 +203,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -140,6 +224,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -160,6 +245,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -180,6 +266,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -200,6 +287,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: None,
+            geom_offset: Default::default(),
         });
         self
     }
@@ -221,6 +309,7 @@ impl ModelBuilder {
             parent,
             joint_idx,
             geometry: geometry.geometry,
+            geom_offset: geometry.geom_offset,
         });
         self
     }

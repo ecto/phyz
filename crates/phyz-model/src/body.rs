@@ -15,6 +15,32 @@ pub struct Body {
     pub joint_idx: usize,
     /// Collision geometry (if any).
     pub geometry: Option<Geometry>,
+    /// Placement of [`Self::geometry`] within the body frame.
+    ///
+    /// MJCF geoms are almost never at the body origin — a capsule written with
+    /// `fromto` sits at the midpoint of its two endpoints, typically well below
+    /// the joint. Ignoring this offset makes limbs collide from the wrong
+    /// place, so contact code must use it.
+    pub geom_offset: GeomOffset,
+}
+
+/// Position and orientation of a body's collision geometry within the body
+/// frame. `rot` maps geometry-local vectors into the body frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeomOffset {
+    /// Geometry origin in body coordinates.
+    pub pos: phyz_math::Vec3,
+    /// Geometry→body rotation.
+    pub rot: phyz_math::Mat3,
+}
+
+impl Default for GeomOffset {
+    fn default() -> Self {
+        Self {
+            pos: phyz_math::Vec3::zeros(),
+            rot: phyz_math::Mat3::identity(),
+        }
+    }
 }
 
 /// Collision geometry types (re-exported from phyz-collision for convenience).

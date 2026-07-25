@@ -27,6 +27,19 @@ fn joint_velocity(joint: &phyz_model::Joint, qd: &[f64]) -> SpatialVec {
 ///
 /// Given state (q, v) and desired accelerations `qdd`, returns the torques needed.
 pub fn rnea(model: &Model, state: &State, qdd: &DVec) -> DVec {
+    rnea_with_wrenches(model, state, qdd).0
+}
+
+/// RNEA, additionally returning the spatial force transmitted through each
+/// body's inboard joint.
+///
+/// This is what a force/torque sensor measures. It is a by-product of the
+/// backward pass, so exposing it costs nothing beyond the allocation.
+pub fn rnea_with_wrenches(
+    model: &Model,
+    state: &State,
+    qdd: &DVec,
+) -> (DVec, Vec<SpatialVec>) {
     let nb = model.nbodies();
     let mut tau = DVec::zeros(model.nv);
 
@@ -100,5 +113,5 @@ pub fn rnea(model: &Model, state: &State, qdd: &DVec) -> DVec {
         }
     }
 
-    tau
+    (tau, forces)
 }

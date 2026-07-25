@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -2890,6 +2890,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-env"
+version = "0.1.0"
+dependencies = [
+ "phyz-gpu",
+ "phyz-math",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-rigid",
+ "tang-tensor",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "phyz-format"
 version = "0.1.0"
 dependencies = [
@@ -2910,6 +2923,7 @@ dependencies = [
  "bytemuck",
  "futures-intrusive",
  "phyz-math",
+ "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
  "pollster",
@@ -3089,9 +3103,11 @@ version = "0.1.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
+ "phyz-rigid",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

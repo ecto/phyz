@@ -74,11 +74,29 @@ impl World {
     }
 
     /// Read all sensors at the current state.
+    ///
+    /// Dynamics are computed once and shared across sensors. Readings that
+    /// error (an unimplemented sensor, an out-of-range target) are dropped from
+    /// the history rather than recorded as zeros; use
+    /// [`Self::read_sensors_checked`] when you need to see the failures.
     fn read_sensors(&self) -> Vec<SensorOutput> {
+        self.read_sensors_checked()
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect()
+    }
+
+    /// Read all sensors, keeping per-sensor errors.
+    pub fn read_sensors_checked(&self) -> Vec<Result<SensorOutput, crate::sensor::SensorError>> {
+        let ctx = crate::sensor::SensorContext::new(
+            &self.model,
+            &self.state,
+            crate::sensor::SensorContext::wrenches_needed(&self.sensors),
+        );
         self.sensors
             .iter()
             .enumerate()
-            .map(|(id, sensor)| sensor.read(&self.model, &self.state, id))
+            .map(|(id, sensor)| sensor.read(&self.model, &self.state, &ctx, id))
             .collect()
     }
 
