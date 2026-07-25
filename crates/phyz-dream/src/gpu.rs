@@ -80,12 +80,7 @@ impl<D: ComputeDevice> GpuDreamModel<D> {
     ///
     /// Takes **unnormalized** flat f32 data (q ++ v ++ ctrl per sample).
     /// Returns denormalized accelerations.
-    pub fn predict_batch(
-        &self,
-        dev: &D,
-        raw_inputs: &[f32],
-        batch: usize,
-    ) -> Vec<f32> {
+    pub fn predict_batch(&self, dev: &D, raw_inputs: &[f32], batch: usize) -> Vec<f32> {
         assert_eq!(raw_inputs.len(), batch * self.in_dim);
 
         // CPU normalize
@@ -130,21 +125,14 @@ impl<D: ComputeDevice> GpuDreamModel<D> {
 }
 
 /// SiLU activation: x * sigmoid(x), fused into a single kernel.
-fn silu<D: ComputeDevice>(
-    dev: &D,
-    x: &ComputeTensor<D::Buffer>,
-) -> ComputeTensor<D::Buffer> {
-    let buf = dev.elementwise(
-        &[&x.buffer],
-        x.numel(),
-        &|ids: &[ExprId]| {
-            let one = ExprId::from_f64(1.0);
-            let neg = -ids[0];
-            let exp_neg = Scalar::exp(neg);
-            let sigmoid = one / (one + exp_neg);
-            ids[0] * sigmoid
-        },
-    );
+fn silu<D: ComputeDevice>(dev: &D, x: &ComputeTensor<D::Buffer>) -> ComputeTensor<D::Buffer> {
+    let buf = dev.elementwise(&[&x.buffer], x.numel(), &|ids: &[ExprId]| {
+        let one = ExprId::from_f64(1.0);
+        let neg = -ids[0];
+        let exp_neg = Scalar::exp(neg);
+        let sigmoid = one / (one + exp_neg);
+        ids[0] * sigmoid
+    });
     ComputeTensor::from_buffer(buf, x.shape().to_vec())
 }
 

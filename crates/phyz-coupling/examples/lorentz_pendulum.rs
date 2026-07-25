@@ -1,7 +1,9 @@
 //! Lorentz-forced pendulum example.
 //!
-//! Demonstrates EM→rigid body coupling where an oscillating electromagnetic
-//! field exerts Lorentz forces on a charged pendulum bob.
+//! NOTE: this integrates a hand-written 1-DOF pendulum against an analytic
+//! prescribed field — it calls `lorentz_force` but neither `phyz-rigid` nor
+//! `phyz-em` is involved. See `coupled_cyclotron.rs` for the same physics
+//! driven through two real solvers via the [`phyz_coupling::Solver`] trait.
 
 use phyz_coupling::lorentz_force;
 use phyz_math::Vec3;

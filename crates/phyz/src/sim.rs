@@ -1,14 +1,18 @@
 //! Integrated time stepping: pluggable solvers and the [`Simulator`] driver.
 //!
-//! A step composes forward dynamics (ABA) → optional contact resolution →
-//! integration → forward kinematics, matching the ordering used by
+//! This is the one piece of the umbrella crate that isn't a re-export: it
+//! composes forward dynamics ([`phyz_rigid`]), contact resolution
+//! ([`phyz_contact`]) and integration into a single `step()`. The ordering
+//! (FK → contacts → ABA with external forces → integrate → FK) matches
 //! `phyz_world::World::step`.
+//!
+//! Requires the `contact` and `diff` features (both on by default).
 
-use crate::contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
-use crate::diff::{StepJacobians, analytical_step_jacobians, finite_diff_jacobians};
-use crate::math::DVec;
-use crate::model::{Geometry, Model, State};
-use crate::rigid::{aba, aba_with_external_forces, forward_kinematics};
+use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+use phyz_diff::{StepJacobians, analytical_step_jacobians, finite_diff_jacobians};
+use phyz_math::DVec;
+use phyz_model::{Geometry, Model, State};
+use phyz_rigid::{aba, aba_with_external_forces, forward_kinematics};
 
 /// Pluggable solver trait.
 ///

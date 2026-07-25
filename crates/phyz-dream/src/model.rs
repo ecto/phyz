@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use tang_tensor::{Shape, Tensor};
-use tang_train::{Dataset, Linear, Module, SiLU, Sequential, TensorDataset};
+use tang_train::{Dataset, Linear, Module, Sequential, SiLU, TensorDataset};
 
 /// Per-feature normalization statistics.
 #[derive(Clone, Debug, Serialize, Deserialize)]
