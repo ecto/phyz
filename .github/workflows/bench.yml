@@ -1,0 +1,96 @@
+# Benchmarks — deliberately NOT part of the main CI gate.
+#
+# Timing numbers from shared GitHub runners are noisy: neighbours on the same
+# host, variable CPU models, and no thermal guarantees. A gate built on that
+# fails randomly, and a randomly-failing gate is one people learn to ignore.
+#
+# So this workflow:
+#   - never runs on push or pull_request,
+#   - never fails the build on a slow number,
+#   - exists to (a) prove the harness still compiles and runs end to end, and
+#     (b) produce an artifact you can eyeball.
+#
+# **Publishable numbers come from a known machine**, recorded by hand with
+# `make bench` and committed to BENCHMARKS.md. The runner label is stamped into
+# every artifact so a CI number can never be mistaken for one of those.
+
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick:
+        description: "Use --quick (fewer repetitions)"
+        type: boolean
+        default: true
+  schedule:
+    # Weekly smoke test that the harness has not rotted.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: benchmark harness (informational)
+    runs-on: ubuntu-latest
+    # Never block anything.
+    continue-on-error: true
+    timeout-minutes: 45
+
+    steps:
+      # tang, tang-la and tang-expr come from crates.io, so no sibling
+      # `tang` checkout is needed. phyz-bench does not use tang-mesh, the
+      # one unpublished crate.
+      - name: Check out phyz
+        uses: actions/checkout@v4
+        with:
+          path: phyz
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: phyz
+
+      - name: Build harness
+        working-directory: phyz
+        run: cargo build --release -p phyz-bench
+
+      - name: Run benchmarks
+        working-directory: phyz
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.quick }}" != "false" ]; then
+            FLAGS="--quick"
+          fi
+          # The GPU suite reports `skipped` with a reason on a runner with no
+          # adapter, which is the honest outcome rather than a failure.
+          cargo run --release -p phyz-bench -- $FLAGS \
+            --json bench-results.json \
+            --markdown bench-results.md
+
+      - name: Stamp the runner so these numbers cannot be mistaken for published ones
+        working-directory: phyz
+        run: |
+          {
+            echo ""
+            echo "> **Not a published result.** Measured on a shared GitHub Actions"
+            echo "> runner (\`${{ runner.os }}\`, \`${{ runner.arch }}\`), which is noisy"
+            echo "> and thermally unconstrained. Published numbers in BENCHMARKS.md come"
+            echo "> from a known machine, recorded with \`make bench\`."
+          } >> bench-results.md
+
+      - name: Summary
+        working-directory: phyz
+        run: cat bench-results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            phyz/bench-results.json
+            phyz/bench-results.md
+          retention-days: 90

@@ -13,6 +13,7 @@ pub struct ReadmeDocTests;
 
 pub mod contact_pipeline;
 pub mod gpu_batch_simulator;
+pub mod interop;
 pub mod gpu_simulator;
 pub mod gpu_state;
 pub mod shaders;
@@ -23,3 +24,5 @@ pub use contact_pipeline::ContactPipeline;
 pub use gpu_batch_simulator::GpuBatchSimulator;
 pub use gpu_simulator::GpuSimulator;
 pub use gpu_state::GpuState;
+
+pub use interop::GpuInterop;
