@@ -2,6 +2,7 @@
 name = "phyz-dream"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -15,11 +16,11 @@ gpu = ["dep:tang-compute"]
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
-tang = { path = "../../../tang/crates/tang" }
-tang-tensor = { path = "../../../tang/crates/tang-tensor" }
-tang-train = { path = "../../../tang/crates/tang-train" }
-tang-safetensors = { path = "../../../tang/crates/tang-safetensors" }
-tang-compute = { path = "../../../tang/crates/tang-compute", optional = true }
-tang-expr = { path = "../../../tang/crates/tang-expr" }
+tang = { workspace = true }
+tang-tensor = { workspace = true }
+tang-train = { workspace = true }
+tang-safetensors = { workspace = true }
+tang-compute = { workspace = true, optional = true }
+tang-expr = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"

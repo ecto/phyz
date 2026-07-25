@@ -78,13 +78,34 @@ phyz/
 
 ## Development
 
+Minimum supported Rust version: **1.89**. Edition 2024 sets the floor at 1.85,
+but the dependency tree raises it to 1.89 (iroh, via `tang-mesh`). It's declared
+as `rust-version` in `[workspace.package]` and checked by CI.
+
 ```bash
+cargo fmt --all --check
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Build WASM demos
 wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above plus an MSRV check on
+every push and pull request.
+
+### Working against a local `tang`
+
+`tang` is pinned to a git rev in `[workspace.dependencies]` so a fresh checkout
+builds with no sibling directories. To develop against your own tang tree,
+copy the example cargo config and point it at your checkout:
+
+```bash
+cp .cargo/config.toml.example .cargo/config.toml
+```
+
+That file is gitignored, so it never affects CI. When tang changes land
+upstream, bump the `rev` in the root `Cargo.toml` instead.
 
 ## License
 
