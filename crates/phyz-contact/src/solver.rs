@@ -96,45 +96,31 @@ pub fn find_contacts(
             );
 
             if dist < 0.0 {
-                // Default: take the normal from the body centres. When the
-                // centres coincide (or are within numerical noise) that
-                // division gives NaN, so we fall back to an EPA-derived
-                // normal, then to +Z. If even EPA can't agree on a
-                // direction we drop the contact rather than seeding NaN.
-                let center_offset = pos_j - pos_i;
-                let normal = if center_offset.norm() > 1e-9 {
-                    center_offset.normalize()
-                } else if let Some((_, epa_normal)) = phyz_collision::epa_penetration_rot(
+                // Full manifold from the narrow phase: an EPA normal (not the
+                // body-centre difference, which is not a contact normal at
+                // all), contact points on the surfaces (not the midpoint of
+                // the two body centres, which lies inside both bodies), and up
+                // to four points per pair so face contacts resist tipping.
+                let Some(manifold) = phyz_collision::contact_manifold(
                     &collision_geom_i,
                     &collision_geom_j,
                     &pos_i,
-                    &pos_j,
                     &rot_i,
+                    &pos_j,
                     &rot_j,
-                ) {
-                    if pos_is_finite(&epa_normal) && epa_normal.norm() > 1e-9 {
-                        epa_normal.normalize()
-                    } else {
-                        Vec3::z()
-                    }
-                } else {
-                    Vec3::z()
+                ) else {
+                    continue;
                 };
 
-                if !pos_is_finite(&normal) {
-                    continue;
+                for point in &manifold.points {
+                    contacts.push(Collision {
+                        body_i: i,
+                        body_j: j,
+                        contact_point: point.position,
+                        contact_normal: manifold.normal,
+                        penetration_depth: point.depth,
+                    });
                 }
-
-                let contact_point = (pos_i + pos_j) * 0.5;
-                let penetration_depth = -dist;
-
-                contacts.push(Collision {
-                    body_i: i,
-                    body_j: j,
-                    contact_point,
-                    contact_normal: normal,
-                    penetration_depth,
-                });
             }
         }
     }
@@ -161,6 +147,11 @@ fn rot_is_finite(m: &phyz_math::Mat3) -> bool {
 ///
 /// `body_velocities` should come from forward_kinematics (linear part of spatial velocity).
 /// Returns spatial forces for each body in body frame.
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`), which couples contacts through the Delassus \
+            operator instead of treating each in isolation"
+)]
 pub fn contact_forces(
     contacts: &[Collision],
     state: &State,
@@ -198,6 +189,7 @@ pub fn contact_forces(
         };
 
         // Compute force
+        #[allow(deprecated)]
         let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
         let f_linear = force.linear;
 
@@ -230,6 +222,11 @@ pub fn contact_forces(
 /// `masses[i]` is the effective contact mass of body `i`. Use
 /// `f64::INFINITY` for fixed/world bodies. For ground contacts
 /// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
+#[deprecated(
+    note = "penalty contact is superseded by the convex solve (`assemble` + \
+            `solve_contacts`), which couples contacts through the Delassus \
+            operator instead of treating each in isolation"
+)]
 pub fn contact_forces_implicit(
     contacts: &[Collision],
     state: &State,
@@ -272,6 +269,7 @@ pub fn contact_forces_implicit(
             masses.get(j).copied().unwrap_or(f64::INFINITY)
         };
 
+        #[allow(deprecated)]
         let force = crate::compute_contact_force_implicit(
             contact, material, &vel_i, &vel_j, mass_i, mass_j, dt,
         );
@@ -292,7 +290,16 @@ pub fn contact_forces_implicit(
     forces
 }
 
-/// Find ground plane contacts.
+/// Find contacts against a horizontal ground plane at `z = ground_height`.
+///
+/// Shapes with a flat underside (boxes) report a contact per supporting
+/// corner, so a resting box has a real support polygon. Curved shapes report
+/// the single point they actually touch at.
+///
+/// The old implementation ignored body orientation entirely — it used the
+/// axis-aligned half-extent for depth and put one contact at the body centre's
+/// `(x, y)`. A tilted box therefore reported the wrong depth at a point that
+/// was not on the box, and no box could resist tipping.
 pub fn find_ground_contacts(
     state: &State,
     geometries: &[Option<ModelGeometry>],
@@ -301,29 +308,78 @@ pub fn find_ground_contacts(
     let mut contacts = Vec::new();
 
     for (i, geom_opt) in geometries.iter().enumerate() {
-        if let Some(geom) = geom_opt {
-            let xform = &state.body_xform[i];
-            let pos = xform.pos;
+        let Some(geom) = geom_opt else { continue };
+        let xform = &state.body_xform[i];
+        let (pos, rot) = (xform.pos, xform.rot);
+        if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
+            continue;
+        }
 
-            // Check if body is below ground
-            let min_z = match geom {
-                ModelGeometry::Sphere { radius } => pos.z - radius,
-                ModelGeometry::Box { half_extents } => pos.z - half_extents.z,
-                ModelGeometry::Capsule { radius, length } => pos.z - length * 0.5 - radius,
-                ModelGeometry::Cylinder { height, .. } => pos.z - height * 0.5,
-                _ => pos.z,
-            };
-
-            if min_z < ground_height {
-                let penetration = ground_height - min_z;
-                contacts.push(Collision {
-                    body_i: i,
-                    body_j: usize::MAX, // Ground is not a body
-                    contact_point: Vec3::new(pos.x, pos.y, ground_height),
-                    contact_normal: Vec3::z(),
-                    penetration_depth: penetration,
-                });
+        // Candidate support points in world coordinates.
+        let candidates: Vec<Vec3> = match geom {
+            ModelGeometry::Box { half_extents } => {
+                let h = half_extents;
+                let mut v = Vec::with_capacity(8);
+                for sx in [-1.0, 1.0] {
+                    for sy in [-1.0, 1.0] {
+                        for sz in [-1.0, 1.0] {
+                            v.push(pos + rot * Vec3::new(sx * h.x, sy * h.y, sz * h.z));
+                        }
+                    }
+                }
+                v
             }
+            ModelGeometry::Sphere { radius } => {
+                vec![pos - Vec3::new(0.0, 0.0, *radius)]
+            }
+            ModelGeometry::Capsule { radius, length } => {
+                // The two hemisphere centres, each dropped by the radius.
+                let axis = rot * Vec3::new(0.0, 0.0, length * 0.5);
+                vec![
+                    pos + axis - Vec3::new(0.0, 0.0, *radius),
+                    pos - axis - Vec3::new(0.0, 0.0, *radius),
+                ]
+            }
+            ModelGeometry::Cylinder { radius, height } => {
+                // Rim points of both end caps, sampled around the circle.
+                let hz = rot * Vec3::new(0.0, 0.0, height * 0.5);
+                let (ex, ey) = (rot * Vec3::x() * *radius, rot * Vec3::y() * *radius);
+                let mut v = Vec::with_capacity(8);
+                for k in 0..4 {
+                    let t = k as f64 * std::f64::consts::FRAC_PI_2;
+                    let r = ex * t.cos() + ey * t.sin();
+                    v.push(pos + hz + r);
+                    v.push(pos - hz + r);
+                }
+                v
+            }
+            ModelGeometry::Mesh { vertices, .. } => {
+                vertices.iter().map(|v| pos + rot * *v).collect()
+            }
+            ModelGeometry::Plane { .. } => continue,
+        };
+
+        // Keep the penetrating points, deepest first, capped at a manifold.
+        let mut hits: Vec<(f64, Vec3)> = candidates
+            .into_iter()
+            .filter(|p| p.z.is_finite() && p.z < ground_height)
+            .map(|p| (ground_height - p.z, p))
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+        hits.truncate(phyz_collision::MAX_MANIFOLD_POINTS);
+
+        for (depth, p) in hits {
+            contacts.push(Collision {
+                body_i: i,
+                body_j: usize::MAX, // Ground is not a body
+                // On the midsurface between the vertex and the plane.
+                contact_point: Vec3::new(p.x, p.y, ground_height - depth * 0.5),
+                contact_normal: Vec3::z(),
+                penetration_depth: depth,
+            });
         }
     }
 

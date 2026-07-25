@@ -100,8 +100,8 @@ pub use collision::{
 };
 #[cfg(feature = "contact")]
 pub use contact::{
-    ContactMaterial, compute_contact_force, compute_contact_force_implicit, contact_forces,
-    contact_forces_implicit, find_contacts, find_ground_contacts,
+    ContactMaterial, ContactProblem, ContactSolverConfig, find_contacts, find_ground_contacts,
+    solve_contacts,
 };
 pub use math::{DMat, DVec, GRAVITY, Mat3, Mat4, Vec3, skew};
 pub use math::{Quat, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};

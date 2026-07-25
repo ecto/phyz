@@ -4,6 +4,11 @@
 //! a fixed host body and a free accessory body, body-pair contact detection,
 //! and penalty-based contact forces under gravity.
 
+// These tests still exercise the deprecated penalty path directly. They are
+// retained until it is deleted, so the old behaviour stays pinned while the
+// convex solve takes over the production stepper.
+#![allow(deprecated)]
+
 use approx::assert_relative_eq;
 use phyz::{
     ContactMaterial, Geometry, Mat3, ModelBuilder, SpatialInertia, SpatialTransform, SpatialVec,
@@ -20,8 +25,6 @@ use phyz::{
 // BUG: find_contacts returns 0 contacts for an overlapping box/sphere body
 // pair that should report exactly 1. This file did not compile before the
 // documentation pass, so the assertion had never actually run. Needs a
-// narrow-phase fix; remove the ignore once it lands.
-#[ignore = "known bug: box/sphere body-pair contact is not detected"]
 fn body_drop_on_fixed_body_with_contacts() {
     let mut model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -9.81))
@@ -466,8 +469,6 @@ fn contact_force_torque_at_contact_point() {
 // BUG: the far end of an offset-supported rod rises instead of dropping
 // (-18.3mm observed against an expected >+10mm), so the contact wrench
 // torque arm has the wrong sign or origin. Never ran before the
-// documentation pass. Remove the ignore once fixed.
-#[ignore = "known bug: offset contact torque drives the rod the wrong way"]
 fn rod_tips_off_support_when_contact_is_offset() {
     use phyz::collision::Collision;
 
@@ -493,6 +494,9 @@ fn rod_tips_off_support_when_contact_is_offset() {
     let mut vz = 0.0_f64;
     let mut omega = 0.0_f64;
     let initial_tip_z = z; // far end (+x) at θ=0 sits at the COM's z.
+    let mut max_tip_drop = 0.0_f64;
+    let mut final_theta = 0.0_f64;
+    let mut final_z = z;
 
     for _ in 0..((0.5_f64 / dt) as usize) {
         let cos_t = theta.cos();
@@ -563,20 +567,27 @@ fn rod_tips_off_support_when_contact_is_offset() {
         theta += omega * dt;
 
         assert!(theta.is_finite() && z.is_finite() && omega.is_finite());
+
+        // Track the tip while the rod is still tipping rather than freely
+        // spinning. `tip_z = z_com - (L/2)·sin θ` only describes a descending
+        // tip for |θ| <= π/2; past that the rod has long since left the
+        // support and sin θ folds back on itself. Sampling once at the end of
+        // a fixed 0.5 s window measured that fold, not the tipping.
+        if theta.abs() <= std::f64::consts::FRAC_PI_2 {
+            let tip_z = z - half_l * theta.sin();
+            max_tip_drop = max_tip_drop.max(initial_tip_z - tip_z);
+            final_theta = theta;
+            final_z = z;
+        }
     }
 
-    // Far end of the rod (+x side) world-z position. With our convention
-    // (positive θ ⇒ +x end down), the tip is at z_com − half_l · sin θ.
-    let tip_z_world = z - half_l * theta.sin();
-    let tip_drop = initial_tip_z - tip_z_world; // positive = went down
-
-    assert!(omega.abs() > 0.0, "rod should be rotating; got ω = {omega}",);
+    assert!(omega > 0.0, "rod should tip +x-end-down; got ω = {omega}");
     assert!(
-        tip_drop > 0.01,
+        max_tip_drop > 0.01,
         "far end of rod should drop > 1cm; got {:.4}mm (θ={:.3} rad, z={:.4} m)",
-        tip_drop * 1000.0,
-        theta,
-        z,
+        max_tip_drop * 1000.0,
+        final_theta,
+        final_z,
     );
 }
 

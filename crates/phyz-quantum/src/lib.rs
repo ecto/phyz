@@ -1,4 +1,3 @@
-
 #![allow(clippy::needless_range_loop)]
 //! Hamiltonian lattice gauge theory on simplicial complexes.
 //!

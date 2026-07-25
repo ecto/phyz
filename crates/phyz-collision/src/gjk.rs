@@ -125,15 +125,43 @@ impl Simplex {
     }
 }
 
+/// What GJK concluded about a pair.
+#[derive(Debug, Clone)]
+pub enum GjkOutcome {
+    /// The shapes are disjoint; `distance` is the separation (> 0).
+    Separated {
+        /// Separation between the two surfaces (> 0).
+        distance: f64,
+    },
+    /// The shapes overlap. `simplex` is the terminating simplex — a set of
+    /// Minkowski-difference points enclosing the origin, which is exactly the
+    /// seed EPA needs to be valid.
+    Penetrating {
+        /// Minkowski-difference points enclosing the origin.
+        simplex: Vec<Vec3>,
+    },
+    /// GJK could not decide within its iteration budget (near-tangential
+    /// configurations on curved surfaces). Callers should treat this as "no
+    /// contact" rather than guessing.
+    Indeterminate,
+}
+
 /// Compute signed distance between two geometries.
-/// Returns negative value if penetrating.
+///
+/// Positive is the separation distance; negative is the **penetration depth**
+/// (see [`gjk_distance_rot`]).
 pub fn gjk_distance(geom_a: &Geometry, geom_b: &Geometry, pos_a: &Vec3, pos_b: &Vec3) -> f64 {
     let rot_a = Mat3::identity();
     let rot_b = Mat3::identity();
     gjk_distance_rot(geom_a, geom_b, pos_a, pos_b, &rot_a, &rot_b)
 }
 
-/// GJK with rotation matrices.
+/// Signed distance with rotation matrices: `+separation` when disjoint,
+/// `-depth` when overlapping.
+///
+/// The negative branch runs EPA to get a *real* depth. It previously returned
+/// a hardcoded `-1.0`, which meant every overlapping pair reported a fake one
+/// metre of penetration — and any penalty force built on it was meaningless.
 pub fn gjk_distance_rot(
     geom_a: &Geometry,
     geom_b: &Geometry,
@@ -142,6 +170,30 @@ pub fn gjk_distance_rot(
     rot_a: &Mat3,
     rot_b: &Mat3,
 ) -> f64 {
+    match gjk_rot(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b) {
+        GjkOutcome::Separated { distance } => distance,
+        GjkOutcome::Indeterminate => 0.0,
+        GjkOutcome::Penetrating { simplex } => {
+            match crate::epa::epa_from_simplex(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, &simplex)
+            {
+                Some((depth, _)) => -depth,
+                // Overlap is certain but EPA could not measure it; report a
+                // vanishing depth rather than inventing a magnitude.
+                None => -0.0,
+            }
+        }
+    }
+}
+
+/// Run GJK, reporting separation *or* the origin-enclosing simplex.
+pub fn gjk_rot(
+    geom_a: &Geometry,
+    geom_b: &Geometry,
+    pos_a: &Vec3,
+    pos_b: &Vec3,
+    rot_a: &Mat3,
+    rot_b: &Mat3,
+) -> GjkOutcome {
     let mut simplex = Simplex::new();
     let mut dir = pos_b - pos_a;
     if dir.norm() < 1e-10 {
@@ -156,35 +208,47 @@ pub fn gjk_distance_rot(
     };
 
     let mut s = support(&dir);
+    if !is_finite(&s) {
+        return GjkOutcome::Indeterminate;
+    }
     simplex.add(s);
     dir = -s;
 
     for _ in 0..64 {
-        // Ensure dir is not zero
         let dir_norm = dir.norm();
         if dir_norm < 1e-10 {
             // The search direction collapsed: the origin lies on the current
             // simplex. With a single point that means the two surfaces touch
             // exactly (distance 0). With two or more the origin is enclosed by
-            // the simplex, so the shapes are penetrating — reporting 0 here
-            // makes deep overlaps invisible to `find_contacts`, which only
-            // treats a negative return as a contact.
-            return if simplex.len() >= 2 { -1.0 } else { 0.0 };
+            // the simplex, so the shapes are penetrating — reporting separation
+            // here would make deep overlaps invisible to `find_contacts`.
+            return if simplex.len() >= 2 {
+                GjkOutcome::Penetrating {
+                    simplex: simplex.points.clone(),
+                }
+            } else {
+                GjkOutcome::Separated { distance: 0.0 }
+            };
         }
 
         s = support(&dir);
+        if !is_finite(&s) {
+            return GjkOutcome::Indeterminate;
+        }
         if s.dot(&dir) < 0.0 {
-            // No intersection
-            return dir_norm;
+            return GjkOutcome::Separated { distance: dir_norm };
         }
         simplex.add(s);
         if simplex.contains_origin(&mut dir) {
-            // Penetrating
-            return -1.0;
+            return GjkOutcome::Penetrating {
+                simplex: simplex.points.clone(),
+            };
         }
     }
 
-    // Convergence failed; approximate distance
-    let dir_norm = dir.norm();
-    if dir_norm < 1e-10 { 0.0 } else { dir_norm }
+    GjkOutcome::Indeterminate
+}
+
+fn is_finite(v: &Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
