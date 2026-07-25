@@ -17,12 +17,6 @@ use phyz::{
 /// Mirrors `ball_drop_with_contacts` in `integration.rs` but uses two real bodies
 /// (one fixed host below, one free accessory above) instead of a ground plane.
 #[test]
-#[ignore = "pre-existing narrow-phase bug, fixed in stage 1 of the \
-           differentiable-contact rewrite: gjk_distance_rot returns a \
-           hardcoded -1.0 on penetration, so depth is meaningless and \
-           box/sphere overlap is missed entirely. This target did not \
-           compile before the phyz dedupe, so the failure is latent, \
-           not a regression. See docs/design/differentiable-contact.md."]
 fn body_drop_on_fixed_body_with_contacts() {
     let mut model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -9.81))
@@ -464,12 +458,6 @@ fn contact_force_torque_at_contact_point() {
 /// We carry our own 2D rotational integrator (no ABA) so the assertion is
 /// about the wrench, not the full multibody machinery.
 #[test]
-#[ignore = "pre-existing narrow-phase bug, fixed in stage 1 of the \
-           differentiable-contact rewrite: gjk_distance_rot returns a \
-           hardcoded -1.0 on penetration, so depth is meaningless and \
-           box/sphere overlap is missed entirely. This target did not \
-           compile before the phyz dedupe, so the failure is latent, \
-           not a regression. See docs/design/differentiable-contact.md."]
 fn rod_tips_off_support_when_contact_is_offset() {
     use phyz::collision::Collision;
 
@@ -495,6 +483,9 @@ fn rod_tips_off_support_when_contact_is_offset() {
     let mut vz = 0.0_f64;
     let mut omega = 0.0_f64;
     let initial_tip_z = z; // far end (+x) at θ=0 sits at the COM's z.
+    let mut max_tip_drop = 0.0_f64;
+    let mut final_theta = 0.0_f64;
+    let mut final_z = z;
 
     for _ in 0..((0.5_f64 / dt) as usize) {
         let cos_t = theta.cos();
@@ -565,20 +556,27 @@ fn rod_tips_off_support_when_contact_is_offset() {
         theta += omega * dt;
 
         assert!(theta.is_finite() && z.is_finite() && omega.is_finite());
+
+        // Track the tip while the rod is still tipping rather than freely
+        // spinning. `tip_z = z_com - (L/2)·sin θ` only describes a descending
+        // tip for |θ| <= π/2; past that the rod has long since left the
+        // support and sin θ folds back on itself. Sampling once at the end of
+        // a fixed 0.5 s window measured that fold, not the tipping.
+        if theta.abs() <= std::f64::consts::FRAC_PI_2 {
+            let tip_z = z - half_l * theta.sin();
+            max_tip_drop = max_tip_drop.max(initial_tip_z - tip_z);
+            final_theta = theta;
+            final_z = z;
+        }
     }
 
-    // Far end of the rod (+x side) world-z position. With our convention
-    // (positive θ ⇒ +x end down), the tip is at z_com − half_l · sin θ.
-    let tip_z_world = z - half_l * theta.sin();
-    let tip_drop = initial_tip_z - tip_z_world; // positive = went down
-
-    assert!(omega.abs() > 0.0, "rod should be rotating; got ω = {omega}",);
+    assert!(omega > 0.0, "rod should tip +x-end-down; got ω = {omega}");
     assert!(
-        tip_drop > 0.01,
+        max_tip_drop > 0.01,
         "far end of rod should drop > 1cm; got {:.4}mm (θ={:.3} rad, z={:.4} m)",
-        tip_drop * 1000.0,
-        theta,
-        z,
+        max_tip_drop * 1000.0,
+        final_theta,
+        final_z,
     );
 }
 
