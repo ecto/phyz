@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "JIT compilation of physics kernels to GPU compute shaders for phyz"
+keywords = ["gpu", "wgsl", "compiler", "physics", "codegen"]
+categories = ["compilers", "simulation", "graphics"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

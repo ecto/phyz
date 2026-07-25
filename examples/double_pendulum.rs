@@ -1,10 +1,10 @@
 //! Double pendulum — energy conservation and gradient validation.
 
-use phyz::{
-    ModelBuilder, Simulator, phyz_diff,
-    phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
-    phyz_rigid::total_energy,
-};
+use phyz::Simulator;
+use phyz_diff;
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::ModelBuilder;
+use phyz_rigid::total_energy;
 
 fn main() {
     let length = 1.0;
@@ -101,7 +101,7 @@ fn main() {
     state_grad.v[1] = -0.1;
 
     let fd = phyz_diff::finite_diff_jacobians(&model, &state_grad, 1e-6);
-    let an = phyz_diff::analytical_step_jacobians(&model, &state_grad);
+    let an = phyz_diff::semi_implicit_step_jacobians(&model, &state_grad);
 
     let checks = [
         ("dq'/dq", &fd.dqnext_dq, &an.dqnext_dq),

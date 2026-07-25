@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Spatial algebra and math primitives for phyz physics engine"
+keywords = ["physics", "spatial-algebra", "linear-algebra", "robotics", "math"]
+categories = ["mathematics", "science", "simulation"]
+readme = "README.md"
 
 [dependencies]
 tang.workspace = true

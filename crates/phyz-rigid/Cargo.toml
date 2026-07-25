@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Featherstone articulated rigid body dynamics for phyz"
+keywords = ["physics", "rigid-body", "featherstone", "robotics", "dynamics"]
+categories = ["simulation", "science::robotics", "science"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

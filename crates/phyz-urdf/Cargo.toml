@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URDF (Unified Robot Description Format) importer for phyz physics engine"
+keywords = ["urdf", "robotics", "ros", "parser", "physics"]
+categories = ["parsing", "science::robotics", "simulation"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

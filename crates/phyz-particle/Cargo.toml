@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Material Point Method (MPM) particle simulation for phyz"
+keywords = ["mpm", "particle", "physics", "granular", "fluid"]
+categories = ["simulation", "science", "graphics"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

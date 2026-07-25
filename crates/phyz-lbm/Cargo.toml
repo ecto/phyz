@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Lattice Boltzmann Method for emergent fluid dynamics in phyz"
+keywords = ["lattice-boltzmann", "fluid", "cfd", "physics", "lbm"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [dependencies]
 phyz-math = { workspace = true }

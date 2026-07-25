@@ -28,9 +28,9 @@ jobs:
   clippy:
     name: clippy
     runs-on: ubuntu-latest
-    # NOTE: non-blocking for now — the existing tree has a large backlog of
-    # clippy findings. Flip this off (delete the line) once they are cleared;
-    # do not add blanket #[allow]s to make it pass.
+    # Advisory for now: the workspace has a backlog of pre-existing clippy
+    # findings. Delete this line once that is cleared; do not add blanket
+    # #[allow]s to make it pass.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +51,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: test
+      # Every file under examples/ is a target of the phyz-examples crate, so
+      # --all-targets is what stops the documented API from rotting.
+      - name: Build workspace and examples
+        run: cargo build --workspace --all-targets
       # --no-fail-fast: without it cargo stops at the first failing test binary,
       # which hides every failure behind whichever crate happens to fail first.
-      - run: cargo test --workspace --no-fail-fast
+      - name: Test workspace
+        run: cargo test --workspace --no-fail-fast
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+      # The root README is included as a doc-test of crates/phyz, so its Quick
+      # Start is compiled and run by the test job.
+      - name: Documentation builds clean
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
 
   # MSRV. Edition 2024 sets the floor at 1.85, but the dependency tree raises it
   # to 1.89 (iroh, via tang-mesh). Mirrored as `rust-version` in

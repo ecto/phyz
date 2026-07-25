@@ -4,9 +4,10 @@
 //! and simulates 1000 steps with zero control using step_with_contacts.
 //! Reports joint positions, torso height, total sim time, and per-step timing.
 
-use std::time::Instant;
-use phyz::{ContactMaterial, Simulator};
+use phyz::Simulator;
+use phyz_contact::ContactMaterial;
 use phyz_mjcf::MjcfLoader;
+use std::time::Instant;
 
 fn main() {
     println!("MuJoCo Ant Benchmark");
@@ -96,7 +97,7 @@ fn main() {
     println!("\nAnt benchmark completed.");
 }
 
-fn print_joint_positions(q: &phyz::phyz_math::DVec, nq: usize) {
+fn print_joint_positions(q: &phyz_math::DVec, nq: usize) {
     print!("  Joint positions q[0..{}]: [", nq);
     for i in 0..nq {
         if i > 0 {

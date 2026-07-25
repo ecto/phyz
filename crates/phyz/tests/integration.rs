@@ -222,7 +222,7 @@ fn gradient_consistency() {
     state.q[0] = 0.3;
 
     let fd = phyz::phyz_diff::finite_diff_jacobians(&model, &state, 1e-7);
-    let an = phyz::phyz_diff::analytical_step_jacobians(&model, &state);
+    let an = phyz::phyz_diff::semi_implicit_step_jacobians(&model, &state);
 
     // Compare dvnext_dq entries
     let diff = (&fd.dvnext_dq - &an.dvnext_dq).norm();

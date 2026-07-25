@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Analytical Jacobians and differentiation for phyz"
+keywords = ["differentiable", "physics", "jacobian", "autodiff", "gradients"]
+categories = ["simulation", "mathematics", "science"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

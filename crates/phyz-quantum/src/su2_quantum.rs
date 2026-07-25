@@ -36,7 +36,7 @@ pub struct Su2HilbertSpace {
     pub basis: Vec<u64>,
     /// Basis index lookup.
     index_map: HashMap<u64, usize>,
-    /// Basis as Vec<Vec<i32>> for entropy computation.
+    /// Basis as Vec<`Vec<i32>`> for entropy computation.
     basis_vecs: Vec<Vec<i32>>,
 }
 
@@ -75,7 +75,7 @@ impl Su2HilbertSpace {
         self.index_map.get(&state).copied()
     }
 
-    /// Get basis as Vec<Vec<i32>> for entanglement entropy computation.
+    /// Get basis as Vec<`Vec<i32>`> for entanglement entropy computation.
     pub fn basis_vecs(&self) -> &[Vec<i32>] {
         &self.basis_vecs
     }
@@ -327,7 +327,7 @@ pub fn su2_entanglement_decomposed(
 /// W|s⟩ = (-1)^(popcount(s & mask)) |s⟩
 /// where mask = Σ (1 << e) for edges in the loop.
 ///
-/// Returns ⟨ψ|W|ψ⟩ = Σ_i |ψ_i|² × (-1)^(popcount(basis[i] & mask)).
+/// Returns ⟨ψ|W|ψ⟩ = Σ_i |ψ_i|² × (-1)^(popcount(basis`[i]` & mask)).
 pub fn su2_wilson_loop(hilbert: &Su2HilbertSpace, state: &DVec, loop_edges: &[usize]) -> f64 {
     let mask: u64 = loop_edges.iter().fold(0u64, |m, &e| m | (1 << e));
     let mut expectation = 0.0;

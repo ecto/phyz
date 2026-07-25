@@ -5,7 +5,9 @@ use std::collections::HashMap;
 /// Default values for MJCF elements.
 #[derive(Debug, Clone, Default)]
 pub struct ElementDefaults {
+    /// Default `<joint>` attributes for this class.
     pub joint: JointDefaults,
+    /// Default `<geom>` attributes for this class.
     pub geom: GeomDefaults,
 }
 

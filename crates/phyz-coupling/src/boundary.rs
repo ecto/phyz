@@ -5,7 +5,9 @@ use phyz_math::Vec3;
 /// Axis-aligned bounding box for overlap regions.
 #[derive(Clone, Debug)]
 pub struct BoundingBox {
+    /// Lower corner (componentwise minimum).
     pub min: Vec3,
+    /// Upper corner (componentwise maximum).
     pub max: Vec3,
 }
 

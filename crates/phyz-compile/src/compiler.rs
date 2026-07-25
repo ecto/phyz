@@ -8,8 +8,11 @@ use std::collections::HashMap;
 /// Compiled kernel ready for GPU execution.
 #[derive(Debug, Clone)]
 pub struct CompiledKernel {
+    /// The generated WGSL shader source.
     pub wgsl_source: String,
+    /// Workgroup dimensions the shader declares.
     pub workgroup_size: [u32; 3],
+    /// Fields the shader binds, by name.
     pub fields: HashMap<String, FieldMeta>,
 }
 
@@ -19,6 +22,7 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    /// Create a compiler with default settings.
     pub fn new() -> Self {
         Self { next_temp_id: 0 }
     }

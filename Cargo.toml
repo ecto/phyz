@@ -25,10 +25,12 @@ members = [
     "crates/phyz-format",
     "crates/phyz",
     "crates/phyz-wasm",
+    "crates/phyz-examples",
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",
     "crates/phyz-dream",
+    "crates/phyz-validate",
 ]
 
 [workspace.package]
@@ -83,6 +85,7 @@ phyz-format = { version = "0.3.1", path = "crates/phyz-format" }
 phyz-regge = { version = "0.3.1", path = "crates/phyz-regge", default-features = false }
 phyz-quantum = { version = "0.3.1", path = "crates/phyz-quantum", default-features = false }
 phyz = { version = "0.3.1", path = "crates/phyz" }
+phyz-validate = { version = "0.3.1", path = "crates/phyz-validate" }
 
 # Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
 [profile.dev.package.phyz-home]
@@ -93,9 +96,10 @@ debug-assertions = false
 opt-level = 2
 debug-assertions = false
 
-# phyz-dream's tests train a small network. Unoptimized that takes >10 minutes;
-# at opt-level 2 the crate's suite runs in ~25s. Optimize it and the tang
-# numerics it leans on so `cargo test` stays viable in CI.
+# phyz-dream's tests train a small network to convergence. Unoptimized that
+# takes tens of minutes and dominates `cargo test --workspace`; at opt-level 2
+# it is seconds. Same reasoning as phyz-lbm below. The tang numerics carry the
+# actual training work, so they need the same treatment.
 [profile.dev.package.phyz-dream]
 opt-level = 2
 

@@ -254,6 +254,7 @@ impl EmbeddedRkError {
 ///
 /// Combines error estimation with PI controller to automatically adjust dt.
 pub struct AdaptiveTimeStep {
+    /// The PI controller driving the step-size adjustment.
     pub controller: PiController,
     /// Number of rejected steps
     pub rejected_steps: usize,

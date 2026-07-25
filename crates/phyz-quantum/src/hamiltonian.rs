@@ -11,7 +11,7 @@
 //!   holonomy U_tri raises/lowers quantum numbers on its 3 edges
 //!
 //! Triangle holonomy convention (from `phyz-regge::gauge`):
-//!   For triangle [v0,v1,v2] with v0<v1<v2, `tri_edge_indices` returns
+//!   For triangle `[v0,v1,v2]` with v0<v1<v2, `tri_edge_indices` returns
 //!   [e01, e02, e12]. The oriented holonomy is θ_{01} - θ_{02} + θ_{12},
 //!   so signs are [+1, -1, +1].
 //!
