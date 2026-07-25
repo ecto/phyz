@@ -51,7 +51,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: test
-      - run: cargo test --workspace
+      # --no-fail-fast: without it cargo stops at the first failing test binary,
+      # which hides every failure behind whichever crate happens to fail first.
+      - run: cargo test --workspace --no-fail-fast
 
   # MSRV. Edition 2024 sets the floor at 1.85, but the dependency tree raises it
   # to 1.89 (iroh, via tang-mesh). Mirrored as `rust-version` in
