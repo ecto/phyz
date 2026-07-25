@@ -46,24 +46,24 @@ pub struct SimplicialComplex {
     pub pents: Vec<Pent>,
 
     /// For each triangle, the list of 4-simplices containing it.
-    /// tri_to_pents[tri_idx] = vec of pent indices.
+    /// tri_to_pents`[tri_idx]` = vec of pent indices.
     pub tri_to_pents: Vec<Vec<usize>>,
 
     /// For each edge, the list of triangles containing it.
-    /// edge_to_tris[edge_idx] = vec of triangle indices.
+    /// edge_to_tris`[edge_idx]` = vec of triangle indices.
     pub edge_to_tris: Vec<Vec<usize>>,
 
     /// For each triangle in each 4-simplex: the two "opposite" vertices.
-    /// Given triangle [a,b,c] in pent [a,b,c,d,e], the opposite edge is [d,e].
-    /// tri_pent_opposite[tri_idx] stores (pent_idx, [d, e]) pairs.
+    /// Given triangle `[a,b,c]` in pent `[a,b,c,d,e]`, the opposite edge is `[d,e]`.
+    /// tri_pent_opposite`[tri_idx]` stores (pent_idx, [d, e]) pairs.
     pub tri_pent_opposite: Vec<Vec<(usize, [usize; 2])>>,
 
     /// For each vertex, the list of triangles containing it.
-    /// vertex_to_tris[vertex] = vec of triangle indices.
+    /// vertex_to_tris`[vertex]` = vec of triangle indices.
     pub vertex_to_tris: Vec<Vec<usize>>,
 
     /// For each edge, the list of 4-simplices containing it.
-    /// edge_to_pents[edge_idx] = vec of pent indices.
+    /// edge_to_pents`[edge_idx]` = vec of pent indices.
     pub edge_to_pents: Vec<Vec<usize>>,
 }
 
@@ -289,7 +289,7 @@ impl SimplicialComplex {
     /// For a triangle in a 4-simplex, find the index pair (within 0..5)
     /// of the two "opposite" vertices (the ones not in the triangle).
     ///
-    /// Returns (local_idx_d, local_idx_e) such that pent[d] and pent[e]
+    /// Returns (local_idx_d, local_idx_e) such that pent`[d]` and pent`[e]`
     /// are the vertices not in the triangle.
     pub fn opposite_local_indices(pent: &Pent, tri: &Triangle) -> (usize, usize) {
         let mut opp = [0usize; 2];

@@ -10,7 +10,9 @@ use std::sync::Arc;
 /// Detected GPU floating-point precision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuPrecision {
+    /// Double precision, where the adapter supports it.
     F64,
+    /// Single precision — the portable default.
     F32,
 }
 
@@ -26,10 +28,15 @@ impl GpuPrecision {
 
 /// CSR sparse matrix stored on GPU.
 pub struct GpuSparseMatrix {
+    /// Number of rows in the matrix.
     pub nrows: u32,
+    /// Number of stored non-zeros.
     pub nnz: u32,
+    /// CSR row-pointer array, `nrows + 1` entries.
     pub row_ptr_buf: wgpu::Buffer,
+    /// CSR column indices, `nnz` entries.
     pub col_idx_buf: wgpu::Buffer,
+    /// CSR values, `nnz` entries.
     pub vals_buf: wgpu::Buffer,
 }
 
@@ -38,9 +45,13 @@ pub struct GpuSparseMatrix {
 /// Holds compute pipelines, scratch buffers, and device references.
 /// All operations encode into a `CommandEncoder` for batched submission.
 pub struct GpuVecOps {
+    /// The wgpu device the pipelines live on.
     pub device: Arc<wgpu::Device>,
+    /// The queue commands are submitted to.
     pub queue: Arc<wgpu::Queue>,
+    /// Scalar precision the shaders were compiled for.
     pub precision: GpuPrecision,
+    /// Vector length these kernels operate on.
     pub dim: u32,
 
     // Pipelines
@@ -118,7 +129,8 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
 ///
 /// Uses `BROWSER_WEBGPU` backend on wasm32; `all()` elsewhere.
 /// WebGPU does not support SHADER_F64, so precision is always F32 on wasm32.
-pub async fn request_device_async() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPrecision), String> {
+pub async fn request_device_async()
+-> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPrecision), String> {
     let backends = if cfg!(target_arch = "wasm32") {
         wgpu::Backends::BROWSER_WEBGPU
     } else {
@@ -797,7 +809,7 @@ impl GpuVecOps {
         }
     }
 
-    /// Encode multi-dot: overlaps[k] = dot(q_bank[k], w) for k=0..n_vecs.
+    /// Encode multi-dot: overlaps`[k]` = dot(q_bank`[k]`, w) for k=0..n_vecs.
     /// Result is written to scalar_result_buf (first n_vecs elements).
     pub fn encode_multi_dot(
         &self,
@@ -895,7 +907,7 @@ impl GpuVecOps {
         }
     }
 
-    /// Encode batch subtract: w -= sum_k overlaps[k] * q_bank[k]
+    /// Encode batch subtract: w -= sum_k overlaps`[k]` * q_bank`[k]`
     /// `overlaps_buf` should contain n_vecs scalars (from multi_dot).
     pub fn encode_batch_subtract(
         &self,
@@ -1114,7 +1126,7 @@ impl GpuVecOps {
         rx.receive().await.unwrap()
     }
 
-    /// Async variant of [`submit_and_read_scalar`].
+    /// Async variant of `submit_and_read_scalar`.
     pub async fn submit_and_read_scalar_async(&self, encoder: wgpu::CommandEncoder) -> f64 {
         let elem_size = self.precision.elem_size() as u64;
 
@@ -1150,13 +1162,13 @@ impl GpuVecOps {
         val
     }
 
-    /// Async variant of [`submit`] — submits and polls.
+    /// Async variant of `submit` — submits and polls.
     pub async fn submit_async(&self, encoder: wgpu::CommandEncoder) {
         self.queue.submit(Some(encoder.finish()));
         self.device.poll(wgpu::Maintain::Wait);
     }
 
-    /// Async variant of [`download_vec`].
+    /// Async variant of `download_vec`.
     pub async fn download_vec_async(&self, buf: &wgpu::Buffer) -> Vec<f64> {
         let size = self.dim as u64 * self.precision.elem_size() as u64;
 

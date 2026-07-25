@@ -8,7 +8,7 @@
 use phyz_collision::Collision;
 use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
 use phyz_math::{Mat3, SpatialInertia, SpatialTransform, SpatialVec, Vec3};
-use phyz_model::{Body, Geometry, Model, ModelBuilder, State};
+use phyz_model::{Body, GeomInstance, Geometry, Model, ModelBuilder, State};
 use phyz_rigid::{aba_with_external_forces, forward_kinematics};
 
 use crate::settings::{CONTACT_DAMPING, CONTACT_FRICTION, CONTACT_STIFFNESS, GRAVITY};
@@ -153,18 +153,22 @@ pub fn build_model(scene: Scene, dt: f64) -> Model {
                     -1,
                     SpatialTransform::identity(),
                     box_inertia(BOX_MASS, BOX_HALF_EXTENT),
-                    Body {
-                        name: String::new(),
-                        inertia: box_inertia(BOX_MASS, BOX_HALF_EXTENT),
-                        parent: -1,
-                        joint_idx: 0,
-                        geometry: Some(Geometry::Box {
+                    {
+                        let shape = Geometry::Box {
                             half_extents: Vec3::new(
                                 BOX_HALF_EXTENT,
                                 BOX_HALF_EXTENT,
                                 BOX_HALF_EXTENT,
                             ),
-                        }),
+                        };
+                        let mut body =
+                            Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
+                        // `geometry` mirrors the first centred entry in
+                        // `collisions`; set both so single-shape and
+                        // multi-shape consumers agree.
+                        body.geometry = Some(shape.clone());
+                        body.collisions = vec![GeomInstance::centered(shape)];
+                        body
                     },
                 );
             }

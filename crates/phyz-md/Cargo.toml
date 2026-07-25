@@ -6,9 +6,22 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Molecular dynamics with Lennard-Jones, Coulomb, and bonded potentials for phyz"
+keywords = ["molecular-dynamics", "lennard-jones", "physics", "chemistry", "md"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true
+rand = "0.8"
+rand_chacha = "0.3"
+rand_distr = "0.4"
+rayon = { version = "1.10", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+
+[features]
+default = ["parallel"]
+## Parallelize the pairwise force loops with rayon. Trades bit-for-bit
+## reproducibility for throughput: the reduction order is unspecified.
+parallel = ["dep:rayon"]

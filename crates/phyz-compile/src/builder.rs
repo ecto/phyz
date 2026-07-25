@@ -82,7 +82,7 @@ pub struct StencilBuilder;
 impl StencilBuilder {
     /// Create a 3D Laplacian stencil operation.
     ///
-    /// Computes: (T[i+1,j,k] + T[i-1,j,k] + T[i,j+1,k] + T[i,j-1,k] + T[i,j,k+1] + T[i,j,k-1] - 6*T[i,j,k]) / dx^2
+    /// Computes: (T[i+1,j,k] + T[i-1,j,k] + T[i,j+1,k] + T[i,j-1,k] + T[i,j,k+1] + T[i,j,k-1] - 6*T`[i,j,k]`) / dx^2
     pub fn laplacian_3d(field: impl Into<String>, dx: f64) -> PhysicsOp {
         let field = field.into();
 

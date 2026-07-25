@@ -32,9 +32,13 @@ struct BodyParams {
 
 /// GPU-accelerated batch simulator.
 pub struct GpuSimulator {
+    /// The wgpu device the pipelines live on.
     pub device: Arc<wgpu::Device>,
+    /// The queue commands are submitted to.
     pub queue: Arc<wgpu::Queue>,
+    /// GPU-side state buffers.
     pub state: GpuState,
+    /// The CPU-side model these buffers were built from.
     pub model: Model,
 
     // Compute pipelines

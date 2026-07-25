@@ -8,11 +8,14 @@ use std::collections::HashMap;
 /// Reference to a field in the physics computation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldRef {
+    /// Name of the referenced field.
     pub name: String,
-    pub offset: [i32; 3], // [i, j, k] offset for stencil access
+    /// `[i, j, k]` offset from the current cell, for stencil access.
+    pub offset: [i32; 3],
 }
 
 impl FieldRef {
+    /// Reference the field at the current cell (zero offset).
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -20,6 +23,7 @@ impl FieldRef {
         }
     }
 
+    /// Reference the field at a fixed `[i, j, k]` offset from the current cell.
     pub fn with_offset(name: impl Into<String>, offset: [i32; 3]) -> Self {
         Self {
             name: name.into(),
@@ -31,9 +35,13 @@ impl FieldRef {
 /// Binary operation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
+    /// Addition.
     Add,
+    /// Subtraction.
     Sub,
+    /// Multiplication.
     Mul,
+    /// Division.
     Div,
 }
 
@@ -47,12 +55,20 @@ pub enum PhysicsOp {
     Store(FieldRef, Box<PhysicsOp>),
 
     /// Stencil operation (named pattern)
-    StencilOp { name: String, args: Vec<PhysicsOp> },
+    StencilOp {
+        /// Name of the stencil pattern to apply.
+        name: String,
+        /// Operands the pattern consumes.
+        args: Vec<PhysicsOp>,
+    },
 
     /// Binary operation
     BinOp {
+        /// Which operation to apply.
         op: BinOp,
+        /// Left-hand operand.
         lhs: Box<PhysicsOp>,
+        /// Right-hand operand.
         rhs: Box<PhysicsOp>,
     },
 
@@ -125,24 +141,33 @@ impl PhysicsOp {
 /// Metadata about a field in the computation.
 #[derive(Debug, Clone)]
 pub struct FieldMeta {
+    /// Field name, as bound in the generated shader.
     pub name: String,
+    /// Grid dimensions `[nx, ny, nz]`.
     pub shape: [usize; 3],
+    /// Element type.
     pub dtype: FieldType,
 }
 
 /// Field data type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
+    /// 32-bit float — the portable choice for WGSL.
     F32,
+    /// 64-bit float, where the target supports it.
     F64,
 }
 
 /// Scheduling hints for kernel optimization.
 #[derive(Debug, Clone)]
 pub struct ScheduleHints {
+    /// Workgroup tile dimensions.
     pub tile_size: [u32; 3],
+    /// Whether to unroll the innermost loop.
     pub loop_unroll: bool,
+    /// Whether to emit prefetches for stencil neighbours.
     pub prefetch: bool,
+    /// Name of a kernel this one should be fused with, if any.
     pub fuse_next: Option<String>,
 }
 
@@ -160,9 +185,13 @@ impl Default for ScheduleHints {
 /// A complete physics program in IR form.
 #[derive(Debug, Clone)]
 pub struct PhysicsProgram {
+    /// Kernel name, used for the generated entry point.
     pub name: String,
+    /// Operations executed per grid cell, in order.
     pub ops: Vec<PhysicsOp>,
+    /// Fields the program reads or writes, by name.
     pub fields: HashMap<String, FieldMeta>,
+    /// Scheduling hints for the compiler.
     pub schedule: ScheduleHints,
 }
 

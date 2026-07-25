@@ -6,6 +6,7 @@ members = [
     "crates/phyz-rigid",
     "crates/phyz-diff",
     "crates/phyz-mjcf",
+    "crates/phyz-urdf",
     "crates/phyz-collision",
     "crates/phyz-contact",
     "crates/phyz-gpu",
@@ -24,51 +25,62 @@ members = [
     "crates/phyz-format",
     "crates/phyz",
     "crates/phyz-wasm",
+    "crates/phyz-examples",
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",
     "crates/phyz-dream",
+    "crates/phyz-validate",
     "crates/phyz-bench",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ecto/phyz"
 homepage = "https://phyz.dev"
 
 [workspace.dependencies]
-tang = { version = "0.2.0", path = "../tang/crates/tang" }
-tang-la = { version = "0.1.0", path = "../tang/crates/tang-la" }
-tang-expr = { version = "0.1.0", path = "../tang/crates/tang-expr" }
+# tang, tang-la and tang-expr are published on crates.io, so they are plain
+# registry deps: every phyz crate that depends on them is publishable, and CI
+# needs no sibling `tang` checkout. To develop against a local tang, uncomment
+# the [patch.crates-io] block at the bottom of this file.
+tang = { version = "0.2.0" }
+tang-la = { version = "0.1.0" }
+tang-expr = { version = "0.1.0" }
+# tang-mesh is NOT published. It is an optional dep of phyz-quantum only
+# (`mesh` feature, off by default); phyz-quantum is therefore publish = false
+# and building it still requires the sibling checkout.
 tang-mesh = { version = "0.1.0", path = "../tang/crates/tang-mesh" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-phyz-math = { version = "0.1.0", path = "crates/phyz-math" }
-phyz-model = { version = "0.1.0", path = "crates/phyz-model" }
-phyz-rigid = { version = "0.1.0", path = "crates/phyz-rigid" }
-phyz-diff = { version = "0.1.0", path = "crates/phyz-diff" }
-phyz-mjcf = { version = "0.1.0", path = "crates/phyz-mjcf" }
-phyz-collision = { version = "0.1.0", path = "crates/phyz-collision" }
-phyz-contact = { version = "0.1.0", path = "crates/phyz-contact" }
-phyz-gpu = { version = "0.1.0", path = "crates/phyz-gpu" }
-phyz-particle = { version = "0.1.0", path = "crates/phyz-particle" }
-phyz-em = { version = "0.1.0", path = "crates/phyz-em" }
-phyz-md = { version = "0.1.0", path = "crates/phyz-md" }
-phyz-qft = { version = "0.1.0", path = "crates/phyz-qft" }
-phyz-gravity = { version = "0.1.0", path = "crates/phyz-gravity" }
-phyz-coupling = { version = "0.1.0", path = "crates/phyz-coupling" }
-phyz-guardian = { version = "0.1.0", path = "crates/phyz-guardian" }
-phyz-lbm = { version = "0.1.0", path = "crates/phyz-lbm" }
-phyz-compile = { version = "0.1.0", path = "crates/phyz-compile" }
-phyz-prob = { version = "0.1.0", path = "crates/phyz-prob" }
-phyz-world = { version = "0.1.0", path = "crates/phyz-world" }
-phyz-real2sim = { version = "0.1.0", path = "crates/phyz-real2sim" }
-phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
-phyz-regge = { version = "0.1.0", path = "crates/phyz-regge", default-features = false }
-phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum", default-features = false }
-phyz = { version = "0.1.0", path = "crates/phyz" }
+phyz-math = { version = "0.3.1", path = "crates/phyz-math" }
+phyz-model = { version = "0.3.1", path = "crates/phyz-model" }
+phyz-rigid = { version = "0.3.1", path = "crates/phyz-rigid" }
+phyz-diff = { version = "0.3.1", path = "crates/phyz-diff" }
+phyz-mjcf = { version = "0.3.1", path = "crates/phyz-mjcf" }
+phyz-urdf = { version = "0.3.1", path = "crates/phyz-urdf" }
+phyz-collision = { version = "0.3.1", path = "crates/phyz-collision" }
+phyz-contact = { version = "0.3.1", path = "crates/phyz-contact" }
+phyz-gpu = { version = "0.3.1", path = "crates/phyz-gpu" }
+phyz-particle = { version = "0.3.1", path = "crates/phyz-particle" }
+phyz-em = { version = "0.3.1", path = "crates/phyz-em" }
+phyz-md = { version = "0.3.1", path = "crates/phyz-md" }
+phyz-qft = { version = "0.3.1", path = "crates/phyz-qft" }
+phyz-gravity = { version = "0.3.1", path = "crates/phyz-gravity" }
+phyz-coupling = { version = "0.3.1", path = "crates/phyz-coupling" }
+phyz-guardian = { version = "0.3.1", path = "crates/phyz-guardian" }
+phyz-lbm = { version = "0.3.1", path = "crates/phyz-lbm" }
+phyz-compile = { version = "0.3.1", path = "crates/phyz-compile" }
+phyz-prob = { version = "0.3.1", path = "crates/phyz-prob" }
+phyz-world = { version = "0.3.1", path = "crates/phyz-world" }
+phyz-real2sim = { version = "0.3.1", path = "crates/phyz-real2sim" }
+phyz-format = { version = "0.3.1", path = "crates/phyz-format" }
+phyz-regge = { version = "0.3.1", path = "crates/phyz-regge", default-features = false }
+phyz-quantum = { version = "0.3.1", path = "crates/phyz-quantum", default-features = false }
+phyz = { version = "0.3.1", path = "crates/phyz" }
+phyz-validate = { version = "0.3.1", path = "crates/phyz-validate" }
 
 # Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
 [profile.dev.package.phyz-home]
@@ -78,3 +90,27 @@ debug-assertions = false
 [profile.dev.package.phyz-wasm]
 opt-level = 2
 debug-assertions = false
+
+# phyz-dream's tests train a small network to convergence. Unoptimized that
+# takes tens of minutes and dominates `cargo test --workspace`; at opt-level 2
+# it is seconds. Same reasoning as phyz-lbm below.
+[profile.dev.package.phyz-dream]
+opt-level = 2
+
+# The LBM validation benchmarks run flows to steady state on real grids;
+# unoptimized they take tens of minutes instead of tens of seconds.
+[profile.dev.package.phyz-lbm]
+opt-level = 3
+
+# The published tang 0.2.0 predates API the phyz crates rely on (notably
+# `impl Scalar for Dual<S>`, used by phyz-diff's dual-number ABA). Until tang
+# cuts a release carrying it, the workspace builds against a sibling checkout
+# via this patch; `cargo publish` ignores [patch] and uses the registry
+# versions declared in [workspace.dependencies] above.
+#
+# TODO: drop this patch once tang publishes the required version, then bump
+# the tang requirement in [workspace.dependencies] to match.
+[patch.crates-io]
+tang = { path = "../tang/crates/tang" }
+tang-la = { path = "../tang/crates/tang-la" }
+tang-expr = { path = "../tang/crates/tang-expr" }

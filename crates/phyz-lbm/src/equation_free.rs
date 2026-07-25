@@ -7,7 +7,7 @@ use phyz_math::DMat;
 
 /// Trait for fine-scale solvers (microscopic dynamics).
 pub trait FineSolver {
-    /// State type (e.g., Vec<f64>, particle positions, etc.)
+    /// State type (e.g., Vec`<f64>`, particle positions, etc.)
     type State;
 
     /// Advance the fine-scale state by one time step.

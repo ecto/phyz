@@ -15,6 +15,171 @@ pub struct Lattice {
     pub periodic: [bool; 3],
 }
 
+impl Lattice {
+    /// A fully periodic orthorhombic cell with the given edge lengths (Å).
+    pub fn orthorhombic(lx: f64, ly: f64, lz: f64) -> Self {
+        Self {
+            a: [lx, 0.0, 0.0],
+            b: [0.0, ly, 0.0],
+            c: [0.0, 0.0, lz],
+            periodic: [true; 3],
+        }
+    }
+
+    /// A fully periodic cubic cell of edge `l` (Å).
+    pub fn cubic(l: f64) -> Self {
+        Self::orthorhombic(l, l, l)
+    }
+
+    /// True when the cell is diagonal (no off-diagonal lattice components).
+    pub fn is_orthorhombic(&self) -> bool {
+        self.a[1].abs()
+            + self.a[2].abs()
+            + self.b[0].abs()
+            + self.b[2].abs()
+            + self.c[0].abs()
+            + self.c[1].abs()
+            < 1e-9
+    }
+
+    /// The cell matrix `H` with the lattice vectors as *columns*, so that a
+    /// Cartesian displacement is `d = H s` for fractional `s`.
+    pub fn matrix(&self) -> [[f64; 3]; 3] {
+        [
+            [self.a[0], self.b[0], self.c[0]],
+            [self.a[1], self.b[1], self.c[1]],
+            [self.a[2], self.b[2], self.c[2]],
+        ]
+    }
+
+    /// Signed cell volume `det H` in Å³.
+    pub fn volume(&self) -> f64 {
+        let h = self.matrix();
+        h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
+            - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
+            + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0])
+    }
+
+    /// `H⁻¹`, or `None` for a degenerate cell. Rows of `H⁻¹` are the reciprocal
+    /// lattice vectors divided by 2π.
+    pub fn inverse(&self) -> Option<[[f64; 3]; 3]> {
+        let h = self.matrix();
+        let det = self.volume();
+        let scale = h
+            .iter()
+            .flat_map(|row| row.iter())
+            .fold(0.0f64, |m, &v| m.max(v.abs()));
+        if det.abs() <= 1e-12 * scale * scale * scale {
+            return None;
+        }
+        let id = 1.0 / det;
+        Some([
+            [
+                (h[1][1] * h[2][2] - h[1][2] * h[2][1]) * id,
+                (h[0][2] * h[2][1] - h[0][1] * h[2][2]) * id,
+                (h[0][1] * h[1][2] - h[0][2] * h[1][1]) * id,
+            ],
+            [
+                (h[1][2] * h[2][0] - h[1][0] * h[2][2]) * id,
+                (h[0][0] * h[2][2] - h[0][2] * h[2][0]) * id,
+                (h[0][2] * h[1][0] - h[0][0] * h[1][2]) * id,
+            ],
+            [
+                (h[1][0] * h[2][1] - h[1][1] * h[2][0]) * id,
+                (h[0][1] * h[2][0] - h[0][0] * h[2][1]) * id,
+                (h[0][0] * h[1][1] - h[0][1] * h[1][0]) * id,
+            ],
+        ])
+    }
+
+    /// Fractional coordinates `s = H⁻¹ r` (raw, not wrapped).
+    pub fn to_fractional(&self, r: [f64; 3]) -> [f64; 3] {
+        let Some(hinv) = self.inverse() else {
+            return r;
+        };
+        mat_vec(&hinv, r)
+    }
+
+    /// Cartesian coordinates `r = H s`.
+    pub fn to_cartesian(&self, s: [f64; 3]) -> [f64; 3] {
+        mat_vec(&self.matrix(), s)
+    }
+
+    /// Wrap a position into the primary cell along the periodic axes.
+    ///
+    /// Uses `rem_euclid` on the fractional coordinate, so a position an
+    /// arbitrary number of box lengths outside the cell lands in `[0, 1)` in
+    /// one shot — a single-crossing correction silently loses atoms whenever a
+    /// step is large (a hot start, a bad timestep, a minimizer jump).
+    pub fn wrap(&self, r: [f64; 3]) -> [f64; 3] {
+        if self.inverse().is_none() {
+            return r;
+        }
+        let mut s = self.to_fractional(r);
+        for (k, sk) in s.iter_mut().enumerate() {
+            if self.periodic[k] {
+                *sk = sk.rem_euclid(1.0);
+                // rem_euclid can return exactly 1.0 for tiny negative inputs.
+                if *sk >= 1.0 {
+                    *sk = 0.0;
+                }
+            }
+        }
+        self.to_cartesian(s)
+    }
+
+    /// Perpendicular widths: the distance between opposite faces along each
+    /// lattice direction, `V / |b × c|` and cyclic. The minimum-image
+    /// convention is only valid for cutoffs below half the smallest width.
+    pub fn perp_widths(&self) -> [f64; 3] {
+        let v = self.volume().abs();
+        let areas = [
+            vec3::norm(cross(self.b, self.c)),
+            vec3::norm(cross(self.c, self.a)),
+            vec3::norm(cross(self.a, self.b)),
+        ];
+        let mut out = [f64::INFINITY; 3];
+        for (k, w) in out.iter_mut().enumerate() {
+            if areas[k] > 1e-12 {
+                *w = v / areas[k];
+            }
+        }
+        out
+    }
+
+    /// Reciprocal lattice vectors including the `2π` factor, as rows: the
+    /// wavevector for integer triple `m` is `k = m₀ B₀ + m₁ B₁ + m₂ B₂`.
+    pub fn reciprocal(&self) -> Option<[[f64; 3]; 3]> {
+        // Rows of H⁻¹ are the reciprocal vectors over 2π, since H⁻¹ H = I
+        // means row_k · col_l = δ_kl.
+        let hinv = self.inverse()?;
+        let tau = std::f64::consts::TAU;
+        Some([
+            vec3::scale(hinv[0], tau),
+            vec3::scale(hinv[1], tau),
+            vec3::scale(hinv[2], tau),
+        ])
+    }
+}
+
+#[inline]
+fn mat_vec(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
+#[inline]
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 /// Minimum-image displacement `ri - rj`, wrapped into the cell if one is
 /// present. Diagonal (orthorhombic) cells take a fast per-axis path (exact
 /// minimum image); general cells wrap in fractional coordinates (`s = H⁻¹d`,

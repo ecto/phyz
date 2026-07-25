@@ -370,7 +370,18 @@ pub async fn gpu_lanczos_diagonalize_su2_async(
     };
     let double_reorth = precision == GpuPrecision::F32;
 
-    gpu_lanczos_inner_async(device, queue, precision, &csr, dim, k, m, tol, double_reorth).await
+    gpu_lanczos_inner_async(
+        device,
+        queue,
+        precision,
+        &csr,
+        dim,
+        k,
+        m,
+        tol,
+        double_reorth,
+    )
+    .await
 }
 
 /// Inner GPU Lanczos loop. Separated for testability.
@@ -617,19 +628,15 @@ async fn gpu_lanczos_inner_async(
                 .fold(0.0f64, f64::max);
 
             if max_change < tol {
-                return Ok(recover_eigenvectors_gpu_async(
-                    &alpha, &beta, &ops, &q_bank, dim, k,
-                )
-                .await);
+                return Ok(
+                    recover_eigenvectors_gpu_async(&alpha, &beta, &ops, &q_bank, dim, k).await,
+                );
             }
             prev_eigenvalues = spec;
         }
 
         if b < 1e-14 {
-            return Ok(recover_eigenvectors_gpu_async(
-                &alpha, &beta, &ops, &q_bank, dim, k,
-            )
-            .await);
+            return Ok(recover_eigenvectors_gpu_async(&alpha, &beta, &ops, &q_bank, dim, k).await);
         }
 
         beta.push(b);

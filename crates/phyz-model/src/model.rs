@@ -4,13 +4,36 @@ use crate::{Body, Joint, State};
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
 /// A motor actuator attached to a joint.
+///
+/// The generalized force an actuator produces is
+/// `gear * clamp(ctrl, ctrl_range)`, applied to the first DOF of `joint_idx`.
 #[derive(Debug, Clone)]
 pub struct Actuator {
+    /// Actuator name, as declared in the source model.
     pub name: String,
+    /// Name of the joint this actuator drives.
     pub joint_name: String,
+    /// Index into [`Model::joints`] of the driven joint.
     pub joint_idx: usize,
+    /// Gear ratio applied to the control signal to produce joint torque.
     pub gear: f64,
+    /// Optional `[lo, hi]` clamp on the control signal, before `gear`.
     pub ctrl_range: Option<[f64; 2]>,
+}
+
+impl Actuator {
+    /// Clamp a raw control value to this actuator's control range.
+    pub fn clamp_ctrl(&self, ctrl: f64) -> f64 {
+        match self.ctrl_range {
+            Some([lo, hi]) => ctrl.clamp(lo.min(hi), hi.max(lo)),
+            None => ctrl,
+        }
+    }
+
+    /// Generalized force produced by this actuator for a raw control value.
+    pub fn force(&self, ctrl: f64) -> f64 {
+        self.gear * self.clamp_ctrl(ctrl)
+    }
 }
 
 /// Static model describing the topology and parameters of a physical system.
@@ -39,12 +62,57 @@ pub struct Model {
 impl Model {
     /// Create a default empty state for this model.
     pub fn default_state(&self) -> State {
-        State::new(self.nq, self.nv, self.bodies.len())
+        State::new_with_nu(self.nq, self.nv, self.nu(), self.bodies.len())
+    }
+
+    /// Number of actuators (MuJoCo's `nu`).
+    pub fn nu(&self) -> usize {
+        self.actuators.len()
+    }
+
+    /// Map actuator-space controls to generalized forces of dimension `nv`.
+    ///
+    /// Each actuator's control is clamped to its `ctrl_range`, scaled by `gear`,
+    /// and added to the first velocity DOF of the joint it drives.
+    ///
+    /// When the model has no actuators, `ctrl` is interpreted as a raw per-DOF
+    /// generalized force and passed through unchanged — this keeps hand-built
+    /// models (which set `state.ctrl` per DOF) working.
+    pub fn actuator_forces(&self, ctrl: &phyz_math::DVec) -> phyz_math::DVec {
+        let mut qfrc = phyz_math::DVec::zeros(self.nv);
+        if self.actuators.is_empty() {
+            for i in 0..self.nv.min(ctrl.len()) {
+                qfrc[i] = ctrl[i];
+            }
+            return qfrc;
+        }
+        for (a, act) in self.actuators.iter().enumerate() {
+            if a >= ctrl.len() {
+                break;
+            }
+            let Some(&v_idx) = self.v_offsets.get(act.joint_idx) else {
+                continue;
+            };
+            if v_idx < self.nv {
+                qfrc[v_idx] += act.force(ctrl[a]);
+            }
+        }
+        qfrc
     }
 
     /// Number of bodies.
     pub fn nbodies(&self) -> usize {
         self.bodies.len()
+    }
+
+    /// Look up a body index by name.
+    pub fn body_index(&self, name: &str) -> Option<usize> {
+        self.bodies.iter().position(|b| b.name == name)
+    }
+
+    /// Look up a joint index by name.
+    pub fn joint_index(&self, name: &str) -> Option<usize> {
+        self.joints.iter().position(|j| j.name == name)
     }
 }
 
@@ -93,13 +161,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::revolute(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -114,13 +177,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::prismatic(parent_to_joint, axis));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -134,13 +192,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::spherical(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -154,13 +207,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::free(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -174,13 +222,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::fixed(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -194,13 +237,8 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(joint);
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: None,
-        });
+        self.bodies
+            .push(Body::new(name, inertia, parent, joint_idx));
         self
     }
 
@@ -215,13 +253,11 @@ impl ModelBuilder {
     ) -> Self {
         let joint_idx = self.joints.len();
         self.joints.push(Joint::free(parent_to_joint));
-        self.bodies.push(Body {
-            name: name.to_string(),
-            inertia,
-            parent,
-            joint_idx,
-            geometry: geometry.geometry,
-        });
+        let mut body = Body::new(name, inertia, parent, joint_idx);
+        body.geometry = geometry.geometry;
+        body.collisions = geometry.collisions;
+        body.visuals = geometry.visuals;
+        self.bodies.push(body);
         self
     }
 

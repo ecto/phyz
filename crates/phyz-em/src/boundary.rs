@@ -1,47 +1,70 @@
 //! Boundary conditions for FDTD simulation.
 
+use crate::cpml::{Cpml, CpmlConfig};
 use crate::grid::YeeGrid;
 
 /// Boundary condition types.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BoundaryCondition {
-    /// Perfectly Matched Layer (absorbing boundary).
-    Pml { order: usize, sigma_max: f64 },
-    /// Periodic boundary conditions.
+    /// Convolutional PML — a true impedance-matched absorbing layer.
+    ///
+    /// This is the boundary you want for open-domain problems. See
+    /// [`crate::cpml`] for the formulation; reflection at normal incidence is
+    /// typically below −60 dB for a 10-cell layer.
+    Cpml(CpmlConfig),
+
+    /// Graded-conductivity absorbing layer.
+    ///
+    /// **This is not a PML.** It adds electric loss σ in the boundary region
+    /// without the matching magnetic loss σ\* = σμ/ε, so the layer has a
+    /// different wave impedance than the interior and reflects strongly
+    /// (typically −10 to −20 dB). It is kept because it is cheap — no
+    /// auxiliary variables, no extra memory — and adequate when you only need
+    /// to keep a cavity from ringing. Use [`BoundaryCondition::Cpml`] when
+    /// reflections matter.
+    LossyAbsorber {
+        /// Layer thickness in cells.
+        thickness: usize,
+        /// Polynomial grading order.
+        order: usize,
+        /// Peak conductivity at the wall (S/m).
+        sigma_max: f64,
+    },
+
+    /// Periodic boundary conditions on all three axes.
     Periodic,
-    /// Perfect electric conductor (PEC) - E tangential = 0.
+
+    /// Perfect electric conductor (PEC) — tangential E = 0 on every wall.
     PerfectConductor,
 }
 
 impl Default for BoundaryCondition {
     fn default() -> Self {
-        BoundaryCondition::Pml {
-            order: 2,
-            sigma_max: 1.0,
-        }
+        BoundaryCondition::Cpml(CpmlConfig::default())
     }
 }
 
-/// PML layer for absorbing boundaries.
+/// Conductivity profile for a [`BoundaryCondition::LossyAbsorber`].
 ///
-/// Uses auxiliary differential equations for split-field implementation.
-pub struct PmlLayer {
+/// Kept separate from the CPML so the cheap absorber stays dependency-free.
+pub struct AbsorberLayer {
     /// Layer thickness (number of cells).
     pub thickness: usize,
     /// Polynomial grading order.
     pub order: usize,
     /// Maximum conductivity.
     pub sigma_max: f64,
-    /// Precomputed conductivity profile.
+    /// Precomputed conductivity profile, indexed by distance from the wall.
     sigma_profile: Vec<f64>,
 }
 
-impl PmlLayer {
-    /// Create a new PML layer.
+impl AbsorberLayer {
+    /// Create a new absorbing layer.
     pub fn new(thickness: usize, order: usize, sigma_max: f64) -> Self {
         let mut sigma_profile = vec![0.0; thickness];
 
-        // Polynomial grading: σ(d) = σ_max * (d/thickness)^order
+        // Polynomial grading: σ(d) = σ_max * ((thickness − d)/thickness)^order,
+        // so σ peaks at the wall (d = 0) and vanishes at the inner surface.
         for (i, sigma) in sigma_profile.iter_mut().enumerate() {
             let d = (thickness - i) as f64;
             let ratio = d / thickness as f64;
@@ -56,7 +79,7 @@ impl PmlLayer {
         }
     }
 
-    /// Get conductivity at distance d from boundary.
+    /// Get conductivity at distance d (in cells) from the wall.
     pub fn get_sigma(&self, d: usize) -> f64 {
         if d < self.thickness {
             self.sigma_profile[d]
@@ -67,139 +90,127 @@ impl PmlLayer {
 }
 
 impl YeeGrid {
-    /// Apply boundary conditions to the grid.
-    pub fn apply_boundary(&mut self, bc: BoundaryCondition) {
+    /// Configure the boundary treatment for this grid.
+    ///
+    /// Unlike the previous design there is nothing to "apply" each step: PEC
+    /// walls, periodic wrapping and the CPML convolution are all handled inside
+    /// the field update loops.
+    pub fn set_boundary(&mut self, bc: BoundaryCondition) {
         match bc {
-            BoundaryCondition::PerfectConductor => self.apply_pec_boundary(),
-            BoundaryCondition::Periodic => self.apply_periodic_boundary(),
-            BoundaryCondition::Pml { order, sigma_max } => {
-                self.apply_pml_boundary(order, sigma_max)
+            BoundaryCondition::Cpml(cfg) => {
+                // A PML axis cannot also be periodic.
+                for a in 0..3 {
+                    if cfg.axes[a] {
+                        self.periodic[a] = false;
+                    }
+                }
+                self.cpml = Some(Cpml::new(
+                    self.nx, self.ny, self.nz, self.dx, self.dy, self.dz, self.dt, cfg,
+                ));
+            }
+            BoundaryCondition::LossyAbsorber {
+                thickness,
+                order,
+                sigma_max,
+            } => {
+                self.cpml = None;
+                self.apply_lossy_absorber(thickness, order, sigma_max);
+            }
+            BoundaryCondition::Periodic => {
+                self.cpml = None;
+                self.periodic = [true; 3];
+            }
+            BoundaryCondition::PerfectConductor => {
+                self.cpml = None;
+                self.periodic = [false; 3];
             }
         }
     }
 
-    /// Apply perfect electric conductor (PEC) boundary conditions.
+    /// Set periodicity per axis. Periodic axes wrap in the update loops;
+    /// non-periodic axes are terminated by a PEC wall (plus a CPML if one is
+    /// configured for that axis).
+    pub fn set_periodic(&mut self, axes: [bool; 3]) {
+        self.periodic = axes;
+    }
+
+    /// Fill the boundary region with a graded conductivity.
     ///
-    /// Sets tangential E-field components to zero at boundaries.
-    fn apply_pec_boundary(&mut self) {
-        // x = 0 and x = nx boundaries
-        for j in 0..self.ny {
-            for k in 0..self.nz {
-                // Tangential components (Ey, Ez) = 0 at x boundaries
+    /// See [`BoundaryCondition::LossyAbsorber`] — this is a lossy layer, not a
+    /// matched one.
+    pub fn apply_lossy_absorber(&mut self, thickness: usize, order: usize, sigma_max: f64) {
+        // Clamp per axis: a thin or periodic direction should not switch the
+        // layer off along the other two.
+        let n = [self.nx, self.ny, self.nz];
+        let thick: Vec<usize> = (0..3)
+            .map(|a| {
+                if self.periodic[a] {
+                    0
+                } else {
+                    thickness.min(n[a] / 2)
+                }
+            })
+            .collect();
+        if thick.iter().all(|&t| t == 0) {
+            return;
+        }
+        let layers: Vec<Option<AbsorberLayer>> = thick
+            .iter()
+            .map(|&t| {
+                if t == 0 {
+                    None
+                } else {
+                    Some(AbsorberLayer::new(t, order, sigma_max))
+                }
+            })
+            .collect();
+
+        for k in 0..self.nz {
+            for j in 0..self.ny {
+                for i in 0..self.nx {
+                    let idx = [i, j, k];
+                    // Take the strongest of the six wall contributions rather
+                    // than the sum, so corners are not over-damped.
+                    let mut sigma = 0.0_f64;
+                    for a in 0..3 {
+                        if let Some(layer) = &layers[a] {
+                            sigma = sigma.max(layer.get_sigma(idx[a]));
+                            sigma = sigma.max(layer.get_sigma(n[a] - 1 - idx[a]));
+                        }
+                    }
+                    self.sigma.set(i, j, k, sigma);
+                }
+            }
+        }
+    }
+
+    /// Zero the tangential E-field on every outer wall.
+    ///
+    /// The update loops already enforce this for non-periodic axes; this is
+    /// exposed for tests and for callers driving the grid manually.
+    pub fn apply_pec_boundary(&mut self) {
+        for k in 0..self.nz {
+            for j in 0..self.ny {
                 self.ey.set(0, j, k, 0.0);
                 self.ez.set(0, j, k, 0.0);
                 self.ey.set(self.nx - 1, j, k, 0.0);
                 self.ez.set(self.nx - 1, j, k, 0.0);
             }
         }
-
-        // y = 0 and y = ny boundaries
-        for i in 0..self.nx {
-            for k in 0..self.nz {
-                // Tangential components (Ex, Ez) = 0 at y boundaries
+        for k in 0..self.nz {
+            for i in 0..self.nx {
                 self.ex.set(i, 0, k, 0.0);
                 self.ez.set(i, 0, k, 0.0);
                 self.ex.set(i, self.ny - 1, k, 0.0);
                 self.ez.set(i, self.ny - 1, k, 0.0);
             }
         }
-
-        // z = 0 and z = nz boundaries
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                // Tangential components (Ex, Ey) = 0 at z boundaries
+        for j in 0..self.ny {
+            for i in 0..self.nx {
                 self.ex.set(i, j, 0, 0.0);
                 self.ey.set(i, j, 0, 0.0);
                 self.ex.set(i, j, self.nz - 1, 0.0);
                 self.ey.set(i, j, self.nz - 1, 0.0);
-            }
-        }
-    }
-
-    /// Apply periodic boundary conditions.
-    ///
-    /// Wraps field values from one boundary to the opposite boundary.
-    fn apply_periodic_boundary(&mut self) {
-        // x-direction periodicity
-        for j in 0..self.ny {
-            for k in 0..self.nz {
-                // Copy x=0 to x=nx, and x=nx-1 to x=-1 (wraps)
-                let ex_left = self.ex.get(0, j, k);
-                let ey_left = self.ey.get(0, j, k);
-                let ez_left = self.ez.get(0, j, k);
-                let hx_left = self.hx.get(0, j, k);
-                let hy_left = self.hy.get(0, j, k);
-                let hz_left = self.hz.get(0, j, k);
-
-                let ex_right = self.ex.get(self.nx - 1, j, k);
-                let ey_right = self.ey.get(self.nx - 1, j, k);
-                let ez_right = self.ez.get(self.nx - 1, j, k);
-                let hx_right = self.hx.get(self.nx - 1, j, k);
-                let hy_right = self.hy.get(self.nx - 1, j, k);
-                let hz_right = self.hz.get(self.nx - 1, j, k);
-
-                self.ex.set(self.nx - 1, j, k, ex_left);
-                self.ey.set(self.nx - 1, j, k, ey_left);
-                self.ez.set(self.nx - 1, j, k, ez_left);
-                self.hx.set(self.nx - 1, j, k, hx_left);
-                self.hy.set(self.nx - 1, j, k, hy_left);
-                self.hz.set(self.nx - 1, j, k, hz_left);
-
-                self.ex.set(0, j, k, ex_right);
-                self.ey.set(0, j, k, ey_right);
-                self.ez.set(0, j, k, ez_right);
-                self.hx.set(0, j, k, hx_right);
-                self.hy.set(0, j, k, hy_right);
-                self.hz.set(0, j, k, hz_right);
-            }
-        }
-
-        // Similar for y and z directions (simplified for brevity)
-    }
-
-    /// Apply PML absorbing boundary conditions.
-    ///
-    /// Sets conductivity σ in boundary layers to absorb outgoing waves.
-    fn apply_pml_boundary(&mut self, order: usize, sigma_max: f64) {
-        let thickness = 8.min(self.nx / 4); // PML thickness
-        let pml = PmlLayer::new(thickness, order, sigma_max);
-
-        // Apply PML conductivity in boundary regions
-        for i in 0..self.nx {
-            for j in 0..self.ny {
-                for k in 0..self.nz {
-                    let mut sigma = 0.0;
-
-                    // Distance from boundaries
-                    let d_xmin = i;
-                    let d_xmax = self.nx - 1 - i;
-                    let d_ymin = j;
-                    let d_ymax = self.ny - 1 - j;
-                    let d_zmin = k;
-                    let d_zmax = self.nz - 1 - k;
-
-                    // Accumulate PML conductivity from all boundaries
-                    if d_xmin < thickness {
-                        sigma += pml.get_sigma(d_xmin);
-                    }
-                    if d_xmax < thickness {
-                        sigma += pml.get_sigma(d_xmax);
-                    }
-                    if d_ymin < thickness {
-                        sigma += pml.get_sigma(d_ymin);
-                    }
-                    if d_ymax < thickness {
-                        sigma += pml.get_sigma(d_ymax);
-                    }
-                    if d_zmin < thickness {
-                        sigma += pml.get_sigma(d_zmin);
-                    }
-                    if d_zmax < thickness {
-                        sigma += pml.get_sigma(d_zmax);
-                    }
-
-                    self.sigma.set(i, j, k, sigma);
-                }
             }
         }
     }
@@ -210,46 +221,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pml_layer() {
-        let pml = PmlLayer::new(8, 2, 1.0);
-        assert_eq!(pml.thickness, 8);
+    fn test_absorber_layer_grading() {
+        let layer = AbsorberLayer::new(8, 2, 1.0);
+        assert_eq!(layer.thickness, 8);
+        assert_eq!(layer.order, 2);
+        assert_eq!(layer.sigma_max, 1.0);
 
-        // Conductivity should increase towards boundary
-        assert!(pml.get_sigma(7) < pml.get_sigma(6));
-        assert!(pml.get_sigma(1) < pml.get_sigma(0));
+        // Conductivity increases toward the wall (d = 0).
+        assert!(layer.get_sigma(7) < layer.get_sigma(6));
+        assert!(layer.get_sigma(1) < layer.get_sigma(0));
 
-        // Outside PML layer should be zero
-        assert_eq!(pml.get_sigma(8), 0.0);
+        // Outside the layer it is zero.
+        assert_eq!(layer.get_sigma(8), 0.0);
     }
 
     #[test]
     fn test_pec_boundary() {
         let mut grid = YeeGrid::new(16, 16, 16, 1e-9, 1e-18);
-
-        // Set some fields
         grid.ex.set(0, 5, 5, 1.0);
         grid.ey.set(0, 5, 5, 1.0);
         grid.ez.set(0, 5, 5, 1.0);
 
-        // Apply PEC boundary
         grid.apply_pec_boundary();
 
-        // Tangential components at boundary should be zero
         assert_eq!(grid.ey.get(0, 5, 5), 0.0);
         assert_eq!(grid.ez.get(0, 5, 5), 0.0);
     }
 
     #[test]
-    fn test_pml_boundary_application() {
+    fn test_lossy_absorber_profile() {
         let mut grid = YeeGrid::new(32, 32, 32, 1e-9, 1e-18);
+        grid.set_boundary(BoundaryCondition::LossyAbsorber {
+            thickness: 8,
+            order: 2,
+            sigma_max: 1.0,
+        });
 
-        // Apply PML boundary
-        grid.apply_pml_boundary(2, 1.0);
-
-        // Conductivity should be higher near boundaries
         let sigma_center = grid.sigma.get(16, 16, 16);
         let sigma_edge = grid.sigma.get(1, 16, 16);
         assert!(sigma_edge > sigma_center);
-        assert!(sigma_center < 0.01); // Center should have low conductivity
+        assert_eq!(sigma_center, 0.0);
+        assert!(grid.cpml.is_none());
+    }
+
+    #[test]
+    fn test_cpml_selection_disables_periodicity_on_pml_axes() {
+        let dx = 1e-9;
+        let dt = dx / (3e8 * 3_f64.sqrt() * 1.1);
+        let mut grid = YeeGrid::new(48, 48, 48, dx, dt);
+        grid.set_periodic([true, true, true]);
+        grid.set_boundary(BoundaryCondition::Cpml(
+            CpmlConfig::with_thickness(10).on_axes([false, false, true]),
+        ));
+        assert_eq!(grid.periodic, [true, true, false]);
+        assert!(grid.cpml.as_ref().unwrap().is_active());
     }
 }

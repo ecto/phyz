@@ -39,17 +39,13 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # tang, tang-la and tang-expr come from crates.io, so no sibling
+      # `tang` checkout is needed. phyz-bench does not use tang-mesh, the
+      # one unpublished crate.
       - name: Check out phyz
         uses: actions/checkout@v4
         with:
           path: phyz
-
-      # The workspace resolves `tang` through a sibling path dependency.
-      - name: Check out tang (sibling checkout required by the workspace)
-        uses: actions/checkout@v4
-        with:
-          repository: ecto/tang
-          path: tang
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

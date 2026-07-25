@@ -611,7 +611,7 @@ pub fn local_lorentzian_regge_hessian(
 
 /// Local gradient of the Lorentzian Regge action restricted to free edges.
 ///
-/// Only processes triangles touching free edges, returning a Vec<f64> of length n_free.
+/// Only processes triangles touching free edges, returning a Vec`<f64>` of length n_free.
 pub fn local_lorentzian_regge_action_grad(
     complex: &SimplicialComplex,
     sq_lengths: &[f64],
