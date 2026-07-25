@@ -6,8 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Hamiltonian lattice gauge theory on simplicial complexes"
-keywords = ["quantum", "lattice-gauge", "physics", "hamiltonian", "simulation"]
-categories = ["science", "simulation"]
+publish = false  # depends on unpublished tang-mesh (optional `mesh` feature)
 readme = "README.md"
 
 [features]

@@ -2,21 +2,34 @@
 
 The differentiable rigid-body core of phyz.
 
-`phyz` is self-contained. It bundles spatial algebra, articulated models,
-Featherstone dynamics, collision, contact, and a reverse-mode differentiable
-rollout — and it does **not** re-export the other crates in the workspace.
-`phyz-gpu`, `phyz-particle`, `phyz-lbm` and friends are added separately.
+`phyz` holds no code of its own. It re-exports the focused `phyz-*` crates that
+make up the rigid-body stack, so `cargo add phyz` gets you all of them behind
+one dependency and `phyz::collision` is literally `phyz_collision`.
+
+It does **not** cover the whole workspace — `phyz-gpu`, `phyz-particle`,
+`phyz-lbm` and friends are separate crates you add explicitly.
+
+## Features
+
+`collision`, `contact` and `diff` are on by default; `math`, `model` and
+`rigid` are always present.
+
+```bash
+cargo add phyz                                  # everything below
+cargo add phyz --no-default-features            # math + model + rigid only
+cargo add phyz --no-default-features -F diff    # ...plus gradients
+```
 
 ## Modules
 
 | Module | Contents |
 | --- | --- |
-| `math` | Re-export of [`phyz-math`](https://docs.rs/phyz-math): `Vec3`, `Mat3`, `Quat`, `SpatialVec`, `SpatialTransform`, `SpatialInertia` |
-| `model` | `Model`, `ModelBuilder`, `Body`, `Joint`, `JointType`, `Actuator`, `State` |
-| `rigid` | `aba`, `aba_with_external_forces`, `rnea`, `crba`, `forward_kinematics` |
-| `collision` | `gjk_distance`, `epa_penetration`, `sweep_and_prune`, `AABB` |
-| `contact` | `find_contacts`, `find_ground_contacts`, `contact_forces`, `ContactMaterial` |
-| `diff` | `adjoint_rollout_gradient` — exact inertia-parameter and contact-vertex adjoints |
+| `math` | [`phyz-math`](https://docs.rs/phyz-math): `Vec3`, `Mat3`, `Quat`, `SpatialVec`, `SpatialTransform`, `SpatialInertia` |
+| `model` | [`phyz-model`](https://docs.rs/phyz-model): `Model`, `ModelBuilder`, `Body`, `Joint`, `JointType`, `Actuator`, `State` |
+| `rigid` | [`phyz-rigid`](https://docs.rs/phyz-rigid): `aba`, `rnea`, `crba`, `forward_kinematics`, `body_wrenches` |
+| `collision` | [`phyz-collision`](https://docs.rs/phyz-collision): `gjk_distance`, `epa_penetration`, `ray_cast`, `sweep_and_prune`, `AABB` |
+| `contact` | [`phyz-contact`](https://docs.rs/phyz-contact): `find_contacts`, `find_ground_contacts`, `contact_forces`, `ContactMaterial` |
+| `diff` | [`phyz-diff`](https://docs.rs/phyz-diff): `adjoint_rollout_gradient`, plus the per-step Jacobians |
 
 ## Forward dynamics
 
@@ -63,12 +76,12 @@ worked example.
 For per-step Jacobians with respect to `(q, v, ctrl)`, use
 [`phyz-diff`](https://docs.rs/phyz-diff) instead.
 
-## Note
+## Naming
 
-This crate currently vendors its own copies of the model/rigid/collision/contact
-code rather than depending on `phyz-model`, `phyz-rigid`, `phyz-collision` and
-`phyz-contact`. That means `phyz::model::Model` and `phyz_model::Model` are
-distinct types. De-duplicating them is tracked separately.
+Each sub-crate is reachable under both names: `phyz::rigid::aba` and
+`phyz::phyz_rigid::aba` are the same function, and both are
+`phyz_rigid::aba`. Types cross crate boundaries freely because there is only
+ever one of them.
 
 ## Part of phyz
 

@@ -7,28 +7,41 @@ engine for larger systems.
 
 | Type | Purpose |
 | --- | --- |
-| `MdSystem` | particles, bonds, box, thermostat |
-| `LennardJones`, `Coulomb`, `HarmonicBond` | force-field terms |
-| `ForceField` | the trait these implement |
-| `NeighborList`, `minimum_image` | cell lists and periodic wrapping |
-| `Thermostat` | Berendsen temperature control |
+| `MdSystem` | particles, bonds, box, thermostat, integrator |
+| `LennardJones`, `Coulomb`, `HarmonicBonds`, `HarmonicAngles` | non-bonded and bonded terms |
+| `PeriodicDihedrals`, `HarmonicImpropers` | torsions |
+| `Ewald`, `Pme` | periodic electrostatics |
+| `NeighborList`, `Lattice`, `min_image` | cell lists and periodic wrapping |
+| `Berendsen`, `NoseHoover`, `Barostat` | temperature and pressure control |
+| `Rdf` | radial distribution function |
 
 The `field` module holds the SoA engine: slice-based potentials,
-velocity-Verlet integration, and FIRE energy minimization. `field::units`
-defines the shared Å / eV / amu / fs / e / K constants — every potential in
-this crate agrees on them.
+velocity-Verlet integration, virial/pressure bundles, and FIRE energy
+minimization. `field::units` defines the shared Å / eV / amu / fs / e / K
+constants — every potential in this crate agrees on them, and
+`field::units::FORCE_TO_ACCEL` is the one conversion that ties them together.
 
 ## Example
 
 ```rust
-use std::sync::Arc;
+use phyz_math::Vec3;
+use phyz_md::{LennardJones, MdSystem, Particle};
 
-use phyz_md::{LennardJones, MdSystem};
+// Argon fluid, 1 fs timestep.
+let mut system = MdSystem::lennard_jones(LennardJones::argon(), 1.0);
 
-// Argon-like LJ fluid: epsilon (eV), sigma (Å), cutoff (Å).
-let ff = Arc::new(LennardJones::new(0.0103, 3.4, 8.5));
-let mut system = MdSystem::new(ff, 1.0); // dt in fs
+for i in 0..10 {
+    system.add_particle(Particle::new(
+        Vec3::new(i as f64 * 3.4, 0.0, 0.0),
+        Vec3::zeros(),
+        39.948, // argon mass (amu)
+        0,      // species
+    ));
+}
 ```
+
+`LennardJones::monatomic(epsilon, sigma, cutoff)` takes explicit parameters;
+per-species tables with Lorentz-Berthelot mixing are also supported.
 
 ## Part of phyz
 

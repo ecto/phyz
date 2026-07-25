@@ -25,3 +25,12 @@ pub const KB_EV_PER_K: f64 = 8.617_333_262e-5;
 
 /// Coulomb constant `1/(4πε₀)` in eV·Å/e² (so `E = KE_COULOMB q_i q_j / r`).
 pub const KE_COULOMB: f64 = 14.399_645_351_950_54;
+
+/// Convert a pressure in eV/Å³ to GPa (`1 eV/Å³ = 160.2176634 GPa`).
+pub const EV_PER_A3_TO_GPA: f64 = 160.217_663_4;
+
+/// Convert a pressure in eV/Å³ to bar.
+pub const EV_PER_A3_TO_BAR: f64 = 1.602_176_634e7;
+
+/// Convert a pressure in eV/Å³ to atmospheres.
+pub const EV_PER_A3_TO_ATM: f64 = 1.581_226_355e7;

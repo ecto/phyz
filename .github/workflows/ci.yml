@@ -34,11 +34,9 @@ jobs:
         with:
           workspaces: phyz
 
-      # Not `--all-targets`: crates/phyz/tests/integration.rs is stale (see
-      # the note on the test step below).
       - name: Build workspace
         working-directory: phyz
-        run: cargo build --workspace
+        run: cargo build --workspace --all-targets
 
       # Every file under examples/ is a target of the phyz-examples crate, so
       # this is what stops the documented API from rotting.
@@ -46,21 +44,11 @@ jobs:
         working-directory: phyz
         run: cargo build --workspace --examples
 
-      # `crates/phyz` currently vendors copies of phyz-model/rigid/contact
-      # rather than depending on them, and `crates/phyz/tests/integration.rs`
-      # is still written against the older umbrella API. It does not compile.
-      # De-vendoring is tracked separately; until then the rest of the
-      # workspace and phyz's own unit + doc tests are gated here.
+      # Two contact tests are #[ignore]d against known bugs — see the reasons
+      # on them in crates/phyz/tests/contact_stability.rs. Everything else runs.
       - name: Test workspace
         working-directory: phyz
-        run: cargo test --workspace --exclude phyz
-
-      - name: Test phyz (lib, doc, contact_stability)
-        working-directory: phyz
-        run: |
-          cargo test -p phyz --lib
-          cargo test -p phyz --test contact_stability
-          cargo test -p phyz --doc
+        run: cargo test --workspace
 
       # The root README is included as a doc-test of crates/phyz, so its
       # Quick Start is compiled and run by the step above.

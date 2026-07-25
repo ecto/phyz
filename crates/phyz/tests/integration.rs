@@ -2,10 +2,64 @@
 
 use approx::assert_relative_eq;
 use phyz::{
-    ContactMaterial, Geometry, Model, ModelBuilder, Simulator,
+    ContactMaterial, Geometry, Model, ModelBuilder, State,
     phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
     phyz_rigid::{aba, crba, rnea, total_energy},
 };
+
+/// A minimal RK4 stepper for these tests.
+///
+/// `phyz` exposes the dynamics (`aba`, `rnea`, `crba`) but no stepper type —
+/// integration policy is the caller's. These tests were written against an
+/// older `phyz::Simulator` that no longer exists, so the loop lives here
+/// instead of being re-added to the public API.
+struct Simulator;
+
+impl Simulator {
+    fn rk4() -> Self {
+        Self
+    }
+
+    fn step(&self, model: &Model, state: &mut State) {
+        let dt = model.dt;
+        let (nq, nv) = (model.nq, model.nv);
+
+        let deriv = |dq: &[f64], dv: &[f64]| -> (Vec<f64>, Vec<f64>) {
+            let mut probe = state.clone();
+            for k in 0..nq {
+                probe.q[k] = state.q[k] + dq[k];
+            }
+            for k in 0..nv {
+                probe.v[k] = state.v[k] + dv[k];
+            }
+            let qdd = aba(model, &probe);
+            (
+                (0..nq).map(|k| probe.v[k]).collect(),
+                (0..nv).map(|k| qdd[k]).collect(),
+            )
+        };
+        let scale = |a: &[f64], f: f64| -> Vec<f64> { a.iter().map(|x| x * f).collect() };
+
+        let (k1q, k1v) = deriv(&vec![0.0; nq], &vec![0.0; nv]);
+        let (k2q, k2v) = deriv(&scale(&k1q, dt / 2.0), &scale(&k1v, dt / 2.0));
+        let (k3q, k3v) = deriv(&scale(&k2q, dt / 2.0), &scale(&k2v, dt / 2.0));
+        let (k4q, k4v) = deriv(&scale(&k3q, dt), &scale(&k3v, dt));
+
+        for k in 0..nq {
+            state.q[k] += dt / 6.0 * (k1q[k] + 2.0 * k2q[k] + 2.0 * k3q[k] + k4q[k]);
+        }
+        for k in 0..nv {
+            state.v[k] += dt / 6.0 * (k1v[k] + 2.0 * k2v[k] + 2.0 * k3v[k] + k4v[k]);
+        }
+        state.time += dt;
+    }
+
+    fn simulate(&self, model: &Model, state: &mut State, steps: usize) {
+        for _ in 0..steps {
+            self.step(model, state);
+        }
+    }
+}
 
 /// Build a single pendulum: revolute about Z, gravity along -Y, rod mass 1kg length 1m.
 fn make_pendulum(dt: f64) -> Model {

@@ -12,11 +12,21 @@ Simulate a robot, compute gradients through the entire trajectory, and optimize 
 cargo add phyz
 ```
 
-The `phyz` crate is the **rigid-body core**: spatial math, articulated models,
-Featherstone dynamics, collision, contact, and the differentiable rollout. It is
-self-contained and does not pull in the rest of the workspace.
+The `phyz` crate is an umbrella over the **rigid-body stack**: spatial math,
+articulated models, Featherstone dynamics, collision, contact, and the
+differentiable rollout. It holds no code of its own — the modules are
+re-exports of the focused `phyz-*` crates, so `phyz::collision` and
+`phyz_collision` are the same thing.
 
-Everything else lives in its own crate and must be added explicitly:
+Collision, contact and diff are default features and can be turned off:
+
+```bash
+cargo add phyz --no-default-features            # math + model + rigid only
+cargo add phyz --no-default-features -F diff    # ...plus gradients
+```
+
+It does **not** cover the whole workspace. Everything else lives in its own
+crate and must be added explicitly:
 
 ```bash
 cargo add phyz-gpu        # batched simulation on wgpu
@@ -87,7 +97,7 @@ The word "analytical" is easy to over-claim, so here is the honest breakdown.
 
 | API | What it differentiates | Method | Exact? |
 | --- | --- | --- | --- |
-| `phyz::diff::adjoint_rollout_gradient` | whole rollout w.r.t. inertia params and contact-mesh vertices | reverse-mode adjoint, dual numbers within each step | **yes** |
+| `phyz_diff::rollout::adjoint_rollout_gradient` (`phyz::diff::…`) | whole rollout w.r.t. inertia params and contact-mesh vertices | reverse-mode adjoint, dual numbers within each step | **yes** |
 | `phyz_diff::symbolic::symbolic_step_jacobians` | one step w.r.t. `(q, v, ctrl)` | symbolic differentiation | **yes** |
 | `phyz_diff::semi_implicit_step_jacobians` | one step w.r.t. `(q, v, ctrl)` | chain rule through the integrator, **finite differences on ABA** | no |
 | `phyz_diff::finite_diff_jacobians` | one step w.r.t. `(q, v, ctrl)` | central differences over the whole step | no |
@@ -102,11 +112,11 @@ opt-in.
 
 | Crate | What it does |
 | --- | --- |
-| [`phyz`](crates/phyz) | Rigid-body core: spatial math, models, ABA/RNEA/CRBA, collision, contact, differentiable rollout |
+| [`phyz`](crates/phyz) | Umbrella over the rigid-body stack: re-exports math, model, rigid, collision, contact, diff |
 | [`phyz-math`](crates/phyz-math) | Spatial algebra: vectors, matrices, quaternions, spatial transforms and inertias |
 | [`phyz-model`](crates/phyz-model) | Articulated body models, joints, actuators, state |
 | [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, energy |
-| [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians: finite-difference, chain-rule, and symbolic |
+| [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians (finite-difference, chain-rule, symbolic) and the exact trajectory adjoint |
 | [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
 | [`phyz-mjcf`](crates/phyz-mjcf) | MuJoCo MJCF model loading |
@@ -120,7 +130,6 @@ opt-in.
 | [`phyz-gravity`](crates/phyz-gravity) | N-body gravitational dynamics |
 | [`phyz-qft`](crates/phyz-qft) | Lattice QFT, Wilson action |
 | [`phyz-regge`](crates/phyz-regge) | Regge calculus (discrete GR + EM) |
-| [`phyz-quantum`](crates/phyz-quantum) | Quantum state evolution |
 | [`phyz-prob`](crates/phyz-prob) | Probabilistic inference over physics (SVGD, HMC) |
 | [`phyz-coupling`](crates/phyz-coupling) | Multi-physics coupling: `Solver` trait, coupled systems, subcycling, flux accounting |
 | [`phyz-guardian`](crates/phyz-guardian) | Conservation monitoring, adaptive time-stepping, solver auto-switching |
@@ -129,8 +138,10 @@ opt-in.
 | [`phyz-format`](crates/phyz-format) | `.phyz` scene serialization, MJCF and URDF import |
 | [`phyz-dream`](crates/phyz-dream) | Learned latent dynamics on top of the simulator |
 
-Not published: `phyz-wasm` (browser demo bindings) and `phyz-home` (the site
-backend). `phyz-py` (Python bindings) lives outside the workspace.
+Not published: `phyz-wasm` (browser demo bindings), `phyz-home` (the site
+backend), and `phyz-quantum` (Hamiltonian lattice gauge theory — it depends on
+the unpublished `tang-mesh`). `phyz-py` (Python bindings) lives outside the
+workspace.
 
 > **Versioning note:** `phyz` is at 0.3.x; every other crate is at 0.1.0. That
 > split is being addressed separately.
