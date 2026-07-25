@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "MuJoCo MJCF XML parser for phyz physics engine"
+keywords = ["mjcf", "mujoco", "robotics", "parser", "physics"]
+categories = ["parsing", "science::robotics", "simulation"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

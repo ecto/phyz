@@ -2,7 +2,7 @@
 //!
 //! The full action is:
 //!
-//!   S[l, θ] = S_R[l] + α · S_M[l, θ]
+//!   S[l, θ] = S_R`[l]` + α · S_M[l, θ]
 //!
 //! where:
 //!   S_R = Σ_t A_t δ_t         (Regge / Einstein-Hilbert)
@@ -125,7 +125,7 @@ pub fn einstein_maxwell_grad(
 
 /// Compute action variation under a field transformation.
 ///
-/// |S[T(φ)] - S[φ]|
+/// |S[T(φ)] - S`[φ]`|
 ///
 /// This is the key quantity for the symmetry search: we look for
 /// transformations T that make this small.

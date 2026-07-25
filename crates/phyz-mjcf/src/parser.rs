@@ -74,12 +74,17 @@ struct GeomElement {
 /// A `<site>`: a named massless frame. Recorded for sensors/tendons/tooling.
 #[derive(Debug, Clone)]
 pub struct SiteElement {
+    /// Site name, or a generated one if the document omitted it.
     pub name: String,
     /// Name of the body the site is attached to.
     pub body: String,
+    /// Position in the owning body's frame.
     pub pos: Vec3,
+    /// Orientation in the owning body's frame.
     pub quat: Quat,
+    /// `size` attribute, interpreted per `site_type`.
     pub size: Vec<f64>,
+    /// `type` attribute, e.g. `"sphere"` or `"box"`.
     pub site_type: String,
 }
 
@@ -221,18 +226,22 @@ impl MjcfLoader {
         &self.sites
     }
 
+    /// `<mesh>` assets, in document order.
     pub fn meshes(&self) -> &[MeshAsset] {
         &self.meshes
     }
 
+    /// `<texture>` assets, in document order.
     pub fn textures(&self) -> &[TextureAsset] {
         &self.textures
     }
 
+    /// `<material>` assets, in document order.
     pub fn materials(&self) -> &[MaterialAsset] {
         &self.materials
     }
 
+    /// `<hfield>` assets, in document order.
     pub fn hfields(&self) -> &[HFieldAsset] {
         &self.hfields
     }

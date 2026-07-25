@@ -36,7 +36,15 @@ fn test_gpu_single_step_vs_cpu() {
     let model = make_pendulum();
 
     // Create GPU simulator with single environment
-    let gpu_sim = GpuSimulator::new(model.clone(), 1).expect("Failed to create GPU simulator");
+    // Headless CI has no GPU adapter. Skip rather than fail — same convention
+    // as the unit tests in src/gpu_batch_simulator.rs.
+    let gpu_sim = match GpuSimulator::new(model.clone(), 1) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Skipping GPU test (no adapter): {e}");
+            return;
+        }
+    };
 
     // Initialize state
     let mut cpu_state = model.default_state();
@@ -70,7 +78,15 @@ fn test_gpu_multiple_steps_vs_cpu() {
     let model = make_pendulum();
 
     // Create GPU simulator with single environment
-    let gpu_sim = GpuSimulator::new(model.clone(), 1).expect("Failed to create GPU simulator");
+    // Headless CI has no GPU adapter. Skip rather than fail — same convention
+    // as the unit tests in src/gpu_batch_simulator.rs.
+    let gpu_sim = match GpuSimulator::new(model.clone(), 1) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Skipping GPU test (no adapter): {e}");
+            return;
+        }
+    };
 
     // Initialize state
     let mut cpu_state = model.default_state();
@@ -112,7 +128,13 @@ fn test_gpu_batch_consistency() {
 
     // Create GPU simulator with multiple environments
     let nworld = 10;
-    let gpu_sim = GpuSimulator::new(model.clone(), nworld).expect("Failed to create GPU simulator");
+    let gpu_sim = match GpuSimulator::new(model.clone(), nworld) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Skipping GPU test (no adapter): {e}");
+            return;
+        }
+    };
 
     // Initialize with same state
     let init_state = {

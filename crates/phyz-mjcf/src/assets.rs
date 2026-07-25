@@ -12,18 +12,22 @@ use std::path::{Path, PathBuf};
 /// Triangle soup loaded from a mesh file.
 #[derive(Debug, Clone, Default)]
 pub struct MeshData {
+    /// Vertex positions, already scaled by the asset's `scale`.
     pub vertices: Vec<Vec3>,
+    /// Triangles, as indices into `vertices`.
     pub faces: Vec<[usize; 3]>,
 }
 
 /// A `<mesh>` asset.
 #[derive(Debug, Clone)]
 pub struct MeshAsset {
+    /// Asset name, defaulting to the file stem when `name` is absent.
     pub name: String,
     /// `file` attribute as written in the XML.
     pub file: Option<String>,
     /// `file` resolved against `meshdir`/`assetdir` and the model directory.
     pub resolved_path: Option<PathBuf>,
+    /// Per-axis scale applied to the loaded vertices.
     pub scale: Vec3,
     /// Geometry, if the file was found and in a format we can read.
     pub data: Option<MeshData>,
@@ -34,30 +38,45 @@ pub struct MeshAsset {
 /// A `<texture>` asset. Recorded only; phyz has no renderer-side use for it yet.
 #[derive(Debug, Clone)]
 pub struct TextureAsset {
+    /// Asset name, if given.
     pub name: Option<String>,
+    /// `type` attribute, e.g. `"2d"` or `"cube"`.
     pub texture_type: String,
+    /// Source file, if the texture is loaded rather than generated.
     pub file: Option<String>,
+    /// `builtin` generator name, e.g. `"checker"`.
     pub builtin: Option<String>,
+    /// Primary colour for a builtin texture.
     pub rgb1: Option<[f64; 3]>,
+    /// Secondary colour for a builtin texture.
     pub rgb2: Option<[f64; 3]>,
 }
 
 /// A `<material>` asset.
 #[derive(Debug, Clone)]
 pub struct MaterialAsset {
+    /// Asset name.
     pub name: String,
+    /// Name of the `<texture>` this material references, if any.
     pub texture: Option<String>,
+    /// Base colour.
     pub rgba: Option<[f64; 4]>,
+    /// Specular reflectance.
     pub specular: Option<f64>,
+    /// Specular exponent.
     pub shininess: Option<f64>,
 }
 
 /// An `<hfield>` asset. Recorded only: phyz-collision has no heightfield support.
 #[derive(Debug, Clone)]
 pub struct HFieldAsset {
+    /// Asset name.
     pub name: String,
+    /// Elevation data file, if the field is loaded rather than declared.
     pub file: Option<String>,
+    /// Number of rows in the elevation grid.
     pub nrow: Option<usize>,
+    /// Number of columns in the elevation grid.
     pub ncol: Option<usize>,
     /// `size` = [radius_x, radius_y, elevation_z, base_z].
     pub size: Option<[f64; 4]>,

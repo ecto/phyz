@@ -147,13 +147,7 @@ impl YeeGrid {
 
         // Advance the ADE polarizations first: they depend on E^n only.
         if let Some(disp) = self.dispersion.as_mut() {
-            disp.advance(
-                &self.mat_id,
-                [&self.ex, &self.ey, &self.ez],
-                nx,
-                ny,
-                nz,
-            );
+            disp.advance(&self.mat_id, [&self.ex, &self.ey, &self.ez], nx, ny, nz);
         }
 
         let mut cpml = self.cpml.take();
@@ -251,17 +245,13 @@ impl YeeGrid {
     ///
     /// `S = c Δt √(1/Δx² + 1/Δy² + 1/Δz²)`; stability requires `S ≤ 1`.
     pub fn cfl_number(&self) -> f64 {
-        let inv = 1.0 / (self.dx * self.dx)
-            + 1.0 / (self.dy * self.dy)
-            + 1.0 / (self.dz * self.dz);
+        let inv = 1.0 / (self.dx * self.dx) + 1.0 / (self.dy * self.dy) + 1.0 / (self.dz * self.dz);
         self.c0 * self.dt * inv.sqrt()
     }
 
     /// Largest stable timestep for this grid (the Courant limit).
     pub fn max_stable_dt(&self) -> f64 {
-        let inv = 1.0 / (self.dx * self.dx)
-            + 1.0 / (self.dy * self.dy)
-            + 1.0 / (self.dz * self.dz);
+        let inv = 1.0 / (self.dx * self.dx) + 1.0 / (self.dy * self.dy) + 1.0 / (self.dz * self.dz);
         1.0 / (self.c0 * inv.sqrt())
     }
 
@@ -286,7 +276,9 @@ mod tests {
         let dt = dx / (c * 3_f64.sqrt()) * 0.99;
         let grid = YeeGrid::new(10, 10, 10, dx, dt);
         assert!(grid.is_stable());
-        assert!((grid.max_stable_dt() - dx / (c * 3_f64.sqrt())).abs() / grid.max_stable_dt() < 1e-6);
+        assert!(
+            (grid.max_stable_dt() - dx / (c * 3_f64.sqrt())).abs() / grid.max_stable_dt() < 1e-6
+        );
 
         let dt_unstable = dx / (c * 3_f64.sqrt()) * 1.01;
         let grid_unstable = YeeGrid::new(10, 10, 10, dx, dt_unstable);
@@ -376,8 +368,7 @@ mod tests {
         let k_measured = dphi / (n_cells * dz);
 
         // Analytic Yee 1D dispersion relation, solved for k.
-        let k_theory =
-            2.0 / dz * ((dz / (c * dt)) * (omega * dt / 2.0).sin()).asin();
+        let k_theory = 2.0 / dz * ((dz / (c * dt)) * (omega * dt / 2.0).sin()).asin();
 
         let rel_err = (k_measured - k_theory).abs() / k_theory;
         assert!(

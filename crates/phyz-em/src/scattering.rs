@@ -167,8 +167,7 @@ impl CrossSectionMonitor {
                     // ½ Re[E × H*] · n̂, keeping only the normal component.
                     let (p, q) = ((axis + 1) % 3, (axis + 2) % 3);
                     #[allow(clippy::needless_range_loop)]
-                    let s_n =
-                        0.5 * ((e[p] * h[q].conj()).re - (e[q] * h[p].conj()).re);
+                    let s_n = 0.5 * ((e[p] * h[q].conj()).re - (e[q] * h[p].conj()).re);
                     total += sign * s_n * area[axis];
                 }
                 total

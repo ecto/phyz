@@ -1,10 +1,8 @@
 //! Ball drop example — demonstrates contact physics with ground plane.
 //! Simplified particle simulation (no full rigid body dynamics).
 
-use phyz::{
-    ContactMaterial,
-    phyz_math::{GRAVITY, Vec3},
-};
+use phyz::ContactMaterial;
+use phyz_math::{GRAVITY, Vec3};
 
 fn main() {
     let radius = 0.1; // 10 cm ball

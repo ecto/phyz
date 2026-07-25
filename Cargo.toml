@@ -25,10 +25,12 @@ members = [
     "crates/phyz-format",
     "crates/phyz",
     "crates/phyz-wasm",
+    "crates/phyz-examples",
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",
     "crates/phyz-dream",
+    "crates/phyz-validate",
 ]
 
 [workspace.package]
@@ -77,6 +79,7 @@ phyz-format = { version = "0.3.1", path = "crates/phyz-format" }
 phyz-regge = { version = "0.3.1", path = "crates/phyz-regge", default-features = false }
 phyz-quantum = { version = "0.3.1", path = "crates/phyz-quantum", default-features = false }
 phyz = { version = "0.3.1", path = "crates/phyz" }
+phyz-validate = { version = "0.3.1", path = "crates/phyz-validate" }
 
 # Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
 [profile.dev.package.phyz-home]
@@ -86,6 +89,12 @@ debug-assertions = false
 [profile.dev.package.phyz-wasm]
 opt-level = 2
 debug-assertions = false
+
+# phyz-dream's tests train a small network to convergence. Unoptimized that
+# takes tens of minutes and dominates `cargo test --workspace`; at opt-level 2
+# it is seconds. Same reasoning as phyz-lbm below.
+[profile.dev.package.phyz-dream]
+opt-level = 2
 
 # The LBM validation benchmarks run flows to steady state on real grids;
 # unoptimized they take tens of minutes instead of tens of seconds.

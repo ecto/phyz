@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Soft contact dynamics and penalty-based contact resolution for phyz"
+keywords = ["contact", "friction", "physics", "simulation", "robotics"]
+categories = ["simulation", "science::robotics", "science"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

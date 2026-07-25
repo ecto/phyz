@@ -115,8 +115,8 @@ impl GaugeField for U1Field {
 ///
 /// We use a convention where edges are oriented from lower to higher
 /// vertex index. The triangle [v0, v1, v2] with v0 < v1 < v2 has
-/// boundary: (v0→v1) + (v1→v2) - (v0→v2), i.e., edges [v0,v1], [v1,v2]
-/// with positive orientation and [v0,v2] with negative orientation.
+/// boundary: (v0→v1) + (v1→v2) - (v0→v2), i.e., edges `[v0,v1]`, `[v1,v2]`
+/// with positive orientation and `[v0,v2]` with negative orientation.
 pub fn field_strengths(complex: &SimplicialComplex, phases: &[f64]) -> Vec<f64> {
     let n_tri = complex.n_triangles();
     let mut f = vec![0.0; n_tri];

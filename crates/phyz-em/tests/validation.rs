@@ -143,8 +143,14 @@ fn boundary_reflection_coefficient_in_db() {
         // Evaluate across the band where the pulse actually carries energy:
         // 10 to 40 cells per wavelength.
         let ppw: Vec<f64> = (10..=40).map(|p| p as f64).collect();
-        let omegas: Vec<f64> = ppw.iter().map(|p| 2.0 * std::f64::consts::PI * C / (p * dz)).collect();
-        let inc_mag: Vec<f64> = spectrum(&reference, &omegas, dt).iter().map(|c| c.norm()).collect();
+        let omegas: Vec<f64> = ppw
+            .iter()
+            .map(|p| 2.0 * std::f64::consts::PI * C / (p * dz))
+            .collect();
+        let inc_mag: Vec<f64> = spectrum(&reference, &omegas, dt)
+            .iter()
+            .map(|c| c.norm())
+            .collect();
         let r_db = reflection_db(&reflected, &reference, &omegas, dt);
 
         // Report, and take the worst reflection over the well-excited part of
@@ -179,7 +185,10 @@ fn boundary_reflection_coefficient_in_db() {
         "graded-conductivity absorber, 10 cells, near-optimal σ (not a PML)",
     );
 
-    println!("\nCPML improves on the cheap absorber by {:.1} dB\n", lossy - cpml);
+    println!(
+        "\nCPML improves on the cheap absorber by {:.1} dB\n",
+        lossy - cpml
+    );
 
     assert!(
         cpml < -60.0,
@@ -240,8 +249,14 @@ fn cpml_reflection_improves_with_thickness() {
     let r16 = worst_for(16);
     println!("CPML reflection: 6 cells {r6:.1} dB, 10 cells {r10:.1} dB, 16 cells {r16:.1} dB");
 
-    assert!(r10 < r6, "10-cell CPML ({r10:.1} dB) should beat 6-cell ({r6:.1} dB)");
-    assert!(r16 < r10, "16-cell CPML ({r16:.1} dB) should beat 10-cell ({r10:.1} dB)");
+    assert!(
+        r10 < r6,
+        "10-cell CPML ({r10:.1} dB) should beat 6-cell ({r6:.1} dB)"
+    );
+    assert!(
+        r16 < r10,
+        "16-cell CPML ({r16:.1} dB) should beat 10-cell ({r10:.1} dB)"
+    );
 }
 
 /// Shared driver for half-space reflection: illuminate a half-space through a
@@ -289,7 +304,10 @@ fn measure_halfspace_reflection(
 
     let r = spectrum(&reflected, omegas, dt);
     let i = spectrum(&incident, omegas, dt);
-    r.iter().zip(i.iter()).map(|(a, b)| a.norm() / b.norm()).collect()
+    r.iter()
+        .zip(i.iter())
+        .map(|(a, b)| a.norm() / b.norm())
+        .collect()
 }
 
 /// **Item 2, part 1** — reflection off a non-dispersive dielectric half-space
@@ -318,8 +336,7 @@ fn halfspace_reflection_matches_fresnel_nondispersive() {
 
         let mat = DispersiveMaterial::non_dispersive(eps);
         let analytic = (1.0 - eps.sqrt()).abs() / (1.0 + eps.sqrt());
-        let measured =
-            measure_halfspace_reflection(mat, dz, dt, nz, 250, 1600, spread, &omegas);
+        let measured = measure_halfspace_reflection(mat, dz, dt, nz, 250, 1600, spread, &omegas);
 
         println!("\nε_r = {eps}  (analytic |r| = {analytic:.4})");
         let mut errors = Vec::new();
@@ -367,7 +384,11 @@ fn halfspace_reflection_matches_drude_metal() {
     let dt = 0.5 * dz / C;
     let omega_p = 2.0e15;
     let gamma = 1.0e14;
-    assert!(omega_p * dt < 0.1, "plasma pole under-resolved: ω_p Δt = {}", omega_p * dt);
+    assert!(
+        omega_p * dt < 0.1,
+        "plasma pole under-resolved: ω_p Δt = {}",
+        omega_p * dt
+    );
 
     let material = DispersiveMaterial::drude(1.0, omega_p, gamma);
 
@@ -412,7 +433,10 @@ fn halfspace_reflection_matches_drude_metal() {
     // is not.
     let below = material.fresnel_normal(0.6 * omega_p).norm();
     let above = material.fresnel_normal(2.4 * omega_p).norm();
-    assert!(below > 0.8 && above < 0.3, "Drude crossover is not being reproduced");
+    assert!(
+        below > 0.8 && above < 0.3,
+        "Drude crossover is not being reproduced"
+    );
 }
 
 /// **Item 2, part 3** — a Lorentz oscillator.
@@ -427,7 +451,11 @@ fn halfspace_reflection_matches_lorentz_oscillator() {
     let omega0 = 1.5e15;
     let gamma = 2.0e14;
     let delta_eps = 3.0;
-    assert!(omega0 * dt < 0.1, "resonance under-resolved: ω₀ Δt = {}", omega0 * dt);
+    assert!(
+        omega0 * dt < 0.1,
+        "resonance under-resolved: ω₀ Δt = {}",
+        omega0 * dt
+    );
 
     let material = DispersiveMaterial::lorentz(1.5, delta_eps, omega0, gamma);
 
@@ -472,7 +500,11 @@ fn halfspace_reflection_matches_debye_relaxor() {
     // τ must be short enough that the sampled wavelengths (λ = 2πc·τ/ωτ) fit
     // in the domain: at ωτ = 0.3, λ ≈ 3 µm ≈ 200 cells, which they do.
     let tau = 5.0e-16;
-    assert!(dt / tau < 0.1, "relaxation under-resolved: Δt/τ = {}", dt / tau);
+    assert!(
+        dt / tau < 0.1,
+        "relaxation under-resolved: Δt/τ = {}",
+        dt / tau
+    );
 
     let material = DispersiveMaterial::debye(2.0, 4.0, tau);
     let omegas: Vec<f64> = vec![0.3, 0.6, 1.0, 1.6, 2.5]
@@ -540,7 +572,10 @@ fn lossless_interface_conserves_power() {
     }
 
     let ppw: Vec<f64> = (30..=60).step_by(10).map(|p| p as f64).collect();
-    let omegas: Vec<f64> = ppw.iter().map(|p| 2.0 * std::f64::consts::PI * C / (p * dz)).collect();
+    let omegas: Vec<f64> = ppw
+        .iter()
+        .map(|p| 2.0 * std::f64::consts::PI * C / (p * dz))
+        .collect();
     let sr = spectrum(&reflected, &omegas, dt);
     let st = spectrum(&transmitted, &omegas, dt);
     let si = spectrum(&incident, &omegas, dt);
@@ -551,7 +586,12 @@ fn lossless_interface_conserves_power() {
         let t = st[idx].norm() / si[idx].norm();
         // Time-averaged power ∝ n |E|² for a non-magnetic medium.
         let total = r * r + n * t * t;
-        println!("  {p:>4.0} cells/λ : |r|² = {:.4}, n|t|² = {:.4}, sum = {:.4}", r * r, n * t * t, total);
+        println!(
+            "  {p:>4.0} cells/λ : |r|² = {:.4}, n|t|² = {:.4}, sum = {:.4}",
+            r * r,
+            n * t * t,
+            total
+        );
         assert!(
             (total - 1.0).abs() < 0.03,
             "power balance at {p} cells/λ is {total:.4}, not 1"
@@ -589,7 +629,10 @@ fn tfsf_leakage_spectrum() {
     }
 
     let ppw: Vec<f64> = (10..=40).step_by(5).map(|p| p as f64).collect();
-    let omegas: Vec<f64> = ppw.iter().map(|p| 2.0 * std::f64::consts::PI * C / (p * dz)).collect();
+    let omegas: Vec<f64> = ppw
+        .iter()
+        .map(|p| 2.0 * std::f64::consts::PI * C / (p * dz))
+        .collect();
     let leak = reflection_db(&sf, &tf, &omegas, dt);
 
     println!("\nTFSF leakage into the scattered-field region:");
@@ -599,7 +642,10 @@ fn tfsf_leakage_spectrum() {
         worst = worst.max(leak[idx]);
     }
     println!("  worst: {worst:.1} dB");
-    assert!(worst < -60.0, "TFSF leakage {worst:.1} dB exceeds the -60 dB target");
+    assert!(
+        worst < -60.0,
+        "TFSF leakage {worst:.1} dB exceeds the -60 dB target"
+    );
 }
 
 /// The scattered field from an empty TFSF box in 3D is the leakage floor for
@@ -757,7 +803,7 @@ fn slab_reflection_matches_fabry_perot() {
 #[test]
 #[ignore = "3D scattering run; too slow for the default suite"]
 fn sphere_scattering_matches_rayleigh() {
-    use phyz_em::scattering::{rayleigh_cross_section, CrossSectionMonitor};
+    use phyz_em::scattering::{CrossSectionMonitor, rayleigh_cross_section};
 
     let d = 5e-9;
     let dt = d / (C * 3_f64.sqrt()) * 0.99;
@@ -783,7 +829,8 @@ fn sphere_scattering_matches_rayleigh() {
     for &ka in &kas {
         monitor_omegas.push(ka / radius * C);
     }
-    let mut monitor = CrossSectionMonitor::new(&grid, 14, 57, 14, 57, 14, 57, monitor_omegas.clone());
+    let mut monitor =
+        CrossSectionMonitor::new(&grid, 14, 57, 14, 57, 14, 57, monitor_omegas.clone());
 
     let spread = 30.0 * dt;
     let t0 = 5.0 * spread;

@@ -31,6 +31,7 @@ impl ClassDefaults {
         self.attrs.get(tag)
     }
 
+    /// The class this one is nested inside, if any.
     pub fn parent(&self) -> Option<&str> {
         self.parent.as_deref()
     }
@@ -51,6 +52,7 @@ impl Default for DefaultsManager {
 }
 
 impl DefaultsManager {
+    /// A manager holding only the root class.
     pub fn new() -> Self {
         let mut classes = HashMap::new();
         classes.insert(MAIN_CLASS.to_string(), ClassDefaults::default());
@@ -87,14 +89,17 @@ impl DefaultsManager {
         self.cache.borrow_mut().clear();
     }
 
+    /// Whether a class of this name was declared.
     pub fn has_class(&self, name: &str) -> bool {
         self.classes.contains_key(name)
     }
 
+    /// Look up a class by name.
     pub fn class(&self, name: &str) -> Option<&ClassDefaults> {
         self.classes.get(name)
     }
 
+    /// Every declared class name, in arbitrary order.
     pub fn class_names(&self) -> impl Iterator<Item = &str> {
         self.classes.keys().map(|s| s.as_str())
     }

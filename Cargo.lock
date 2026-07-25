@@ -2904,6 +2904,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-examples"
+version = "0.3.1"
+dependencies = [
+ "phyz",
+ "phyz-collision",
+ "phyz-compile",
+ "phyz-contact",
+ "phyz-coupling",
+ "phyz-diff",
+ "phyz-em",
+ "phyz-format",
+ "phyz-gpu",
+ "phyz-gravity",
+ "phyz-guardian",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-mjcf",
+ "phyz-model",
+ "phyz-particle",
+ "phyz-prob",
+ "phyz-real2sim",
+ "phyz-rigid",
+ "phyz-world",
+ "rand 0.8.5",
+ "rand_distr",
+ "serde_json",
+]
+
+[[package]]
 name = "phyz-format"
 version = "0.3.1"
 dependencies = [
@@ -3093,6 +3122,19 @@ dependencies = [
  "phyz-rigid",
  "thiserror 2.0.18",
  "urdf-rs",
+]
+
+[[package]]
+name = "phyz-validate"
+version = "0.3.1"
+dependencies = [
+ "phyz-em",
+ "phyz-gravity",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-md",
+ "phyz-model",
+ "phyz-rigid",
 ]
 
 [[package]]

@@ -1,18 +1,39 @@
 //! phyz — Multi-physics differentiable simulation engine.
 //!
-//! This crate is a thin umbrella: every type and function below lives in one
-//! of the focused `phyz-*` crates and is re-exported here so that
-//! `cargo add phyz` gives you the whole engine behind a single dependency.
-//! There is no code of its own — the modules are aliases, not copies, so a
-//! fix in `phyz-collision` is a fix for `phyz::collision` by construction.
+//! This crate is a thin umbrella over the **rigid-body stack**: every type and
+//! function below lives in one of the focused `phyz-*` crates and is
+//! re-exported here, so `cargo add phyz` gives you that stack behind a single
+//! dependency. The re-exported modules are aliases, not copies, so a fix in
+//! `phyz-collision` is a fix for `phyz::collision` by construction. [`sim`] is
+//! the one module with code of its own: the time loop, which none of the
+//! focused crates own.
+//!
+//! It does **not** cover the whole workspace. `phyz-gpu`, `phyz-particle`,
+//! `phyz-lbm`, `phyz-em`, `phyz-md` and the rest are separate crates you add
+//! explicitly.
 //!
 //! # Features
 //!
 //! - `collision` (default) — GJK/EPA narrow phase and broad-phase spatial hashing.
 //! - `contact` (default) — soft/penalty contact dynamics; implies `collision`.
-//! - `diff` (default) — analytical Jacobians and the trajectory adjoint.
+//! - `diff` (default) — per-step Jacobians and the trajectory adjoint. Only
+//!   the adjoint ([`diff::adjoint_rollout_gradient`]) and the symbolic path
+//!   are derivative-exact; see [`phyz_diff`] for which is which.
 //!
 //! `math`, `model`, and `rigid` are always present.
+
+#![warn(missing_docs)]
+
+// Compile every ```rust block in the crate README and the repository README
+// as doc-tests, so the documented API cannot drift from the real one.
+// `cfg(doctest)` keeps both out of the rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct CrateReadmeDocTests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+pub struct RepoReadmeDocTests;
 
 // Sub-crates re-exported under their real names, so downstream code can name
 // them either way (`phyz::phyz_rigid::aba` or `phyz::rigid::aba`).
@@ -49,6 +70,8 @@ pub use phyz_diff;
 /// alongside `phyz::diff::finite_diff_jacobians`.
 #[cfg(feature = "diff")]
 pub mod diff {
+    #[allow(deprecated)]
+    pub use phyz_diff::analytical_step_jacobians;
     pub use phyz_diff::rollout::{
         AdjointGradients, AdjointRollout, CollisionMesh, ContactSetup, FinalStateObjective,
         GroundContact, N_INERTIA_PARAMS, adjoint_rollout_gradient, inertia_params,
@@ -56,7 +79,7 @@ pub mod diff {
     };
     pub use phyz_diff::rollout::{adjoint, step};
     pub use phyz_diff::{
-        StepJacobians, analytical_step_jacobians, finite_diff_jacobians, rollout, symbolic,
+        StepJacobians, finite_diff_jacobians, rollout, semi_implicit_step_jacobians, symbolic,
     };
 }
 

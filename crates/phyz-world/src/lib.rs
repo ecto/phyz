@@ -8,6 +8,12 @@
 //! kinematic bodies plus a [`Scene`] of static obstacles, and the inertial
 //! sensors run forward kinematics and dynamics rather than reporting zeros.
 
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 mod generator;
 pub mod scene;
 pub mod sensor;
