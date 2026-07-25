@@ -71,10 +71,25 @@ phyz/
 │   ├── phyz-world/       # Scene graph, multi-physics world
 │   ├── phyz-real2sim/    # Inverse problems, parameter fitting
 │   ├── phyz-format/      # Serialization, model I/O
+│   ├── phyz-validate/    # Closed-form physics benchmarks for every solver
 │   └── phyz-wasm/        # WASM bindings for browser demos
 ├── examples/             # Runnable examples
 └── site/                 # Landing page + interactive demos
 ```
+
+## Validation
+
+Every solver is benchmarked against a closed-form solution or published reference
+data, with a quantitative error and — where a discretization parameter exists — a
+demonstrated convergence order:
+
+```bash
+cargo run --release -p phyz-validate
+```
+
+That writes `target/validation/validation.md` and `validation.json`. See
+[VALIDATION.md](VALIDATION.md) for the current results, including the benchmarks
+that fail.
 
 ## Development
 

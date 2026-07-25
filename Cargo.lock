@@ -2809,7 +2809,7 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3062,6 +3062,19 @@ version = "0.1.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
+]
+
+[[package]]
+name = "phyz-validate"
+version = "0.1.0"
+dependencies = [
+ "phyz-em",
+ "phyz-gravity",
+ "phyz-lbm",
+ "phyz-math",
+ "phyz-md",
+ "phyz-model",
+ "phyz-rigid",
 ]
 
 [[package]]

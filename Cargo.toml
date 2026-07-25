@@ -28,6 +28,7 @@ members = [
     "crates/phyz-quantum",
     "crates/phyz-home",
     "crates/phyz-dream",
+    "crates/phyz-validate",
 ]
 
 [workspace.package]
@@ -68,6 +69,7 @@ phyz-format = { version = "0.1.0", path = "crates/phyz-format" }
 phyz-regge = { version = "0.1.0", path = "crates/phyz-regge", default-features = false }
 phyz-quantum = { version = "0.1.0", path = "crates/phyz-quantum", default-features = false }
 phyz = { version = "0.1.0", path = "crates/phyz" }
+phyz-validate = { version = "0.1.0", path = "crates/phyz-validate" }
 
 # Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
 [profile.dev.package.phyz-home]

@@ -22,6 +22,8 @@ pub struct LatticeBoltzmann2D {
     /// Distribution functions f_i at each grid point
     /// Shape: [nx, ny, 9]
     pub f: Vec<f64>,
+    /// Uniform body force per unit volume (Guo forcing scheme). Zero by default.
+    pub force: [f64; 2],
     /// Temporary buffer for streaming step
     f_temp: Vec<f64>,
 }
@@ -71,7 +73,38 @@ impl LatticeBoltzmann2D {
             nu,
             tau,
             f: vec![0.0; size],
+            force: [0.0, 0.0],
             f_temp: vec![0.0; size],
+        }
+    }
+
+    /// Set a uniform body force per unit volume (e.g. a pressure gradient
+    /// driving channel flow), applied with the Guo et al. (2002) forcing scheme.
+    pub fn set_body_force(&mut self, force: [f64; 2]) {
+        self.force = force;
+    }
+
+    /// Equilibrium distribution `f_i^eq(ρ, u)` — exposed for initialisation and
+    /// for validation harnesses.
+    pub fn feq(&self, i: usize, rho: f64, u: [f64; 2]) -> f64 {
+        self.equilibrium(i, rho, u)
+    }
+
+    /// Read a distribution function.
+    pub fn f_at(&self, x: usize, y: usize, i: usize) -> f64 {
+        self.get_f(x, y, i)
+    }
+
+    /// Write a distribution function.
+    pub fn set_f_at(&mut self, x: usize, y: usize, i: usize, val: f64) {
+        self.set_f(x, y, i, val);
+    }
+
+    /// Initialise a single node to the equilibrium of `(rho, u)`.
+    pub fn initialize_at(&mut self, x: usize, y: usize, rho: f64, u: [f64; 2]) {
+        for i in 0..9 {
+            let feq = self.equilibrium(i, rho, u);
+            self.set_f(x, y, i, feq);
         }
     }
 
@@ -129,12 +162,16 @@ impl LatticeBoltzmann2D {
     }
 
     /// Compute macroscopic velocity at (x, y).
+    ///
+    /// With a body force present this is the Guo-corrected velocity
+    /// `u = (Σ f_i e_i + F/2) / ρ`, which is the second-order-accurate
+    /// hydrodynamic velocity.
     pub fn velocity(&self, x: usize, y: usize) -> [f64; 2] {
         let rho = self.density(x, y);
         if rho < 1e-12 {
             return [0.0, 0.0];
         }
-        let mut u = [0.0, 0.0];
+        let mut u = [0.5 * self.force[0], 0.5 * self.force[1]];
         for (i, e) in E.iter().enumerate() {
             let f = self.get_f(x, y, i);
             u[0] += f * e[0] as f64;
@@ -176,8 +213,22 @@ impl LatticeBoltzmann2D {
         }
     }
 
-    /// Perform collision step (BGK operator).
+    /// Guo et al. (2002) forcing source term S_i for a uniform body force.
+    ///
+    /// S_i = (1 − 1/(2τ)) w_i [3(e_i − u) + 9(e_i·u) e_i] · F
+    #[inline]
+    fn guo_source(&self, i: usize, u: [f64; 2]) -> f64 {
+        let ex = E[i][0] as f64;
+        let ey = E[i][1] as f64;
+        let eu = ex * u[0] + ey * u[1];
+        let cx = 3.0 * (ex - u[0]) + 9.0 * eu * ex;
+        let cy = 3.0 * (ey - u[1]) + 9.0 * eu * ey;
+        (1.0 - 0.5 / self.tau) * W[i] * (cx * self.force[0] + cy * self.force[1])
+    }
+
+    /// Perform collision step (BGK operator, with Guo forcing if a body force is set).
     fn collide(&mut self) {
+        let forced = self.force[0] != 0.0 || self.force[1] != 0.0;
         for y in 0..self.ny {
             for x in 0..self.nx {
                 let rho = self.density(x, y);
@@ -186,7 +237,10 @@ impl LatticeBoltzmann2D {
                 for i in 0..9 {
                     let f = self.get_f(x, y, i);
                     let feq = self.equilibrium(i, rho, u);
-                    let f_new = f - (f - feq) / self.tau;
+                    let mut f_new = f - (f - feq) / self.tau;
+                    if forced {
+                        f_new += self.guo_source(i, u);
+                    }
                     self.set_f_temp(x, y, i, f_new);
                 }
             }

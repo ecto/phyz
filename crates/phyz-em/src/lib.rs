@@ -53,7 +53,7 @@ pub mod grid;
 pub mod solver;
 pub mod source;
 
-pub use boundary::BoundaryCondition;
+pub use boundary::{BoundaryCondition, PmlLayer};
 pub use grid::{Array3D, YeeGrid};
 pub use solver::FdtdSolver;
 pub use source::{Probe, Source};

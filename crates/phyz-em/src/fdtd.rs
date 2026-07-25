@@ -136,39 +136,79 @@ mod tests {
         assert!(energy > 0.0);
     }
 
+    /// A single spatial eigenmode must oscillate at exactly the frequency the
+    /// analytic Yee dispersion relation predicts.
+    ///
+    /// For one eigenmode the leapfrog collapses to the three-term recurrence
+    /// `E^{n+1} = 2cos(ωΔt)E^n − E^{n−1}`, so the measured `ω` matches the
+    /// analytic root to round-off when the update coefficients are correct.
+    ///
+    /// The full benchmark — dispersion vs the continuum with a second-order
+    /// convergence study, a rectangular-cavity resonance, and a measured
+    /// absorbing-boundary reflection coefficient — lives in `phyz-validate`.
     #[test]
-    fn test_plane_wave_propagation() {
-        let nx = 64;
-        let ny = 64;
-        let nz = 64;
-        let dx = 1e-9; // 1 nm
-        let c = 3e8;
-        let dt = dx / (c * 3_f64.sqrt() * 1.1);
+    fn test_yee_dispersion_relation() {
+        let nz = 65;
+        let dx = 1e-3;
+        let (nx, ny) = (4, 4);
+        let dt = 0.5 * dx / (299_792_458.0 * 3_f64.sqrt());
 
         let mut grid = YeeGrid::new(nx, ny, nz, dx, dt);
+        let c = grid.c0;
+        let kz = std::f64::consts::PI / ((nz - 1) as f64 * dx);
 
-        // Initialize plane wave in z-direction: Ex polarized, propagating +z
-        for i in 0..nx {
-            for j in 0..ny {
-                let k = 5;
-                grid.ex.set(i, j, k, 1.0);
-                grid.hy.set(i, j, k, 1.0 / (grid.mu0 / grid.eps0).sqrt()); // Impedance match
+        // Ex = sin(k z), H = 0: an exact standing eigenmode of the PEC cavity.
+        for k in 0..nz {
+            let v = (kz * k as f64 * dx).sin();
+            for i in 0..nx {
+                for j in 0..ny {
+                    grid.ex.set(i, j, k, v);
+                }
             }
         }
 
-        let initial_energy = grid.total_energy();
-        assert!(initial_energy > 0.0);
-
-        // Propagate for a few steps (short propagation to avoid boundary issues)
-        for _ in 0..20 {
+        let (i0, j0, k0) = (nx / 2, ny / 2, (nz - 1) / 2);
+        let mut series = vec![grid.ex.get(i0, j0, k0)];
+        for _ in 0..400 {
             grid.update_h_field();
             grid.update_e_field();
+            grid.apply_boundary(crate::BoundaryCondition::PerfectConductor);
+            // Re-impose transverse uniformity: this is a 1-D problem run on the
+            // 3-D grid, whose update loops leave the outermost slab untouched.
+            for k in 0..nz {
+                let (ex, hy) = (grid.ex.get(i0, j0, k), grid.hy.get(i0, j0, k));
+                for i in 0..nx {
+                    for j in 0..ny {
+                        grid.ex.set(i, j, k, ex);
+                        grid.hy.set(i, j, k, hy);
+                    }
+                }
+            }
+            series.push(grid.ex.get(i0, j0, k0));
         }
 
-        // Energy should remain positive and in reasonable range
-        // Note: Without proper boundary conditions, energy may grow from reflections
-        let final_energy = grid.total_energy();
-        assert!(final_energy > 0.0);
-        assert!(final_energy < initial_energy * 100.0); // Very lenient bound
+        // cos(ωΔt) by least squares over the record.
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for n in 1..series.len() - 1 {
+            num += series[n] * (series[n + 1] + series[n - 1]);
+            den += 2.0 * series[n] * series[n];
+        }
+        let omega = (num / den).clamp(-1.0, 1.0).acos() / dt;
+
+        // sin(ωΔt/2) = (cΔt/Δx) sin(kΔx/2)
+        let expected = 2.0 / dt * ((c * dt / dx) * (0.5 * kz * dx).sin()).asin();
+        let rel = (omega - expected).abs() / expected;
+        assert!(rel < 1e-9, "ω = {omega}, Yee dispersion predicts {expected} (rel err {rel:.3e})");
+
+        // ...and that discrete frequency must be within the O((kΔx)²) grid
+        // dispersion error of the continuum ω = ck.
+        let continuum = c * kz;
+        let dispersion_error = (omega - continuum).abs() / continuum;
+        assert!(
+            dispersion_error < 1e-3,
+            "grid dispersion error = {dispersion_error:.3e} at kΔx = {:.4}",
+            kz * dx
+        );
     }
 }
