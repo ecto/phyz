@@ -84,11 +84,3 @@ impl ContactMaterial {
         }
     }
 }
-
-impl ContactMaterial {
-    /// Deprecated alias for [`Self::restitution`].
-    #[deprecated(note = "renamed to `restitution`, which is now actually implemented")]
-    pub fn bounce(&self) -> f64 {
-        self.restitution
-    }
-}

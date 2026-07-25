@@ -14,7 +14,6 @@
 
 use phyz_contact::gradient::{ContactRegime, classify, friction_sensitivity, impulse_sensitivity};
 use phyz_contact::{ContactProblem, ContactRow, ContactSolverConfig, solve_contacts};
-use phyz_math::Vec3;
 
 fn problem(n: usize, mu: f64, b: &[f64], coupling: f64) -> ContactProblem {
     let dim = 3 * n;
@@ -141,7 +140,8 @@ fn coupled_contact_gradient_matches_finite_difference() {
 
     // Perturbing contact 1's normal free velocity must move contact 0's
     // impulse — the cross term.
-    let cross = sens[0 * dim + 3];
+    // Row 0 (contact 0's normal impulse), column 3 (contact 1's normal b).
+    let cross = sens[3];
     assert!(
         cross.abs() > 1e-3,
         "expected non-zero cross-sensitivity, got {cross}"

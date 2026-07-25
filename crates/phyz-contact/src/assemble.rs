@@ -416,7 +416,8 @@ mod tests {
         );
         let dim = 6;
         // Normal-normal off-diagonal block entry between contact 0 and 1.
-        let off = asm.problem.delassus[0 * dim + 3];
+        // Row 0 (contact 0's normal) x column 3 (contact 1's normal).
+        let off = asm.problem.delassus[3];
         assert!(
             off.abs() > 1e-9,
             "contacts on the same body must couple; A[0,3] = {off}"

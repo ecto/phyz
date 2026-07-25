@@ -327,7 +327,8 @@ fn coupled_contacts_differ_from_independent_ones() {
         delassus[i * dim + i] = 1.0;
     }
     // Strong off-diagonal coupling between the two normal directions.
-    delassus[0 * dim + 3] = 0.6;
+    // Row 0 (contact 0 normal) x column 3 (contact 1 normal), and its mirror.
+    delassus[3] = 0.6;
     delassus[3 * dim] = 0.6;
 
     let problem = ContactProblem {
