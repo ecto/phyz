@@ -39,6 +39,7 @@ pub enum ForceTransfer {
         /// In practice, this would be a function pointer or trait object,
         /// but for simplicity we use a simple spring potential here.
         stiffness: f64,
+        /// Separation at which the potential is at its minimum.
         equilibrium: f64,
     },
 }

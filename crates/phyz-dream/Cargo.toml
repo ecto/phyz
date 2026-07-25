@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Learned surrogate dynamics for phyz rigid body models"
+keywords = ["world-model", "surrogate", "dynamics", "physics", "learning"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [features]
 default = []
@@ -23,3 +26,7 @@ tang-compute = { path = "../../../tang/crates/tang-compute", optional = true }
 tang-expr = { path = "../../../tang/crates/tang-expr" }
 serde = { workspace = true }
 serde_json = "1"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

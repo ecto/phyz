@@ -57,7 +57,7 @@ pub fn triangle_area_grad_lsq(a: f64, b: f64, c: f64) -> [f64; 3] {
 ///      | 1  d04²   d14²   d24²   d34²  0      |
 /// ```
 ///
-/// Input: 10 edge lengths in order [l01,l02,l03,l04,l12,l13,l14,l23,l24,l34].
+/// Input: 10 edge lengths in order `[l01,l02,l03,l04,l12,l13,l14,l23,l24,l34]`.
 pub fn cayley_menger_matrix(lengths: &[f64; 10]) -> [[f64; 6]; 6] {
     // Map (i,j) with i<j in 0..5 to index in lengths array.
     // (0,1)→0, (0,2)→1, (0,3)→2, (0,4)→3, (1,2)→4, (1,3)→5, (1,4)→6, (2,3)→7, (2,4)→8, (3,4)→9
@@ -279,11 +279,11 @@ pub fn pent_volume_grad(lengths: &[f64; 10]) -> [f64; 10] {
 
 /// Dihedral angle at a triangle in a 4-simplex.
 ///
-/// In a 4-simplex [v0,v1,v2,v3,v4], the dihedral angle at triangle
-/// [vi,vj,vk] (between the two tetrahedra sharing that triangle) is
+/// In a 4-simplex `[v0,v1,v2,v3,v4]`, the dihedral angle at triangle
+/// `[vi,vj,vk]` (between the two tetrahedra sharing that triangle) is
 /// computed from the Cayley-Menger cofactors.
 ///
-/// The triangle [vi,vj,vk] is "opposite" to the edge [vl,vm].
+/// The triangle `[vi,vj,vk]` is "opposite" to the edge `[vl,vm]`.
 /// In the CM matrix (with border row/col 0), vertices map to rows/cols 1..5.
 ///
 /// cos(θ) = -C_{l+1,m+1} / sqrt(C_{l+1,l+1} · C_{m+1,m+1})

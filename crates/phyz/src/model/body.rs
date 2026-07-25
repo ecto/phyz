@@ -17,28 +17,43 @@ pub struct Body {
     pub geometry: Option<Geometry>,
 }
 
-/// Collision geometry types (re-exported from phyz-collision for convenience).
+/// Collision geometry types (mirrors `phyz-collision`'s shapes for convenience).
 #[derive(Debug, Clone)]
 pub enum Geometry {
+    /// A ball centred on the body frame origin.
     Sphere {
+        /// Ball radius, in metres.
         radius: f64,
     },
+    /// A capsule (swept sphere) aligned with the body frame Z axis.
     Capsule {
+        /// Radius of the swept sphere, in metres.
         radius: f64,
+        /// Distance between the two cap centres, in metres.
         length: f64,
     },
+    /// An axis-aligned box centred on the body frame origin.
     Box {
+        /// Half-extent along each body frame axis, in metres.
         half_extents: crate::math::Vec3,
     },
+    /// A cylinder aligned with the body frame Z axis.
     Cylinder {
+        /// Cylinder radius, in metres.
         radius: f64,
+        /// Cylinder height along Z, in metres.
         height: f64,
     },
+    /// An arbitrary triangle mesh in body frame coordinates.
     Mesh {
+        /// Vertex positions in body frame.
         vertices: Vec<crate::math::Vec3>,
+        /// Triangles, as triples of indices into `vertices`.
         faces: Vec<[usize; 3]>,
     },
+    /// A half-space through the body frame origin.
     Plane {
+        /// Outward unit normal of the plane, in body frame.
         normal: crate::math::Vec3,
     },
 }

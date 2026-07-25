@@ -1,0 +1,121 @@
+[package]
+name = "phyz-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Compile-checked runnable examples for the phyz workspace (not published)"
+publish = false
+
+# This crate exists so that every file under the repository-root `examples/`
+# directory is a real cargo target. `cargo build --workspace --examples` then
+# type-checks all of them, which is what keeps the documented API honest.
+# It ships no library or binary of its own.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Not `workspace = true`: the workspace dependency pins 0.1.0 while the crate
+# is at 0.3.1 (version-split fix tracked separately). Path-only avoids the
+# mismatch without touching the shared table.
+phyz = { path = "../phyz" }
+phyz-math = { workspace = true }
+phyz-model = { workspace = true }
+phyz-rigid = { workspace = true }
+phyz-diff = { workspace = true }
+phyz-collision = { workspace = true }
+phyz-contact = { workspace = true }
+phyz-compile = { workspace = true }
+phyz-coupling = { workspace = true }
+phyz-em = { workspace = true }
+phyz-format = { workspace = true }
+phyz-gpu = { workspace = true }
+phyz-gravity = { workspace = true }
+phyz-guardian = { workspace = true }
+phyz-lbm = { workspace = true }
+phyz-particle = { workspace = true }
+phyz-real2sim = { workspace = true }
+phyz-world = { workspace = true }
+phyz-mjcf = { workspace = true }
+phyz-prob = { workspace = true }
+serde_json.workspace = true
+rand = "0.8"
+rand_distr = "0.4"
+
+[[example]]
+name = "gpu_batch"
+path = "../../examples/gpu_batch.rs"
+
+[[example]]
+name = "coupled_em_rigid"
+path = "../../examples/coupled_em_rigid.rs"
+
+[[example]]
+name = "kernel_fusion"
+path = "../../examples/kernel_fusion.rs"
+
+[[example]]
+name = "pendulum"
+path = "../../examples/pendulum.rs"
+
+[[example]]
+name = "double_pendulum"
+path = "../../examples/double_pendulum.rs"
+
+[[example]]
+name = "multi_joint"
+path = "../../examples/multi_joint.rs"
+
+[[example]]
+name = "ball_drop"
+path = "../../examples/ball_drop.rs"
+
+[[example]]
+name = "granular_column"
+path = "../../examples/granular_column.rs"
+
+[[example]]
+name = "sphere_in_sand"
+path = "../../examples/sphere_in_sand.rs"
+
+[[example]]
+name = "water_container"
+path = "../../examples/water_container.rs"
+
+[[example]]
+name = "tendon_demo"
+path = "../../examples/tendon_demo.rs"
+
+[[example]]
+name = "training_data"
+path = "../../examples/training_data.rs"
+
+[[example]]
+name = "ant"
+path = "../../examples/ant.rs"
+
+[[example]]
+name = "ensemble_pendulum"
+path = "../../examples/ensemble_pendulum.rs"
+
+[[example]]
+name = "equation_free_demo"
+path = "../../examples/equation_free_demo.rs"
+
+[[example]]
+name = "lbm_cavity"
+path = "../../examples/lbm_cavity.rs"
+
+[[example]]
+name = "mercury_precession"
+path = "../../examples/mercury_precession.rs"
+
+[[example]]
+name = "real2sim_pendulum"
+path = "../../examples/real2sim_pendulum.rs"
+
+[[example]]
+name = "world_generation"
+path = "../../examples/world_generation.rs"

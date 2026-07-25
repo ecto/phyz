@@ -1,3 +1,4 @@
+
 #![allow(clippy::needless_range_loop)]
 //! Hamiltonian lattice gauge theory on simplicial complexes.
 //!
@@ -15,6 +16,12 @@
 //! - [`observables`]: Wilson loops, electric field, entanglement entropy
 //! - [`qubit_map`]: Qubit encoding and resource estimates
 //! - [`stabilizer`]: Z₂ limit → stabilizer code parameters
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
 
 pub mod diag;
 pub mod gauss_law;

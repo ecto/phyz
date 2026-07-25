@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build, test, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: phyz
+
+      # The workspace resolves `tang` through a path dependency on a sibling
+      # checkout (see the workspace Cargo.toml). Nothing builds without it.
+      # Removing this path dep is tracked separately.
+      - name: Check out sibling tang
+        uses: actions/checkout@v4
+        with:
+          repository: ecto/tang
+          path: tang
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: phyz
+
+      # Not `--all-targets`: crates/phyz/tests/integration.rs is stale (see
+      # the note on the test step below).
+      - name: Build workspace
+        working-directory: phyz
+        run: cargo build --workspace
+
+      # Every file under examples/ is a target of the phyz-examples crate, so
+      # this is what stops the documented API from rotting.
+      - name: Build examples
+        working-directory: phyz
+        run: cargo build --workspace --examples
+
+      # `crates/phyz` currently vendors copies of phyz-model/rigid/contact
+      # rather than depending on them, and `crates/phyz/tests/integration.rs`
+      # is still written against the older umbrella API. It does not compile.
+      # De-vendoring is tracked separately; until then the rest of the
+      # workspace and phyz's own unit + doc tests are gated here.
+      - name: Test workspace
+        working-directory: phyz
+        run: cargo test --workspace --exclude phyz
+
+      - name: Test phyz (lib, doc, contact_stability)
+        working-directory: phyz
+        run: |
+          cargo test -p phyz --lib
+          cargo test -p phyz --test contact_stability
+          cargo test -p phyz --doc
+
+      # The root README is included as a doc-test of crates/phyz, so its
+      # Quick Start is compiled and run by the step above.
+      - name: Documentation builds clean
+        working-directory: phyz
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      # Advisory for now: the workspace has a backlog of pre-existing clippy
+      # warnings. Flip `continue-on-error` off once that is cleared.
+      - name: Clippy
+        working-directory: phyz
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings

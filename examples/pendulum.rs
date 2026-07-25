@@ -1,10 +1,9 @@
 //! Single pendulum example — validates period and demonstrates gradients.
 
-use phyz::{
-    ModelBuilder, Simulator,
-    phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3},
-    phyz_rigid::{kinetic_energy, potential_energy, total_energy},
-};
+use phyz_examples::Simulator;
+use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_model::ModelBuilder;
+use phyz_rigid::{kinetic_energy, potential_energy, total_energy};
 
 fn main() {
     let length = 1.0;

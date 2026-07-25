@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Procedural world generation for phyz physics engine"
+keywords = ["procedural", "worldgen", "terrain", "physics", "simulation"]
+categories = ["simulation", "game-development", "science"]
+readme = "README.md"
 
 [dependencies]
 rand = "0.8"

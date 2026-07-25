@@ -13,7 +13,7 @@
 //! - [`potentials`] — Lennard-Jones (per-species + Lorentz-Berthelot mixing,
 //!   optional energy shift), direct Coulomb, harmonic bonds and angles
 //! - [`verlet`] — velocity-Verlet step with optional Berendsen thermostat
-//! - [`fire`] — FIRE energy minimization
+//! - [`fire`](mod@fire) — FIRE energy minimization
 //! - [`units`] — the Å / eV / amu / fs / e / K unit constants shared by all of
 //!   the above
 //!

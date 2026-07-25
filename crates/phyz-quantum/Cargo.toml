@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Hamiltonian lattice gauge theory on simplicial complexes"
+keywords = ["quantum", "lattice-gauge", "physics", "hamiltonian", "simulation"]
+categories = ["science", "simulation"]
+readme = "README.md"
 
 [features]
 default = ["parallel", "mesh"]
@@ -31,3 +34,7 @@ pollster = { version = "0.4", optional = true }
 rand = "0.8"
 serde_json = { workspace = true }
 ureq = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

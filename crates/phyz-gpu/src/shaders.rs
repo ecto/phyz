@@ -313,17 +313,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// Bodies must be topologically sorted (parent index < child index).
 ///
 /// Body data layout: 32 f32 values per body (BODY_STRIDE):
-///   [0]  parent (bitcast i32, -1 for root)
-///   [1]  joint_type (0=revolute, 1=prismatic, 2=fixed)
-///   [2]  q_offset
-///   [3]  v_offset
-///   [4]  mass
+///   `[0]`  parent (bitcast i32, -1 for root)
+///   `[1]`  joint_type (0=revolute, 1=prismatic, 2=fixed)
+///   `[2]`  q_offset
+///   `[3]`  v_offset
+///   `[4]`  mass
 ///   [5..8]  com (x,y,z)
 ///   [8..14] inertia (xx,yy,zz,xy,xz,yz)
 ///   [14..23] ptj rotation (row-major 3x3)
 ///   [23..26] ptj translation (x,y,z)
 ///   [26..29] axis (x,y,z)
-///   [29] damping
+///   `[29]` damping
 ///   [30..32] padding
 pub const ABA_GENERAL_SHADER: &str = r#"
 const MAX_BODIES: u32 = 16u;

@@ -6,6 +6,9 @@ license = "MIT"
 repository = "https://github.com/ecto/phyz"
 homepage = "https://phyz.dev"
 description = "Multi-physics differentiable simulation engine"
+keywords = ["physics", "simulation", "differentiable", "robotics", "dynamics"]
+categories = ["simulation", "science", "science::robotics"]
+readme = "README.md"
 
 [dependencies]
 phyz-math.workspace = true

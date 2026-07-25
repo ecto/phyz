@@ -4,7 +4,8 @@
 //! (Note: Full coupling requires collision detection between rigid bodies and particles,
 //! which will be implemented in a future phase.)
 
-use phyz::{Material, MpmSolver, Particle, Vec3};
+use phyz_math::Vec3;
+use phyz_particle::{Material, MpmSolver, Particle};
 
 fn main() {
     println!("Sphere falling into sand simulation");

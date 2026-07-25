@@ -4,7 +4,7 @@
 //! - Link 1: revolute joint (rotation about Z axis)
 //! - Link 2: prismatic joint (translation along X axis)
 
-use phyz::Simulator;
+use phyz_examples::Simulator;
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_rigid::total_energy;
@@ -31,9 +31,9 @@ fn main() {
         // Link 2: prismatic joint along X axis
         .add_prismatic_body(
             "link2",
-            0,                                                       // attached to link1
+            0,                                                            // attached to link1
             SpatialTransform::from_translation(Vec3::new(1.0, 0.0, 0.0)), // 1m offset
-            Vec3::new(1.0, 0.0, 0.0),                                // slide along X
+            Vec3::new(1.0, 0.0, 0.0),                                     // slide along X
             SpatialInertia::new(
                 0.5,                       // 0.5 kg
                 Vec3::new(0.25, 0.0, 0.0), // CoM at 0.25m along X

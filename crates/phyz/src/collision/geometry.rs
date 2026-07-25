@@ -6,26 +6,49 @@ use crate::math::{Mat3, Vec3};
 #[derive(Debug, Clone)]
 pub enum Geometry {
     /// Sphere with given radius.
-    Sphere { radius: f64 },
+    Sphere {
+        /// Ball radius, in metres.
+        radius: f64,
+    },
     /// Capsule: cylinder with hemispheres at ends.
-    Capsule { radius: f64, length: f64 },
+    Capsule {
+        /// Radius of the swept sphere, in metres.
+        radius: f64,
+        /// Distance between the two cap centres, in metres.
+        length: f64,
+    },
     /// Box with half-extents (width/2, height/2, depth/2).
-    Box { half_extents: Vec3 },
+    Box {
+        /// Half-extent along each local axis, in metres.
+        half_extents: Vec3,
+    },
     /// Cylinder along Z axis.
-    Cylinder { radius: f64, height: f64 },
+    Cylinder {
+        /// Cylinder radius, in metres.
+        radius: f64,
+        /// Cylinder height along Z, in metres.
+        height: f64,
+    },
     /// Convex mesh (vertices only; convex hull assumed).
     Mesh {
+        /// Vertex positions in the body frame.
         vertices: Vec<Vec3>,
+        /// Triangles, as triples of indices into `vertices`.
         faces: Vec<[usize; 3]>,
     },
     /// Infinite plane with outward normal.
-    Plane { normal: Vec3 },
+    Plane {
+        /// Outward unit normal of the half-space, in the body frame.
+        normal: Vec3,
+    },
 }
 
 /// Axis-aligned bounding box.
 #[derive(Debug, Clone, Copy)]
 pub struct AABB {
+    /// Lower corner (componentwise minimum).
     pub min: Vec3,
+    /// Upper corner (componentwise maximum).
     pub max: Vec3,
 }
 

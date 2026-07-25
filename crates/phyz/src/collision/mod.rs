@@ -34,8 +34,8 @@ pub struct Collision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use geometry::Geometry;
     use crate::math::Vec3;
+    use geometry::Geometry;
 
     #[test]
     fn test_sphere_sphere_separated() {

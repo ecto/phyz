@@ -2,7 +2,7 @@
 //!
 //! Demonstrates cable-like actuators that span multiple bodies.
 
-use phyz::{SemiImplicitEulerSolver, Solver};
+use phyz_examples::{SemiImplicitEulerSolver, Solver};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::ModelBuilder;
 use phyz_world::{Tendon, World};

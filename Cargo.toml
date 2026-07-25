@@ -24,6 +24,7 @@ members = [
     "crates/phyz-format",
     "crates/phyz",
     "crates/phyz-wasm",
+    "crates/phyz-examples",
     "crates/phyz-regge",
     "crates/phyz-quantum",
     "crates/phyz-home",

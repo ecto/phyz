@@ -1,3 +1,36 @@
+//! Learned surrogate dynamics for phyz rigid-body models.
+//!
+//! `phyz-dream` trains a neural network to approximate one step of a
+//! [`phyz_model::Model`]'s dynamics, so downstream search, planning or control
+//! can query a cheap approximate stepper instead of running the full
+//! simulator. The pipeline is:
+//!
+//! 1. **Sample** — [`generate_dataset`] rolls the true simulator out over
+//!    randomised initial conditions and controls, governed by
+//!    [`SampleConfig`]. [`input_dim`] reports the resulting feature width for
+//!    a given model.
+//! 2. **Train** — [`train()`] fits a [`DreamModel`] under a [`TrainConfig`].
+//!    The learned [`NormStats`] and [`DreamMeta`] travel with the weights, so
+//!    a saved model carries everything needed to run it.
+//! 3. **Validate** — [`validate()`] measures held-out error against the true
+//!    dynamics and returns a [`ValidationResult`].
+//!
+//! Step 3 is not optional. A surrogate that has drifted from the simulator it
+//! was trained on is worse than no surrogate, because the drift is silent;
+//! [`validate()`] is what distinguishes the two cases.
+//!
+//! With the `gpu` feature, `gpu::GpuDreamModel` runs inference on the GPU.
+//!
+//! # Status
+//!
+//! Experimental. The API is expected to change.
+
+// Compile the crate README's Rust blocks as doc-tests so the documented API
+// cannot drift from the real one. `cfg(doctest)` keeps it out of rendered docs.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
+
 pub mod data;
 #[cfg(feature = "gpu")]
 pub mod gpu;
