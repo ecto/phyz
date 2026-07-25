@@ -123,6 +123,26 @@ pub struct OctreeNode {
     pub particles: Vec<usize>,
 }
 
+/// Maximum octree subdivision depth. Prevents infinite recursion when two or
+/// more particles are coincident (or closer than f64 can separate at this
+/// scale); such particles end up sharing a multi-particle leaf.
+const MAX_DEPTH: u32 = 32;
+
+/// Octant index of `x` relative to a box centered at `center`.
+fn octant_of(center: Vec3, x: Vec3) -> usize {
+    let mut idx = 0;
+    if x.x >= center.x {
+        idx |= 1;
+    }
+    if x.y >= center.y {
+        idx |= 2;
+    }
+    if x.z >= center.z {
+        idx |= 4;
+    }
+    idx
+}
+
 impl OctreeNode {
     /// Create a new empty node.
     fn new(center: Vec3, half_size: f64) -> Self {
@@ -143,17 +163,7 @@ impl OctreeNode {
 
     /// Get octant index for a position.
     fn octant(&self, x: Vec3) -> usize {
-        let mut idx = 0;
-        if x.x >= self.center.x {
-            idx |= 1;
-        }
-        if x.y >= self.center.y {
-            idx |= 2;
-        }
-        if x.z >= self.center.z {
-            idx |= 4;
-        }
-        idx
+        octant_of(self.center, x)
     }
 
     /// Get child center for octant.
@@ -167,7 +177,15 @@ impl OctreeNode {
     }
 
     /// Insert a particle into the tree.
-    fn insert(&mut self, particle_idx: usize, particle_pos: Vec3, particle_mass: f64) {
+    ///
+    /// `all` is the full particle slice so that a leaf being subdivided can look
+    /// up the position of the occupant it has to push down into a child.
+    /// `depth` guards against infinite subdivision of coincident particles: at
+    /// [`MAX_DEPTH`] the node stays a multi-particle leaf.
+    fn insert(&mut self, particle_idx: usize, all: &[GravityParticle], depth: u32) {
+        let particle_pos = all[particle_idx].x;
+        let particle_mass = all[particle_idx].m;
+
         // Update center of mass
         let total_mass = self.mass + particle_mass;
         if total_mass > 0.0 {
@@ -176,45 +194,41 @@ impl OctreeNode {
         self.mass = total_mass;
 
         if self.is_leaf() {
-            if self.particles.is_empty() {
-                // Empty leaf: just add particle
+            if self.particles.is_empty() || depth >= MAX_DEPTH {
+                // Empty leaf, or depth cap reached: keep as a (possibly
+                // multi-particle) leaf. Coincident particles land here.
                 self.particles.push(particle_idx);
-            } else if self.particles.len() == 1 {
-                // Split leaf into internal node
-                let _existing_idx = self.particles[0];
-                self.particles.clear();
-
-                // Create children
-                let children = Box::new([
-                    OctreeNode::new(self.child_center(0), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(1), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(2), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(3), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(4), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(5), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(6), self.half_size / 2.0),
-                    OctreeNode::new(self.child_center(7), self.half_size / 2.0),
-                ]);
-
-                // Re-insert existing (this is a hack; we don't have its position)
-                // In a real implementation, we'd store positions separately
-                // For now, we'll just mark this as needing external position data
-                self.children = Some(children);
-
-                // Insert new particle
-                let octant = self.octant(particle_pos);
-                if let Some(ref mut children) = self.children {
-                    children[octant].insert(particle_idx, particle_pos, particle_mass);
-                }
-            } else {
-                // Shouldn't happen
-                self.particles.push(particle_idx);
+                return;
             }
+
+            // Occupied leaf: subdivide and push the existing occupants down
+            // alongside the new particle.
+            let existing = std::mem::take(&mut self.particles);
+
+            let half = self.half_size / 2.0;
+            self.children = Some(Box::new([
+                OctreeNode::new(self.child_center(0), half),
+                OctreeNode::new(self.child_center(1), half),
+                OctreeNode::new(self.child_center(2), half),
+                OctreeNode::new(self.child_center(3), half),
+                OctreeNode::new(self.child_center(4), half),
+                OctreeNode::new(self.child_center(5), half),
+                OctreeNode::new(self.child_center(6), half),
+                OctreeNode::new(self.child_center(7), half),
+            ]));
+
+            let children = self.children.as_mut().expect("just set");
+            for idx in existing {
+                let octant = octant_of(self.center, all[idx].x);
+                children[octant].insert(idx, all, depth + 1);
+            }
+            let octant = octant_of(self.center, particle_pos);
+            children[octant].insert(particle_idx, all, depth + 1);
         } else {
             // Internal node: recurse
             let octant = self.octant(particle_pos);
             if let Some(ref mut children) = self.children {
-                children[octant].insert(particle_idx, particle_pos, particle_mass);
+                children[octant].insert(particle_idx, all, depth + 1);
             }
         }
     }
@@ -229,17 +243,44 @@ impl OctreeNode {
         G * self.mass / r2 * (r / r_mag)
     }
 
-    /// Recursively compute force on a particle.
-    fn compute_force_on(&self, particle: &GravityParticle, theta: f64, softening: f64) -> Vec3 {
+    /// Recursively compute the force on particle `i`.
+    ///
+    /// Leaves are summed directly (excluding `i` itself, so a particle never
+    /// attracts itself through its own leaf's center of mass). Internal nodes
+    /// use the COM approximation once the opening-angle criterion is met.
+    fn compute_force_on(
+        &self,
+        i: usize,
+        all: &[GravityParticle],
+        theta: f64,
+        softening: f64,
+    ) -> Vec3 {
         if self.mass == 0.0 {
             return Vec3::zeros();
+        }
+
+        let particle = &all[i];
+
+        if self.is_leaf() {
+            // Direct summation over the leaf's occupants, skipping self.
+            let mut force = Vec3::zeros();
+            for &j in &self.particles {
+                if j == i {
+                    continue;
+                }
+                let r = all[j].x - particle.x;
+                let r2 = r.norm_squared() + softening * softening;
+                let r_mag = r2.sqrt();
+                force += r / r_mag * (G * particle.m * all[j].m / r2);
+            }
+            return force;
         }
 
         let r = (self.com - particle.x).norm();
 
         // Barnes-Hut criterion: s/d < θ
         let s = 2.0 * self.half_size;
-        if self.is_leaf() || (s / r) < theta {
+        if r > 0.0 && (s / r) < theta {
             // Use COM approximation
             self.acceleration(particle.x, softening) * particle.m
         } else {
@@ -247,7 +288,7 @@ impl OctreeNode {
             let mut force = Vec3::zeros();
             if let Some(ref children) = self.children {
                 for child in children.iter() {
-                    force += child.compute_force_on(particle, theta, softening);
+                    force += child.compute_force_on(i, all, theta, softening);
                 }
             }
             force
@@ -280,14 +321,23 @@ impl BarnesHutTree {
             max.z = max.z.max(p.x.z);
         }
 
+        if particles.is_empty() {
+            return Self {
+                root: OctreeNode::new(Vec3::zeros(), 1.0),
+                softening,
+            };
+        }
+
         let center = (min + max) / 2.0;
-        let half_size = ((max - min).norm() / 2.0) * 1.1; // 10% padding
+        // Half-width large enough to contain the whole bounding box, with 10% padding.
+        let half_size = ((max - min).norm() / 2.0) * 1.1;
+        let half_size = if half_size > 0.0 { half_size } else { 1.0 };
 
         let mut root = OctreeNode::new(center, half_size);
 
         // Insert all particles
-        for (i, p) in particles.iter().enumerate() {
-            root.insert(i, p.x, p.m);
+        for i in 0..particles.len() {
+            root.insert(i, particles, 0);
         }
 
         Self { root, softening }
@@ -295,9 +345,15 @@ impl BarnesHutTree {
 
     /// Compute forces on all particles using tree.
     pub fn compute_forces(&self, particles: &mut [GravityParticle], theta: f64) {
-        for p in particles.iter_mut() {
+        let forces: Vec<Vec3> = (0..particles.len())
+            .map(|i| {
+                self.root
+                    .compute_force_on(i, particles, theta, self.softening)
+            })
+            .collect();
+
+        for (p, f) in particles.iter_mut().zip(forces) {
             p.reset_force();
-            let f = self.root.compute_force_on(p, theta, self.softening);
             p.add_force(f);
         }
     }
@@ -337,6 +393,206 @@ mod tests {
 
         assert_eq!(tree.root.mass, 3e10);
         assert!(tree.root.half_size > 0.0);
+
+        // Every particle must be reachable in exactly one leaf.
+        let mut found = vec![0usize; 3];
+        collect_leaf_indices(&tree.root, &mut found);
+        assert_eq!(found, vec![1, 1, 1], "each particle stored exactly once");
+    }
+
+    fn collect_leaf_indices(node: &OctreeNode, counts: &mut [usize]) {
+        if let Some(ref children) = node.children {
+            for c in children.iter() {
+                collect_leaf_indices(c, counts);
+            }
+        } else {
+            for &i in &node.particles {
+                counts[i] += 1;
+            }
+        }
+    }
+
+    /// Sum of the masses of every particle stored beneath `node`, walking to
+    /// the leaves. Returns it so callers can compare against `node.mass`.
+    fn subtree_mass(node: &OctreeNode, all: &[GravityParticle]) -> f64 {
+        match node.children {
+            Some(ref children) => children.iter().map(|c| subtree_mass(c, all)).sum(),
+            None => node.particles.iter().map(|&i| all[i].m).sum(),
+        }
+    }
+
+    /// Assert `node.mass == sum of descendant particle masses` at every node,
+    /// and that `node.com` is the mass-weighted mean of those particles.
+    fn assert_mass_invariant(node: &OctreeNode, all: &[GravityParticle]) {
+        let expected = subtree_mass(node, all);
+        assert!(
+            (node.mass - expected).abs() <= 1e-6 * expected.max(1.0),
+            "node.mass {} != subtree mass {expected}",
+            node.mass
+        );
+
+        if expected > 0.0 {
+            let mut com = Vec3::zeros();
+            let mut collect =
+                |n: &OctreeNode| n.particles.iter().for_each(|&i| com += all[i].x * all[i].m);
+            walk_leaves(node, &mut collect);
+            com = com / expected;
+            assert!(
+                (node.com - com).norm() <= 1e-6 * (1.0 + com.norm()),
+                "node.com {:?} != {com:?}",
+                node.com
+            );
+        }
+
+        if let Some(ref children) = node.children {
+            for c in children.iter() {
+                assert_mass_invariant(c, all);
+            }
+        }
+    }
+
+    fn walk_leaves(node: &OctreeNode, f: &mut impl FnMut(&OctreeNode)) {
+        match node.children {
+            Some(ref children) => children.iter().for_each(|c| walk_leaves(c, f)),
+            None => f(node),
+        }
+    }
+
+    #[test]
+    fn test_octree_mass_and_com_invariant() {
+        // Random cloud: exercises ordinary subdivision.
+        let cloud = random_cloud(300, 0xa11ce);
+        assert_mass_invariant(&BarnesHutTree::build(&cloud, 1e-3).root, &cloud);
+
+        // Coincident cloud: exercises the MAX_DEPTH cap, where multiple
+        // particles land in one leaf.
+        let mut coincident: Vec<_> = (0..16)
+            .map(|_| GravityParticle::new(Vec3::new(1.0, 2.0, 3.0), Vec3::zeros(), 1e9))
+            .collect();
+        coincident.push(GravityParticle::new(
+            Vec3::new(5.0, 0.0, 0.0),
+            Vec3::zeros(),
+            1e9,
+        ));
+        assert_mass_invariant(&BarnesHutTree::build(&coincident, 1e-3).root, &coincident);
+    }
+
+    /// Deterministic LCG so the test is reproducible without a `rand` dep.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_f64(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // Top 53 bits -> [0, 1)
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+
+        /// Uniform in [-1, 1).
+        fn next_sym(&mut self) -> f64 {
+            self.next_f64() * 2.0 - 1.0
+        }
+    }
+
+    fn random_cloud(n: usize, seed: u64) -> Vec<GravityParticle> {
+        let mut rng = Lcg(seed);
+        (0..n)
+            .map(|_| {
+                let x = Vec3::new(rng.next_sym(), rng.next_sym(), rng.next_sym());
+                let m = 1e9 * (0.5 + rng.next_f64());
+                GravityParticle::new(x, Vec3::zeros(), m)
+            })
+            .collect()
+    }
+
+    /// Mean relative error of Barnes-Hut forces vs. the O(N²) reference.
+    fn bh_error(theta: f64, particles: &[GravityParticle], softening: f64) -> f64 {
+        let mut reference = particles.to_vec();
+        NBodySolver {
+            use_tree: false,
+            theta,
+            softening,
+        }
+        .compute_pairwise_forces(&mut reference);
+
+        let mut approx = particles.to_vec();
+        BarnesHutTree::build(&approx, softening).compute_forces(&mut approx, theta);
+
+        let mut total = 0.0;
+        for (a, r) in approx.iter().zip(reference.iter()) {
+            let denom = r.f.norm();
+            assert!(denom > 0.0);
+            total += (a.f - r.f).norm() / denom;
+        }
+        total / particles.len() as f64
+    }
+
+    #[test]
+    fn test_barnes_hut_matches_direct_summation() {
+        let particles = random_cloud(400, 0x5eed);
+        let softening = 1e-2;
+
+        let e_tight = bh_error(0.1, &particles, softening);
+        let e_mid = bh_error(0.5, &particles, softening);
+        let e_loose = bh_error(1.0, &particles, softening);
+
+        // Small theta => nearly exact (theta -> 0 degenerates to direct summation).
+        assert!(e_tight < 1e-3, "theta=0.1 mean rel err {e_tight}");
+        // Default theta => a few percent.
+        assert!(e_mid < 3e-2, "theta=0.5 mean rel err {e_mid}");
+        // Loose theta => still a usable approximation, just cruder.
+        assert!(e_loose < 2e-1, "theta=1.0 mean rel err {e_loose}");
+
+        // Accuracy must improve monotonically as the opening angle tightens.
+        assert!(
+            e_tight < e_mid && e_mid < e_loose,
+            "error should shrink with theta: {e_tight} < {e_mid} < {e_loose}"
+        );
+    }
+
+    #[test]
+    fn test_direct_summation_conserves_momentum() {
+        let particles = random_cloud(200, 0xc0ffee);
+        let mut direct = particles.clone();
+        NBodySolver::new().compute_pairwise_forces(&mut direct);
+
+        // Newton's third law: forces are antisymmetric, so dP/dt = sum(F) = 0.
+        let net: Vec3 = direct.iter().fold(Vec3::zeros(), |acc, p| acc + p.f);
+        let scale: f64 = direct.iter().map(|p| p.f.norm()).sum();
+        assert!(
+            net.norm() / scale < 1e-12,
+            "net force {net:?} (scale {scale})"
+        );
+    }
+
+    #[test]
+    fn test_barnes_hut_no_self_interaction() {
+        // A single particle feels no force at all.
+        let mut particles = vec![GravityParticle::new(Vec3::zeros(), Vec3::zeros(), 1e12)];
+        let tree = BarnesHutTree::build(&particles, 1e-3);
+        tree.compute_forces(&mut particles, 0.5);
+        assert_eq!(particles[0].f.norm(), 0.0);
+    }
+
+    #[test]
+    fn test_barnes_hut_coincident_particles_terminate() {
+        // Degenerate cloud: many exactly-coincident particles must not recurse forever.
+        let mut particles: Vec<_> = (0..16)
+            .map(|_| GravityParticle::new(Vec3::new(1.0, 2.0, 3.0), Vec3::zeros(), 1e9))
+            .collect();
+        particles.push(GravityParticle::new(
+            Vec3::new(5.0, 0.0, 0.0),
+            Vec3::zeros(),
+            1e9,
+        ));
+
+        let tree = BarnesHutTree::build(&particles, 1e-3);
+        assert!((tree.root.mass - 17e9).abs() < 1.0);
+
+        tree.compute_forces(&mut particles, 0.5);
+        assert!(particles.iter().all(|p| p.f.norm().is_finite()));
     }
 
     #[test]

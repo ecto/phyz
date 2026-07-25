@@ -118,7 +118,8 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
 ///
 /// Uses `BROWSER_WEBGPU` backend on wasm32; `all()` elsewhere.
 /// WebGPU does not support SHADER_F64, so precision is always F32 on wasm32.
-pub async fn request_device_async() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPrecision), String> {
+pub async fn request_device_async()
+-> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPrecision), String> {
     let backends = if cfg!(target_arch = "wasm32") {
         wgpu::Backends::BROWSER_WEBGPU
     } else {

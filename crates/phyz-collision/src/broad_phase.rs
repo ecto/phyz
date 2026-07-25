@@ -124,10 +124,7 @@ mod tests {
     fn test_sweep_and_prune_infinity_is_ignored() {
         let aabbs = vec![
             AABB::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 1.0, 1.0)),
-            AABB::new(
-                Vec3::new(0.5, 0.0, 0.0),
-                Vec3::new(f64::INFINITY, 1.0, 1.0),
-            ),
+            AABB::new(Vec3::new(0.5, 0.0, 0.0), Vec3::new(f64::INFINITY, 1.0, 1.0)),
         ];
         let pairs = sweep_and_prune(&aabbs);
         assert!(pairs.is_empty());
