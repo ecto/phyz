@@ -2,9 +2,15 @@
 //!
 //! Implements MuJoCo-style soft contacts using penalty forces.
 
+pub mod cone;
+pub mod convex;
 pub mod material;
 pub mod solver;
 
+pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
+pub use convex::{
+    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, solve_contacts,
+};
 pub use material::ContactMaterial;
 pub use solver::{contact_forces, contact_forces_implicit, find_contacts, find_ground_contacts};
 

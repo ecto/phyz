@@ -10,7 +10,12 @@ pub struct ContactMaterial {
     /// Coefficient of friction (dimensionless).
     pub friction: f64,
     /// Coefficient of restitution (0 = inelastic, 1 = elastic).
-    pub bounce: f64,
+    ///
+    /// Was `bounce`, a field no solver ever read — `ContactMaterial::bouncy()`
+    /// did nothing. It is now honoured by the convex solve, entering as a
+    /// target normal velocity rather than a post-solve velocity reset. See
+    /// `docs/design/differentiable-contact.md` §4.3.
+    pub restitution: f64,
     /// Constraint force mixing (for numerical stability).
     pub soft_cfm: f64,
     /// Error reduction parameter (for constraint drift correction).
@@ -23,7 +28,7 @@ impl Default for ContactMaterial {
             stiffness: 10000.0,
             damping: 100.0,
             friction: 0.5,
-            bounce: 0.0,
+            restitution: 0.0,
             soft_cfm: 0.0001,
             soft_erp: 0.2,
         }
@@ -32,12 +37,12 @@ impl Default for ContactMaterial {
 
 impl ContactMaterial {
     /// Create a new contact material with custom parameters.
-    pub fn new(stiffness: f64, damping: f64, friction: f64, bounce: f64) -> Self {
+    pub fn new(stiffness: f64, damping: f64, friction: f64, restitution: f64) -> Self {
         Self {
             stiffness,
             damping,
             friction,
-            bounce,
+            restitution,
             soft_cfm: 0.0001,
             soft_erp: 0.2,
         }
@@ -49,7 +54,7 @@ impl ContactMaterial {
             stiffness: 10000.0,
             damping: 50.0,
             friction: 0.3,
-            bounce: 0.8,
+            restitution: 0.8,
             soft_cfm: 0.0001,
             soft_erp: 0.2,
         }
@@ -61,7 +66,7 @@ impl ContactMaterial {
             stiffness: 1000.0,
             damping: 200.0,
             friction: 0.7,
-            bounce: 0.1,
+            restitution: 0.1,
             soft_cfm: 0.001,
             soft_erp: 0.2,
         }
@@ -73,9 +78,17 @@ impl ContactMaterial {
             stiffness: 50000.0,
             damping: 100.0,
             friction: 0.5,
-            bounce: 0.0,
+            restitution: 0.0,
             soft_cfm: 0.00001,
             soft_erp: 0.2,
         }
+    }
+}
+
+impl ContactMaterial {
+    /// Deprecated alias for [`Self::restitution`].
+    #[deprecated(note = "renamed to `restitution`, which is now actually implemented")]
+    pub fn bounce(&self) -> f64 {
+        self.restitution
     }
 }
