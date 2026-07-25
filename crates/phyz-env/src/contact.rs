@@ -66,6 +66,12 @@ impl Default for GroundContact {
 /// The most contact points any supported shape generates (a box's 8 corners).
 const MAX_POINTS: usize = 8;
 
+/// Cap on contact points considered per body across all of its collision
+/// shapes. Bodies with more shapes than this contribute their first
+/// `MAX_TOTAL_POINTS` points; the alternative is a heap allocation in the
+/// innermost simulation loop.
+const MAX_TOTAL_POINTS: usize = 32;
+
 /// One sphere in the sphere-decomposition of a geom, in geom-local coordinates.
 #[derive(Debug, Clone, Copy, Default)]
 struct ContactPoint {
@@ -92,33 +98,43 @@ impl GroundContact {
         }
 
         for (i, body) in model.bodies.iter().enumerate() {
-            let Some(geom) = &body.geometry else { continue };
-
-            let body_to_world = xform[i].rot.transpose();
-            let geom_to_world = body_to_world * body.geom_offset.rot;
-            let geom_center = xform[i].pos + body_to_world * body.geom_offset.pos;
-
-            let mut points = [ContactPoint::default(); MAX_POINTS];
-            let n = contact_points(geom, &mut points);
-            if n == 0 {
+            if body.collisions.is_empty() {
                 continue;
             }
 
-            // Work out which points are penetrating before choosing the
-            // per-point stiffness, so a capsule resting on both ends is held by
-            // the same total force as one balanced on a single end.
-            let mut depth = [0.0f64; MAX_POINTS];
-            let mut r_body = [Vec3::zeros(); MAX_POINTS];
-            let mut active = 0usize;
+            let body_to_world = xform[i].rot.transpose();
 
-            for k in 0..n {
-                let p_world = geom_center + geom_to_world * points[k].pos;
-                let pen = self.height + points[k].radius - p_world.z;
-                if pen > 0.0 {
-                    depth[k] = pen;
-                    r_body[k] = xform[i].rot
-                        * (body_to_world * body.geom_offset.pos + geom_to_world * points[k].pos);
-                    active += 1;
+            // Gather every penetrating point across all of the body's collision
+            // shapes before choosing stiffness, so a body resting on two feet is
+            // held by the same total force as one balanced on one.
+            let mut depth = [0.0f64; MAX_TOTAL_POINTS];
+            let mut r_body = [Vec3::zeros(); MAX_TOTAL_POINTS];
+            let mut active = 0usize;
+            let mut total = 0usize;
+
+            for inst in &body.collisions {
+                // `origin.rot` is the body → shape transform (same convention as
+                // `parent_to_joint`), so shape → body is its transpose.
+                let shape_to_body = inst.origin.rot.transpose();
+                let geom_to_world = body_to_world * shape_to_body;
+                let geom_center = xform[i].pos + body_to_world * inst.origin.pos;
+
+                let mut points = [ContactPoint::default(); MAX_POINTS];
+                let n = contact_points(&inst.geometry, &mut points);
+
+                for p in points.iter().take(n) {
+                    if total >= MAX_TOTAL_POINTS {
+                        break;
+                    }
+                    let p_world = geom_center + geom_to_world * p.pos;
+                    let pen = self.height + p.radius - p_world.z;
+                    if pen > 0.0 {
+                        depth[total] = pen;
+                        r_body[total] = xform[i].rot
+                            * (body_to_world * inst.origin.pos + geom_to_world * p.pos);
+                        active += 1;
+                    }
+                    total += 1;
                 }
             }
             if active == 0 {
@@ -130,7 +146,7 @@ impl GroundContact {
             let k_spring = m * omega * omega;
             let c_damp = 2.0 * m * omega * self.damp_ratio;
 
-            for idx in 0..n {
+            for idx in 0..total {
                 let penetration = depth[idx];
                 if penetration <= 0.0 {
                     continue;
@@ -143,10 +159,10 @@ impl GroundContact {
 
                 let spring = k_spring * penetration - c_damp * v_world.z;
 
-                // Impulse feasibility bound: the force that arrests the
-                // approach and recovers `erp` of the penetration this step.
-                // Anything beyond it can only overshoot, and the overshoot is
-                // what makes light distal links whip and diverge.
+                // Impulse feasibility bound: the force that arrests the approach
+                // and recovers `erp` of the penetration this step. Anything
+                // beyond it can only overshoot, and the overshoot is what makes
+                // light distal links whip and diverge.
                 let target_dv = self.erp * penetration / self.dt - v_world.z;
                 let f_max = if target_dv > 0.0 {
                     m * target_dv / self.dt
@@ -264,6 +280,9 @@ mod tests {
             )
             .build();
         m.bodies[0].geometry = Some(Geometry::Sphere { radius });
+        m.bodies[0].collisions = vec![phyz_model::GeomInstance::centered(Geometry::Sphere {
+            radius,
+        })];
         m
     }
 
@@ -302,15 +321,17 @@ mod tests {
                 SpatialInertia::new(4.0, Vec3::zeros(), Mat3::identity() * 0.5),
             )
             .build();
-        m.bodies[0].geometry = Some(Geometry::Capsule {
-            radius: 0.05,
-            length: 1.0,
-        });
         // Lay the capsule's local Z along world X.
-        m.bodies[0].geom_offset = phyz_model::GeomOffset {
-            pos: Vec3::zeros(),
-            rot: Mat3::new(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0),
-        };
+        // Lay the capsule's local Z along world X. `origin.rot` is body→shape,
+        // so the shape→body rotation goes in transposed.
+        let shape_to_body = Mat3::new(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0);
+        m.bodies[0].collisions = vec![phyz_model::GeomInstance::new(
+            Geometry::Capsule {
+                radius: 0.05,
+                length: 1.0,
+            },
+            SpatialTransform::new(shape_to_body.transpose(), Vec3::zeros()),
+        )];
 
         let g = GroundContact {
             dt: 0.002,
@@ -331,10 +352,10 @@ mod tests {
     #[test]
     fn geom_offset_moves_the_contact_point() {
         let mut with_offset = sphere_body(1.0, 0.05);
-        with_offset.bodies[0].geom_offset = phyz_model::GeomOffset {
-            pos: Vec3::new(0.0, 0.0, -0.5),
-            rot: Mat3::identity(),
-        };
+        with_offset.bodies[0].collisions = vec![phyz_model::GeomInstance::new(
+            Geometry::Sphere { radius: 0.05 },
+            SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, 0.0, -0.5)),
+        )];
         let no_offset = sphere_body(1.0, 0.05);
 
         let g = GroundContact::default();

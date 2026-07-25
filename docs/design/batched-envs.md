@@ -436,29 +436,29 @@ Remaining gaps, all *reported* rather than silently dropped via
 
 ## 8. Blockers and what happened to them
 
-### B1 — Sensors returned placeholder zeros ✅ **fixed**
+### B1 — Sensors returned placeholder zeros ✅ **fixed on `main`, independently**
 
 `phyz-world/src/sensor.rs` returned hard-coded zeros for `BodyAccel`,
 `ForceTorque` and the accelerometer half of `Imu`, and `max_dist` for
 `Rangefinder`. A policy fed these would train against dead channels with no
 error ever surfacing.
 
-Fixed by exposing what the dynamics recursions already computed and discarded:
+This branch fixed it by exposing what the dynamics recursions already computed
+and discarded (`aba_dynamics`, `rnea_with_wrenches`) and by making
+`Rangefinder` return an error rather than a plausible number.
 
-- `phyz_rigid::aba_dynamics` returns per-body spatial velocities **and
-  accelerations** alongside `qdd`. `BodyAccel`/`Imu` now report true proper
-  acceleration (a resting body reads `+g`; a free-falling one reads zero, and
-  both are tested).
-- `phyz_rigid::rnea_with_wrenches` returns the per-body joint wrench.
-  `ForceTorque` reports it.
-- `Rangefinder` now returns `SensorError::NotImplemented` rather than a
-  plausible number, because `phyz-collision` has GJK but no ray cast. **A sensor
-  that cannot be computed must not exist.**
-- `Sensor::read` returns `Result`, and out-of-range targets are errors.
+**`main` solved the same problem more thoroughly and won the merge.** Its
+version adds `forward_kinematics_acc` / `BodyKinematics` for classical
+acceleration, `body_wrenches` for force/torque, a real ray cast against the
+collision set for `Rangefinder` — which this branch had scoped as "medium,
+`phyz-collision` has GJK but no ray cast" — and a `Contact` sensor on top. The
+duplicate APIs added here (`aba_dynamics`, `rnea_with_wrenches`) were dropped
+in the merge; `main`'s are the ones wired into the sensor path.
 
 `phyz-env` still does not route observations through `Sensor` — `ObsSpec`
-offers only directly-computed quantities. Converging the two types so MJCF
-`<sensor>` elements map to observation terms is the remaining follow-up.
+offers only directly-computed quantities. Converging the two so MJCF
+`<sensor>` elements map to observation terms is the remaining follow-up, and is
+now more attractive because the sensor set is genuinely complete.
 
 ### B2 — MJCF parser coverage ✅ **largely fixed**
 
@@ -576,11 +576,17 @@ which mirrored models through the origin. Now locked down by
 |---|---|
 | `phyz-env` **(new)** | `VecEnv`, `BatchEnv`, `ObsSpec`, `TaskSpec`, counter-based RNG, contact, benchmark presets, tensor bridge |
 | `phyz-mjcf` | `<default>` class tree, geom-derived inertia, `fromto`, actuator types, sensors, unsupported-feature reporting |
-| `phyz-model` | affine `Actuator`, `GeomOffset`, `Joint::armature`, `Model::validate` |
-| `phyz-rigid` | `aba_dynamics`, `rnea_with_wrenches`, canonical `semi_implicit_euler`, implicit damping, joint limits, armature |
+| `phyz-model` | affine `Actuator` (`gain`/`bias_q`/`bias_v`/`force_range` + `force_at`), `Model::actuator_forces_at`, `Model::validate` |
+| `phyz-rigid` | canonical `semi_implicit_euler`, implicit joint damping |
 | `phyz-gpu` | multi-DOF ABA, joint-aware integrate shader, ball/free FK in contact, `interop()` |
-| `phyz-world` | real sensors, `SensorError`, `SensorContext` |
 | `models/` | ant rebuilt; half-cheetah, humanoid, shadow-hand approximation added |
+
+Superseded by parallel work on `main` during review, and dropped in the merge:
+real sensors (`main`'s are a superset, including a ray-cast rangefinder and a
+contact sensor), `aba_dynamics` / `rnea_with_wrenches` (duplicates of
+`forward_kinematics_acc` / `body_wrenches`), `GeomOffset` (`main`'s
+`GeomInstance` supports several shapes per body, which the contact model now
+uses), and the joint-limit and armature implementations.
 
 ## 10. Recommended next steps
 

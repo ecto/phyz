@@ -113,60 +113,19 @@ pub fn aba(model: &Model, state: &State) -> DVec {
     aba_with_external_forces(model, state, None)
 }
 
-/// Everything ABA computes, not just the joint accelerations.
-///
-/// The forward-dynamics recursion already produces per-body spatial velocities
-/// and accelerations; plain [`aba`] throws the latter away. Sensors that report
-/// body acceleration (accelerometers, IMUs) need them, and recomputing by
-/// finite differences would be both slower and less accurate.
-#[derive(Debug, Clone)]
-pub struct Dynamics {
-    /// Joint accelerations, length `nv`.
-    pub qdd: DVec,
-    /// World→body Plücker transforms, one per body.
-    pub xform: Vec<SpatialTransform>,
-    /// Body-frame spatial velocities, one per body.
-    pub vel: Vec<SpatialVec>,
-    /// Body-frame spatial accelerations, one per body.
-    ///
-    /// These include the base-acceleration gravity offset, exactly as an
-    /// accelerometer measures it: a body at rest reads +g, not zero.
-    pub acc: Vec<SpatialVec>,
-}
-
-/// Run ABA and keep the per-body kinematics it computes along the way.
-pub fn aba_dynamics(
-    model: &Model,
-    state: &State,
-    external_forces: Option<&[SpatialVec]>,
-) -> Dynamics {
-    let mut out = Dynamics {
-        qdd: DVec::zeros(model.nv),
-        xform: Vec::new(),
-        vel: Vec::new(),
-        acc: Vec::new(),
-    };
-    out.qdd = aba_inner(model, state, external_forces, Some(&mut out));
-    out
-}
-
 /// Run ABA with optional external spatial forces applied to each body.
 pub fn aba_with_external_forces(
     model: &Model,
     state: &State,
     external_forces: Option<&[SpatialVec]>,
 ) -> DVec {
-    aba_inner(model, state, external_forces, None)
-}
-
-fn aba_inner(
-    model: &Model,
-    state: &State,
-    external_forces: Option<&[SpatialVec]>,
-    diagnostics: Option<&mut Dynamics>,
-) -> DVec {
     let nb = model.nbodies();
     let mut qdd = DVec::zeros(model.nv);
+
+    // Generalized forces: actuator controls mapped through gear/ctrlrange, plus
+    // passive joint terms (damping, spring, dry friction, soft limits).
+    let qfrc = crate::actuation::generalized_forces(model, state);
+    let armature = crate::actuation::armature_diag(model);
 
     // Per-body storage
     let mut x_tree = vec![SpatialTransform::identity(); nb];
@@ -241,24 +200,13 @@ fn aba_inner(
         if ndof == 1 {
             // Single-DOF: scalar operations (faster path)
             let s_i = joint.motion_subspace();
-            let phyz_i = state.ctrl[v_idx] - joint.damping * state.v[v_idx];
+            let phyz_i = qfrc[v_idx];
 
             let ia = &i_a[i];
-            // Implicit joint damping: the damping force uses v_old but the
-            // effective inertia gains dt*c, which is the first-order implicit
-            // solve of v_new = v_old + dt*(a_other - c*v_new/M). Explicit
-            // damping is only stable for dt < 2*M/c, and light distal links
-            // (a cheetah's foot) violate that at the timesteps RL uses.
-            let d_bare = s_i.dot(&ia.mul_vec(&s_i));
-            let (f_lim, d_lim) = limit_force(
-                joint.limits,
-                state.q[q_idx_of(model, body)],
-                state.v[v_idx],
-                d_bare,
-                model.dt,
-            );
-            let u_i = phyz_i + f_lim - s_i.dot(&p_a[i]);
-            let d_i = d_bare + joint.armature + model.dt * joint.damping + d_lim;
+            let u_i = phyz_i - s_i.dot(&p_a[i]);
+            let d_i = s_i.dot(&ia.mul_vec(&s_i))
+                + armature[v_idx]
+                + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -289,17 +237,16 @@ fn aba_inner(
             // tau vector for this joint
             let mut phyz_vec = DVec::zeros(ndof);
             for k in 0..ndof {
-                phyz_vec[k] = state.ctrl[v_idx + k] - joint.damping * state.v[v_idx + k];
+                phyz_vec[k] = qfrc[v_idx + k];
             }
 
             // U = I_a * S  (6 x ndof)
             let u_mat = ia_dmat.mul_mat(&s_mat); // 6 x ndof
 
-            // D = S^T * I_a * S + dt*C  (ndof x ndof); see the 1-DOF branch
-            // for why the damping term belongs in D.
+            // D = S^T * I_a * S  (ndof x ndof)
             let mut d_mat = s_mat.transpose().mul_mat(&u_mat); // ndof x ndof
             for k in 0..ndof {
-                d_mat[(k, k)] += joint.armature + model.dt * joint.damping;
+                d_mat[(k, k)] += armature[v_idx + k] + implicit_damping(joint, model.dt);
             }
 
             // u_vec = tau - S^T * p_a  (ndof x 1)
@@ -362,22 +309,16 @@ fn aba_inner(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_bare = s_i.dot(&ia.mul_vec(&s_i));
-            let (f_lim, d_lim) = limit_force(
-                joint.limits,
-                state.q[q_idx_of(model, body)],
-                state.v[v_idx],
-                d_bare,
-                model.dt,
-            );
-            let d_i = d_bare + joint.armature + model.dt * joint.damping + d_lim;
+            let d_i = s_i.dot(&ia.mul_vec(&s_i))
+                + armature[v_idx]
+                + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
                 continue;
             }
 
-            let phyz_i = state.ctrl[v_idx] - joint.damping * state.v[v_idx] + f_lim;
+            let phyz_i = qfrc[v_idx];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
             let qdd_i = (u_i - ia.mul_vec(&(a_parent + c_bias[i])).dot(&s_i)) / d_i;
             qdd[v_idx] = qdd_i;
@@ -389,13 +330,13 @@ fn aba_inner(
 
             let mut phyz_vec = DVec::zeros(ndof);
             for k in 0..ndof {
-                phyz_vec[k] = state.ctrl[v_idx + k] - joint.damping * state.v[v_idx + k];
+                phyz_vec[k] = qfrc[v_idx + k];
             }
 
             let u_mat = ia_dmat.mul_mat(&s_mat);
             let mut d_mat = s_mat.transpose().mul_mat(&u_mat);
             for k in 0..ndof {
-                d_mat[(k, k)] += joint.armature + model.dt * joint.damping;
+                d_mat[(k, k)] += armature[v_idx + k] + implicit_damping(joint, model.dt);
             }
 
             let d_inv = match d_mat.try_inverse() {
@@ -425,56 +366,25 @@ fn aba_inner(
         }
     }
 
-    if let Some(d) = diagnostics {
-        d.xform = x_tree;
-        d.vel = vel;
-        d.acc = acc;
-    }
-
     qdd
 }
 
 
-/// Restoring force for a joint that has been driven past its limit.
+/// Implicit-damping contribution to a joint's effective inertia.
 ///
-/// `limits` are parsed from MJCF but were previously stored and never used, so
-/// a leg could fold through itself without resistance — which is exactly how a
-/// half-cheetah ends up below the floor.
+/// The damping *force* is applied explicitly (it is part of `qfrc`, see
+/// [`crate::actuation::add_passive_forces`]), but a purely explicit treatment
+/// is stable only for `dt < 2M/c`. Light distal links — a cheetah's foot, a
+/// finger's distal phalanx — violate that at the timesteps RL uses, and blow
+/// up. Adding `dt * c` to `D = S^T I^A S` is the first-order implicit solve of
+/// `v' = v + dt (a_other - c v' / M)`, which is unconditionally stable and is
+/// what MuJoCo's `implicitfast` integrator does.
 ///
-/// The spring is scaled by `d`, the joint's own articulated inertia, and
-/// parameterised by a response time constant. That makes one setting work for
-/// both a heavy hip and a light toe, the same reasoning as the contact model.
-/// The returned `(force, extra_d)` pair follows the implicit-damping
-/// convention: `extra_d` is added to the effective inertia so the limit is
-/// unconditionally stable.
+/// The GPU kernel applies the identical term; if one side changes, the two
+/// backends silently disagree on every damped model.
 #[inline]
-fn limit_force(limits: Option<[f64; 2]>, q: f64, v: f64, d: f64, dt: f64) -> (f64, f64) {
-    let Some([lo, hi]) = limits else {
-        return (0.0, 0.0);
-    };
-    let violation = if q < lo {
-        q - lo // negative
-    } else if q > hi {
-        q - hi // positive
-    } else {
-        return (0.0, 0.0);
-    };
-
-    let omega = 1.0 / LIMIT_TIME_CONST;
-    let k = d.abs().max(1e-12) * omega * omega;
-    let c = 2.0 * d.abs().max(1e-12) * omega;
-    (-k * violation - c * v, dt * c)
-}
-
-/// Response time constant for joint limits, seconds. Chosen so a limit is
-/// stiff relative to control bandwidth but soft relative to the timestep.
-const LIMIT_TIME_CONST: f64 = 0.02;
-
-
-/// The position index of a body's (single-DOF) joint.
-#[inline]
-fn q_idx_of(model: &Model, body: &phyz_model::Body) -> usize {
-    model.q_offsets[body.joint_idx]
+fn implicit_damping(joint: &phyz_model::Joint, dt: f64) -> f64 {
+    dt * joint.damping
 }
 
 /// Outer product of two 6D spatial vectors, returning a SpatialMat.

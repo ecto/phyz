@@ -1,7 +1,11 @@
-//! Multi-solver coupling example.
+//! Illustrative `ForceTransfer` / handshake-region demo.
 //!
-//! Demonstrates how to couple different physics solvers using handshake regions
-//! and force transfer mechanisms.
+//! NOTE: the `RigidBody`, `Particle`, and `EmField` structs below are mock
+//! state, not real solvers. This example shows the shape of the
+//! [`Coupling`]/[`ForceTransfer`] configuration API only.
+//!
+//! For a coupled simulation driving two *real* solvers through the
+//! [`phyz_coupling::Solver`] trait, see `coupled_cyclotron.rs`.
 
 use phyz_coupling::{BoundingBox, Coupling, ForceTransfer, SolverType};
 use phyz_math::Vec3;

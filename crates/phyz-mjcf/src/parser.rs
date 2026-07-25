@@ -47,8 +47,12 @@ struct JointElement {
     pos: Vec3,
     axis: Vec3,
     range: Option<[f64; 2]>,
+    limited: Option<bool>,
     damping: f64,
     armature: f64,
+    stiffness: f64,
+    spring_ref: f64,
+    friction_loss: f64,
 }
 
 /// Parsed geom element.
@@ -438,7 +442,8 @@ impl MjcfLoader {
 
         // MuJoCo only applies `range` when `limited` is true (or "auto" with a
         // range present). Honouring that avoids inventing limits.
-        let range = match a.bool("limited") {
+        let limited = a.bool("limited");
+        let range = match limited {
             Some(false) => None,
             _ => a.range("range"),
         };
@@ -449,8 +454,12 @@ impl MjcfLoader {
             pos: a.vec3_or("pos", Vec3::zeros()),
             axis,
             range,
+            limited,
             damping: a.f64_or("damping", 0.0),
             armature: a.f64_or("armature", 0.0),
+            stiffness: a.f64_or("stiffness", 0.0),
+            spring_ref: a.f64_or("springref", 0.0),
+            friction_loss: a.f64_or("frictionloss", 0.0),
         });
         Ok(())
     }
@@ -667,9 +676,17 @@ impl MjcfLoader {
                         _ => Joint::revolute(parent_to_joint),
                     };
                     joint.axis = joint_elem.axis;
+                    joint.name = joint_elem.name.clone();
                     joint.damping = joint_elem.damping;
-                    joint.limits = joint_elem.range;
+                    // MuJoCo: limited="false" disables the range even if given.
+                    joint.limits = match joint_elem.limited {
+                        Some(false) => None,
+                        _ => joint_elem.range,
+                    };
                     joint.armature = joint_elem.armature;
+                    joint.stiffness = joint_elem.stiffness;
+                    joint.spring_ref = joint_elem.spring_ref;
+                    joint.friction_loss = joint_elem.friction_loss;
 
                     let link_inertia = if joint_idx == last {
                         inertia
@@ -695,28 +712,40 @@ impl MjcfLoader {
 
         let mut model = builder.build();
 
-        // Attach the first *colliding* geom to each body.
+        // Attach every geom to its body, split into collision and visual sets.
+        // Geoms are rarely at the body origin — a `fromto` capsule sits at its
+        // midpoint — so each carries its own placement.
         for (body_idx, body) in self.bodies.iter().enumerate() {
             let Some(&model_idx) = body_map.get(&body_idx) else {
                 continue;
             };
-            if let Some((geom, geometry)) = body
-                .geoms
-                .iter()
-                .find(|g| g.collides)
-                .and_then(|g| geom_to_geometry(g).map(|geo| (g, geo)))
-            {
-                {
-                    let b = &mut model.bodies[model_idx as usize];
-                    b.geometry = Some(geometry);
-                    // Geoms are rarely at the body origin — a `fromto` capsule
-                    // sits at its midpoint. Contact needs the offset.
-                    b.geom_offset = phyz_model::GeomOffset {
-                        pos: geom.pos,
-                        rot: geom.rot,
-                    };
+            let b = &mut model.bodies[model_idx as usize];
+            for geom in &body.geoms {
+                let Some(geometry) = geom_to_geometry(geom) else {
+                    continue;
+                };
+                // `GeomInstance::origin` follows the `parent_to_joint`
+                // convention: `rot` is the body → shape transform, so a
+                // shape→body rotation goes in transposed.
+                let instance = phyz_model::GeomInstance {
+                    name: Some(geom.name.clone()),
+                    origin: SpatialTransform::new(geom.rot.transpose(), geom.pos),
+                    geometry,
+                };
+                if geom.collides {
+                    b.collisions.push(instance);
+                } else {
+                    b.visuals.push(instance);
                 }
             }
+            // `geometry` mirrors the first centred collision shape so existing
+            // single-shape consumers keep working.
+            b.geometry = b
+                .collisions
+                .iter()
+                .find(|g| g.is_centered())
+                .or_else(|| b.collisions.first())
+                .map(|g| g.geometry.clone());
         }
 
         for act_elem in &self.actuators {
@@ -899,7 +928,7 @@ mod tests {
         assert_eq!(model.actuators.len(), 1);
         assert_eq!(model.actuators[0].ctrl_range, Some([-1.0, 1.0]));
         // Motor: f = gear * ctrl
-        assert!((model.actuators[0].force(0.5, 1.0, 2.0) - 50.0).abs() < 1e-9);
+        assert!((model.actuators[0].force_at(0.5, 1.0, 2.0) - 50.0).abs() < 1e-9);
     }
 
     #[test]
@@ -923,10 +952,10 @@ mod tests {
         let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
         let p = &model.actuators[0];
         // kp*(ctrl - q) - kv*v = 10*(1 - 0.5) - 2*0.25 = 4.5
-        assert!((p.force(1.0, 0.5, 0.25) - 4.5).abs() < 1e-9);
+        assert!((p.force_at(1.0, 0.5, 0.25) - 4.5).abs() < 1e-9);
         let v = &model.actuators[1];
         // kv*(ctrl - v) = 5*(2 - 0.5) = 7.5
-        assert!((v.force(2.0, 0.0, 0.5) - 7.5).abs() < 1e-9);
+        assert!((v.force_at(2.0, 0.0, 0.5) - 7.5).abs() < 1e-9);
     }
 
     #[test]

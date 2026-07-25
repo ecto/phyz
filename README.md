@@ -54,13 +54,14 @@ phyz/
 │   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
-│   ├── phyz-collision/   # GJK/EPA collision detection
+│   ├── phyz-urdf/        # URDF (ROS) robot description import
+│   ├── phyz-collision/   # GJK/EPA collision, ray casting
 │   ├── phyz-contact/     # Contact resolution, friction
 │   ├── phyz-gpu/         # WGPU compute, batched simulation
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
 │   ├── phyz-particle/    # SPH fluids, granular media
 │   ├── phyz-em/          # Maxwell's equations on Yee lattice
-│   ├── phyz-md/          # Molecular dynamics, Lennard-Jones
+│   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
 │   ├── phyz-qft/         # Lattice QFT, Wilson action
 │   ├── phyz-gravity/     # N-body gravitational dynamics
 │   ├── phyz-lbm/         # Lattice Boltzmann fluid method
@@ -70,7 +71,7 @@ phyz/
 │   ├── phyz-guardian/    # Energy/momentum conservation guards
 │   ├── phyz-world/       # Scene graph, multi-physics world
 │   ├── phyz-real2sim/    # Inverse problems, parameter fitting
-│   ├── phyz-format/      # Serialization, model I/O
+│   ├── phyz-format/      # Serialization, model I/O (.phyz, MJCF, URDF)
 │   └── phyz-wasm/        # WASM bindings for browser demos
 ├── examples/             # Runnable examples
 └── site/                 # Landing page + interactive demos

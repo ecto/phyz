@@ -1,6 +1,6 @@
 //! World container that combines model, state, sensors, and tendons.
 
-use crate::{Sensor, SensorOutput, Tendon};
+use crate::{Obstacle, Scene, Sensor, SensorContext, SensorOutput, Tendon};
 use phyz_model::{Model, State};
 
 /// A complete simulation world with sensors and actuators.
@@ -15,6 +15,8 @@ pub struct World {
     pub sensor_history: Vec<Vec<SensorOutput>>,
     /// Tendons (cable actuators) in the world.
     pub tendons: Vec<Tendon>,
+    /// Static geometry that sensors can see (ground, obstacles).
+    pub scene: Scene,
 }
 
 impl World {
@@ -27,6 +29,7 @@ impl World {
             sensors: Vec::new(),
             sensor_history: Vec::new(),
             tendons: Vec::new(),
+            scene: Scene::empty(),
         }
     }
 
@@ -38,12 +41,18 @@ impl World {
             sensors: Vec::new(),
             sensor_history: Vec::new(),
             tendons: Vec::new(),
+            scene: Scene::empty(),
         }
     }
 
     /// Add a sensor to the world.
     pub fn add_sensor(&mut self, sensor: Sensor) {
         self.sensors.push(sensor);
+    }
+
+    /// Add a static obstacle for sensors to see.
+    pub fn add_obstacle(&mut self, obstacle: Obstacle) {
+        self.scene.push(obstacle);
     }
 
     /// Add a tendon to the world.
@@ -75,28 +84,17 @@ impl World {
 
     /// Read all sensors at the current state.
     ///
-    /// Dynamics are computed once and shared across sensors. Readings that
-    /// error (an unimplemented sensor, an out-of-range target) are dropped from
-    /// the history rather than recorded as zeros; use
-    /// [`Self::read_sensors_checked`] when you need to see the failures.
-    fn read_sensors(&self) -> Vec<SensorOutput> {
-        self.read_sensors_checked()
-            .into_iter()
-            .filter_map(Result::ok)
-            .collect()
-    }
-
-    /// Read all sensors, keeping per-sensor errors.
-    pub fn read_sensors_checked(&self) -> Vec<Result<SensorOutput, crate::sensor::SensorError>> {
-        let ctx = crate::sensor::SensorContext::new(
-            &self.model,
-            &self.state,
-            crate::sensor::SensorContext::wrenches_needed(&self.sensors),
-        );
+    /// The kinematics and dynamics passes the sensors need are computed once
+    /// and shared, so this costs the same whether there is one sensor or twenty.
+    pub fn read_sensors(&self) -> Vec<SensorOutput> {
+        if self.sensors.is_empty() {
+            return Vec::new();
+        }
+        let ctx = SensorContext::new(&self.model, &self.state, &self.scene);
         self.sensors
             .iter()
             .enumerate()
-            .map(|(id, sensor)| sensor.read(&self.model, &self.state, &ctx, id))
+            .map(|(id, sensor)| sensor.read(&ctx, id))
             .collect()
     }
 

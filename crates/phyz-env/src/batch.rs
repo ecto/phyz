@@ -71,9 +71,6 @@ pub struct BatchEnv {
     slots: Vec<EnvSlot>,
     obs_space: BoxSpace,
     act_space: BoxSpace,
-    /// action index → (velocity-DOF index, actuator). `None` for the
-    /// no-`<actuator>` fallback, where actions are direct joint torques.
-    act_map: Vec<(usize, Option<phyz_model::Actuator>)>,
     last_action: Vec<f32>,
     batch: StepBatch,
     seed: u64,
@@ -92,26 +89,21 @@ impl BatchEnv {
         // Actuators drive velocity DOFs. With no `<actuator>` block, fall back
         // to direct torque control on every DOF, which is what the CPU
         // dynamics already assume (`state.ctrl` is nv-long).
-        let (act_map, act_space) = if model.actuators.is_empty() {
-            (
-                (0..model.nv).map(|i| (i, None)).collect::<Vec<_>>(),
-                BoxSpace::uniform(model.nv, -1.0, 1.0),
-            )
+        let act_space = if model.actuators.is_empty() {
+            BoxSpace::uniform(model.nv, -1.0, 1.0)
         } else {
-            let mut map = Vec::with_capacity(model.actuators.len());
             let mut low = Vec::with_capacity(model.actuators.len());
             let mut high = Vec::with_capacity(model.actuators.len());
             for a in &model.actuators {
-                let v_off = *model
+                model
                     .v_offsets
                     .get(a.joint_idx)
                     .ok_or_else(|| EnvError::Config(format!("actuator {} has no joint", a.name)))?;
-                map.push((v_off, Some(a.clone())));
                 let [lo, hi] = a.ctrl_range.unwrap_or([-1.0, 1.0]);
                 low.push(lo as f32);
                 high.push(hi as f32);
             }
-            (map, BoxSpace::new(low, high))
+            BoxSpace::new(low, high)
         };
 
         let obs_dim = config.obs.dim(&model);
@@ -143,7 +135,6 @@ impl BatchEnv {
         Ok(Self {
             obs_space: BoxSpace::unbounded(obs_dim),
             act_space,
-            act_map,
             last_action: vec![0.0; n * nu],
             batch: StepBatch::new(n, obs_dim),
             slots,
@@ -199,26 +190,22 @@ impl BatchEnv {
         Self::refresh_kinematics(&self.model, &mut self.slots[i]);
     }
 
-    /// Turn one environment's actions into joint torques.
+    /// Write one environment's actions into `State::ctrl`.
     ///
-    /// Position and velocity servos depend on the *current* joint state, so
-    /// this is re-evaluated every control step rather than once per action.
-    /// Substeps within a control step reuse the same torque, matching MuJoCo's
-    /// frame-skip semantics.
+    /// `ctrl` is **actuator space** (length `nu`), not DOF space: the dynamics
+    /// map it through `gear`, `ctrlrange` and the affine servo law in
+    /// `phyz_rigid::actuation`. Doing the mapping here as well would apply the
+    /// gear ratio twice. Models with no `<actuator>` block keep the legacy
+    /// meaning, where `ctrl` is a raw per-DOF generalized force.
     fn apply_actions(&mut self, i: usize, act: &[f32]) {
-        for k in 0..self.model.nv {
-            self.slots[i].state.ctrl[k] = 0.0;
+        let ctrl = &mut self.slots[i].state.ctrl;
+        for c in ctrl.as_mut_slice().iter_mut() {
+            *c = 0.0;
         }
-        for (a_idx, (v_idx, actuator)) in self.act_map.iter().enumerate() {
-            let ctrl = act[a_idx] as f64;
-            self.slots[i].state.ctrl[*v_idx] = match actuator {
-                Some(a) => {
-                    let q = self.slots[i].state.q[*v_idx];
-                    let v = self.slots[i].state.v[*v_idx];
-                    a.force(ctrl, q, v)
-                }
-                None => ctrl,
-            };
+        for (a_idx, value) in act.iter().enumerate() {
+            if a_idx < ctrl.len() {
+                ctrl[a_idx] = *value as f64;
+            }
         }
     }
 

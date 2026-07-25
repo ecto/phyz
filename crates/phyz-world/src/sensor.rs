@@ -1,91 +1,65 @@
 //! Sensor models for extracting observations from simulation state.
 //!
-//! Every sensor here reports a real, computed quantity. Sensors that once
-//! returned hard-coded zeros (`BodyAccel`, `ForceTorque`, the accelerometer
-//! half of `Imu`) now read the per-body spatial accelerations and joint
-//! wrenches that the dynamics recursions already produce — see
-//! [`phyz_rigid::aba_dynamics`] and [`phyz_rigid::rnea_with_wrenches`].
-//!
-//! A sensor that cannot be computed does not silently return zeros. It returns
-//! [`SensorError`], because a policy trained against dead observation channels
-//! fails in a way nothing surfaces.
+//! Every sensor here reads real simulation quantities. Sensors that need the
+//! world around them (rangefinders, contact sensors) go through a
+//! [`SensorContext`], which carries the collision scene along with a single
+//! shared kinematics/dynamics pass so that reading N sensors does not run
+//! forward kinematics N times.
 
-use phyz_math::{Mat3, SpatialVec, Vec3};
+use crate::scene::{PlacedShape, Scene, ShapeOwner, placed_shapes};
+use phyz_collision::{Ray, gjk_distance_rot, ray_intersect};
+use phyz_math::{Mat3, SpatialTransform, SpatialVec, Vec3};
 use phyz_model::{Model, State};
-use phyz_rigid::{Dynamics, aba_dynamics};
+use phyz_rigid::{BodyKinematics, aba, body_wrenches, forward_kinematics_acc};
 
 /// Sensor types for extracting observations from simulation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Sensor {
-    /// Joint position and velocity for one joint (`2 * ndof` values).
-    JointState {
-        /// Index into `Model::joints`.
-        joint_idx: usize,
-    },
-    /// Proper linear acceleration of a body origin, in the body frame (3).
+    /// Joint position and velocity sensor. Output: `q` then `v`, `2 × ndof`.
+    JointState { joint_idx: usize },
+    /// Classical linear acceleration of the body origin, in world coordinates.
     ///
-    /// This is what an accelerometer measures, so it includes gravity: a body
-    /// at rest reads `+g` along its local up axis, not zero.
-    BodyAccel {
-        /// Index into `Model::bodies`.
-        body_idx: usize,
-    },
-    /// Body-frame angular velocity (3).
-    BodyAngularVel {
-        /// Index into `Model::bodies`.
-        body_idx: usize,
-    },
-    /// Spatial force transmitted through a body's inboard joint (6:
-    /// torque then force, body frame).
-    ForceTorque {
-        /// Index into `Model::bodies`.
-        body_idx: usize,
-    },
-    /// IMU: proper acceleration (3) then angular velocity (3), body frame.
-    Imu {
-        /// Index into `Model::bodies`.
-        body_idx: usize,
-    },
-    /// Body pose as `[x, y, z, qw, qx, qy, qz]` in world coordinates (7).
-    FrameCapture {
-        /// Index into `Model::bodies`.
-        body_idx: usize,
-    },
-    /// Distance along a body's local axis to the nearest obstacle.
+    /// This is a *kinematic* acceleration: a body in free fall reads `g`
+    /// downward, not zero. For what an accelerometer would report, use
+    /// [`Sensor::Imu`].
+    BodyAccel { body_idx: usize },
+    /// Body angular velocity in the body frame.
+    BodyAngularVel { body_idx: usize },
+    /// Wrench transmitted through the body's joint, in the body frame.
+    /// Output: `[τx, τy, τz, fx, fy, fz]`.
+    ForceTorque { body_idx: usize },
+    /// Rangefinder: distance along a ray to the nearest geometry.
     ///
-    /// **Not implemented.** `phyz-collision` provides GJK distance queries but
-    /// no ray cast, so there is nothing honest to return. Reading this sensor
-    /// yields [`SensorError::NotImplemented`] rather than `max_dist`, which
-    /// would be indistinguishable from "nothing in range".
+    /// `origin` and `direction` are given in the sensor body's frame, so the
+    /// ray follows the body as it moves. Output: `[distance]`, clamped to
+    /// `max_dist` when nothing is in range.
     Rangefinder {
-        /// Index into `Model::bodies`.
         body_idx: usize,
-        /// Maximum range in metres.
-        max_dist: f64,
-        /// Ray direction in the body frame.
+        /// Ray origin in body coordinates.
+        origin: Vec3,
+        /// Ray direction in body coordinates (need not be normalized).
         direction: Vec3,
+        /// Maximum range; also the reading when nothing is hit.
+        max_dist: f64,
     },
-}
-
-/// Why a sensor could not produce a reading.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum SensorError {
-    /// The sensor refers to a body or joint that does not exist.
-    #[error("sensor target index {index} is out of range ({count} available)")]
-    OutOfRange {
-        /// The offending index.
-        index: usize,
-        /// How many exist.
-        count: usize,
+    /// Contact sensor: whether this body touches anything else, and how deeply.
+    ///
+    /// Output: `[count, penetration_depth, nx, ny, nz]`, where the normal
+    /// points away from the deepest contacting shape. Depth is positive when
+    /// overlapping and negative inside the proximity margin; it is `NaN` if the
+    /// shapes overlap but EPA could not resolve a depth, so an unknown value
+    /// can never be mistaken for a real reading.
+    Contact {
+        body_idx: usize,
+        /// Separation below which a pair counts as touching. Zero means "only
+        /// actual overlap"; a small positive value gives a proximity band.
+        margin: f64,
     },
-    /// The engine cannot compute this quantity yet.
-    #[error("sensor '{kind}' is not implemented: {reason}")]
-    NotImplemented {
-        /// Sensor variant name.
-        kind: &'static str,
-        /// What is missing.
-        reason: &'static str,
-    },
+    /// IMU: specific force (what an accelerometer reads, i.e. `a − g`) followed
+    /// by angular velocity, both in the body frame.
+    Imu { body_idx: usize },
+    /// Snapshot of body transform: `[x, y, z, qw, qx, qy, qz]` in world frame.
+    FrameCapture { body_idx: usize },
 }
 
 /// Output from a sensor reading.
@@ -99,65 +73,86 @@ pub struct SensorOutput {
     pub data: Vec<f64>,
 }
 
-/// Dynamics quantities shared by every sensor in one reading.
+/// Everything a batch of sensors needs, computed once.
 ///
-/// Computing this once per step and passing it to each sensor avoids running
-/// ABA per sensor, which for an IMU-per-body setup would be quadratic.
-pub struct SensorContext {
-    dynamics: Dynamics,
-    wrenches: Option<Vec<SpatialVec>>,
+/// Building this runs forward kinematics, forward dynamics (ABA), and the
+/// inverse-dynamics wrench pass, so construct one per timestep and share it
+/// across all sensors rather than one per sensor.
+pub struct SensorContext<'a> {
+    /// The model being observed.
+    pub model: &'a Model,
+    /// The state being observed.
+    pub state: &'a State,
+    /// Static geometry the sensors can see.
+    pub scene: &'a Scene,
+    kinematics: BodyKinematics,
+    wrenches: Vec<SpatialVec>,
 }
 
-impl SensorContext {
-    /// Compute the dynamics quantities the sensors will read.
-    ///
-    /// `need_wrenches` additionally runs RNEA; skip it unless a
-    /// [`Sensor::ForceTorque`] is present.
-    pub fn new(model: &Model, state: &State, need_wrenches: bool) -> Self {
-        let dynamics = aba_dynamics(model, state, None);
-        let wrenches = if need_wrenches {
-            Some(phyz_rigid::rnea_with_wrenches(model, state, &dynamics.qdd).1)
-        } else {
-            None
-        };
+impl<'a> SensorContext<'a> {
+    /// Build a context for the given state and scene.
+    pub fn new(model: &'a Model, state: &'a State, scene: &'a Scene) -> Self {
+        // Accelerations and reaction forces both need the true qdd, which is
+        // whatever the current controls and constraints produce right now.
+        let qdd = aba(model, state);
         Self {
-            dynamics,
-            wrenches,
+            model,
+            state,
+            scene,
+            kinematics: forward_kinematics_acc(model, state, &qdd),
+            wrenches: body_wrenches(model, state, &qdd),
         }
     }
 
-    /// Whether any of `sensors` needs the RNEA pass.
-    pub fn wrenches_needed(sensors: &[Sensor]) -> bool {
-        sensors
-            .iter()
-            .any(|s| matches!(s, Sensor::ForceTorque { .. }))
+    /// World→body transforms for this state.
+    pub fn xforms(&self) -> &[SpatialTransform] {
+        &self.kinematics.xforms
     }
+
+    /// Body-frame spatial velocities.
+    pub fn velocities(&self) -> &[SpatialVec] {
+        &self.kinematics.velocities
+    }
+
+    /// Rotation taking body-`i` coordinates into the world frame.
+    fn body_to_world(&self, i: usize) -> Mat3 {
+        self.kinematics.xforms[i].rot.transpose()
+    }
+
+    /// Every collision shape in the world except those on `exclude`.
+    fn shapes(&self, exclude: Option<usize>) -> Vec<PlacedShape> {
+        placed_shapes(self.model, &self.kinematics.xforms, self.scene, exclude)
+    }
+}
+
+/// A rangefinder hit, for callers that want more than the distance.
+#[derive(Debug, Clone, Copy)]
+pub struct RangeHit {
+    /// Distance from the ray origin.
+    pub distance: f64,
+    /// What was hit.
+    pub owner: ShapeOwner,
+    /// World-space contact point.
+    pub point: Vec3,
+    /// World-space surface normal.
+    pub normal: Vec3,
 }
 
 impl Sensor {
     /// Read this sensor.
-    pub fn read(
-        &self,
-        model: &Model,
-        state: &State,
-        ctx: &SensorContext,
-        sensor_id: usize,
-    ) -> Result<SensorOutput, SensorError> {
-        let nb = model.nbodies();
-        let check = |i: usize, count: usize| -> Result<(), SensorError> {
-            if i >= count {
-                Err(SensorError::OutOfRange { index: i, count })
-            } else {
-                Ok(())
-            }
-        };
+    ///
+    /// Sensors that do not need the scene ignore it; see [`Sensor::read_state`]
+    /// for a convenience wrapper.
+    pub fn read(&self, ctx: &SensorContext, sensor_id: usize) -> SensorOutput {
+        let model = ctx.model;
+        let state = ctx.state;
 
         let data = match self {
             Sensor::JointState { joint_idx } => {
-                check(*joint_idx, model.joints.len())?;
                 let q_off = model.q_offsets[*joint_idx];
                 let v_off = model.v_offsets[*joint_idx];
                 let ndof = model.joints[*joint_idx].ndof();
+
                 let mut out = Vec::with_capacity(ndof * 2);
                 out.extend((0..ndof).map(|i| state.q[q_off + i]));
                 out.extend((0..ndof).map(|i| state.v[v_off + i]));
@@ -165,24 +160,23 @@ impl Sensor {
             }
 
             Sensor::BodyAccel { body_idx } => {
-                check(*body_idx, nb)?;
-                let a = proper_accel(&ctx.dynamics, *body_idx);
+                let i = check_body(model, *body_idx);
+                // Classical acceleration is computed in the body frame, then
+                // rotated out to world.
+                let a_body = ctx.kinematics.classical_linear_accel(i);
+                let a = ctx.body_to_world(i).mul_vec(a_body);
                 vec![a.x, a.y, a.z]
             }
 
             Sensor::BodyAngularVel { body_idx } => {
-                check(*body_idx, nb)?;
-                let w = ctx.dynamics.vel[*body_idx].angular;
+                let i = check_body(model, *body_idx);
+                let w = ctx.kinematics.velocities[i].angular;
                 vec![w.x, w.y, w.z]
             }
 
             Sensor::ForceTorque { body_idx } => {
-                check(*body_idx, nb)?;
-                let w = ctx.wrenches.as_ref().ok_or(SensorError::NotImplemented {
-                    kind: "ForceTorque",
-                    reason: "SensorContext was built without wrenches; pass need_wrenches = true",
-                })?;
-                let f = w[*body_idx];
+                let i = check_body(model, *body_idx);
+                let f = ctx.wrenches[i];
                 vec![
                     f.angular.x,
                     f.angular.y,
@@ -193,128 +187,267 @@ impl Sensor {
                 ]
             }
 
+            Sensor::Rangefinder {
+                body_idx,
+                origin,
+                direction,
+                max_dist,
+            } => {
+                let hit = self.cast(ctx, *body_idx, origin, direction, *max_dist);
+                vec![hit.map_or(*max_dist, |h| h.distance)]
+            }
+
+            Sensor::Contact { body_idx, margin } => {
+                let i = check_body(model, *body_idx);
+                contact_reading(ctx, i, *margin)
+            }
+
             Sensor::Imu { body_idx } => {
-                check(*body_idx, nb)?;
-                let a = proper_accel(&ctx.dynamics, *body_idx);
-                let w = ctx.dynamics.vel[*body_idx].angular;
-                vec![a.x, a.y, a.z, w.x, w.y, w.z]
+                let i = check_body(model, *body_idx);
+                // An accelerometer measures specific force: proper acceleration
+                // minus gravity, in the sensor's own frame. At rest this reads
+                // +9.81 m/s² "up", which is the classic sign trap.
+                let world_to_body = ctx.kinematics.xforms[i].rot;
+                let a_body = ctx.kinematics.classical_linear_accel(i);
+                let g_body = world_to_body.mul_vec(model.gravity);
+                let f = a_body - g_body;
+                let w = ctx.kinematics.velocities[i].angular;
+                vec![f.x, f.y, f.z, w.x, w.y, w.z]
             }
 
             Sensor::FrameCapture { body_idx } => {
-                check(*body_idx, nb)?;
-                // `xform.pos` is already the world position and `xform.rot` is
-                // world→body; see phyz-rigid/tests/frame_conventions.rs.
-                let world = &ctx.dynamics.xform[*body_idx];
-                let q = mat3_to_quat(&world.rot.transpose());
-                vec![
-                    world.pos.x,
-                    world.pos.y,
-                    world.pos.z,
-                    q.0,
-                    q.1,
-                    q.2,
-                    q.3,
-                ]
-            }
-
-            Sensor::Rangefinder { .. } => {
-                return Err(SensorError::NotImplemented {
-                    kind: "Rangefinder",
-                    reason: "phyz-collision has no ray cast; returning max_dist would be \
-                             indistinguishable from an empty scene",
-                });
+                let i = check_body(model, *body_idx);
+                let xf = &ctx.kinematics.xforms[i];
+                // `xf.rot` maps world→body; the body's orientation in the world
+                // frame is its transpose.
+                let (w, x, y, z) = mat3_to_quat(&xf.rot.transpose());
+                vec![xf.pos.x, xf.pos.y, xf.pos.z, w, x, y, z]
             }
         };
 
-        Ok(SensorOutput {
+        SensorOutput {
             sensor_id,
             timestamp: state.time,
             data,
-        })
-    }
-
-    /// Output width for this sensor on `model`.
-    pub fn output_dim(&self, model: &Model) -> usize {
-        match self {
-            Sensor::JointState { joint_idx } => model
-                .joints
-                .get(*joint_idx)
-                .map(|j| j.ndof() * 2)
-                .unwrap_or(0),
-            Sensor::BodyAccel { .. } | Sensor::BodyAngularVel { .. } => 3,
-            Sensor::ForceTorque { .. } | Sensor::Imu { .. } => 6,
-            Sensor::FrameCapture { .. } => 7,
-            Sensor::Rangefinder { .. } => 1,
         }
     }
 
-    /// Whether this sensor can produce a reading at all on this build.
-    pub fn is_implemented(&self) -> bool {
-        !matches!(self, Sensor::Rangefinder { .. })
+    /// Read a sensor without any static scene geometry.
+    ///
+    /// Rangefinders and contact sensors still see the model's own bodies, but
+    /// nothing else. Building the context is not free, so prefer
+    /// [`SensorContext`] plus [`Sensor::read`] when reading several sensors.
+    pub fn read_state(&self, model: &Model, state: &State, sensor_id: usize) -> SensorOutput {
+        let scene = Scene::empty();
+        self.read(&SensorContext::new(model, state, &scene), sensor_id)
+    }
+
+    /// Full rangefinder result, including what was hit and where.
+    ///
+    /// Returns `None` if nothing is within range. Panics if this is not a
+    /// [`Sensor::Rangefinder`].
+    pub fn cast_ray(&self, ctx: &SensorContext) -> Option<RangeHit> {
+        let Sensor::Rangefinder {
+            body_idx,
+            origin,
+            direction,
+            max_dist,
+        } = self
+        else {
+            panic!("cast_ray() is only valid on Sensor::Rangefinder, not {self:?}");
+        };
+        self.cast(ctx, *body_idx, origin, direction, *max_dist)
+    }
+
+    fn cast(
+        &self,
+        ctx: &SensorContext,
+        body_idx: usize,
+        origin: &Vec3,
+        direction: &Vec3,
+        max_dist: f64,
+    ) -> Option<RangeHit> {
+        let i = check_body(ctx.model, body_idx);
+
+        // Lift the body-frame ray into world coordinates.
+        let rot = ctx.body_to_world(i);
+        let world_origin = ctx.kinematics.xforms[i].pos + rot.mul_vec(*origin);
+        let world_dir = rot.mul_vec(*direction);
+
+        let Some(ray) = Ray::new(world_origin, world_dir) else {
+            panic!(
+                "Sensor::Rangefinder on body {body_idx} has a zero-length direction; \
+                 a rangefinder with no direction has no meaningful reading"
+            );
+        };
+
+        let mut best: Option<RangeHit> = None;
+        // The sensor's own body is excluded so it does not range-find itself.
+        for shape in ctx.shapes(Some(i)) {
+            let Some(hit) = ray_intersect(&shape.geometry, &shape.pos, &shape.rot, &ray) else {
+                continue;
+            };
+            if hit.distance > max_dist {
+                continue;
+            }
+            if best.is_none_or(|b| hit.distance < b.distance) {
+                best = Some(RangeHit {
+                    distance: hit.distance,
+                    owner: shape.owner,
+                    point: hit.point,
+                    normal: hit.normal,
+                });
+            }
+        }
+        best
+    }
+
+    /// Get expected output dimension for this sensor.
+    ///
+    /// For [`Sensor::JointState`] this is per-DOF: the actual reading has
+    /// `2 × ndof` entries.
+    pub fn output_dim(&self) -> usize {
+        match self {
+            Sensor::JointState { .. } => 2, // q + v (multiplied by ndof at runtime)
+            Sensor::BodyAccel { .. } => 3,
+            Sensor::BodyAngularVel { .. } => 3,
+            Sensor::ForceTorque { .. } => 6,
+            Sensor::Rangefinder { .. } => 1,
+            Sensor::Contact { .. } => 5,      // count + depth + normal
+            Sensor::Imu { .. } => 6,          // accel (3) + gyro (3)
+            Sensor::FrameCapture { .. } => 7, // pos (3) + quat (4)
+        }
     }
 }
 
-/// Proper (accelerometer-measured) linear acceleration of a body origin.
+/// Validate a body index up front rather than quietly reading zeros.
 ///
-/// ABA's pass 3 uses the base-acceleration trick: gravity enters as a fictitious
-/// base acceleration of `-g`, so the spatial acceleration it produces is already
-/// the *proper* acceleration. The classical-to-spatial correction `ω × v` turns
-/// the spatial acceleration's linear part into the acceleration of the material
-/// point currently at the body origin.
-fn proper_accel(d: &Dynamics, i: usize) -> Vec3 {
-    let a = d.acc[i];
-    let v = d.vel[i];
-    a.linear + v.angular.cross(v.linear)
+/// A sensor pointed at a body that does not exist is a configuration bug, and
+/// an RL policy trained on the resulting zeros would be silently wrong.
+fn check_body(model: &Model, body_idx: usize) -> usize {
+    assert!(
+        body_idx < model.nbodies(),
+        "sensor references body {body_idx}, but the model only has {} bodies",
+        model.nbodies()
+    );
+    body_idx
 }
 
-/// Rotation matrix to `(w, x, y, z)` quaternion, Shepperd's method.
-fn mat3_to_quat(mat: &Mat3) -> (f64, f64, f64, f64) {
+/// `[count, depth, nx, ny, nz]` for the shapes touching body `i`.
+fn contact_reading(ctx: &SensorContext, i: usize, margin: f64) -> Vec<f64> {
+    let own: Vec<PlacedShape> = ctx
+        .shapes(None)
+        .into_iter()
+        .filter(|s| s.owner == ShapeOwner::Body(i))
+        .collect();
+    if own.is_empty() {
+        // No geometry means nothing can be touched; that is a real answer, not
+        // a placeholder.
+        return vec![0.0, 0.0, 0.0, 0.0, 0.0];
+    }
+
+    let mut count = 0.0;
+    let mut deepest: f64 = 0.0;
+    let mut normal = Vec3::zeros();
+
+    for other in ctx.shapes(Some(i)) {
+        // Skip the body's own parent/child? No: adjacent links genuinely do
+        // touch, and filtering that is the contact pipeline's job, not the
+        // sensor's.
+        for mine in &own {
+            let sep = gjk_distance_rot(
+                &mine.geometry,
+                &other.geometry,
+                &mine.pos,
+                &other.pos,
+                &mine.rot,
+                &other.rot,
+            );
+            if sep > margin {
+                continue;
+            }
+            count += 1.0;
+
+            let axis = (other.pos - mine.pos).normalize();
+            let (depth, dir) = if sep > 0.0 {
+                // Inside the proximity margin but not actually overlapping:
+                // the separation itself is the (negative) depth.
+                (-sep, axis)
+            } else {
+                // Overlapping. EPA gives the exact depth and direction; if the
+                // polytope is degenerate it reports NaN rather than a plausible
+                // zero, so a caller cannot mistake "unknown" for "just touching".
+                match phyz_collision::epa_penetration_rot(
+                    &mine.geometry,
+                    &other.geometry,
+                    &mine.pos,
+                    &other.pos,
+                    &mine.rot,
+                    &other.rot,
+                ) {
+                    Some((d, n)) => (d, n),
+                    None => (f64::NAN, axis),
+                }
+            };
+            // `NaN >= x` is false, so an unresolved depth would silently lose
+            // to a resolved one; propagate it explicitly instead.
+            if depth.is_nan() || (!deepest.is_nan() && depth >= deepest) {
+                deepest = depth;
+                normal = dir;
+            }
+        }
+    }
+
+    vec![count, deepest, normal.x, normal.y, normal.z]
+}
+
+/// Helper function to convert rotation matrix to quaternion.
+/// Returns (w, x, y, z).
+fn mat3_to_quat(mat: &phyz_math::Mat3) -> (f64, f64, f64, f64) {
+    // Shepperd's method for numerical stability
     let trace = mat[(0, 0)] + mat[(1, 1)] + mat[(2, 2)];
 
     if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
-        (
-            0.25 * s,
-            (mat[(2, 1)] - mat[(1, 2)]) / s,
-            (mat[(0, 2)] - mat[(2, 0)]) / s,
-            (mat[(1, 0)] - mat[(0, 1)]) / s,
-        )
+        let w = 0.25 * s;
+        let x = (mat[(2, 1)] - mat[(1, 2)]) / s;
+        let y = (mat[(0, 2)] - mat[(2, 0)]) / s;
+        let z = (mat[(1, 0)] - mat[(0, 1)]) / s;
+        (w, x, y, z)
     } else if mat[(0, 0)] > mat[(1, 1)] && mat[(0, 0)] > mat[(2, 2)] {
         let s = (1.0 + mat[(0, 0)] - mat[(1, 1)] - mat[(2, 2)]).sqrt() * 2.0;
-        (
-            (mat[(2, 1)] - mat[(1, 2)]) / s,
-            0.25 * s,
-            (mat[(0, 1)] + mat[(1, 0)]) / s,
-            (mat[(0, 2)] + mat[(2, 0)]) / s,
-        )
+        let w = (mat[(2, 1)] - mat[(1, 2)]) / s;
+        let x = 0.25 * s;
+        let y = (mat[(0, 1)] + mat[(1, 0)]) / s;
+        let z = (mat[(0, 2)] + mat[(2, 0)]) / s;
+        (w, x, y, z)
     } else if mat[(1, 1)] > mat[(2, 2)] {
         let s = (1.0 + mat[(1, 1)] - mat[(0, 0)] - mat[(2, 2)]).sqrt() * 2.0;
-        (
-            (mat[(0, 2)] - mat[(2, 0)]) / s,
-            (mat[(0, 1)] + mat[(1, 0)]) / s,
-            0.25 * s,
-            (mat[(1, 2)] + mat[(2, 1)]) / s,
-        )
+        let w = (mat[(0, 2)] - mat[(2, 0)]) / s;
+        let x = (mat[(0, 1)] + mat[(1, 0)]) / s;
+        let y = 0.25 * s;
+        let z = (mat[(1, 2)] + mat[(2, 1)]) / s;
+        (w, x, y, z)
     } else {
         let s = (1.0 + mat[(2, 2)] - mat[(0, 0)] - mat[(1, 1)]).sqrt() * 2.0;
-        (
-            (mat[(1, 0)] - mat[(0, 1)]) / s,
-            (mat[(0, 2)] + mat[(2, 0)]) / s,
-            (mat[(1, 2)] + mat[(2, 1)]) / s,
-            0.25 * s,
-        )
+        let w = (mat[(1, 0)] - mat[(0, 1)]) / s;
+        let x = (mat[(0, 2)] + mat[(2, 0)]) / s;
+        let y = (mat[(1, 2)] + mat[(2, 1)]) / s;
+        let z = 0.25 * s;
+        (w, x, y, z)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phyz_math::{SpatialInertia, SpatialTransform};
-    use phyz_model::{Joint, ModelBuilder};
+    use crate::scene::Obstacle;
+    use phyz_collision::Geometry as CGeom;
+    use phyz_math::{SpatialInertia, SpatialTransform, Vec3};
+    use phyz_model::ModelBuilder;
 
-    fn pendulum() -> Model {
+    fn one_link() -> Model {
         ModelBuilder::new()
-            .gravity(Vec3::new(0.0, 0.0, -9.81))
             .add_revolute_body(
                 "link",
                 -1,
@@ -324,145 +457,415 @@ mod tests {
             .build()
     }
 
-    fn free_body() -> Model {
-        ModelBuilder::new()
-            .gravity(Vec3::new(0.0, 0.0, -9.81))
-            .add_body(
-                "body",
-                -1,
-                Joint::free(SpatialTransform::identity()),
-                SpatialInertia::new(
-                    1.0,
-                    Vec3::zeros(),
-                    Mat3::from_diagonal(&Vec3::new(0.1, 0.1, 0.1)),
-                ),
-            )
-            .build()
-    }
-
-    fn read(model: &Model, state: &State, s: &Sensor) -> Vec<f64> {
-        let ctx = SensorContext::new(model, state, SensorContext::wrenches_needed(std::slice::from_ref(s)));
-        s.read(model, state, &ctx, 0).unwrap().data
-    }
-
     #[test]
-    fn joint_state_reports_q_and_v() {
-        let model = pendulum();
+    fn test_joint_state_sensor() {
+        let model = one_link();
         let mut state = model.default_state();
         state.q[0] = 0.5;
         state.v[0] = 1.0;
-        assert_eq!(read(&model, &state, &Sensor::JointState { joint_idx: 0 }), vec![0.5, 1.0]);
+
+        let output = Sensor::JointState { joint_idx: 0 }.read_state(&model, &state, 0);
+
+        assert_eq!(output.data.len(), 2);
+        assert_eq!(output.data[0], 0.5);
+        assert_eq!(output.data[1], 1.0);
     }
 
     #[test]
-    fn angular_velocity_follows_the_joint_axis() {
-        let model = pendulum();
+    fn test_body_angular_vel_sensor() {
+        let model = one_link();
         let mut state = model.default_state();
         state.v[0] = 2.0;
-        let w = read(&model, &state, &Sensor::BodyAngularVel { body_idx: 0 });
-        assert!((w[2] - 2.0).abs() < 1e-10, "{w:?}");
-    }
 
-    /// The regression that matters: this used to be hard-coded `[0, 0, 0]`.
-    /// A free body in free fall is weightless, so its accelerometer reads zero;
-    /// but that must be a *computed* zero, so check a body that is not in free
-    /// fall as well.
-    #[test]
-    fn body_accel_is_computed_not_zero() {
-        let model = pendulum();
-        let mut state = model.default_state();
-        state.q[0] = std::f64::consts::FRAC_PI_2; // horizontal, max gravity torque
-        let a = read(&model, &state, &Sensor::BodyAccel { body_idx: 0 });
-        assert!(
-            a.iter().any(|x| x.abs() > 1e-6),
-            "accelerometer on a swinging pendulum must not read zero: {a:?}"
-        );
-        assert!(a.iter().all(|x| x.is_finite()));
+        let output = Sensor::BodyAngularVel { body_idx: 0 }.read_state(&model, &state, 0);
+
+        assert_eq!(output.data.len(), 3);
+        // The joint spins about Z at 2 rad/s.
+        assert!((output.data[2] - 2.0).abs() < 1e-10);
+        assert!(output.data[0].abs() < 1e-10 && output.data[1].abs() < 1e-10);
     }
 
     #[test]
-    fn free_falling_body_is_weightless() {
-        let model = free_body();
+    fn test_imu_sensor_reads_gravity_at_rest() {
+        // A body held at rest by a locked joint measures +g upward, the
+        // textbook accelerometer reading — not zero.
+        let model = ModelBuilder::new()
+            .add_fixed_body(
+                "link",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::point_mass(1.0, Vec3::zeros()),
+            )
+            .build();
         let state = model.default_state();
-        let a = read(&model, &state, &Sensor::BodyAccel { body_idx: 0 });
-        for x in &a {
-            assert!(x.abs() < 1e-9, "free fall should read ~0, got {a:?}");
-        }
+
+        let output = Sensor::Imu { body_idx: 0 }.read_state(&model, &state, 0);
+        assert_eq!(output.data.len(), 6);
+        assert!(
+            (output.data[2] - 9.81).abs() < 1e-6,
+            "specific force z = {}",
+            output.data[2]
+        );
+        assert!(output.data[3..].iter().all(|w| w.abs() < 1e-12));
     }
 
     #[test]
-    fn imu_reports_accel_then_gyro() {
-        let model = pendulum();
-        let mut state = model.default_state();
-        state.q[0] = 0.7;
-        state.v[0] = 1.5;
-        let d = read(&model, &state, &Sensor::Imu { body_idx: 0 });
-        assert_eq!(d.len(), 6);
-        assert!((d[5] - 1.5).abs() < 1e-10, "gyro z should be qd: {d:?}");
+    fn test_frame_capture_sensor() {
+        let model = one_link();
+        let state = model.default_state();
+        let output = Sensor::FrameCapture { body_idx: 0 }.read_state(&model, &state, 0);
+
+        assert_eq!(output.data.len(), 7); // 3 pos + 4 quat
+        assert!((output.data[3] - 1.0).abs() < 1e-12, "identity quaternion");
     }
 
-    /// Also previously hard-coded zeros. A loaded pendulum transmits a real
-    /// wrench through its joint.
     #[test]
-    fn force_torque_is_computed_not_zero() {
-        let model = pendulum();
+    fn test_frame_capture_reports_world_orientation() {
+        // Rotating the joint by +90° about Z must give a quaternion with a
+        // positive Z component. Reporting the world→body transform instead
+        // would flip the sign.
+        let model = one_link();
         let mut state = model.default_state();
         state.q[0] = std::f64::consts::FRAC_PI_2;
-        let f = read(&model, &state, &Sensor::ForceTorque { body_idx: 0 });
-        assert_eq!(f.len(), 6);
+
+        let output = Sensor::FrameCapture { body_idx: 0 }.read_state(&model, &state, 0);
+        let (w, z) = (output.data[3], output.data[6]);
+        let half = std::f64::consts::FRAC_PI_4;
+        assert!((w - half.cos()).abs() < 1e-9, "qw = {w}");
+        assert!((z - half.sin()).abs() < 1e-9, "qz = {z}");
+    }
+
+    #[test]
+    fn rangefinder_measures_known_sphere_distance() {
+        // Sensor body at the origin, sphere of radius 1 centred 5 m along +X:
+        // the surface is exactly 4 m away.
+        let model = one_link();
+        let state = model.default_state();
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(5.0, 0.0, 0.0),
+        ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+
+        let sensor = Sensor::Rangefinder {
+            body_idx: 0,
+            origin: Vec3::zeros(),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            max_dist: 10.0,
+        };
+        let out = sensor.read(&ctx, 0);
+        assert_eq!(out.data.len(), 1);
+        assert!((out.data[0] - 4.0).abs() < 1e-9, "got {}", out.data[0]);
+
+        let hit = sensor.cast_ray(&ctx).unwrap();
+        assert_eq!(hit.owner, ShapeOwner::Obstacle(0));
+        assert!((hit.point.x - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rangefinder_returns_max_dist_when_nothing_in_range() {
+        let model = one_link();
+        let state = model.default_state();
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(50.0, 0.0, 0.0),
+        ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+
+        let sensor = Sensor::Rangefinder {
+            body_idx: 0,
+            origin: Vec3::zeros(),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            max_dist: 10.0,
+        };
+        assert_eq!(sensor.read(&ctx, 0).data[0], 10.0);
+        assert!(sensor.cast_ray(&ctx).is_none());
+    }
+
+    #[test]
+    fn rangefinder_ray_follows_the_body() {
+        // The ray is specified in body coordinates, so rotating the body by 90°
+        // about Z must swing a +X ray onto the +Y target.
+        let model = one_link();
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(0.0, 5.0, 0.0),
+        ));
+        let sensor = Sensor::Rangefinder {
+            body_idx: 0,
+            origin: Vec3::zeros(),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            max_dist: 10.0,
+        };
+
+        let state = model.default_state();
+        let ctx = SensorContext::new(&model, &state, &scene);
+        assert_eq!(sensor.read(&ctx, 0).data[0], 10.0, "ray points away");
+
+        let mut turned = model.default_state();
+        turned.q[0] = std::f64::consts::FRAC_PI_2;
+        let ctx = SensorContext::new(&model, &turned, &scene);
         assert!(
-            f.iter().any(|x| x.abs() > 1e-6),
-            "joint wrench must not be zero: {f:?}"
+            (sensor.read(&ctx, 0).data[0] - 4.0).abs() < 1e-9,
+            "got {}",
+            sensor.read(&ctx, 0).data[0]
         );
     }
 
     #[test]
-    fn force_torque_without_wrenches_errors_rather_than_lying() {
-        let model = pendulum();
+    fn rangefinder_sees_the_ground_plane() {
+        let model = one_link();
         let state = model.default_state();
-        let ctx = SensorContext::new(&model, &state, false);
-        let err = Sensor::ForceTorque { body_idx: 0 }
-            .read(&model, &state, &ctx, 0)
-            .unwrap_err();
-        assert!(matches!(err, SensorError::NotImplemented { .. }));
-    }
+        let scene = Scene::empty().with_ground(-2.0);
+        let ctx = SensorContext::new(&model, &state, &scene);
 
-    #[test]
-    fn rangefinder_errors_instead_of_returning_max_dist() {
-        let model = pendulum();
-        let state = model.default_state();
-        let ctx = SensorContext::new(&model, &state, false);
-        let s = Sensor::Rangefinder {
+        let out = Sensor::Rangefinder {
             body_idx: 0,
-            max_dist: 10.0,
+            origin: Vec3::zeros(),
             direction: Vec3::new(0.0, 0.0, -1.0),
-        };
-        assert!(!s.is_implemented());
-        assert!(matches!(
-            s.read(&model, &state, &ctx, 0),
-            Err(SensorError::NotImplemented { .. })
-        ));
+            max_dist: 10.0,
+        }
+        .read(&ctx, 0);
+        assert!((out.data[0] - 2.0).abs() < 1e-9, "got {}", out.data[0]);
     }
 
     #[test]
-    fn out_of_range_target_is_an_error() {
-        let model = pendulum();
+    fn rangefinder_ignores_its_own_body() {
+        // A body wrapped in its own collision sphere must not report 0.
+        let mut model = one_link();
+        model.bodies[0].geometry = Some(phyz_model::Geometry::Sphere { radius: 0.2 });
         let state = model.default_state();
-        let ctx = SensorContext::new(&model, &state, false);
-        assert!(matches!(
-            Sensor::BodyAccel { body_idx: 99 }.read(&model, &state, &ctx, 0),
-            Err(SensorError::OutOfRange { .. })
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(5.0, 0.0, 0.0),
         ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+
+        let out = Sensor::Rangefinder {
+            body_idx: 0,
+            origin: Vec3::zeros(),
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            max_dist: 10.0,
+        }
+        .read(&ctx, 0);
+        assert!((out.data[0] - 4.0).abs() < 1e-9, "got {}", out.data[0]);
     }
 
     #[test]
-    fn frame_capture_reports_world_pose() {
-        let model = free_body();
-        let mut state = model.default_state();
-        state.q[2] = 2.5;
-        let d = read(&model, &state, &Sensor::FrameCapture { body_idx: 0 });
-        assert_eq!(d.len(), 7);
-        assert!((d[2] - 2.5).abs() < 1e-9, "world z: {d:?}");
-        assert!((d[3] - 1.0).abs() < 1e-9, "identity quaternion: {d:?}");
+    #[should_panic(expected = "zero-length direction")]
+    fn rangefinder_with_no_direction_fails_loudly() {
+        let model = one_link();
+        let state = model.default_state();
+        let scene = Scene::empty();
+        let ctx = SensorContext::new(&model, &state, &scene);
+        Sensor::Rangefinder {
+            body_idx: 0,
+            origin: Vec3::zeros(),
+            direction: Vec3::zeros(),
+            max_dist: 1.0,
+        }
+        .read(&ctx, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "only has 1 bodies")]
+    fn out_of_range_body_index_fails_loudly() {
+        let model = one_link();
+        let state = model.default_state();
+        Sensor::BodyAngularVel { body_idx: 7 }.read_state(&model, &state, 0);
+    }
+
+    #[test]
+    fn contact_sensor_detects_overlap() {
+        let mut model = one_link();
+        model.bodies[0].geometry = Some(phyz_model::Geometry::Sphere { radius: 1.0 });
+        let state = model.default_state();
+
+        // Overlapping sphere: centres 1.5 apart, radii 1.0 + 1.0 → depth 0.5.
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(1.5, 0.0, 0.0),
+        ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+        let out = Sensor::Contact {
+            body_idx: 0,
+            margin: 0.0,
+        }
+        .read(&ctx, 0);
+
+        assert_eq!(out.data.len(), 5);
+        assert_eq!(out.data[0], 1.0, "one contact");
+        assert!((out.data[1] - 0.5).abs() < 0.1, "depth {}", out.data[1]);
+    }
+
+    #[test]
+    fn contact_sensor_reports_no_contact_when_apart() {
+        let mut model = one_link();
+        model.bodies[0].geometry = Some(phyz_model::Geometry::Sphere { radius: 1.0 });
+        let state = model.default_state();
+
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(5.0, 0.0, 0.0),
+        ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+        let out = Sensor::Contact {
+            body_idx: 0,
+            margin: 0.0,
+        }
+        .read(&ctx, 0);
+        assert_eq!(out.data[0], 0.0);
+    }
+
+    #[test]
+    fn contact_sensor_margin_creates_a_proximity_band() {
+        let mut model = one_link();
+        model.bodies[0].geometry = Some(phyz_model::Geometry::Sphere { radius: 1.0 });
+        let state = model.default_state();
+
+        // Gap of 0.5 between surfaces.
+        let scene = Scene::empty().with_obstacle(Obstacle::new(
+            "ball",
+            CGeom::Sphere { radius: 1.0 },
+            Vec3::new(2.5, 0.0, 0.0),
+        ));
+        let ctx = SensorContext::new(&model, &state, &scene);
+
+        let tight = Sensor::Contact {
+            body_idx: 0,
+            margin: 0.1,
+        }
+        .read(&ctx, 0);
+        assert_eq!(tight.data[0], 0.0);
+
+        let loose = Sensor::Contact {
+            body_idx: 0,
+            margin: 1.0,
+        }
+        .read(&ctx, 0);
+        assert_eq!(loose.data[0], 1.0);
+    }
+
+    #[test]
+    fn body_accel_reports_free_fall() {
+        // A single free body under gravity accelerates downward at g.
+        let model = ModelBuilder::new()
+            .add_free_body(
+                "ball",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::sphere(1.0, 0.1),
+            )
+            .build();
+        let state = model.default_state();
+
+        let out = Sensor::BodyAccel { body_idx: 0 }.read_state(&model, &state, 0);
+        assert_eq!(out.data.len(), 3);
+        assert!(
+            (out.data[2] + 9.81).abs() < 1e-6,
+            "free fall should read -g, got {}",
+            out.data[2]
+        );
+
+        // And the same body's IMU reads zero specific force in free fall.
+        let imu = Sensor::Imu { body_idx: 0 }.read_state(&model, &state, 0);
+        assert!(
+            imu.data[..3].iter().all(|a| a.abs() < 1e-6),
+            "free-fall IMU should read ~0, got {:?}",
+            &imu.data[..3]
+        );
+    }
+
+    #[test]
+    fn force_torque_holds_up_a_static_load() {
+        // A 3 kg mass rigidly welded to the world: the joint must transmit
+        // 3 × 9.81 N upward.
+        let mass = 3.0;
+        let model = ModelBuilder::new()
+            .add_fixed_body(
+                "post",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::point_mass(mass, Vec3::zeros()),
+            )
+            .build();
+        let state = model.default_state();
+
+        let out = Sensor::ForceTorque { body_idx: 0 }.read_state(&model, &state, 0);
+        assert_eq!(out.data.len(), 6);
+        let fz = out.data[5];
+        assert!(
+            (fz - mass * 9.81).abs() < 1e-6,
+            "expected {} N, got {fz}",
+            mass * 9.81
+        );
+    }
+
+    #[test]
+    fn force_torque_reports_the_moment_of_an_offset_mass() {
+        // Same mass, now hung 2 m along +X: the joint sees the same vertical
+        // force plus a moment of m·g·d about Y.
+        let (mass, arm) = (3.0, 2.0);
+        let model = ModelBuilder::new()
+            .add_fixed_body(
+                "arm",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::point_mass(mass, Vec3::new(arm, 0.0, 0.0)),
+            )
+            .build();
+        let state = model.default_state();
+
+        let out = Sensor::ForceTorque { body_idx: 0 }.read_state(&model, &state, 0);
+        assert!(
+            (out.data[5] - mass * 9.81).abs() < 1e-6,
+            "fz {}",
+            out.data[5]
+        );
+        assert!(
+            (out.data[1].abs() - mass * 9.81 * arm).abs() < 1e-6,
+            "expected |τy| = {}, got {}",
+            mass * 9.81 * arm,
+            out.data[1]
+        );
+    }
+
+    #[test]
+    fn output_dims_match_actual_readings() {
+        let model = one_link();
+        let state = model.default_state();
+        let scene = Scene::empty();
+        let ctx = SensorContext::new(&model, &state, &scene);
+
+        for sensor in [
+            Sensor::BodyAccel { body_idx: 0 },
+            Sensor::BodyAngularVel { body_idx: 0 },
+            Sensor::ForceTorque { body_idx: 0 },
+            Sensor::Rangefinder {
+                body_idx: 0,
+                origin: Vec3::zeros(),
+                direction: Vec3::new(1.0, 0.0, 0.0),
+                max_dist: 1.0,
+            },
+            Sensor::Contact {
+                body_idx: 0,
+                margin: 0.0,
+            },
+            Sensor::Imu { body_idx: 0 },
+            Sensor::FrameCapture { body_idx: 0 },
+        ] {
+            let out = sensor.read(&ctx, 0);
+            assert_eq!(
+                out.data.len(),
+                sensor.output_dim(),
+                "output_dim mismatch for {sensor:?}"
+            );
+        }
     }
 }
