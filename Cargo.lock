@@ -2822,6 +2822,7 @@ dependencies = [
  "phyz-contact",
  "phyz-diff",
  "phyz-math",
+ "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
 ]

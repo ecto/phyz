@@ -22,4 +22,6 @@ pub use adjoint::{
     AdjointGradients, AdjointRollout, ContactSetup, FinalStateObjective, adjoint_rollout_gradient,
     rollout_objective,
 };
-pub use step::{CollisionMesh, GroundContact, N_INERTIA_PARAMS, inertia_params};
+pub use step::{
+    CollisionMesh, DofLayout, GroundContact, N_INERTIA_PARAMS, inertia_params, joint_nq,
+};

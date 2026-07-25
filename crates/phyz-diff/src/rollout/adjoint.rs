@@ -20,13 +20,23 @@
 //! Jacobians are read out **exactly** with [`tang::Dual`] lanes through the
 //! scalar-generic step of [`super::step`] — no finite differences anywhere.
 //!
-//! Semi-implicit Euler has the structure `v' = v + dt·a`, `q' = q + dt·v'`
-//! with `a = ABA(q, v, u; π, V)`, so with `w := dt·λ_q' + λ_v'`:
+//! Semi-implicit Euler has the structure `v' = v + dt·a`, `q' = Φ(q, v')`
+//! with `a = ABA(q, v, u; π, V)`. Differentiating and collecting terms, with
+//! `w := Φ_v'ᵀ λ_q' + λ_v'` (an `nv`-covector):
 //!
 //! ```text
-//! λ_q = λ_q' + dt·(∂a/∂q)ᵀ w          λ_v = w + dt·(∂a/∂v)ᵀ w
+//! λ_q = Φ_qᵀ λ_q' + dt·(∂a/∂q)ᵀ w     λ_v = w + dt·(∂a/∂v)ᵀ w
 //! dJ/dπ += dt·wᵀ·∂a/∂π               dJ/dV += dt·wᵀ·∂a/∂V
 //! ```
+//!
+//! For a model of single-DOF joints only, `Φ(q, v') = q + dt·v'`, so
+//! `Φ_q = I`, `Φ_v' = dt·I`, and this collapses to the familiar
+//! `w = dt·λ_q' + λ_v'`, `λ_q = λ_q' + dt·(∂a/∂q)ᵀw`. With a spherical or free
+//! joint in the model `Φ` is a Lie-group step on quaternion coordinates:
+//! `Φ_q` is not the identity and `Φ_v'` is `nq×nv`, not square (see
+//! [`super::step`]'s module docs for the layout). Both blocks are read out
+//! with dual lanes through `Φ` alone — `nq + nv` lanes of a few dozen flops
+//! each, negligible beside the ABA lanes.
 //!
 //! Each `∂a/∂(·)` column is one dual lane. The vertex channel avoids a lane
 //! per vertex coordinate: vertices reach the dynamics only through each
@@ -39,8 +49,10 @@
 //!
 //! # Contract
 //!
-//! - Joint domain: single-DOF (revolute/prismatic) + fixed, like the
-//!   symbolic tracer. Multi-DOF joints panic.
+//! - Joint domain: all of them — revolute/prismatic/fixed plus spherical and
+//!   free. Multi-DOF joints carry quaternion configuration, so `q0` must be
+//!   laid out per [`super::step::DofLayout`] (use its `neutral_q`), and
+//!   `∂g/∂q` is an `nq`-vector while `∂g/∂v` is an `nv`-vector.
 //! - **Open-loop control**: `ctrl(t)` must not read the state. A
 //!   state-feedback law would add `∂u/∂x` terms this driver does not model.
 //! - Objective reads the **final state** only.
@@ -51,8 +63,9 @@
 //!   bit-identical.
 
 use super::step::{
-    CollisionMesh, GroundContact, N_INERTIA_PARAMS, fk_generic, inertia_from_params, lift_inertia,
-    lift_vec3, rollout_states, step_generic, validate_and_params, vertex_wrench,
+    CollisionMesh, GroundContact, N_INERTIA_PARAMS, config_update_generic, fk_generic,
+    inertia_from_params, lift_inertia, lift_vec3, rollout_states, step_generic,
+    validate_and_params, vertex_wrench,
 };
 use phyz_math::{DVec, Vec3};
 use phyz_model::Model;
@@ -77,7 +90,9 @@ pub struct AdjointRollout<'a> {
     pub model: &'a Model,
     /// Optional ground contact.
     pub contact: Option<ContactSetup<'a>>,
-    /// Initial joint positions (length `nq`).
+    /// Initial joint positions, in [`super::step::DofLayout`] packing (length
+    /// `DofLayout::of(model).nq`, which exceeds `Model::nq` when the model has
+    /// spherical or free joints).
     pub q0: Vec<f64>,
     /// Initial joint velocities (length `nv`).
     pub v0: Vec<f64>,
@@ -113,10 +128,11 @@ pub struct AdjointGradients {
 /// Run the nominal rollout and return the objective value only (the FD
 /// oracle for gates, and a cheap primal probe for callers).
 pub fn rollout_objective(rollout: &AdjointRollout, objective: &FinalStateObjective) -> f64 {
-    validate_and_params(rollout.model);
+    let (layout, _) = validate_and_params(rollout.model);
     let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
     let states = rollout_states(
         rollout.model,
+        &layout,
         contact,
         &rollout.q0,
         &rollout.v0,
@@ -134,15 +150,19 @@ pub fn adjoint_rollout_gradient(
     objective: &FinalStateObjective,
 ) -> AdjointGradients {
     let model = rollout.model;
-    let params = validate_and_params(model);
+    let (layout, params) = validate_and_params(model);
     let nb = model.nbodies();
-    let n = model.nv;
+    let nq = layout.nq;
+    let nv = layout.nv;
     let dt = model.dt;
     let contact = rollout.contact.as_ref().map(|c| (&c.ground, c.meshes));
+    assert_eq!(rollout.q0.len(), nq, "q0 length (DofLayout::nq)");
+    assert_eq!(rollout.v0.len(), nv, "v0 length (nv)");
 
     // Forward: store the whole trajectory.
     let states = rollout_states(
         model,
+        &layout,
         contact,
         &rollout.q0,
         &rollout.v0,
@@ -152,8 +172,8 @@ pub fn adjoint_rollout_gradient(
     let (q_final, v_final) = states.last().expect("rollout produced no states");
     let j0 = (objective.value)(q_final, v_final);
     let (mut lam_q, mut lam_v) = (objective.gradient)(q_final, v_final);
-    assert_eq!(lam_q.len(), n, "objective ∂g/∂q length");
-    assert_eq!(lam_v.len(), n, "objective ∂g/∂v length");
+    assert_eq!(lam_q.len(), nq, "objective ∂g/∂q length");
+    assert_eq!(lam_v.len(), nv, "objective ∂g/∂v length");
 
     let mut d_inertia = vec![[0.0f64; N_INERTIA_PARAMS]; nb];
     let mut d_vertices: Vec<Vec<Vec3>> = rollout
@@ -177,18 +197,37 @@ pub fn adjoint_rollout_gradient(
     // Backward over steps.
     for t in (0..rollout.steps).rev() {
         let (q_t, v_t) = &states[t];
+        let v_next = &states[t + 1].1;
         let u_t = (rollout.ctrl)(t);
         let u_t = u_t.as_slice();
 
-        // w = dt·λ_q' + λ_v' — the covector every channel contracts against.
-        let w: Vec<f64> = lam_q
-            .iter()
-            .zip(&lam_v)
-            .map(|(&lq, &lv)| dt * lq + lv)
-            .collect();
-
         let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
         let (q_c, v_c, u_c) = (lift(q_t), lift(v_t), lift(u_t));
+        let vn_c = lift(v_next);
+        let dt_d = D::constant(dt);
+
+        // Configuration-update lanes: Φ contracted against λ_q' along each of
+        // its two argument blocks. `phi_q = Φ_qᵀ λ_q'` (nq), `psi = Φ_v'ᵀ λ_q'`
+        // (nv). Both are dual lanes through Φ alone — no ABA.
+        let phi_dot = |q_d: &[D], vn_d: &[D]| -> f64 {
+            let qn = config_update_generic(model, &layout, q_d, vn_d, dt_d);
+            qn.iter().zip(&lam_q).map(|(x, &l)| x.dual * l).sum()
+        };
+        let mut phi_q = vec![0.0f64; nq];
+        for i in 0..nq {
+            let mut q_d = q_c.clone();
+            q_d[i] = D::var(q_t[i]);
+            phi_q[i] = phi_dot(&q_d, &vn_c);
+        }
+        let mut psi = vec![0.0f64; nv];
+        for j in 0..nv {
+            let mut vn_d = vn_c.clone();
+            vn_d[j] = D::var(v_next[j]);
+            psi[j] = phi_dot(&q_c, &vn_d);
+        }
+
+        // w = Φ_v'ᵀλ_q' + λ_v' — the covector every channel contracts against.
+        let w: Vec<f64> = psi.iter().zip(&lam_v).map(|(&p, &lv)| p + lv).collect();
 
         // One dual lane: returns wᵀ·∂qdd/∂(seeded input).
         let contract = |q_d: &[D],
@@ -196,18 +235,19 @@ pub fn adjoint_rollout_gradient(
                         inertias: &[SpatialInertia<D>],
                         ext: Option<&[SpatialVec<D>]>|
          -> f64 {
-            let (_, _, qdd) = step_generic(model, inertias, contact, ext, q_d, v_d, &u_c);
+            let (_, _, qdd) = step_generic(model, &layout, inertias, contact, ext, q_d, v_d, &u_c);
             qdd.iter().zip(&w).map(|(a, &wi)| a.dual * wi).sum()
         };
 
-        // State lanes: aq[j] = (∂a/∂q)ᵀw, av[j] = (∂a/∂v)ᵀw.
-        let mut aq = vec![0.0f64; n];
-        let mut av = vec![0.0f64; n];
-        for j in 0..n {
+        // State lanes: aq[i] = (∂a/∂q_i)ᵀw (nq of them), av[j] = (∂a/∂v_j)ᵀw.
+        let mut aq = vec![0.0f64; nq];
+        for i in 0..nq {
             let mut q_d = q_c.clone();
-            q_d[j] = D::var(q_t[j]);
-            aq[j] = contract(&q_d, &v_c, &inertias_nominal, None);
-
+            q_d[i] = D::var(q_t[i]);
+            aq[i] = contract(&q_d, &v_c, &inertias_nominal, None);
+        }
+        let mut av = vec![0.0f64; nv];
+        for j in 0..nv {
             let mut v_d = v_c.clone();
             v_d[j] = D::var(v_t[j]);
             av[j] = contract(&q_c, &v_d, &inertias_nominal, None);
@@ -253,7 +293,7 @@ pub fn adjoint_rollout_gradient(
 
             // Local per-vertex wrench Jacobian at the nominal kinematics:
             // 3 dual evaluations of the penalty law, holding the state fixed.
-            let (xforms, vels) = fk_generic::<f64>(model, q_t, v_t);
+            let (xforms, vels) = fk_generic::<f64>(model, &layout, q_t, v_t);
             for (mi, mesh) in setup.meshes.iter().enumerate() {
                 let b = mesh.body;
                 let xf_d = tang::SpatialTransform::<D>::new(
@@ -291,8 +331,10 @@ pub fn adjoint_rollout_gradient(
         }
 
         // λ update (see module docs for the derivation).
-        for j in 0..n {
-            lam_q[j] += dt * aq[j];
+        for i in 0..nq {
+            lam_q[i] = phi_q[i] + dt * aq[i];
+        }
+        for j in 0..nv {
             lam_v[j] = w[j] + dt * av[j];
         }
     }

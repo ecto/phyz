@@ -27,3 +27,6 @@ phyz-diff = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+# Only the multi-DOF adjoint gate needs it: models/ant.xml is the free-floating
+# base regression case, and it lives in MJCF.
+phyz-mjcf.workspace = true
