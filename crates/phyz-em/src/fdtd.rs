@@ -199,7 +199,10 @@ mod tests {
         // sin(ωΔt/2) = (cΔt/Δx) sin(kΔx/2)
         let expected = 2.0 / dt * ((c * dt / dx) * (0.5 * kz * dx).sin()).asin();
         let rel = (omega - expected).abs() / expected;
-        assert!(rel < 1e-9, "ω = {omega}, Yee dispersion predicts {expected} (rel err {rel:.3e})");
+        assert!(
+            rel < 1e-9,
+            "ω = {omega}, Yee dispersion predicts {expected} (rel err {rel:.3e})"
+        );
 
         // ...and that discrete frequency must be within the O((kΔx)²) grid
         // dispersion error of the continuum ω = ck.

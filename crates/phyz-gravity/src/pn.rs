@@ -362,11 +362,7 @@ mod tests {
         let v_apo = (mu * (1.0 - e) / (a * (1.0 + e))).sqrt();
         let mut p = vec![
             GravityParticle::new(Vec3::zeros(), Vec3::zeros(), m_sun),
-            GravityParticle::new(
-                Vec3::new(r_apo, 0.0, 0.0),
-                Vec3::new(0.0, v_apo, 0.0),
-                m,
-            ),
+            GravityParticle::new(Vec3::new(r_apo, 0.0, 0.0), Vec3::new(0.0, v_apo, 0.0), m),
         ];
 
         let lrl = |p: &[GravityParticle]| {
@@ -393,7 +389,10 @@ mod tests {
 
         let drift = (lrl(&p) - e0).norm() / e0.norm();
         // Velocity Verlet's apsidal error accumulates as N_orbits·(2π/N_steps)².
-        assert!(drift < 1e-4, "LRL vector drifted by {drift:.3e} over 2 orbits");
+        assert!(
+            drift < 1e-4,
+            "LRL vector drifted by {drift:.3e} over 2 orbits"
+        );
     }
 
     #[test]

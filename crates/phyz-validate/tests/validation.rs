@@ -26,16 +26,6 @@ const KNOWN_FAILURES: &[&str] = &[
     // `PmlLayer` has no magnetic loss term, so it is a lossy slab, not a matched
     // layer; best measured reflection is ≈ −12 dB against ≈ −60 dB for a real PML.
     "em.absorbing_boundary_reflection",
-    // Full-node bounce-back and equilibrium velocity boundaries are first order.
-    "lbm.poiseuille.convergence",
-    "lbm.cavity_re100.u.n33",
-    "lbm.cavity_re100.v.n33",
-    "lbm.cavity_re100.u.n65",
-    "lbm.cavity_re100.v.n65",
-    "lbm.cavity_re100.convergence",
-    // `MdSystem::step` drops the first half-kick because forces are never
-    // initialised; the start-up error is O(Δt) instead of O(Δt²).
-    "md.startup_consistency",
 ];
 
 #[test]

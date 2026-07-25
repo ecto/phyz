@@ -81,7 +81,12 @@ struct Run {
 }
 
 /// Integrate with velocity Verlet using the crate's own particle integrator.
-fn integrate(mut solver: PostNewtonianSolver, mut p: Vec<GravityParticle>, dt: f64, steps: usize) -> Run {
+fn integrate(
+    mut solver: PostNewtonianSolver,
+    mut p: Vec<GravityParticle>,
+    dt: f64,
+    steps: usize,
+) -> Run {
     solver.compute_forces(&mut p);
     let inv0 = invariants(&p);
     let ang0 = inv0.e_vec.y.atan2(inv0.e_vec.x);
@@ -235,8 +240,10 @@ pub fn run() -> Suite {
             ErrorKind::Absolute,
             orbits * vv_bound,
         )
-        .note("The LRL vector is the sharpest of the three: it detects any spurious \
-               non-1/r² component in the force law, which energy and angular momentum do not.")
+        .note(
+            "The LRL vector is the sharpest of the three: it detects any spurious \
+               non-1/r² component in the force law, which energy and angular momentum do not.",
+        )
         .note(format!(
             "Unlike the energy error, the apsidal error of a symplectic integrator accumulates \
              linearly in the number of orbits, so the pre-registered bound is \

@@ -479,7 +479,9 @@ mod tests {
     fn omega_fit_is_exact_for_a_pure_cosine() {
         let dt = 1e-3;
         let w = 137.0;
-        let s: Vec<f64> = (0..500).map(|n| 0.7 * (w * n as f64 * dt + 0.3).cos()).collect();
+        let s: Vec<f64> = (0..500)
+            .map(|n| 0.7 * (w * n as f64 * dt + 0.3).cos())
+            .collect();
         assert!((fit_omega(&s, dt) - w).abs() / w < 1e-10);
     }
 }

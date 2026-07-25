@@ -9,7 +9,7 @@
 
 use crate::report::{Convergence, ErrorKind, Suite, Validation};
 use phyz_math::{Mat3, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Joint, JointType, Model, ModelBuilder, State};
+use phyz_model::{Joint, Model, ModelBuilder, State};
 use phyz_rigid::{aba, total_energy};
 
 const CRATE: &str = "phyz-rigid";
@@ -171,19 +171,25 @@ fn spinning_top(m: f64, l: f64, i1_pivot: f64, i3: f64) -> Model {
         Vec3::zeros(),
         Mat3::from_diagonal(&Vec3::new(1e-12, 1e-12, 1e-12)),
     );
-    let hinge = |axis: Vec3| Joint {
-        joint_type: JointType::Revolute,
-        parent_to_joint: SpatialTransform::identity(),
-        axis,
-        damping: 0.0,
-        limits: None,
+    // Build from the constructor rather than a struct literal so passive terms
+    // (damping, armature, springs, limits) keep their defaults — this benchmark
+    // must exercise the ideal top, with nothing added to the equations of motion.
+    let hinge = |axis: Vec3| {
+        let mut j = Joint::revolute(SpatialTransform::identity());
+        j.axis = axis;
+        j
     };
     // I₁ is quoted about the pivot; the body frame carries the inertia about
     // its own centre of mass, which sits a distance l up the symmetry axis.
     let i1_com = i1_pivot - m * l * l;
     ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -G))
-        .add_body("precess", -1, hinge(Vec3::new(0.0, 0.0, 1.0)), ghost.clone())
+        .add_body(
+            "precess",
+            -1,
+            hinge(Vec3::new(0.0, 0.0, 1.0)),
+            ghost.clone(),
+        )
         .add_body("nutate", 0, hinge(Vec3::new(1.0, 0.0, 0.0)), ghost)
         .add_body(
             "spin",

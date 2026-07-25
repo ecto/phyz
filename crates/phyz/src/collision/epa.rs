@@ -237,8 +237,8 @@ fn is_visible(points: &[Vec3], face: &Face, point: &Vec3) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::geometry::Geometry;
+    use super::*;
 
     fn mesh(verts: &[[f64; 3]]) -> Geometry {
         Geometry::Mesh {

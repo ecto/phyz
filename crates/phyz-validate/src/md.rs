@@ -6,7 +6,8 @@
 //! 1. **Symplectic energy-drift scaling** — for velocity Verlet the total-energy
 //!    error must be a *bounded* O(Δt²) oscillation, not a secular drift. Both the
 //!    amplitude scaling and the secular slope are measured.
-//! 2. **Start-up consistency** — whether the first step is a valid Verlet step.
+//! 2. **Start-up consistency** — whether the first step is a valid Verlet step,
+//!    measured by the convergence order of its energy error.
 //! 3. **Radial distribution function** — structure of the LJ fluid at Verlet's
 //!    canonical state point ρ* = 0.8442, T* = 0.722, against published values.
 
@@ -57,9 +58,10 @@ fn fcc(system: &mut MdSystem, n: usize, rho: f64) -> f64 {
 
 /// Compute and store the forces the system's own `compute_forces` would produce.
 ///
-/// `MdSystem::step` reads `particle.f` as `a(t)`, but nothing initialises it, so
-/// the harness primes it explicitly for the integrator benchmarks. See the
-/// `md.startup_consistency` entry for what happens when it is not primed.
+/// `MdSystem::step` reads `particle.f` as `a(t)`. It primes the accumulator
+/// itself on step 0, but the integrator benchmarks below prime it explicitly so
+/// that `E(0)` is measured against the same forces the first step will use. See
+/// the `md.startup_consistency` entry, which exercises the crate's own path.
 fn prime_forces(system: &mut MdSystem) {
     system
         .neighbor_list
@@ -382,22 +384,25 @@ pub fn run() -> Suite {
             "First integration step is a valid velocity-Verlet step",
             CRATE,
             "A correct velocity-Verlet start-up evaluates a(0) before the first drift, so the \
-             energy error of step 1 is O(Δt²) like every other step",
-"|ΔE|/|E| across the first step alone, Δt = 0.001, v(0)·a(0) ≠ 0",
+             local truncation error of step 1 is O(Δt³) like every other step",
+            "|ΔE|/|E| across the first step alone, Δt = 0.001, v(0)·a(0) ≠ 0",
             finest,
             0.0,
             ErrorKind::Absolute,
             1e-6,
         )
-        .with_convergence(Convergence::fit("Δt", startup, 2.0, 0.3))
+        .with_convergence(Convergence::fit("Δt", startup, 3.0, 0.3))
         .note(
-            "`MdSystem::step` (crates/phyz-md/src/system.rs:210-263) reads `particle.f` as a(t), \
-             but forces are only ever written at the *end* of a step and nothing computes them at \
-             construction time. On step 0 the stored force is zero, so the drift uses a = 0 and \
-             the first half-kick is dropped entirely — a one-off O(Δt) velocity error. The \
-             measured convergence order below distinguishes the two cases: order 1 confirms the \
-             dropped kick, order 2 would mean the start-up is sound. Every benchmark above \
-             primes the forces explicitly to work around this.",
+            "The measured order is what distinguishes the two cases. A start-up that drifts with \
+             a = 0 drops half of the first kick, which is an O(Δt) velocity error and shows up \
+             here as order 1; a sound start-up shows the ordinary O(Δt³) local truncation error \
+             of a single velocity-Verlet step.",
+        )
+        .note(
+            "`MdSystem::step` (crates/phyz-md/src/system.rs:250-272) now calls `compute_forces()` \
+             when `self.step == 0`, so the accumulator holds F(x(0)) before the first drift. An \
+             earlier revision did not, and this benchmark measured order 0.993 against it. The \
+             other MD benchmarks still prime forces explicitly, which is harmless either way.",
         ),
     );
 
@@ -494,7 +499,9 @@ pub fn run() -> Suite {
             ErrorKind::Relative,
             0.05,
         )
-        .note("Reported without a long-range tail correction, matching the crate's hard truncation."),
+        .note(
+            "Reported without a long-range tail correction, matching the crate's hard truncation.",
+        ),
     );
     suite.push(
         Validation::new(
