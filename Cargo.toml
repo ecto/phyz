@@ -6,6 +6,7 @@ members = [
     "crates/phyz-rigid",
     "crates/phyz-diff",
     "crates/phyz-mjcf",
+    "crates/phyz-urdf",
     "crates/phyz-collision",
     "crates/phyz-contact",
     "crates/phyz-gpu",
@@ -49,6 +50,7 @@ phyz-model = { version = "0.1.0", path = "crates/phyz-model" }
 phyz-rigid = { version = "0.1.0", path = "crates/phyz-rigid" }
 phyz-diff = { version = "0.1.0", path = "crates/phyz-diff" }
 phyz-mjcf = { version = "0.1.0", path = "crates/phyz-mjcf" }
+phyz-urdf = { version = "0.1.0", path = "crates/phyz-urdf" }
 phyz-collision = { version = "0.1.0", path = "crates/phyz-collision" }
 phyz-contact = { version = "0.1.0", path = "crates/phyz-contact" }
 phyz-gpu = { version = "0.1.0", path = "crates/phyz-gpu" }

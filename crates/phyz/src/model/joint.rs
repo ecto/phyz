@@ -29,8 +29,12 @@ pub struct Joint {
     /// Joint type.
     pub joint_type: JointType,
     /// Transform from parent body frame to joint frame (constant).
+    ///
+    /// `pos` is the joint origin expressed in parent-body coordinates and
+    /// `rot` is the coordinate transform *parent → joint*, i.e. the joint's
+    /// orientation in the parent frame is `rot.transpose()`.
     pub parent_to_joint: SpatialTransform,
-    /// Joint axis in local frame (for revolute: typically Z).
+    /// Joint axis, expressed in the joint frame (for revolute: typically Z).
     pub axis: Vec3,
     /// Damping coefficient (force = -damping * qd).
     pub damping: f64,
@@ -53,8 +57,17 @@ pub struct Joint {
     pub stiffness: f64,
     /// Rest position of the passive spring (MuJoCo's `springref`).
     pub spring_ref: f64,
-    /// Dry (Coulomb) friction magnitude — MuJoCo's `frictionloss`.
+    /// Dry (Coulomb) friction magnitude — MuJoCo's `frictionloss`, and where
+    /// URDF's `<dynamics friction="...">` lands.
     pub friction_loss: f64,
+    /// Actuation effort limit (torque or force), if the source declares one.
+    ///
+    /// Descriptive only: nothing in the solver clamps to it yet.
+    pub effort_limit: Option<f64>,
+    /// Velocity limit, if the source declares one. Descriptive only.
+    pub velocity_limit: Option<f64>,
+    /// Name of the joint in the source file (empty if unnamed).
+    pub name: String,
 }
 
 impl Default for Joint {
@@ -71,6 +84,9 @@ impl Default for Joint {
             stiffness: 0.0,
             spring_ref: 0.0,
             friction_loss: 0.0,
+            effort_limit: None,
+            velocity_limit: None,
+            name: String::new(),
         }
     }
 }
@@ -136,6 +152,12 @@ impl Joint {
             axis: Vec3::zeros(),
             ..Default::default()
         }
+    }
+
+    /// Set the joint name (builder style).
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
     }
 
     /// Number of degrees of freedom for this joint type.

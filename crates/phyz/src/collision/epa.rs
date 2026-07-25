@@ -75,7 +75,11 @@ pub fn epa_penetration_rot(
         Face::new(&points, [1, 3, 2]),
     ];
 
-    const MAX_ITERATIONS: usize = 64;
+    // Smooth shapes converge linearly: each iteration shaves one facet off a
+    // curved surface, so a sphere-sphere pair needs roughly 100 expansions to
+    // reach TOLERANCE. The old cap of 64 bailed out just short of that and
+    // returned `None` for the most common contact pair there is.
+    const MAX_ITERATIONS: usize = 256;
     const MAX_POLYTOPE_FACES: usize = 1024;
     const TOLERANCE: f64 = 1e-6;
 
