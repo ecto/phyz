@@ -238,7 +238,7 @@ fn two_link_chain_inertia_gradient_matches_fd() {
             parent_to_joint: SpatialTransform::from_translation(Vec3::new(0.5, 0.0, 0.0)),
             axis: Vec3::new(1.0, 0.0, 0.0),
             damping: 0.02,
-            limits: None,
+            ..Joint::revolute(SpatialTransform::identity())
         };
         ModelBuilder::new()
             .gravity(Vec3::new(0.0, 0.0, -9.81))
@@ -541,7 +541,7 @@ fn tilting_paddle_vertex_gradient_matches_fd() {
         parent_to_joint: SpatialTransform::identity(),
         axis: Vec3::new(0.0, 1.0, 0.0),
         damping: 0.05,
-        limits: None,
+        ..Joint::revolute(SpatialTransform::identity())
     };
     let model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -9.81))

@@ -1,12 +1,18 @@
 [package]
-name = "phyz-collision"
+name = "phyz-urdf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "GJK/EPA collision detection, ray casting, and broad-phase spatial hashing for phyz"
+description = "URDF (Unified Robot Description Format) importer for phyz physics engine"
 
 [dependencies]
 phyz-math.workspace = true
 phyz-model.workspace = true
+urdf-rs = "0.9"
+thiserror = "2.0"
+
+[dev-dependencies]
+phyz-rigid.workspace = true
+urdf-rs = "0.9"

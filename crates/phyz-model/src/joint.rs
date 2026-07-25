@@ -29,69 +29,79 @@ pub struct Joint {
     /// Joint type.
     pub joint_type: JointType,
     /// Transform from parent body frame to joint frame (constant).
+    ///
+    /// `pos` is the joint origin expressed in parent-body coordinates and
+    /// `rot` is the coordinate transform *parent → joint*, i.e. the joint's
+    /// orientation in the parent frame is `rot.transpose()`.
     pub parent_to_joint: SpatialTransform,
-    /// Joint axis in local frame (for revolute: typically Z).
+    /// Joint axis, expressed in the joint frame (for revolute: typically Z).
     pub axis: Vec3,
-    /// Damping coefficient.
+    /// Viscous damping coefficient (torque or force per unit velocity).
     pub damping: f64,
+    /// Static (Coulomb) friction: constant opposing torque/force magnitude.
+    pub friction: f64,
     /// Joint position limits [lower, upper] (None = unlimited).
     pub limits: Option<[f64; 2]>,
+    /// Actuation effort limit (torque or force), if the source declares one.
+    pub effort_limit: Option<f64>,
+    /// Velocity limit, if the source declares one.
+    pub velocity_limit: Option<f64>,
+    /// Name of the joint in the source file (empty if unnamed).
+    pub name: String,
 }
 
 impl Joint {
+    /// Create a joint of the given type with default dynamics and no limits.
+    fn bare(joint_type: JointType, parent_to_joint: SpatialTransform, axis: Vec3) -> Self {
+        Self {
+            joint_type,
+            parent_to_joint,
+            axis,
+            damping: 0.0,
+            friction: 0.0,
+            limits: None,
+            effort_limit: None,
+            velocity_limit: None,
+            name: String::new(),
+        }
+    }
+
     /// Create a revolute joint with the given parent-to-joint transform.
     pub fn revolute(parent_to_joint: SpatialTransform) -> Self {
-        Self {
-            joint_type: JointType::Revolute,
+        // revolute about Z
+        Self::bare(
+            JointType::Revolute,
             parent_to_joint,
-            axis: Vec3::new(0.0, 0.0, 1.0), // revolute about Z
-            damping: 0.0,
-            limits: None,
-        }
+            Vec3::new(0.0, 0.0, 1.0),
+        )
     }
 
     /// Create a prismatic joint with the given parent-to-joint transform and axis.
     pub fn prismatic(parent_to_joint: SpatialTransform, axis: Vec3) -> Self {
-        Self {
-            joint_type: JointType::Prismatic,
-            parent_to_joint,
-            axis,
-            damping: 0.0,
-            limits: None,
-        }
+        Self::bare(JointType::Prismatic, parent_to_joint, axis)
     }
 
     /// Create a spherical (ball) joint with the given parent-to-joint transform.
     pub fn spherical(parent_to_joint: SpatialTransform) -> Self {
-        Self {
-            joint_type: JointType::Spherical,
-            parent_to_joint,
-            axis: Vec3::zeros(), // not used for spherical
-            damping: 0.0,
-            limits: None,
-        }
+        // axis unused for spherical
+        Self::bare(JointType::Spherical, parent_to_joint, Vec3::zeros())
     }
 
     /// Create a free joint with the given parent-to-joint transform.
     pub fn free(parent_to_joint: SpatialTransform) -> Self {
-        Self {
-            joint_type: JointType::Free,
-            parent_to_joint,
-            axis: Vec3::zeros(), // not used for free
-            damping: 0.0,
-            limits: None,
-        }
+        // axis unused for free
+        Self::bare(JointType::Free, parent_to_joint, Vec3::zeros())
     }
 
     /// Create a fixed joint (rigid attachment).
     pub fn fixed(parent_to_joint: SpatialTransform) -> Self {
-        Self {
-            joint_type: JointType::Fixed,
-            parent_to_joint,
-            axis: Vec3::zeros(),
-            damping: 0.0,
-            limits: None,
-        }
+        Self::bare(JointType::Fixed, parent_to_joint, Vec3::zeros())
+    }
+
+    /// Set the joint name (builder style).
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
     }
 
     /// Number of degrees of freedom for this joint type.

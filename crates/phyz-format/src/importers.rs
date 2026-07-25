@@ -15,43 +15,60 @@ pub fn from_mjcf(path: &str) -> Result<PhyzSpec> {
     model_to_phyz_spec(&model, path)
 }
 
-/// Convert URDF file to PhyzSpec.
+/// Convert a URDF file to PhyzSpec.
 ///
-/// Note: URDF parsing not yet implemented. Returns placeholder.
+/// Handles plain URDF; `.xacro` files must be expanded first (see the
+/// [`phyz_urdf`] crate docs). Use [`from_urdf_model`] instead if you need the
+/// import warnings or mesh references, which `PhyzSpec` cannot carry.
 pub fn from_urdf(path: &str) -> Result<PhyzSpec> {
-    // Placeholder: URDF parsing would go here
-    Err(TauFormatError::InvalidFormat(format!(
-        "URDF import not yet implemented: {}",
-        path
-    )))
+    let robot = phyz_urdf::load_file(path, &Default::default())?;
+    model_to_phyz_spec(&robot.model, path)
 }
 
-/// Convert USD file to PhyzSpec.
-///
-/// Note: USD parsing not yet implemented. Returns placeholder.
-pub fn from_usd(path: &str) -> Result<PhyzSpec> {
-    Err(TauFormatError::InvalidFormat(format!(
-        "USD import not yet implemented: {}",
-        path
-    )))
+/// Import a URDF file, returning the full [`phyz_urdf::UrdfModel`] alongside
+/// its `PhyzSpec` so callers can inspect warnings and unresolved meshes.
+pub fn from_urdf_model(path: &str) -> Result<(phyz_urdf::UrdfModel, PhyzSpec)> {
+    let robot = phyz_urdf::load_file(path, &Default::default())?;
+    let spec = model_to_phyz_spec(&robot.model, path)?;
+    Ok((robot, spec))
 }
 
-/// Convert SDF file to PhyzSpec.
+/// USD import — **not implemented**.
 ///
-/// Note: SDF parsing not yet implemented. Returns placeholder.
-pub fn from_sdf(path: &str) -> Result<PhyzSpec> {
-    Err(TauFormatError::InvalidFormat(format!(
-        "SDF import not yet implemented: {}",
-        path
-    )))
+/// Always returns [`TauFormatError::UnsupportedImportFormat`]. USD scene
+/// description needs the OpenUSD runtime (or a substantial subset of it) to
+/// resolve layers, references, and variants; there is no partial version of
+/// this worth shipping.
+pub fn from_usd(_path: &str) -> Result<PhyzSpec> {
+    Err(TauFormatError::UnsupportedImportFormat { format: "USD" })
+}
+
+/// SDF import — **not implemented**.
+///
+/// Always returns [`TauFormatError::UnsupportedImportFormat`]. SDF (Gazebo)
+/// overlaps heavily with URDF but adds worlds, models, nested includes, and
+/// plugin configuration; it is a plausible future addition, not a stub.
+pub fn from_sdf(_path: &str) -> Result<PhyzSpec> {
+    Err(TauFormatError::UnsupportedImportFormat { format: "SDF" })
 }
 
 /// Convert a tau Model to PhyzSpec.
 fn model_to_phyz_spec(model: &Model, source_name: &str) -> Result<PhyzSpec> {
+    // Preserve source names where the model has them (URDF always does, MJCF
+    // sometimes does not), falling back to positional names.
+    let body_name = |i: usize| -> String {
+        let n = &model.bodies[i].name;
+        if n.is_empty() {
+            format!("body_{}", i)
+        } else {
+            n.clone()
+        }
+    };
+
     // Extract bodies
     let mut bodies = Vec::new();
     for (i, body) in model.bodies.iter().enumerate() {
-        let name = format!("body_{}", i);
+        let name = body_name(i);
         bodies.push(BodySpec {
             name: name.clone(),
             mass: body.inertia.mass,
@@ -74,9 +91,9 @@ fn model_to_phyz_spec(model: &Model, source_name: &str) -> Result<PhyzSpec> {
         let parent_name = if body.parent < 0 {
             "world".to_string()
         } else {
-            format!("body_{}", body.parent)
+            body_name(body.parent as usize)
         };
-        let child_name = format!("body_{}", i);
+        let child_name = body_name(i);
 
         let joint_type = match joint.joint_type {
             JointType::Free => JointTypeSpec::Free,
@@ -174,21 +191,70 @@ fn mat3_to_quat(mat: &phyz_math::Mat3) -> [f64; 4] {
 mod tests {
     use super::*;
 
+    const PANDA: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../phyz-urdf/tests/data/panda.urdf"
+    );
+
     #[test]
-    fn test_from_urdf_not_implemented() {
-        let result = from_urdf("test.urdf");
-        assert!(result.is_err());
+    fn from_urdf_imports_a_real_robot() {
+        let spec = from_urdf(PANDA).expect("panda.urdf should import");
+
+        let rigid = spec
+            .domains
+            .get("rigid_body")
+            .expect("URDF import produces a rigid-body domain");
+        let bodies = rigid.config["bodies"].as_array().unwrap();
+        let joints = rigid.config["joints"].as_array().unwrap();
+        assert_eq!(bodies.len(), 13);
+        assert_eq!(joints.len(), 13);
+
+        // URDF link names survive into the spec instead of becoming `body_N`.
+        assert_eq!(bodies[0]["name"], "panda_link0");
+        assert_eq!(joints[0]["parent"], "world");
+        assert!(
+            joints
+                .iter()
+                .any(|j| j["child"] == "panda_link8" && j["type"] == "fixed")
+        );
+
+        // Masses came across, not zeros.
+        let total: f64 = bodies.iter().map(|b| b["mass"].as_f64().unwrap()).sum();
+        assert!(total > 1.0, "total mass was {total}");
     }
 
     #[test]
-    fn test_from_usd_not_implemented() {
-        let result = from_usd("test.usd");
-        assert!(result.is_err());
+    fn from_urdf_model_exposes_warnings_and_meshes() {
+        let (robot, _spec) = from_urdf_model(PANDA).unwrap();
+        assert_eq!(robot.robot_name, "panda");
+        // The Panda description is mesh-based, so every mesh must be reported.
+        assert!(!robot.mesh_refs.is_empty());
+        assert!(robot.warnings.iter().any(|w| w.contains("mesh")));
     }
 
     #[test]
-    fn test_from_sdf_not_implemented() {
-        let result = from_sdf("test.sdf");
-        assert!(result.is_err());
+    fn from_urdf_reports_missing_files() {
+        assert!(matches!(
+            from_urdf("does_not_exist.urdf"),
+            Err(TauFormatError::UrdfError(_))
+        ));
+    }
+
+    // USD and SDF remain documented gaps: they must fail loudly and be
+    // identifiable as "unsupported", not as a malformed file.
+    #[test]
+    fn from_usd_is_an_explicit_unsupported_format() {
+        assert!(matches!(
+            from_usd("test.usd"),
+            Err(TauFormatError::UnsupportedImportFormat { format: "USD" })
+        ));
+    }
+
+    #[test]
+    fn from_sdf_is_an_explicit_unsupported_format() {
+        assert!(matches!(
+            from_sdf("test.sdf"),
+            Err(TauFormatError::UnsupportedImportFormat { format: "SDF" })
+        ));
     }
 }
