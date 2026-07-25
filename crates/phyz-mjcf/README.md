@@ -38,6 +38,11 @@ substituted default. Errors name the element and attribute they came from:
 | Assets | `<mesh>` (STL binary/ASCII, OBJ), `<texture>`, `<material>`, `<hfield>` |
 | Files | `<include>`, with cycle detection |
 
+Every geom on a body is carried into `Body::collisions` as a `GeomInstance` with
+its own body-relative pose. `Body::geometry` mirrors the first shape that is
+actually centred on the body frame, so the single-shape contact path is
+unchanged.
+
 Actuators use MuJoCo's affine model, so `position` and `velocity` servos are
 special cases of `general` rather than separate code paths:
 
@@ -49,16 +54,6 @@ force = gear * (gain * ctrl + bias[0] + bias[1] * q + bias[2] * qdot)
 
 Each of these is reported through `MjcfLoader::unsupported()` when a model uses
 it, rather than being dropped quietly.
-
-**Blocked on `phyz_model::Geometry`**, which has no body-relative transform and
-holds one shape per body:
-
-- A geom offset or rotated relative to its body is treated as centred on the
-  body frame. Common in Menagerie models — the Shadow Hand has 34.
-- Only the first geom on a body is kept for collision.
-
-Fixing both means giving `Body` a list of `(SpatialTransform, Geometry)` pairs
-instead of a single `Option<Geometry>`.
 
 **Blocked on `phyz-collision`:**
 

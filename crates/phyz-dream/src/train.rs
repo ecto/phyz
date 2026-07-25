@@ -3,7 +3,9 @@ use crate::model::{DreamModel, NormStats};
 use phyz_model::Model;
 use tang::Scalar;
 use tang_tensor::{Shape, Tensor};
-use tang_train::{DataLoader, Dataset, ModuleAdam, Trainer, TensorDataset, mse_loss, mse_loss_grad};
+use tang_train::{
+    DataLoader, Dataset, ModuleAdam, TensorDataset, Trainer, mse_loss, mse_loss_grad,
+};
 
 /// Training configuration.
 #[derive(Clone, Debug)]
@@ -36,9 +38,7 @@ impl Default for TrainConfig {
 }
 
 /// Build a normalized dataset from raw data, returning (normalized_dataset, input_norm, output_norm).
-fn normalize_dataset(
-    raw: &TensorDataset<f32>,
-) -> (TensorDataset<f32>, NormStats, NormStats) {
+fn normalize_dataset(raw: &TensorDataset<f32>) -> (TensorDataset<f32>, NormStats, NormStats) {
     let input_norm = NormStats::from_dataset(raw, true);
     let output_norm = NormStats::from_dataset(raw, false);
 

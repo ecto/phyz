@@ -5,7 +5,10 @@
 //! - Multiple physics domains (rigid body, particles, EM, quantum, etc.)
 //! - Cross-domain coupling definitions
 //! - Parameter specifications with uncertainty
-//! - Import/export from common formats (MJCF, URDF, USD, SDF)
+//! - Import from MJCF (MuJoCo) and URDF (ROS) descriptions
+//!
+//! USD and SDF import are *not* implemented; [`from_usd`] and [`from_sdf`]
+//! return [`TauFormatError::UnsupportedImportFormat`] rather than a stub.
 
 pub mod coupling;
 pub mod domain;
@@ -16,5 +19,5 @@ pub mod schema;
 pub use coupling::{Coupling, CouplingType, ForceTransfer};
 pub use domain::{Domain, DomainType, RigidBodyDomain};
 pub use error::{Result, TauFormatError};
-pub use importers::{from_mjcf, from_urdf};
+pub use importers::{from_mjcf, from_sdf, from_urdf, from_urdf_model, from_usd};
 pub use schema::{PhyzSpec, WorldConfig, export_phyz, load_phyz_model};

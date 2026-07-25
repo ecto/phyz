@@ -9,7 +9,9 @@ use crate::defaults::{DefaultsManager, MAIN_CLASS};
 use crate::orientation::{AngleConfig, parse_fromto, parse_orientation};
 use crate::{MjcfError, Result};
 use phyz_math::{GRAVITY, Mat3, Quat, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Actuator, ActuatorType, Geometry, Joint, JointType, Model, ModelBuilder};
+use phyz_model::{
+    Actuator, ActuatorType, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder,
+};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
@@ -48,20 +50,20 @@ struct JointElement {
     axis: Vec3,
     range: Option<[f64; 2]>,
     damping: f64,
+    armature: f64,
+    stiffness: f64,
+    spring_ref: f64,
+    friction_loss: f64,
 }
 
 /// Parsed geom element.
 #[derive(Debug, Clone)]
 struct GeomElement {
-    #[allow(dead_code)]
     name: String,
     geom_type: String,
     size: Vec<f64>,
-    /// Pose relative to the owning body. Recorded for completeness; phyz's
-    /// Geometry has no local transform, so it is not carried into the Model.
-    #[allow(dead_code)]
+    /// Pose relative to the owning body.
     pos: Vec3,
-    #[allow(dead_code)]
     quat: Quat,
     /// Referenced `<mesh>` asset name, for `type="mesh"`.
     mesh: Option<String>,
@@ -115,10 +117,6 @@ pub struct MjcfLoader {
     materials: Vec<MaterialAsset>,
     hfields: Vec<HFieldAsset>,
     unsupported: Vec<UnsupportedFeature>,
-    /// Geoms whose pose relative to their body had to be discarded.
-    offset_geoms: usize,
-    /// Geoms dropped because their body already had one.
-    extra_geoms: usize,
     gravity_vec: Vec3,
     timestep: f64,
     angles: AngleConfig,
@@ -204,8 +202,6 @@ impl MjcfLoader {
             materials: Vec::new(),
             hfields: Vec::new(),
             unsupported: Vec::new(),
-            offset_geoms: 0,
-            extra_geoms: 0,
             gravity_vec: Vec3::new(0.0, 0.0, -GRAVITY),
             timestep: 0.002,
             angles: AngleConfig::default(),
@@ -273,27 +269,6 @@ impl MjcfLoader {
 
     /// Post-parse work that needs the whole document.
     fn finish(&mut self) {
-        if self.offset_geoms > 0 {
-            let n = self.offset_geoms;
-            self.note_unsupported(
-                "geom",
-                format!(
-                    "{n} geom(s) have a body-relative pose, which phyz_model::Geometry \
-                     cannot represent; they are treated as centred on the body frame"
-                ),
-            );
-        }
-        if self.extra_geoms > 0 {
-            let n = self.extra_geoms;
-            self.note_unsupported(
-                "geom",
-                format!(
-                    "{n} geom(s) dropped: phyz keeps only the first geom per body \
-                     for collision"
-                ),
-            );
-        }
-
         if !self.angles.degrees {
             return;
         }
@@ -687,15 +662,17 @@ impl MjcfLoader {
             None => None,
         };
 
-        let damping = attrs.f64_or("damping", 0.0)?;
-
         self.bodies[body_idx].joints.push(JointElement {
             name,
             joint_type,
             pos,
             axis,
             range,
-            damping,
+            damping: attrs.f64_or("damping", 0.0)?,
+            armature: attrs.f64_or("armature", 0.0)?,
+            stiffness: attrs.f64_or("stiffness", 0.0)?,
+            spring_ref: attrs.f64_or("springref", 0.0)?,
+            friction_loss: attrs.f64_or("frictionloss", 0.0)?,
         });
         Ok(())
     }
@@ -712,6 +689,10 @@ impl MjcfLoader {
             axis: Vec3::new(0.0, 0.0, 1.0),
             range: None,
             damping: 0.0,
+            armature: 0.0,
+            stiffness: 0.0,
+            spring_ref: 0.0,
+            friction_loss: 0.0,
         });
         Ok(())
     }
@@ -771,16 +752,6 @@ impl MjcfLoader {
             // Match MuJoCo's small default rather than failing: many models rely on
             // defaults classes for size, which we have already merged in by now.
             size.push(0.05);
-        }
-
-        // phyz_model::Geometry has neither a body-relative transform nor more than
-        // one shape per body. Count what gets dropped and report it in finish(),
-        // rather than emitting one note per geom.
-        if pos.norm() > 1e-12 || (quat.w.abs() - 1.0).abs() > 1e-9 {
-            self.offset_geoms += 1;
-        }
-        if !self.bodies[body_idx].geoms.is_empty() {
-            self.extra_geoms += 1;
         }
 
         self.bodies[body_idx].geoms.push(GeomElement {
@@ -1024,7 +995,12 @@ impl MjcfLoader {
 
                     joint.axis = joint_elem.axis;
                     joint.damping = joint_elem.damping;
+                    // `limited="false"` was already folded into `range` at parse time.
                     joint.limits = joint_elem.range;
+                    joint.armature = joint_elem.armature;
+                    joint.stiffness = joint_elem.stiffness;
+                    joint.spring_ref = joint_elem.spring_ref;
+                    joint.friction_loss = joint_elem.friction_loss;
 
                     let model_joint_idx = next_model_idx as usize;
                     joint_name_map.insert(joint_elem.name.clone(), model_joint_idx);
@@ -1050,14 +1026,33 @@ impl MjcfLoader {
 
         let mut model = builder.build();
 
-        // Set geometry on bodies post-build
+        // Attach geometry post-build. Every geom is carried with its own
+        // body-relative pose; `geometry` mirrors the first centred shape so the
+        // single-shape contact path keeps working.
         for (body_idx, body) in self.bodies.iter().enumerate() {
-            if let Some(geom) = body.geoms.first()
-                && let Some(&model_idx) = body_map.get(&body_idx)
-                && let Some(geometry) = self.geom_to_geometry(geom)
-            {
-                model.bodies[model_idx as usize].geometry = Some(geometry);
+            let Some(&model_idx) = body_map.get(&body_idx) else {
+                continue;
+            };
+            let target = &mut model.bodies[model_idx as usize];
+            for geom in &body.geoms {
+                let Some(geometry) = self.geom_to_geometry(geom) else {
+                    continue;
+                };
+                // GeomInstance::origin.rot is the body -> shape coordinate
+                // transform, i.e. the transpose of the shape's orientation in
+                // the body frame.
+                let origin = SpatialTransform::new(geom.quat.to_matrix().transpose(), geom.pos);
+                target.collisions.push(GeomInstance {
+                    name: Some(geom.name.clone()),
+                    origin,
+                    geometry,
+                });
             }
+            target.geometry = target
+                .collisions
+                .iter()
+                .find(|g| g.is_centered())
+                .map(|g| g.geometry.clone());
         }
 
         // Build actuators

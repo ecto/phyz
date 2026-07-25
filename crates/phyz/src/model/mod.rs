@@ -8,7 +8,7 @@ pub mod joint;
 pub mod model;
 pub mod state;
 
-pub use body::{Body, Geometry};
+pub use body::{Body, GeomInstance, Geometry};
 pub use joint::{Joint, JointType};
 pub use model::{Actuator, ActuatorType, Model, ModelBuilder};
 pub use state::State;

@@ -280,14 +280,14 @@ fn all_orientation_forms_agree_where_they_should() {
 
 #[test]
 fn fromto_sets_capsule_length_and_frame() {
-    let loader = load("orientations.xml");
-    let model = loader.build_model();
+    let model = load("orientations.xml").build_model();
     let body = model
         .bodies
         .iter()
         .find(|b| b.name == "capsule_fromto")
         .unwrap();
-    match body.geometry.as_ref().expect("fromto capsule") {
+    let geom = body.collisions.first().expect("fromto capsule");
+    match &geom.geometry {
         Geometry::Capsule { radius, length } => {
             assert!((radius - 0.03).abs() < 1e-12);
             // fromto spans 0.4 m, so half-length 0.2 and full length 0.4.
@@ -295,16 +295,54 @@ fn fromto_sets_capsule_length_and_frame() {
         }
         other => panic!("expected capsule, got {other:?}"),
     }
-    // The capsule is offset from the body frame, which phyz cannot represent —
-    // that must be reported rather than silently dropped.
+    // fromto="0 0 0  0 0 0.4" puts the capsule centre at z = 0.2, and the geom
+    // carries that offset rather than being flattened onto the body frame.
     assert!(
-        loader
-            .unsupported()
-            .iter()
-            .any(|u| u.element == "geom" && u.detail.contains("body-relative pose")),
-        "expected a note about the geom offset: {:?}",
-        loader.unsupported()
+        (geom.origin.pos - phyz_math::Vec3::new(0.0, 0.0, 0.2)).norm() < 1e-12,
+        "origin {:?}",
+        geom.origin.pos
     );
+    assert!(!geom.is_centered());
+    // An offset shape is not mirrored into the single-shape `geometry` field.
+    assert!(body.geometry.is_none());
+}
+
+#[test]
+fn every_geom_on_a_body_is_kept_with_its_pose() {
+    // phyz_model::Body holds a list of placed shapes, so neither extra geoms
+    // nor their body-relative poses are dropped.
+    let mjcf = r#"
+    <mujoco><worldbody><body name="multi" pos="0 0 1">
+        <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+        <joint name="j" type="hinge" axis="0 0 1"/>
+        <geom name="centred" type="sphere" size="0.1"/>
+        <geom name="offset" type="box" size="0.1 0.1 0.1" pos="0.5 0 0"/>
+        <geom name="turned" type="capsule" size="0.02 0.1" euler="0 1.5707963267948966 0"/>
+    </body></worldbody></mujoco>"#;
+    let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
+    let body = &model.bodies[0];
+
+    assert_eq!(body.collisions.len(), 3);
+    let named = |n: &str| {
+        body.collisions
+            .iter()
+            .find(|g| g.name.as_deref() == Some(n))
+            .unwrap()
+    };
+    assert!(named("centred").is_centered());
+    assert!((named("offset").origin.pos.x - 0.5).abs() < 1e-12);
+
+    // origin.rot is the body -> shape transform, so its transpose is the
+    // shape's orientation in the body frame: +90 deg about Y takes z onto x.
+    let shape_to_body = named("turned").origin.rot.transpose();
+    let z_in_body = shape_to_body * phyz_math::Vec3::new(0.0, 0.0, 1.0);
+    assert!(
+        (z_in_body - phyz_math::Vec3::new(1.0, 0.0, 0.0)).norm() < 1e-9,
+        "{z_in_body:?}"
+    );
+
+    // The single-shape field mirrors the first centred geom.
+    assert!(matches!(body.geometry, Some(Geometry::Sphere { .. })));
 }
 
 #[test]
@@ -737,14 +775,15 @@ fn quadruped_shaped_model_is_fully_resolved() {
     assert!((knee.axis.y - 1.0).abs() < 1e-12, "axis from 'knee'");
 
     // The shank capsule gets its radius from the class and its length from fromto.
-    let shank = model
+    let shank = &model
         .bodies
         .iter()
         .find(|b| b.name == "fl_knee_link")
         .unwrap()
-        .geometry
-        .as_ref()
-        .expect("shank geometry");
+        .collisions
+        .first()
+        .expect("shank geometry")
+        .geometry;
     match shank {
         Geometry::Capsule { radius, length } => {
             assert!((radius - 0.02).abs() < 1e-12, "radius from class 'robot'");

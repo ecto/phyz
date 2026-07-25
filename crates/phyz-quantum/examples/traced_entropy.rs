@@ -59,7 +59,11 @@ fn main() {
     // Serialize as WireGraph
     let wire = solver.to_wire_graph();
     let bytes = wire.to_bytes().unwrap();
-    println!("WireGraph serialized: {} bytes ({:.1} KB)", bytes.len(), bytes.len() as f64 / 1024.0);
+    println!(
+        "WireGraph serialized: {} bytes ({:.1} KB)",
+        bytes.len(),
+        bytes.len() as f64 / 1024.0
+    );
 
     // Roundtrip
     let wire2 = tang_mesh::protocol::WireGraph::from_bytes(&bytes).unwrap();
@@ -73,7 +77,8 @@ fn main() {
 
     // WGSL generation check
     let wgsl = wire.to_wgsl();
-    println!("\nWGSL shader: {} lines, {} bytes",
+    println!(
+        "\nWGSL shader: {} lines, {} bytes",
         wgsl.source.lines().count(),
         wgsl.source.len()
     );
