@@ -1,0 +1,8 @@
+# Pinned so a published comparison names exact versions.
+# Bump deliberately, and re-record the numbers when you do.
+mujoco==3.2.7
+
+# MJX only. Uncomment ONE of these; the CPU build of JAX makes MJX slower than
+# plain MuJoCo and is useful only for checking that the harness runs.
+# jax[cuda12]==0.4.35
+# jax==0.4.35

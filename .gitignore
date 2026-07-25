@@ -1,5 +1,14 @@
 /target
 
+# Benchmark output. Published results are committed to BENCHMARKS.md by hand,
+# from a known idle machine — a stray `make bench` on a busy laptop must not
+# be able to overwrite them.
+/bench-results.json
+/bench-results.md
+/mujoco-results.json
+crates/phyz-bench/python/.venv/
+crates/phyz-bench/python/__pycache__/
+
 # Trunk copies wasm/.gitignore (which contains *) into dist — override it
 !crates/phyz-home/dist/wasm/*.js
 !crates/phyz-home/dist/wasm/*.wasm

@@ -1,0 +1,160 @@
+<!--
+  Shadow-hand-style dexterous hand: 2 wrist DOF + 5 fingers.
+
+  IMPORTANT — this is a capsule approximation, not the Shadow Hand model.
+  The real model is defined by mesh assets and by tendon-coupled distal joints,
+  neither of which phyz supports yet (docs/design/batched-envs.md, B2). This
+  file matches the *articulation*: 24 hinge DOF, 20 position actuators, the
+  same finger topology and roughly the same link scale. It is here so the
+  high-DOF, many-contact regime is exercised and benchmarkable. It is NOT a
+  substitute for the real model and must not be presented as one.
+
+  Where the real hand couples the distal interphalangeal joint to the proximal
+  one with a tendon, this file leaves the distal joint unactuated but free —
+  the closest honest approximation without tendon support.
+
+  Base is fixed (no free joint), as in the standard manipulation setup.
+-->
+<mujoco model="shadow_hand_approx">
+    <compiler angle="degree"/>
+    <option gravity="0 0 -9.81" timestep="0.002"/>
+
+    <default>
+        <joint limited="true" damping="0.1" armature="0.001"/>
+        <geom type="capsule" density="1000" friction="1 0.05 0.01"/>
+        <position ctrlrange="-1 1" kp="4" kv="0.1" gear="1"/>
+        <default class="phalanx">
+            <geom size="0.009"/>
+        </default>
+    </default>
+
+    <worldbody>
+        <body name="forearm" pos="0 0 0.2">
+            <geom name="forearm_geom" fromto="0 0 -0.20  0 0 0" size="0.02"/>
+
+            <body name="wrist" pos="0 0 0.02">
+                <joint name="wrist_pitch" type="hinge" axis="0 1 0" range="-30 40"/>
+                <joint name="wrist_yaw" type="hinge" axis="1 0 0" range="-30 10"/>
+                <geom name="wrist_geom" fromto="0 0 0  0 0 0.03" size="0.017"/>
+
+                <body name="palm" pos="0 0 0.03">
+                    <geom name="palm_geom" type="box" size="0.033 0.011 0.045" pos="0 0 0.045"/>
+
+                    <!-- First finger -->
+                    <body name="ff_proximal" pos="0.022 0 0.095" childclass="phalanx">
+                        <joint name="ff_abduct" type="hinge" axis="0 1 0" range="-20 20"/>
+                        <joint name="ff_mcp" type="hinge" axis="1 0 0" range="0 90"/>
+                        <geom name="ff_proximal_geom" fromto="0 0 0  0 0 0.045"/>
+                        <body name="ff_middle" pos="0 0 0.045">
+                            <joint name="ff_pip" type="hinge" axis="1 0 0" range="0 90"/>
+                            <geom name="ff_middle_geom" fromto="0 0 0  0 0 0.025"/>
+                            <body name="ff_distal" pos="0 0 0.025">
+                                <joint name="ff_dip" type="hinge" axis="1 0 0" range="0 90"/>
+                                <geom name="ff_distal_geom" fromto="0 0 0  0 0 0.026"/>
+                            </body>
+                        </body>
+                    </body>
+
+                    <!-- Middle finger -->
+                    <body name="mf_proximal" pos="0 0 0.099" childclass="phalanx">
+                        <joint name="mf_abduct" type="hinge" axis="0 1 0" range="-20 20"/>
+                        <joint name="mf_mcp" type="hinge" axis="1 0 0" range="0 90"/>
+                        <geom name="mf_proximal_geom" fromto="0 0 0  0 0 0.045"/>
+                        <body name="mf_middle" pos="0 0 0.045">
+                            <joint name="mf_pip" type="hinge" axis="1 0 0" range="0 90"/>
+                            <geom name="mf_middle_geom" fromto="0 0 0  0 0 0.025"/>
+                            <body name="mf_distal" pos="0 0 0.025">
+                                <joint name="mf_dip" type="hinge" axis="1 0 0" range="0 90"/>
+                                <geom name="mf_distal_geom" fromto="0 0 0  0 0 0.026"/>
+                            </body>
+                        </body>
+                    </body>
+
+                    <!-- Ring finger -->
+                    <body name="rf_proximal" pos="-0.022 0 0.095" childclass="phalanx">
+                        <joint name="rf_abduct" type="hinge" axis="0 1 0" range="-20 20"/>
+                        <joint name="rf_mcp" type="hinge" axis="1 0 0" range="0 90"/>
+                        <geom name="rf_proximal_geom" fromto="0 0 0  0 0 0.045"/>
+                        <body name="rf_middle" pos="0 0 0.045">
+                            <joint name="rf_pip" type="hinge" axis="1 0 0" range="0 90"/>
+                            <geom name="rf_middle_geom" fromto="0 0 0  0 0 0.025"/>
+                            <body name="rf_distal" pos="0 0 0.025">
+                                <joint name="rf_dip" type="hinge" axis="1 0 0" range="0 90"/>
+                                <geom name="rf_distal_geom" fromto="0 0 0  0 0 0.026"/>
+                            </body>
+                        </body>
+                    </body>
+
+                    <!-- Little finger, with its extra metacarpal DOF -->
+                    <body name="lf_meta" pos="-0.033 0 0.02" childclass="phalanx">
+                        <joint name="lf_meta_joint" type="hinge" axis="0.573 0 0.819" range="0 45"/>
+                        <geom name="lf_meta_geom" fromto="0 0 0  -0.011 0 0.06"/>
+                        <body name="lf_proximal" pos="-0.011 0 0.06">
+                            <joint name="lf_abduct" type="hinge" axis="0 1 0" range="-20 20"/>
+                            <joint name="lf_mcp" type="hinge" axis="1 0 0" range="0 90"/>
+                            <geom name="lf_proximal_geom" fromto="0 0 0  0 0 0.04"/>
+                            <body name="lf_middle" pos="0 0 0.04">
+                                <joint name="lf_pip" type="hinge" axis="1 0 0" range="0 90"/>
+                                <geom name="lf_middle_geom" fromto="0 0 0  0 0 0.02"/>
+                                <body name="lf_distal" pos="0 0 0.02">
+                                    <joint name="lf_dip" type="hinge" axis="1 0 0" range="0 90"/>
+                                    <geom name="lf_distal_geom" fromto="0 0 0  0 0 0.024"/>
+                                </body>
+                            </body>
+                        </body>
+                    </body>
+
+                    <!-- Thumb -->
+                    <body name="th_base" pos="0.034 -0.009 0.029" childclass="phalanx">
+                        <joint name="th_base_joint" type="hinge" axis="0 0 -1" range="-60 60"/>
+                        <geom name="th_base_geom" fromto="0 0 0  0 0 0.019" size="0.012"/>
+                        <body name="th_proximal" pos="0 0 0.019">
+                            <joint name="th_rot" type="hinge" axis="1 0 0" range="0 70"/>
+                            <geom name="th_proximal_geom" fromto="0 0 0  0 0 0.032" size="0.011"/>
+                            <body name="th_hub" pos="0 0 0.032">
+                                <joint name="th_hub_joint" type="hinge" axis="0 -1 0" range="-12 12"/>
+                                <geom name="th_hub_geom" fromto="0 0 0  0 0 0.018"/>
+                                <body name="th_middle" pos="0 0 0.018">
+                                    <joint name="th_pip" type="hinge" axis="1 0 0" range="-30 30"/>
+                                    <geom name="th_middle_geom" fromto="0 0 0  0 0 0.016"/>
+                                    <body name="th_distal" pos="0 0 0.016">
+                                        <joint name="th_dip" type="hinge" axis="0 1 0" range="-15 90"/>
+                                        <geom name="th_distal_geom" fromto="0 0 0  0 0 0.026"/>
+                                    </body>
+                                </body>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <actuator>
+        <position name="wrist_pitch_act" joint="wrist_pitch" kp="20"/>
+        <position name="wrist_yaw_act"   joint="wrist_yaw"   kp="20"/>
+
+        <position name="ff_abduct_act" joint="ff_abduct"/>
+        <position name="ff_mcp_act"    joint="ff_mcp"/>
+        <position name="ff_pip_act"    joint="ff_pip"/>
+
+        <position name="mf_abduct_act" joint="mf_abduct"/>
+        <position name="mf_mcp_act"    joint="mf_mcp"/>
+        <position name="mf_pip_act"    joint="mf_pip"/>
+
+        <position name="rf_abduct_act" joint="rf_abduct"/>
+        <position name="rf_mcp_act"    joint="rf_mcp"/>
+        <position name="rf_pip_act"    joint="rf_pip"/>
+
+        <position name="lf_meta_act"   joint="lf_meta_joint"/>
+        <position name="lf_abduct_act" joint="lf_abduct"/>
+        <position name="lf_mcp_act"    joint="lf_mcp"/>
+        <position name="lf_pip_act"    joint="lf_pip"/>
+
+        <position name="th_base_act"   joint="th_base_joint"/>
+        <position name="th_rot_act"    joint="th_rot"/>
+        <position name="th_hub_act"    joint="th_hub_joint"/>
+        <position name="th_pip_act"    joint="th_pip"/>
+        <position name="th_dip_act"    joint="th_dip"/>
+    </actuator>
+</mujoco>

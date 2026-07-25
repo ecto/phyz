@@ -1,0 +1,25 @@
+[package]
+name = "phyz-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Batched reinforcement-learning environments for phyz (Gymnasium-style vector API)"
+
+[features]
+default = []
+# Zero-copy interop with the tang ML stack. Off by default so the crate builds
+# without a sibling ../tang checkout.
+tang = ["dep:tang-tensor"]
+# GPU-resident batch backend (wgpu). Design-complete, implementation gated.
+gpu = ["dep:phyz-gpu"]
+
+[dependencies]
+phyz-math = { workspace = true }
+phyz-model = { workspace = true }
+phyz-rigid = { workspace = true }
+phyz-mjcf = { workspace = true }
+phyz-gpu = { workspace = true, optional = true }
+tang-tensor = { path = "../../../tang/crates/tang-tensor", optional = true }
+thiserror = "2"

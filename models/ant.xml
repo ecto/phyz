@@ -1,55 +1,83 @@
+<!--
+  Ant: a quadruped with a free-floating torso and two hinges per leg.
+
+  Re-authored for phyz with the same topology, DOF count (nq = nv = 14: 6 free
+  + 8 hinge) and action space (8 motors) as the standard MuJoCo/Gym ant, so
+  throughput comparisons are meaningful. Link lengths, masses and gearing are
+  not bit-identical to Gym's file, so episode returns are NOT directly
+  comparable to published Gym-Ant numbers.
+
+  Exercises: free joint, <default> classes, childclass inheritance, capsule
+  fromto, geom-derived inertia, motor actuators.
+-->
 <mujoco model="ant">
-    <option gravity="0 0 -9.81" timestep="0.002"/>
+    <compiler angle="degree"/>
+    <option gravity="0 0 -9.81" timestep="0.01"/>
+
+    <default>
+        <joint limited="true" damping="1" armature="0.01"/>
+        <geom density="1000" friction="1 0.5 0.5"/>
+        <motor ctrlrange="-1 1" gear="150"/>
+        <default class="leg">
+            <geom type="capsule" size="0.08"/>
+        </default>
+    </default>
 
     <worldbody>
-        <!-- Torso -->
-        <body name="torso" pos="0 0 0.75">
-            <joint name="root" type="free"/>
-            <inertial pos="0 0 0" mass="10" diaginertia="1.0 1.0 1.0"/>
+        <body name="torso" pos="0 0 0.75" childclass="leg">
+            <freejoint name="root"/>
+            <geom name="torso_geom" type="sphere" size="0.25"/>
 
-            <!-- Front left leg -->
+            <!-- Front left -->
             <body name="fl_hip" pos="0.2 0.2 0">
-                <inertial pos="0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-                <joint name="fl_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
-
-                <body name="fl_ankle" pos="0.2 0 0">
-                    <inertial pos="0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
-                    <joint name="fl_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+                <joint name="fl_hip_joint" type="hinge" axis="0 0 1" range="-30 30"/>
+                <geom name="fl_hip_geom" fromto="0 0 0  0.2 0.2 0"/>
+                <body name="fl_ankle" pos="0.2 0.2 0">
+                    <joint name="fl_ankle_joint" type="hinge" axis="-1 1 0" range="-70 70"/>
+                    <geom name="fl_ankle_geom" fromto="0 0 0  0.4 0.4 0"/>
                 </body>
             </body>
 
-            <!-- Front right leg -->
-            <body name="fr_hip" pos="0.2 -0.2 0">
-                <inertial pos="0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-                <joint name="fr_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
-
-                <body name="fr_ankle" pos="0.2 0 0">
-                    <inertial pos="0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
-                    <joint name="fr_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+            <!-- Front right -->
+            <body name="fr_hip" pos="-0.2 0.2 0">
+                <joint name="fr_hip_joint" type="hinge" axis="0 0 1" range="-30 30"/>
+                <geom name="fr_hip_geom" fromto="0 0 0  -0.2 0.2 0"/>
+                <body name="fr_ankle" pos="-0.2 0.2 0">
+                    <joint name="fr_ankle_joint" type="hinge" axis="1 1 0" range="-70 70"/>
+                    <geom name="fr_ankle_geom" fromto="0 0 0  -0.4 0.4 0"/>
                 </body>
             </body>
 
-            <!-- Back left leg -->
-            <body name="bl_hip" pos="-0.2 0.2 0">
-                <inertial pos="-0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-                <joint name="bl_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
-
-                <body name="bl_ankle" pos="-0.2 0 0">
-                    <inertial pos="-0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
-                    <joint name="bl_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+            <!-- Back left -->
+            <body name="bl_hip" pos="-0.2 -0.2 0">
+                <joint name="bl_hip_joint" type="hinge" axis="0 0 1" range="-30 30"/>
+                <geom name="bl_hip_geom" fromto="0 0 0  -0.2 -0.2 0"/>
+                <body name="bl_ankle" pos="-0.2 -0.2 0">
+                    <joint name="bl_ankle_joint" type="hinge" axis="-1 1 0" range="-70 70"/>
+                    <geom name="bl_ankle_geom" fromto="0 0 0  -0.4 -0.4 0"/>
                 </body>
             </body>
 
-            <!-- Back right leg -->
-            <body name="br_hip" pos="-0.2 -0.2 0">
-                <inertial pos="-0.1 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-                <joint name="br_hip_joint" type="hinge" axis="0 0 1" damping="0.5"/>
-
-                <body name="br_ankle" pos="-0.2 0 0">
-                    <inertial pos="-0.1 0 -0.1" mass="1" diaginertia="0.01 0.01 0.01"/>
-                    <joint name="br_ankle_joint" type="hinge" axis="0 1 0" damping="0.5"/>
+            <!-- Back right -->
+            <body name="br_hip" pos="0.2 -0.2 0">
+                <joint name="br_hip_joint" type="hinge" axis="0 0 1" range="-30 30"/>
+                <geom name="br_hip_geom" fromto="0 0 0  0.2 -0.2 0"/>
+                <body name="br_ankle" pos="0.2 -0.2 0">
+                    <joint name="br_ankle_joint" type="hinge" axis="1 1 0" range="-70 70"/>
+                    <geom name="br_ankle_geom" fromto="0 0 0  0.4 -0.4 0"/>
                 </body>
             </body>
         </body>
     </worldbody>
+
+    <actuator>
+        <motor name="fl_hip_motor"   joint="fl_hip_joint"/>
+        <motor name="fl_ankle_motor" joint="fl_ankle_joint"/>
+        <motor name="fr_hip_motor"   joint="fr_hip_joint"/>
+        <motor name="fr_ankle_motor" joint="fr_ankle_joint"/>
+        <motor name="bl_hip_motor"   joint="bl_hip_joint"/>
+        <motor name="bl_ankle_motor" joint="bl_ankle_joint"/>
+        <motor name="br_hip_motor"   joint="br_hip_joint"/>
+        <motor name="br_ankle_motor" joint="br_ankle_joint"/>
+    </actuator>
 </mujoco>

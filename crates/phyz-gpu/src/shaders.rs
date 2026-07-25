@@ -8,7 +8,7 @@
 ///
 /// One thread per environment, serial tree traversal within.
 pub const CONTACT_GROUND_SHADER: &str = r#"
-const MAX_BODIES: u32 = 16u;
+const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 32u;
 const GEOM_STRIDE: u32 = 8u;
 
@@ -55,6 +55,27 @@ fn rev_rot(axis: vec3<f32>, angle: f32) -> array<f32, 9> {
 
 fn identity_rot() -> array<f32, 9> {
     return array<f32, 9>(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
+}
+
+// Quaternion exponential (w, x, y, z), matching tang's Quat::exp.
+fn cquat_exp(omega: vec3<f32>) -> vec4<f32> {
+    let angle = length(omega);
+    if (angle < 1e-6) {
+        return vec4<f32>(1.0, omega.x * 0.5, omega.y * 0.5, omega.z * 0.5);
+    }
+    let half = angle * 0.5;
+    let s = sin(half) / angle;
+    return vec4<f32>(cos(half), omega.x * s, omega.y * s, omega.z * s);
+}
+
+// Quaternion to row-major rotation matrix.
+fn cq_to_rot(qt: vec4<f32>) -> array<f32, 9> {
+    let w = qt.x; let x = qt.y; let y = qt.z; let z = qt.w;
+    return array<f32, 9>(
+        1.0 - 2.0*(y*y + z*z), 2.0*(x*y - w*z),       2.0*(x*z + w*y),
+        2.0*(x*y + w*z),       1.0 - 2.0*(x*x + z*z), 2.0*(y*z - w*x),
+        2.0*(x*z - w*y),       2.0*(y*z + w*x),       1.0 - 2.0*(x*x + y*y)
+    );
 }
 
 // Multiply rotation (row-major) by vector
@@ -108,7 +129,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let ptj_pos = vec3<f32>(bf(i, 23u), bf(i, 24u), bf(i, 25u));
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
 
-        // Joint transform
+        // Joint transform. Ball and free joints must be handled here too: a
+        // floating-base model whose root is treated as fixed puts every body at
+        // the origin, so no foot ever reaches the ground and contact silently
+        // does nothing.
         var j_rot: array<f32, 9>;
         var j_pos = vec3<f32>(0.0, 0.0, 0.0);
         if (jtype == 0u) {
@@ -116,6 +140,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else if (jtype == 1u) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
+        } else if (jtype == 3u) {
+            let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
+            j_rot = cq_to_rot(cquat_exp(w));
+        } else if (jtype == 4u) {
+            let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            j_rot = cq_to_rot(cquat_exp(w));
+            j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
         } else {
             j_rot = identity_rot();
         }
@@ -267,10 +298,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-/// WGSL shader for semi-implicit Euler integration.
+/// Flat semi-implicit Euler for single-DOF-only models.
 ///
-/// Each work item processes one DOF across all worlds in parallel.
-pub const INTEGRATE_SHADER: &str = r#"
+/// Correct only when every joint is revolute or prismatic, where `q` and `v`
+/// share a parameterisation. Used by [`crate::GpuSimulator`], which is
+/// pendulum-only by construction. General models must use
+/// [`INTEGRATE_SHADER`], which is joint-aware.
+pub const INTEGRATE_SIMPLE_SHADER: &str = r#"
 struct SimParams {
     nworld: u32,
     nv: u32,
@@ -286,35 +320,151 @@ struct SimParams {
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
-    let total_dofs = params.nworld * params.nv;
+    if (idx >= params.nworld * params.nv) { return; }
 
-    if (idx >= total_dofs) {
+    let v_new = v[idx] + params.dt * qdd[idx];
+    v[idx] = v_new;
+    q[idx] = q[idx] + params.dt * v_new;
+}
+"#;
+
+/// Joint-aware semi-implicit Euler.
+///
+/// Must match `phyz_rigid::semi_implicit_euler` exactly. A flat `q += dt * v`
+/// is wrong for ball and free joints because `q` and `v` use different
+/// parameterisations — for a free joint `q` is `[pos(3), exp-coords(3)]` while
+/// `v` is `[angular(3), linear(3)]`, so the naive update adds angular velocity
+/// into position.
+///
+/// One thread per (environment, joint) pair, so joints in the same environment
+/// touch disjoint `q`/`v` ranges and no synchronisation is needed.
+pub const INTEGRATE_SHADER: &str = r#"
+const BODY_STRIDE: u32 = 32u;
+
+struct SimParams {
+    nworld: u32,
+    nv: u32,
+    dt: f32,
+    nbodies: u32,
+    gx: f32,
+    gy: f32,
+    gz: f32,
+    _padding: u32,
+}
+
+@group(0) @binding(0) var<uniform> params: SimParams;
+@group(0) @binding(1) var<storage, read_write> q: array<f32>;
+@group(0) @binding(2) var<storage, read_write> v: array<f32>;
+@group(0) @binding(3) var<storage, read> qdd: array<f32>;
+@group(0) @binding(4) var<storage, read> bodies: array<f32>;
+
+fn bf_i(bidx: u32, off: u32) -> f32 { return bodies[bidx * BODY_STRIDE + off]; }
+fn bu_i(bidx: u32, off: u32) -> u32 { return bitcast<u32>(bodies[bidx * BODY_STRIDE + off]); }
+
+fn ndof_of(jtype: u32) -> u32 {
+    if (jtype == 2u) { return 0u; }
+    if (jtype == 3u) { return 3u; }
+    if (jtype == 4u) { return 6u; }
+    return 1u;
+}
+
+fn qexp(omega: vec3<f32>) -> vec4<f32> {
+    let angle = length(omega);
+    if (angle < 1e-6) {
+        return vec4<f32>(1.0, omega.x * 0.5, omega.y * 0.5, omega.z * 0.5);
+    }
+    let half = angle * 0.5;
+    let s = sin(half) / angle;
+    return vec4<f32>(cos(half), omega.x * s, omega.y * s, omega.z * s);
+}
+
+// Hamilton product, both as (w, x, y, z).
+fn qmul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(
+        a.x*b.x - a.y*b.y - a.z*b.z - a.w*b.w,
+        a.x*b.y + a.y*b.x + a.z*b.w - a.w*b.z,
+        a.x*b.z - a.y*b.w + a.z*b.x + a.w*b.y,
+        a.x*b.w + a.y*b.z - a.z*b.y + a.w*b.x
+    );
+}
+
+// Matches tang's Quat::log, including the small-angle branch.
+fn qlog(qt: vec4<f32>) -> vec3<f32> {
+    let vv = vec3<f32>(qt.y, qt.z, qt.w);
+    let n = length(vv);
+    if (n < 1e-6) { return vv * 2.0; }
+    let angle = 2.0 * atan2(n, qt.x);
+    return vv * (angle / n);
+}
+
+fn qrotate(qt: vec4<f32>, p: vec3<f32>) -> vec3<f32> {
+    let u = vec3<f32>(qt.y, qt.z, qt.w);
+    let t = cross(u, p) * 2.0;
+    return p + t * qt.x + cross(u, t);
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let nb = params.nbodies;
+    if (idx >= params.nworld * nb) { return; }
+
+    let world_idx = idx / nb;
+    let body_idx = idx % nb;
+
+    let jtype = bu_i(body_idx, 1u);
+    let ndof = ndof_of(jtype);
+    if (ndof == 0u) { return; }
+
+    let q_off = world_idx * params.nv + bu_i(body_idx, 2u);
+    let v_off = world_idx * params.nv + bu_i(body_idx, 3u);
+    let dt = params.dt;
+
+    // Velocity first (semi-implicit).
+    for (var k = 0u; k < ndof; k++) {
+        v[v_off + k] = v[v_off + k] + dt * qdd[v_off + k];
+    }
+
+    if (jtype == 0u || jtype == 1u) {
+        q[q_off] = q[q_off] + dt * v[v_off];
         return;
     }
 
-    let dt = params.dt;
+    if (jtype == 3u) {
+        // Ball: compose the rotation, then re-log to exponential coordinates.
+        let omega = vec3<f32>(v[v_off], v[v_off + 1u], v[v_off + 2u]);
+        let cur = qexp(vec3<f32>(q[q_off], q[q_off + 1u], q[q_off + 2u]));
+        let nxt = normalize(qmul(cur, qexp(omega * dt)));
+        let lg = qlog(nxt);
+        q[q_off] = lg.x; q[q_off + 1u] = lg.y; q[q_off + 2u] = lg.z;
+        return;
+    }
 
-    // Semi-implicit Euler: v' = v + dt * qdd, q' = q + dt * v'
-    let v_old = v[idx];
-    let qdd_val = qdd[idx];
-    let v_new = v_old + dt * qdd_val;
-    let q_old = q[idx];
-    let q_new = q_old + dt * v_new;
+    // Free: v = [angular(3), linear(3)], q = [pos(3), exp-coords(3)].
+    let omega = vec3<f32>(v[v_off], v[v_off + 1u], v[v_off + 2u]);
+    let lin = vec3<f32>(v[v_off + 3u], v[v_off + 4u], v[v_off + 5u]);
+    let cur = qexp(vec3<f32>(q[q_off + 3u], q[q_off + 4u], q[q_off + 5u]));
 
-    v[idx] = v_new;
-    q[idx] = q_new;
+    let world_lin = qrotate(cur, lin);
+    q[q_off] = q[q_off] + dt * world_lin.x;
+    q[q_off + 1u] = q[q_off + 1u] + dt * world_lin.y;
+    q[q_off + 2u] = q[q_off + 2u] + dt * world_lin.z;
+
+    let nxt = normalize(qmul(cur, qexp(omega * dt)));
+    let lg = qlog(nxt);
+    q[q_off + 3u] = lg.x; q[q_off + 4u] = lg.y; q[q_off + 5u] = lg.z;
 }
 "#;
 
 /// WGSL shader for generalized ABA (arbitrary articulated body trees).
 ///
-/// Supports revolute (type 0), prismatic (type 1), and fixed (type 2) joints.
-/// One thread per environment, serial tree traversal within.
+/// Supports revolute (0), prismatic (1), fixed (2), ball (3, 3 DOF) and free
+/// (4, 6 DOF) joints. One thread per environment, serial tree traversal within.
 /// Bodies must be topologically sorted (parent index < child index).
 ///
 /// Body data layout: 32 f32 values per body (BODY_STRIDE):
 ///   `[0]`  parent (bitcast i32, -1 for root)
-///   `[1]`  joint_type (0=revolute, 1=prismatic, 2=fixed)
+///   `[1]`  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
 ///   `[2]`  q_offset
 ///   `[3]`  v_offset
 ///   `[4]`  mass
@@ -326,7 +476,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ///   `[29]` damping
 ///   [30..32] padding
 pub const ABA_GENERAL_SHADER: &str = r#"
-const MAX_BODIES: u32 = 16u;
+const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 32u;
 
 struct SimParams {
@@ -649,6 +799,133 @@ fn joint_vel(jtype: u32, axis: vec3<f32>, qd: f32) -> array<f32, 6> {
     return sv_scale(joint_motion_subspace(jtype, axis), qd);
 }
 
+// ── Multi-DOF joint support ──
+//
+// Joint types: 0=revolute, 1=prismatic, 2=fixed, 3=ball (3 DOF), 4=free (6 DOF).
+// Every benchmark model (ant, half-cheetah, humanoid, hand-on-a-floating-base)
+// has a floating root, so welding multi-DOF joints — as this kernel used to —
+// silently produced a different robot. See docs/design/batched-envs.md, B4.
+
+fn joint_ndof(jtype: u32) -> u32 {
+    if (jtype == 2u) { return 0u; }
+    if (jtype == 3u) { return 3u; }
+    if (jtype == 4u) { return 6u; }
+    return 1u;
+}
+
+// Column `k` of the motion subspace matrix S (6 x ndof).
+//
+// Mirrors phyz_model::Joint::motion_subspace_matrix and
+// phyz_rigid::kinematics::joint_velocity exactly, including the free joint's
+// angular-then-linear velocity ordering.
+fn subspace_col(jtype: u32, axis: vec3<f32>, k: u32) -> array<f32, 6> {
+    if (jtype == 0u) {
+        return array<f32, 6>(axis.x, axis.y, axis.z, 0.0, 0.0, 0.0);
+    }
+    if (jtype == 1u) {
+        return array<f32, 6>(0.0, 0.0, 0.0, axis.x, axis.y, axis.z);
+    }
+    if (jtype == 3u) {
+        // Ball: angular DOF only.
+        var s = sv_zero();
+        s[k] = 1.0;
+        return s;
+    }
+    if (jtype == 4u) {
+        // Free: v = [angular(3), linear(3)], so S is the 6x6 identity.
+        var s = sv_zero();
+        s[k] = 1.0;
+        return s;
+    }
+    return sv_zero();
+}
+
+// Quaternion exponential of a rotation vector, as (w, x, y, z).
+// Matches tang's Quat::exp including the small-angle branch.
+fn quat_exp(omega: vec3<f32>) -> vec4<f32> {
+    let angle = length(omega);
+    if (angle < 1e-6) {
+        return vec4<f32>(1.0, omega.x * 0.5, omega.y * 0.5, omega.z * 0.5);
+    }
+    let half = angle * 0.5;
+    let s = sin(half) / angle;
+    return vec4<f32>(cos(half), omega.x * s, omega.y * s, omega.z * s);
+}
+
+// Quaternion (w, x, y, z) to row-major rotation matrix.
+fn quat_to_rot(qt: vec4<f32>) -> array<f32, 9> {
+    let w = qt.x; let x = qt.y; let y = qt.z; let z = qt.w;
+    var r: array<f32, 9>;
+    r[0] = 1.0 - 2.0*(y*y + z*z); r[1] = 2.0*(x*y - w*z);       r[2] = 2.0*(x*z + w*y);
+    r[3] = 2.0*(x*y + w*z);       r[4] = 1.0 - 2.0*(x*x + z*z); r[5] = 2.0*(y*z - w*x);
+    r[6] = 2.0*(x*z - w*y);       r[7] = 2.0*(y*z + w*x);       r[8] = 1.0 - 2.0*(x*x + y*y);
+    return r;
+}
+
+// ── Small dense solve for the ndof x ndof articulated inertia block ──
+//
+// ndof <= 6, so Gauss-Jordan with partial pivoting is both simple and fast
+// enough; the cost is dwarfed by the 6x6 spatial products around it.
+
+const MAX_JDOF: u32 = 6u;
+
+fn mat_get(m: ptr<function, array<f32, 36>>, n: u32, r: u32, c: u32) -> f32 {
+    return (*m)[r * n + c];
+}
+
+// In-place inverse of the leading n x n block (row-major, stride n).
+// Returns false if the block is singular, in which case the caller falls back
+// to zero acceleration rather than emitting NaNs into the state buffer.
+fn invert_small(m: ptr<function, array<f32, 36>>, n: u32) -> bool {
+    var inv: array<f32, 36>;
+    for (var r = 0u; r < n; r++) {
+        for (var c = 0u; c < n; c++) {
+            inv[r * n + c] = select(0.0, 1.0, r == c);
+        }
+    }
+
+    for (var col = 0u; col < n; col++) {
+        // Partial pivot.
+        var piv = col;
+        var best = abs((*m)[col * n + col]);
+        for (var r = col + 1u; r < n; r++) {
+            let a = abs((*m)[r * n + col]);
+            if (a > best) { best = a; piv = r; }
+        }
+        if (best < 1e-20) { return false; }
+
+        if (piv != col) {
+            for (var c = 0u; c < n; c++) {
+                let t1 = (*m)[col * n + c];
+                (*m)[col * n + c] = (*m)[piv * n + c];
+                (*m)[piv * n + c] = t1;
+                let t2 = inv[col * n + c];
+                inv[col * n + c] = inv[piv * n + c];
+                inv[piv * n + c] = t2;
+            }
+        }
+
+        let d = (*m)[col * n + col];
+        for (var c = 0u; c < n; c++) {
+            (*m)[col * n + c] /= d;
+            inv[col * n + c] /= d;
+        }
+
+        for (var r = 0u; r < n; r++) {
+            if (r == col) { continue; }
+            let f = (*m)[r * n + col];
+            if (f == 0.0) { continue; }
+            for (var c = 0u; c < n; c++) {
+                (*m)[r * n + c] -= f * (*m)[col * n + c];
+                inv[r * n + c] -= f * inv[col * n + c];
+            }
+        }
+    }
+
+    for (var i = 0u; i < n * n; i++) { (*m)[i] = inv[i]; }
+    return true;
+}
+
 // Joint transform rotation for revolute: Rodrigues with -angle
 fn revolute_rot(axis: vec3<f32>, angle: f32) -> array<f32, 9> {
     let neg_a = -angle;
@@ -757,6 +1034,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let q_val = q[q_base + q_off];
             j_rot = revolute_rot(axis, q_val);
             j_pos = vec3<f32>(0.0, 0.0, 0.0);
+        } else if (jtype == 3u) {
+            // Ball: q = exponential coordinates (3).
+            let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
+            j_rot = quat_to_rot(quat_exp(w));
+            j_pos = vec3<f32>(0.0, 0.0, 0.0);
+        } else if (jtype == 4u) {
+            // Free: q = [pos(3), exponential coordinates(3)].
+            let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            j_rot = quat_to_rot(quat_exp(w));
+            j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
         } else {
             // Prismatic
             let q_val = q[q_base + q_off];
@@ -769,13 +1056,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var k = 0u; k < 9u; k++) { x_rot[i][k] = composed[k]; }
         x_pos[i] = vec3<f32>(composed[9], composed[10], composed[11]);
 
-        // Joint velocity
-        var v_joint: array<f32, 6>;
-        if (jtype == 2u) {
-            v_joint = sv_zero();
-        } else {
-            let qd = v[v_base + v_off];
-            v_joint = joint_vel(jtype, axis, qd);
+        // Joint velocity: S * qd, summed over the joint's DOFs.
+        let ndof = joint_ndof(jtype);
+        var v_joint = sv_zero();
+        for (var k = 0u; k < ndof; k++) {
+            v_joint = sv_add(v_joint, sv_scale(subspace_col(jtype, axis, k), v[v_base + v_off + k]));
         }
 
         if (parent < 0) {
@@ -826,33 +1111,87 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // Single-DOF joint
-        let s_i = joint_motion_subspace(jtype, axis);
-        let phi = ctrl[v_base + v_off] - damping_val * v[v_base + v_off];
-        let u_i = phi - sv_dot(s_i, p_a[i]);
+        // Joint with 1..6 DOF. U = I_A S (6 x n), D = Sᵀ U (n x n),
+        // u = τ − Sᵀ p_A (n).
+        let ndof = joint_ndof(jtype);
+        var u_mat: array<f32, 36>;   // U, column k at [k*6 .. k*6+6]
+        var d_mat: array<f32, 36>;   // D, row-major with stride ndof
+        var u_vec: array<f32, 6>;
 
         var ia_ref = i_a[i];
-        let ia_s = m6_mul_vec(&ia_ref, s_i);
-        let d_i = sv_dot(s_i, ia_s);
+        for (var k = 0u; k < ndof; k++) {
+            let s_k = subspace_col(jtype, axis, k);
+            let uk = m6_mul_vec(&ia_ref, s_k);
+            for (var r = 0u; r < 6u; r++) { u_mat[k * 6u + r] = uk[r]; }
+            u_vec[k] = ctrl[v_base + v_off + k]
+                - damping_val * v[v_base + v_off + k]
+                - sv_dot(s_k, p_a[i]);
+        }
+        for (var r = 0u; r < ndof; r++) {
+            let s_r = subspace_col(jtype, axis, r);
+            for (var c = 0u; c < ndof; c++) {
+                var acc_d = 0.0;
+                for (var t = 0u; t < 6u; t++) { acc_d += s_r[t] * u_mat[c * 6u + t]; }
+                d_mat[r * ndof + c] = acc_d;
+            }
+            // Implicit joint damping — must match phyz_rigid::aba exactly, or
+            // the two backends diverge on any damped model.
+            d_mat[r * ndof + r] += params.dt * damping_val;
+        }
 
-        if (abs(d_i) < 1e-20) { continue; }
-
-        let u_inv_d = u_i / d_i;
+        // A singular articulated inertia means the joint carries no effective
+        // mass; treat it as fixed rather than dividing by ~0.
+        if (!invert_small(&d_mat, ndof)) {
+            if (parent >= 0) {
+                let pi = u32(parent);
+                var x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
+                var x_mot_st = transpose6(&x_mot_s);
+                var ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
+                i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                let p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
+                p_a[pi] = sv_add(p_a[pi], p_par_s);
+            }
+            continue;
+        }
 
         if (parent >= 0) {
             let pi = u32(parent);
 
-            // I_a^A = I_a - (I_a*S)(I_a*S)^T / D
-            var outer = m6_outer(ia_s, ia_s);
-            for (var k = 0u; k < 36u; k++) { outer[k] /= d_i; }
-            var ia_new = m6_sub(&i_a[i], &outer);
+            // W = U D⁻¹  (6 x n)
+            var w_mat: array<f32, 36>;
+            for (var c = 0u; c < ndof; c++) {
+                for (var r = 0u; r < 6u; r++) {
+                    var s = 0.0;
+                    for (var j = 0u; j < ndof; j++) {
+                        s += u_mat[j * 6u + r] * d_mat[j * ndof + c];
+                    }
+                    w_mat[c * 6u + r] = s;
+                }
+            }
 
-            // p_a^A = p_a + I_a^A * c + I_a*S * u/D
+            // I_a^A = I_A − W Uᵀ
+            var ia_new = i_a[i];
+            for (var c = 0u; c < ndof; c++) {
+                var wc: array<f32, 6>;
+                var uc: array<f32, 6>;
+                for (var r = 0u; r < 6u; r++) {
+                    wc[r] = w_mat[c * 6u + r];
+                    uc[r] = u_mat[c * 6u + r];
+                }
+                var outer = m6_outer(wc, uc);
+                ia_new = m6_sub(&ia_new, &outer);
+            }
+
+            // p_a^A = p_A + I_a^A c + W u
             let ia_c = m6_mul_vec(&ia_new, c_bias[i]);
-            let ia_s_u = sv_scale(ia_s, u_inv_d);
-            let p_new = sv_add(sv_add(p_a[i], ia_c), ia_s_u);
+            var wu = sv_zero();
+            for (var c = 0u; c < ndof; c++) {
+                for (var r = 0u; r < 6u; r++) {
+                    wu[r] += w_mat[c * 6u + r] * u_vec[c];
+                }
+            }
+            let p_new = sv_add(sv_add(p_a[i], ia_c), wu);
 
-            // Transform to parent frame
             var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
             var x_mot_t = transpose6(&x_mot);
             var ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
@@ -879,32 +1218,63 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             a_parent = apply_motion(x_rot[i], x_pos[i], acc[pi]);
         }
 
-        if (jtype == 2u) {
-            // Fixed
-            acc[i] = sv_add(a_parent, c_bias[i]);
+        let a_c = sv_add(a_parent, c_bias[i]);
+        let ndof = joint_ndof(jtype);
+        if (ndof == 0u) {
+            acc[i] = a_c;
             continue;
         }
 
-        let s_i = joint_motion_subspace(jtype, axis);
-        let phi = ctrl[v_base + v_off] - damping_val * v[v_base + v_off];
-        let u_i = phi - sv_dot(s_i, p_a[i]);
+        // Rebuild U, D and u rather than carrying them from pass 2: at
+        // MAX_BODIES bodies the extra 72 floats per body would spill private
+        // storage to device memory and cost more than the recompute.
+        var u_mat: array<f32, 36>;
+        var d_mat: array<f32, 36>;
+        var u_vec: array<f32, 6>;
 
         var ia_ref = i_a[i];
-        let d_i = sv_dot(s_i, m6_mul_vec(&ia_ref, s_i));
+        for (var k = 0u; k < ndof; k++) {
+            let s_k = subspace_col(jtype, axis, k);
+            let uk = m6_mul_vec(&ia_ref, s_k);
+            for (var r = 0u; r < 6u; r++) { u_mat[k * 6u + r] = uk[r]; }
+            u_vec[k] = ctrl[v_base + v_off + k]
+                - damping_val * v[v_base + v_off + k]
+                - sv_dot(s_k, p_a[i]);
+        }
+        for (var r = 0u; r < ndof; r++) {
+            let s_r = subspace_col(jtype, axis, r);
+            for (var c = 0u; c < ndof; c++) {
+                var acc_d = 0.0;
+                for (var t = 0u; t < 6u; t++) { acc_d += s_r[t] * u_mat[c * 6u + t]; }
+                d_mat[r * ndof + c] = acc_d;
+            }
+            // Implicit joint damping — must match phyz_rigid::aba exactly, or
+            // the two backends diverge on any damped model.
+            d_mat[r * ndof + r] += params.dt * damping_val;
+        }
 
-        if (abs(d_i) < 1e-20) {
-            acc[i] = sv_add(a_parent, c_bias[i]);
+        if (!invert_small(&d_mat, ndof)) {
+            acc[i] = a_c;
+            for (var k = 0u; k < ndof; k++) { qdd[v_base + v_off + k] = 0.0; }
             continue;
         }
 
-        let a_c = sv_add(a_parent, c_bias[i]);
-        let ia_ac = m6_mul_vec(&ia_ref, a_c);
-        let qdd_i = (u_i - sv_dot(s_i, ia_ac)) / d_i;
+        // qdd = D⁻¹ (u − Uᵀ a_c)
+        var rhs: array<f32, 6>;
+        for (var k = 0u; k < ndof; k++) {
+            var uta = 0.0;
+            for (var t = 0u; t < 6u; t++) { uta += u_mat[k * 6u + t] * a_c[t]; }
+            rhs[k] = u_vec[k] - uta;
+        }
 
-        // Write qdd
-        qdd[v_base + v_off] = qdd_i;
-
-        acc[i] = sv_add(a_c, sv_scale(s_i, qdd_i));
+        var a_new = a_c;
+        for (var k = 0u; k < ndof; k++) {
+            var qdd_k = 0.0;
+            for (var j = 0u; j < ndof; j++) { qdd_k += d_mat[k * ndof + j] * rhs[j]; }
+            qdd[v_base + v_off + k] = qdd_k;
+            a_new = sv_add(a_new, sv_scale(subspace_col(jtype, axis, k), qdd_k));
+        }
+        acc[i] = a_new;
     }
 }
 "#;

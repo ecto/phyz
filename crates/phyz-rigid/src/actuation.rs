@@ -16,7 +16,7 @@ use phyz_model::{Model, State};
 ///
 /// `qfrc = actuator_forces(ctrl) + passive_forces(q, v)`.
 pub fn generalized_forces(model: &Model, state: &State) -> DVec {
-    let mut qfrc = model.actuator_forces(&state.ctrl);
+    let mut qfrc = model.actuator_forces_at(&state.ctrl, &state.q, &state.v);
     add_passive_forces(model, state, &mut qfrc);
     qfrc
 }
