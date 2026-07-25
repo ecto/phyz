@@ -73,9 +73,9 @@ pub mod diff {
     #[allow(deprecated)]
     pub use phyz_diff::analytical_step_jacobians;
     pub use phyz_diff::rollout::{
-        AdjointGradients, AdjointRollout, CollisionMesh, ContactSetup, FinalStateObjective,
-        GroundContact, N_INERTIA_PARAMS, adjoint_rollout_gradient, inertia_params,
-        rollout_objective,
+        AdjointGradients, AdjointRollout, CollisionMesh, ContactSetup, DofLayout,
+        FinalStateObjective, GroundContact, N_INERTIA_PARAMS, adjoint_rollout_gradient,
+        inertia_params, joint_nq, rollout_objective,
     };
     pub use phyz_diff::rollout::{adjoint, step};
     pub use phyz_diff::{

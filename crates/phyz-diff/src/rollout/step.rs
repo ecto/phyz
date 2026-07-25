@@ -9,11 +9,39 @@
 //!
 //! # Scope
 //!
-//! Same joint domain as `phyz-diff`'s symbolic tracer: **single-DOF joints**
-//! (revolute/hinge, prismatic/slide) plus fixed. Spherical and free joints
-//! need a generic `ndof×ndof` articulated-inertia solve and quaternion state
-//! handling; they are deliberately out of scope (the functions panic, they do
-//! not silently misdifferentiate).
+//! **Every** joint type the model can express: revolute/hinge,
+//! prismatic/slide, fixed, spherical/ball (3 DOF) and free (6 DOF). Multi-DOF
+//! joints go through a generic `ndof×ndof` articulated-inertia solve and carry
+//! **quaternion** configuration, so `nq ≠ nv` in general — see [`DofLayout`].
+//!
+//! # State layout (`nq ≠ nv`)
+//!
+//! Velocity coordinates are the joint's motion subspace, one per DOF. Position
+//! coordinates are *not*: rotational sub-blocks of multi-DOF joints are stored
+//! as unit quaternions rather than exponential coordinates, so the
+//! configuration update is a Lie-group step rather than `q += dt·v`.
+//!
+//! | joint | `nq` | `q` layout | `nv` | `v` layout |
+//! |---|---|---|---|---|
+//! | revolute / prismatic | 1 | `[θ]` / `[d]` | 1 | `[θ̇]` / `[ḋ]` |
+//! | fixed | 0 | — | 0 | — |
+//! | spherical | 4 | `[w, x, y, z]` | 3 | body-frame `ω` |
+//! | free | 7 | `[x, y, z, w, qx, qy, qz]` | 6 | body-frame `[ω; v]` |
+//!
+//! `[x, y, z]` of a free joint is the successor origin in **predecessor**
+//! coordinates (the `pos` half of the Plücker transform), matching
+//! [`tang::SpatialTransform`]; its rate is therefore `Eᵀ·v_lin`, not `v_lin`.
+//! The quaternion `p` is the one with `E = R(p)`, i.e. the *coordinate*
+//! transform predecessor→successor, matching the sign convention
+//! `phyz_model::Joint::joint_transform_slice` uses for its exponential
+//! coordinates. Since `Ė = −ω× E`, the update is
+//! `p' = normalize(exp(−dt·ω) ⊗ p)`.
+//!
+//! This differs from `phyz_model`'s own `nq == nv` exponential-coordinate
+//! packing (and from [`phyz::sim::SemiImplicitEulerSolver`]'s flat
+//! `q += dt·v`, which for a free joint would add angular rates to positional
+//! coordinates). Build the initial configuration with
+//! [`DofLayout::neutral_q`] and index it with [`DofLayout::q_offsets`].
 //!
 //! # Contact model
 //!
@@ -34,7 +62,7 @@
 
 use phyz_math::DVec;
 use phyz_model::{JointType, Model};
-use tang::{Mat3, Scalar, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec, Vec3};
+use tang::{Mat3, Quat, Scalar, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec, Vec3};
 
 /// Number of inertia parameters per body: `[m, cx, cy, cz, Ixx, Iyy, Izz,
 /// Ixy, Ixz, Iyz]` — mass, COM (body frame), inertia about the COM. The
@@ -122,54 +150,245 @@ pub(crate) fn lift_inertia<T: Scalar>(si: &SpatialInertia<f64>) -> SpatialInerti
 }
 
 // ---------------------------------------------------------------------------
-// Generic joint helpers (single-DOF domain)
+// Position/velocity coordinate layout
 // ---------------------------------------------------------------------------
 
-fn assert_single_dof(model: &Model) {
-    assert_eq!(
-        model.nq, model.nv,
-        "diff step requires nq == nv (single-DOF joints only)"
-    );
-    for joint in &model.joints {
-        assert!(
-            matches!(
-                joint.joint_type,
-                JointType::Revolute
-                    | JointType::Hinge
-                    | JointType::Prismatic
-                    | JointType::Slide
-                    | JointType::Fixed
-            ),
-            "diff step supports revolute/prismatic/fixed joints only, found {:?}",
-            joint.joint_type
-        );
+/// Largest `ndof` any joint type has (free joint).
+const MAX_DOF: usize = 6;
+
+/// Number of **position** coordinates a joint type carries in this module's
+/// layout: quaternions for the rotational sub-blocks of multi-DOF joints, so
+/// this is *not* `ndof()` in general. See the module docs for the packing.
+pub fn joint_nq(joint_type: JointType) -> usize {
+    match joint_type {
+        JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => 1,
+        JointType::Spherical | JointType::Ball => 4,
+        JointType::Free => 7,
+        JointType::Fixed => 0,
     }
 }
 
-fn joint_transform<T: Scalar>(joint_type: JointType, axis: &Vec3<T>, q: T) -> SpatialTransform<T> {
+/// The `q`/`v` coordinate split for a model under this module's layout.
+///
+/// `nv` and `v_offsets` agree with `Model::nv` / `Model::v_offsets` (velocity
+/// coordinates are the motion subspace either way). `nq` and `q_offsets` do
+/// **not** agree with the model's when any spherical or free joint is present,
+/// because those carry quaternions here — always index a diff-rollout `q`
+/// through this layout, never through `Model::q_offsets`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DofLayout {
+    /// Total number of position coordinates.
+    pub nq: usize,
+    /// Total number of velocity coordinates (== `Model::nv`).
+    pub nv: usize,
+    /// Position offset of each joint, parallel to `Model::joints`.
+    pub q_offsets: Vec<usize>,
+    /// Velocity offset of each joint, parallel to `Model::joints`.
+    pub v_offsets: Vec<usize>,
+}
+
+impl DofLayout {
+    /// Derive the layout of a model.
+    pub fn of(model: &Model) -> Self {
+        let mut nq = 0;
+        let mut nv = 0;
+        let mut q_offsets = Vec::with_capacity(model.joints.len());
+        let mut v_offsets = Vec::with_capacity(model.joints.len());
+        for joint in &model.joints {
+            q_offsets.push(nq);
+            v_offsets.push(nv);
+            nq += joint_nq(joint.joint_type);
+            nv += joint.ndof();
+        }
+        Self {
+            nq,
+            nv,
+            q_offsets,
+            v_offsets,
+        }
+    }
+
+    /// The identity configuration: zeros, except every quaternion sub-block is
+    /// the identity rotation `[1, 0, 0, 0]`. Use this as the base for a `q0`
+    /// and overwrite the coordinates you care about.
+    pub fn neutral_q(&self, model: &Model) -> Vec<f64> {
+        let mut q = vec![0.0; self.nq];
+        for (j, joint) in model.joints.iter().enumerate() {
+            let qi = self.q_offsets[j];
+            match joint.joint_type {
+                JointType::Spherical | JointType::Ball => q[qi] = 1.0,
+                JointType::Free => q[qi + 3] = 1.0,
+                _ => {}
+            }
+        }
+        q
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Generic joint helpers (all joint types)
+// ---------------------------------------------------------------------------
+
+/// Joint transform (Plücker, predecessor→successor) for `ndof`-many position
+/// coordinates starting at `q[0]`. `q` must be at least `joint_nq` long.
+fn joint_transform<T: Scalar>(
+    joint_type: JointType,
+    axis: &Vec3<T>,
+    q: &[T],
+) -> SpatialTransform<T> {
     match joint_type {
         JointType::Revolute | JointType::Hinge => {
             // Rodrigues with negated angle: coordinate transform, matching
             // the concrete Joint::joint_transform_slice.
-            let (s, c) = (-q).sin_cos();
+            let (s, c) = (-q[0]).sin_cos();
             let ax = tang::skew(axis);
             let rot = Mat3::identity() + ax * s + ax.mul_mat(&ax) * (T::ONE - c);
             SpatialTransform::new(rot, Vec3::zero())
         }
         JointType::Prismatic | JointType::Slide => {
-            SpatialTransform::new(Mat3::identity(), *axis * q)
+            SpatialTransform::new(Mat3::identity(), *axis * q[0])
+        }
+        JointType::Spherical | JointType::Ball => {
+            let rot = quat_at(&q[0..4]).normalize().to_matrix();
+            SpatialTransform::new(rot, Vec3::zero())
+        }
+        JointType::Free => {
+            let rot = quat_at(&q[3..7]).normalize().to_matrix();
+            SpatialTransform::new(rot, Vec3::new(q[0], q[1], q[2]))
         }
         JointType::Fixed => SpatialTransform::identity(),
-        _ => unreachable!("multi-DOF joints rejected by assert_single_dof"),
     }
 }
 
+/// Read a `[w, x, y, z]` quaternion out of a coordinate slice.
+fn quat_at<T: Scalar>(q: &[T]) -> Quat<T> {
+    Quat::new(q[0], q[1], q[2], q[3])
+}
+
+/// The single motion-subspace column of a 1-DOF joint.
 fn motion_subspace<T: Scalar>(joint_type: JointType, axis: &Vec3<T>) -> SpatialVec<T> {
     match joint_type {
         JointType::Revolute | JointType::Hinge => SpatialVec::new(*axis, Vec3::zero()),
         JointType::Prismatic | JointType::Slide => SpatialVec::new(Vec3::zero(), *axis),
-        _ => unreachable!("multi-DOF joints rejected by assert_single_dof"),
+        _ => unreachable!("motion_subspace is the 1-DOF path"),
     }
+}
+
+/// Cartesian basis vector `e_k`.
+fn unit<T: Scalar>(k: usize) -> Vec3<T> {
+    let mut e = Vec3::zero();
+    match k {
+        0 => e.x = T::ONE,
+        1 => e.y = T::ONE,
+        _ => e.z = T::ONE,
+    }
+    e
+}
+
+/// The motion subspace `S` (6×ndof) as columns; only the first `ndof` entries
+/// of the returned array are meaningful.
+fn motion_subspace_cols<T: Scalar>(
+    joint_type: JointType,
+    axis: &Vec3<T>,
+) -> [SpatialVec<T>; MAX_DOF] {
+    let mut s = [SpatialVec::zero(); MAX_DOF];
+    match joint_type {
+        JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => {
+            s[0] = motion_subspace(joint_type, axis);
+        }
+        JointType::Spherical | JointType::Ball => {
+            for (k, s_k) in s.iter_mut().enumerate().take(3) {
+                *s_k = SpatialVec::new(unit(k), Vec3::zero());
+            }
+        }
+        JointType::Free => {
+            for k in 0..3 {
+                s[k] = SpatialVec::new(unit(k), Vec3::zero());
+                s[3 + k] = SpatialVec::new(Vec3::zero(), unit(k));
+            }
+        }
+        JointType::Fixed => {}
+    }
+    s
+}
+
+/// The joint's spatial velocity `S·v` for `ndof` velocity coordinates.
+fn joint_velocity<T: Scalar>(
+    joint_type: JointType,
+    axis: &Vec3<T>,
+    v: &[T],
+    ndof: usize,
+) -> SpatialVec<T> {
+    if ndof == 1 {
+        let s = motion_subspace(joint_type, axis);
+        return SpatialVec::new(s.angular * v[0], s.linear * v[0]);
+    }
+    let s = motion_subspace_cols(joint_type, axis);
+    let mut out = SpatialVec::zero();
+    for k in 0..ndof {
+        out = out + SpatialVec::new(s[k].angular * v[k], s[k].linear * v[k]);
+    }
+    out
+}
+
+/// Solve `A·X = B` in place for a small dense system, `A` row-major `n×n` and
+/// `B` row-major `n×m` (overwritten with `X`). Returns `false` — leaving `b`
+/// unusable — when the matrix is numerically singular.
+///
+/// Gaussian elimination with partial pivoting. The pivot search and the
+/// singularity test both read the **primal** (`to_f64`), so a dual-seeded
+/// solve differentiates exactly the elimination order the `f64` solve takes —
+/// the same discipline the rest of this module applies to its branches.
+fn solve_in_place<T: Scalar>(a: &mut [T], n: usize, b: &mut [T], m: usize) -> bool {
+    for col in 0..n {
+        let mut piv = col;
+        let mut best = a[col * n + col].to_f64().abs();
+        for row in (col + 1)..n {
+            let mag = a[row * n + col].to_f64().abs();
+            if mag > best {
+                best = mag;
+                piv = row;
+            }
+        }
+        if best < 1e-20 {
+            return false;
+        }
+        if piv != col {
+            for k in 0..n {
+                a.swap(col * n + k, piv * n + k);
+            }
+            for k in 0..m {
+                b.swap(col * m + k, piv * m + k);
+            }
+        }
+        let inv = a[col * n + col].recip();
+        for row in (col + 1)..n {
+            let f = a[row * n + col] * inv;
+            if f.to_f64() == 0.0 {
+                continue;
+            }
+            for k in col..n {
+                let t = f * a[col * n + k];
+                a[row * n + k] -= t;
+            }
+            for k in 0..m {
+                let t = f * b[col * m + k];
+                b[row * m + k] -= t;
+            }
+        }
+    }
+    // Back-substitution.
+    for col in (0..n).rev() {
+        let inv = a[col * n + col].recip();
+        for k in 0..m {
+            let mut acc = b[col * m + k];
+            for j in (col + 1)..n {
+                acc -= a[col * n + j] * b[j * m + k];
+            }
+            b[col * m + k] = acc * inv;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +400,7 @@ fn motion_subspace<T: Scalar>(joint_type: JointType, axis: &Vec3<T>) -> SpatialV
 /// rotation) and body-frame spatial velocities.
 pub(crate) fn fk_generic<T: Scalar>(
     model: &Model,
+    layout: &DofLayout,
     q: &[T],
     v: &[T],
 ) -> (Vec<SpatialTransform<T>>, Vec<SpatialVec<T>>) {
@@ -191,23 +411,22 @@ pub(crate) fn fk_generic<T: Scalar>(
     for i in 0..nb {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let q_idx = model.q_offsets[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let q_idx = layout.q_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
         let axis = lift_vec3::<T>(joint.axis);
 
         let x_joint = if ndof == 0 {
             SpatialTransform::identity()
         } else {
-            joint_transform(joint.joint_type, &axis, q[q_idx])
+            joint_transform(joint.joint_type, &axis, &q[q_idx..])
         };
         let x_tree = x_joint.compose(&lift_xform(&joint.parent_to_joint));
 
         let v_joint = if ndof == 0 {
             SpatialVec::zero()
         } else {
-            let s = motion_subspace(joint.joint_type, &axis);
-            SpatialVec::new(s.angular * v[v_idx], s.linear * v[v_idx])
+            joint_velocity(joint.joint_type, &axis, &v[v_idx..], ndof)
         };
 
         if body.parent < 0 {
@@ -281,11 +500,31 @@ fn contact_wrenches<T: Scalar>(
 // Generic ABA (single-DOF) with external wrenches
 // ---------------------------------------------------------------------------
 
-/// Generic mirror of `rigid::aba_with_external_forces`, restricted to the
-/// single-DOF joint domain, with the body inertias supplied separately so a
-/// caller can seed them.
+/// Implicit-damping contribution to a joint's effective inertia, mirroring
+/// `rigid::aba::implicit_damping`. The damping *force* stays explicit (it is
+/// in `tau`); adding `dt·c` to `D = Sᵀ Iᴬ S` is the first-order implicit solve
+/// that makes a light, heavily damped distal link stable at RL timesteps.
+///
+/// This must track the concrete ABA and the GPU kernel: if the diff step
+/// omitted it, the adjoint would return exact gradients of dynamics the engine
+/// does not integrate. `dt` and `damping` are model constants, so this carries
+/// no tangent.
+fn implicit_damping<T: Scalar>(model: &Model, joint: &phyz_model::Joint) -> T {
+    T::from_f64(model.dt * joint.damping)
+}
+
+/// Generic mirror of `rigid::aba_with_external_forces` over the full joint
+/// domain, with the body inertias supplied separately so a caller can seed
+/// them.
+///
+/// Single-DOF joints keep the scalar fast path (`D` is one number); spherical
+/// and free joints go through a dense `ndof×ndof` solve
+/// ([`solve_in_place`]), which is what makes the articulated-inertia
+/// factorisation `Iᴬ = I − U D⁻¹ Uᵀ` well-defined for them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn aba_generic<T: Scalar>(
     model: &Model,
+    layout: &DofLayout,
     inertias: &[SpatialInertia<T>],
     q: &[T],
     v: &[T],
@@ -293,7 +532,7 @@ pub(crate) fn aba_generic<T: Scalar>(
     ext: Option<&[SpatialVec<T>]>,
 ) -> Vec<T> {
     let nb = model.nbodies();
-    let mut qdd = vec![T::ZERO; model.nv];
+    let mut qdd = vec![T::ZERO; layout.nv];
 
     let mut x_tree: Vec<SpatialTransform<T>> = vec![SpatialTransform::identity(); nb];
     let mut vel: Vec<SpatialVec<T>> = vec![SpatialVec::zero(); nb];
@@ -308,23 +547,22 @@ pub(crate) fn aba_generic<T: Scalar>(
     for i in 0..nb {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let q_idx = model.q_offsets[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let q_idx = layout.q_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
         let axis = lift_vec3::<T>(joint.axis);
 
         let x_joint = if ndof == 0 {
             SpatialTransform::identity()
         } else {
-            joint_transform(joint.joint_type, &axis, q[q_idx])
+            joint_transform(joint.joint_type, &axis, &q[q_idx..])
         };
         x_tree[i] = x_joint.compose(&lift_xform(&joint.parent_to_joint));
 
         let v_joint = if ndof == 0 {
             SpatialVec::zero()
         } else {
-            let s = motion_subspace(joint.joint_type, &axis);
-            SpatialVec::new(s.angular * v[v_idx], s.linear * v[v_idx])
+            joint_velocity(joint.joint_type, &axis, &v[v_idx..], ndof)
         };
 
         if body.parent < 0 {
@@ -347,7 +585,7 @@ pub(crate) fn aba_generic<T: Scalar>(
     for i in (0..nb).rev() {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
 
         if ndof == 0 {
@@ -361,12 +599,68 @@ pub(crate) fn aba_generic<T: Scalar>(
         }
 
         let axis = lift_vec3::<T>(joint.axis);
+
+        if ndof > 1 {
+            // Multi-DOF: U = Iᴬ S, D = Sᵀ U, u = τ − Sᵀ pᴬ, then one solve of
+            // D against [u | Uᵀ] gives both D⁻¹u and D⁻¹Uᵀ.
+            let s = motion_subspace_cols(joint.joint_type, &axis);
+            let ia = i_a[i];
+            let mut u_cols = [SpatialVec::<T>::zero(); MAX_DOF];
+            for k in 0..ndof {
+                u_cols[k] = ia.mul_vec(&s[k]);
+            }
+
+            let mut d = vec![T::ZERO; ndof * ndof];
+            for k in 0..ndof {
+                for l in 0..ndof {
+                    d[k * ndof + l] = s[k].dot(&u_cols[l]);
+                }
+                d[k * ndof + k] += implicit_damping::<T>(model, joint);
+            }
+            // rhs column 0 = u, columns 1..7 = Uᵀ.
+            let mut rhs = vec![T::ZERO; ndof * 7];
+            for k in 0..ndof {
+                rhs[k * 7] =
+                    ctrl[v_idx + k] - T::from_f64(joint.damping) * v[v_idx + k] - s[k].dot(&p_a[i]);
+                let uk = u_cols[k].as_array();
+                for c in 0..6 {
+                    rhs[k * 7 + 1 + c] = uk[c];
+                }
+            }
+            if !solve_in_place(&mut d, ndof, &mut rhs, 7) {
+                continue;
+            }
+
+            if body.parent >= 0 {
+                let pi = body.parent as usize;
+                // Iᴬ_new = Iᴬ − Σ_k U[:,k] ⊗ (D⁻¹Uᵀ)[k,:]
+                let mut ia_new = ia;
+                for k in 0..ndof {
+                    let y_k = SpatialVec::new(
+                        Vec3::new(rhs[k * 7 + 1], rhs[k * 7 + 2], rhs[k * 7 + 3]),
+                        Vec3::new(rhs[k * 7 + 4], rhs[k * 7 + 5], rhs[k * 7 + 6]),
+                    );
+                    ia_new = ia_new - outer_product_6(&u_cols[k], &y_k);
+                }
+                // pᴬ_new = pᴬ + Iᴬ_new·c + U·(D⁻¹u)
+                let mut p_new = p_a[i] + ia_new.mul_vec(&c_bias[i]);
+                for k in 0..ndof {
+                    p_new = p_new + u_cols[k] * rhs[k * 7];
+                }
+
+                let x_mot = x_tree[i].to_motion_matrix();
+                i_a[pi] = i_a[pi] + x_mot.transpose().mul_mat(&ia_new).mul_mat(&x_mot);
+                p_a[pi] = p_a[pi] + x_tree[i].inv_apply_force(&p_new);
+            }
+            continue;
+        }
+
         let s_i = motion_subspace(joint.joint_type, &axis);
         let tau_i = ctrl[v_idx] - T::from_f64(joint.damping) * v[v_idx];
 
         let ia = &i_a[i];
         let u_i = tau_i - s_i.dot(&p_a[i]);
-        let d_i = s_i.dot(&ia.mul_vec(&s_i));
+        let d_i = s_i.dot(&ia.mul_vec(&s_i)) + implicit_damping::<T>(model, joint);
 
         // Same degeneracy guard as the concrete ABA, on the primal.
         if d_i.to_f64().abs() < 1e-20 {
@@ -392,7 +686,7 @@ pub(crate) fn aba_generic<T: Scalar>(
     for i in 0..nb {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
 
         let a_parent = if body.parent < 0 {
@@ -407,9 +701,42 @@ pub(crate) fn aba_generic<T: Scalar>(
         }
 
         let axis = lift_vec3::<T>(joint.axis);
+
+        if ndof > 1 {
+            // qdd = D⁻¹(u − Sᵀ Iᴬ (a_parent + c))
+            let s = motion_subspace_cols(joint.joint_type, &axis);
+            let ia = i_a[i];
+            let a_total = a_parent + c_bias[i];
+            let ia_a = ia.mul_vec(&a_total);
+
+            let mut d = vec![T::ZERO; ndof * ndof];
+            let mut rhs = vec![T::ZERO; ndof];
+            for k in 0..ndof {
+                for l in 0..ndof {
+                    d[k * ndof + l] = s[k].dot(&ia.mul_vec(&s[l]));
+                }
+                d[k * ndof + k] += implicit_damping::<T>(model, joint);
+                rhs[k] = ctrl[v_idx + k]
+                    - T::from_f64(joint.damping) * v[v_idx + k]
+                    - s[k].dot(&p_a[i])
+                    - s[k].dot(&ia_a);
+            }
+            if !solve_in_place(&mut d, ndof, &mut rhs, 1) {
+                acc[i] = a_total;
+                continue;
+            }
+            let mut s_qdd = SpatialVec::zero();
+            for k in 0..ndof {
+                qdd[v_idx + k] = rhs[k];
+                s_qdd = s_qdd + SpatialVec::new(s[k].angular * rhs[k], s[k].linear * rhs[k]);
+            }
+            acc[i] = a_total + s_qdd;
+            continue;
+        }
+
         let s_i = motion_subspace(joint.joint_type, &axis);
         let ia = &i_a[i];
-        let d_i = s_i.dot(&ia.mul_vec(&s_i));
+        let d_i = s_i.dot(&ia.mul_vec(&s_i)) + implicit_damping::<T>(model, joint);
         if d_i.to_f64().abs() < 1e-20 {
             acc[i] = a_parent + c_bias[i];
             continue;
@@ -457,6 +784,7 @@ fn outer_product_6<T: Scalar>(a: &SpatialVec<T>, b: &SpatialVec<T>) -> SpatialMa
 /// no dual arithmetic.
 pub(crate) fn nominal_motion(
     model: &Model,
+    layout: &DofLayout,
     q: &[f64],
     v: &[f64],
     qdd: &[f64],
@@ -472,22 +800,21 @@ pub(crate) fn nominal_motion(
     for i in 0..nb {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let q_idx = model.q_offsets[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let q_idx = layout.q_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
 
         let x_joint = if ndof == 0 {
             SpatialTransform::identity()
         } else {
-            joint_transform(joint.joint_type, &joint.axis, q[q_idx])
+            joint_transform(joint.joint_type, &joint.axis, &q[q_idx..])
         };
         x_tree[i] = x_joint.compose(&joint.parent_to_joint);
 
         let v_joint = if ndof == 0 {
             SpatialVec::zero()
         } else {
-            let s = motion_subspace(joint.joint_type, &joint.axis);
-            SpatialVec::new(s.angular * v[v_idx], s.linear * v[v_idx])
+            joint_velocity(joint.joint_type, &joint.axis, &v[v_idx..], ndof)
         };
 
         if body.parent < 0 {
@@ -502,7 +829,7 @@ pub(crate) fn nominal_motion(
     for i in 0..nb {
         let body = &model.bodies[i];
         let joint = &model.joints[body.joint_idx];
-        let v_idx = model.v_offsets[body.joint_idx];
+        let v_idx = layout.v_offsets[body.joint_idx];
         let ndof = joint.ndof();
 
         let a_parent = if body.parent < 0 {
@@ -513,9 +840,9 @@ pub(crate) fn nominal_motion(
 
         acc[i] = a_parent + c_bias[i];
         if ndof > 0 {
-            let s = motion_subspace(joint.joint_type, &joint.axis);
-            let a_j = qdd[v_idx];
-            acc[i] = acc[i] + SpatialVec::new(s.angular * a_j, s.linear * a_j);
+            // S·qdd, summed over the joint's DOFs — a multi-DOF joint
+            // contributes every column, not just the first.
+            acc[i] = acc[i] + joint_velocity(joint.joint_type, &joint.axis, &qdd[v_idx..], ndof);
         }
     }
 
@@ -526,12 +853,72 @@ pub(crate) fn nominal_motion(
 // Generic semi-implicit Euler step
 // ---------------------------------------------------------------------------
 
+/// The configuration update `q' = Φ(q, v')` of the semi-implicit step, split
+/// out because the adjoint needs its two Jacobian blocks (`Φ_q`, `Φ_v'`)
+/// separately — with quaternion coordinates neither is the identity and
+/// `Φ_v'` is not even square.
+///
+/// Single-DOF joints get `q' = q + dt·v'`. Quaternion sub-blocks get the
+/// Lie-group step `p' = normalize(exp(−dt·ω) ⊗ p)` (the sign follows
+/// `Ė = −ω× E` for the coordinate transform `E = R(p)`), and a free joint's
+/// translation integrates `ṙ = Eᵀ·v_lin` at the **current** orientation.
+pub(crate) fn config_update_generic<T: Scalar>(
+    model: &Model,
+    layout: &DofLayout,
+    q: &[T],
+    v_next: &[T],
+    dt: T,
+) -> Vec<T> {
+    let mut out = q.to_vec();
+    for (j, joint) in model.joints.iter().enumerate() {
+        let qi = layout.q_offsets[j];
+        let vi = layout.v_offsets[j];
+        match joint.joint_type {
+            JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => {
+                out[qi] = q[qi] + dt * v_next[vi];
+            }
+            JointType::Spherical | JointType::Ball => {
+                let p = quat_at(&q[qi..qi + 4]);
+                let omega = Vec3::new(v_next[vi], v_next[vi + 1], v_next[vi + 2]);
+                write_quat(&mut out[qi..qi + 4], &rotate_step(&p, omega, dt));
+            }
+            JointType::Free => {
+                let p = quat_at(&q[qi + 3..qi + 7]);
+                let e = p.normalize().to_matrix();
+                let v_lin = Vec3::new(v_next[vi + 3], v_next[vi + 4], v_next[vi + 5]);
+                let dr = e.transpose().mul_vec(v_lin) * dt;
+                out[qi] = q[qi] + dr.x;
+                out[qi + 1] = q[qi + 1] + dr.y;
+                out[qi + 2] = q[qi + 2] + dr.z;
+
+                let omega = Vec3::new(v_next[vi], v_next[vi + 1], v_next[vi + 2]);
+                write_quat(&mut out[qi + 3..qi + 7], &rotate_step(&p, omega, dt));
+            }
+            JointType::Fixed => {}
+        }
+    }
+    out
+}
+
+/// `normalize(exp(−dt·ω) ⊗ p)` — one Lie-group step of the coordinate
+/// quaternion under body-frame angular velocity `ω`.
+fn rotate_step<T: Scalar>(p: &Quat<T>, omega: Vec3<T>, dt: T) -> Quat<T> {
+    Quat::exp(&(omega * -dt)).mul(p).normalize()
+}
+
+fn write_quat<T: Scalar>(out: &mut [T], p: &Quat<T>) {
+    out[0] = p.w;
+    out[1] = p.v.x;
+    out[2] = p.v.y;
+    out[3] = p.v.z;
+}
+
 /// One semi-implicit Euler step, generic over the scalar:
 ///
 /// ```text
 /// qdd  = ABA(q, v, ctrl; π, contact(q, v, V), ext)
 /// v'   = v + dt·qdd
-/// q'   = q + dt·v'
+/// q'   = Φ(q, v')
 /// ```
 ///
 /// `ext` is an additive per-body external wrench **on top of** the contact
@@ -540,6 +927,7 @@ pub(crate) fn nominal_motion(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn step_generic<T: Scalar>(
     model: &Model,
+    layout: &DofLayout,
     inertias: &[SpatialInertia<T>],
     contact: Option<(&GroundContact, &[CollisionMesh])>,
     ext: Option<&[SpatialVec<T>]>,
@@ -556,7 +944,7 @@ pub(crate) fn step_generic<T: Scalar>(
             None => vec![SpatialVec::zero(); nb],
         };
         if let Some((gc, meshes)) = contact {
-            let (xforms, vels) = fk_generic(model, q, v);
+            let (xforms, vels) = fk_generic(model, layout, q, v);
             contact_wrenches(gc, meshes, &xforms, &vels, &mut w);
         }
         Some(w)
@@ -564,27 +952,24 @@ pub(crate) fn step_generic<T: Scalar>(
         None
     };
 
-    let qdd = aba_generic(model, inertias, q, v, ctrl, total_ext.as_deref());
+    let qdd = aba_generic(model, layout, inertias, q, v, ctrl, total_ext.as_deref());
 
     let v_next: Vec<T> = v.iter().zip(&qdd).map(|(&vi, &ai)| vi + dt * ai).collect();
-    let q_next: Vec<T> = q
-        .iter()
-        .zip(&v_next)
-        .map(|(&qi, &vi)| qi + dt * vi)
-        .collect();
+    let q_next = config_update_generic(model, layout, q, &v_next, dt);
 
     (q_next, v_next, qdd)
 }
 
-/// Validate a model for the diff step domain and return its nominal inertia
-/// parameters (one 10-vector per body).
-pub(crate) fn validate_and_params(model: &Model) -> Vec<[f64; N_INERTIA_PARAMS]> {
-    assert_single_dof(model);
-    model
+/// Derive the coordinate layout and the nominal inertia parameters (one
+/// 10-vector per body) of a model.
+pub(crate) fn validate_and_params(model: &Model) -> (DofLayout, Vec<[f64; N_INERTIA_PARAMS]>) {
+    let layout = DofLayout::of(model);
+    let params = model
         .bodies
         .iter()
         .map(|b| inertia_params(&b.inertia))
-        .collect()
+        .collect();
+    (layout, params)
 }
 
 /// A nominal trajectory: `(states, accels)` — see [`rollout_states`].
@@ -598,6 +983,7 @@ pub(crate) type RolloutTrace = (Vec<(Vec<f64>, Vec<f64>)>, Vec<Vec<f64>>);
 /// here is free, recomputing them later is not.
 pub(crate) fn rollout_states(
     model: &Model,
+    layout: &DofLayout,
     contact: Option<(&GroundContact, &[CollisionMesh])>,
     q0: &[f64],
     v0: &[f64],
@@ -612,8 +998,16 @@ pub(crate) fn rollout_states(
     states.push((q.clone(), v.clone()));
     for t in 0..steps {
         let u = ctrl(t);
-        let (qn, vn, qdd) =
-            step_generic::<f64>(model, &inertias, contact, None, &q, &v, u.as_slice());
+        let (qn, vn, qdd) = step_generic::<f64>(
+            model,
+            layout,
+            &inertias,
+            contact,
+            None,
+            &q,
+            &v,
+            u.as_slice(),
+        );
         q = qn;
         v = vn;
         states.push((q.clone(), v.clone()));
