@@ -480,6 +480,61 @@ mod tests {
     }
 
     #[test]
+    fn test_entropy_equals_complement_entropy() {
+        // For a pure global state the Schmidt decomposition forces
+        // S(A) = S(A^c) exactly: ρ_A and ρ_{A^c} share their nonzero spectrum.
+        //
+        // This is the sharpest available check on the reduced density matrix and
+        // its eigendecomposition — it caught a symmetric-eigensolver defect that
+        // silently returned non-converged eigenvalues, which in turn made mutual
+        // information go negative (violating subadditivity) and gave the
+        // Jacobson entanglement gradient a spurious nonzero value on the full
+        // partition. Both subsystems here are computed from the same state, so
+        // any disagreement beyond round-off is a bug in the entropy pipeline.
+        let complex = single_pentachoron();
+        let hs = U1HilbertSpace::new(&complex, 1);
+        let params = KSParams {
+            g_squared: 1.0,
+            metric_weights: None,
+        };
+        let h = build_hamiltonian(&hs, &complex, &params);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        for size in 1..hs.n_edges {
+            let edges_a: Vec<usize> = (0..size).collect();
+            let edges_b: Vec<usize> = (size..hs.n_edges).collect();
+            let s_a = entanglement_entropy(&hs, gs, &edges_a);
+            let s_b = entanglement_entropy(&hs, gs, &edges_b);
+            assert!(
+                (s_a - s_b).abs() < 1e-10,
+                "size {size}: S(A) = {s_a} but S(A^c) = {s_b}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_entropy_zero_for_full_partition() {
+        // Tracing out nothing leaves the (pure) global state, so ρ is a rank-1
+        // projector and S vanishes identically — not just to within a loose
+        // tolerance. The Jacobson gradient differentiates this quantity, so any
+        // spurious entropy here shows up amplified by 1/(2·fd_eps).
+        let complex = single_pentachoron();
+        let hs = U1HilbertSpace::new(&complex, 1);
+        let params = KSParams {
+            g_squared: 1.0,
+            metric_weights: None,
+        };
+        let h = build_hamiltonian(&hs, &complex, &params);
+        let spec = diag::diagonalize(&h, Some(1));
+        let gs = spec.ground_state();
+
+        let all_edges: Vec<usize> = (0..hs.n_edges).collect();
+        let s = entanglement_entropy(&hs, gs, &all_edges);
+        assert!(s.abs() < 1e-12, "full-partition entropy = {s}, expected 0");
+    }
+
+    #[test]
     fn test_decomposition_sums_to_total() {
         // g²=1 pentachoron: verify |total - (shannon + distillable)| < 1e-12.
         let complex = single_pentachoron();

@@ -63,8 +63,8 @@ pub mod diff {
 // Re-export core types at crate root for convenience
 #[cfg(feature = "collision")]
 pub use collision::{
-    AABB, Collision, epa_penetration, epa_penetration_rot, gjk_distance, gjk_distance_rot,
-    sweep_and_prune,
+    AABB, Collision, Ray, RayHit, epa_penetration, epa_penetration_rot, gjk_distance,
+    gjk_distance_rot, ray_cast, ray_intersect, sweep_and_prune,
 };
 #[cfg(feature = "contact")]
 pub use contact::{
@@ -73,5 +73,10 @@ pub use contact::{
 };
 pub use math::{DMat, DVec, GRAVITY, Mat3, Mat4, Vec3, skew};
 pub use math::{Quat, SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
-pub use model::{Actuator, Body, Geometry, Joint, JointType, Model, ModelBuilder, State};
-pub use rigid::{aba, aba_with_external_forces, crba, forward_kinematics, rnea};
+pub use model::{
+    Actuator, Body, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder, State,
+};
+pub use rigid::{
+    BodyKinematics, aba, aba_with_external_forces, body_wrenches, crba, forward_kinematics,
+    forward_kinematics_acc, rnea,
+};
