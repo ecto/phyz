@@ -161,7 +161,7 @@ All files under `examples/` are registered as targets of the `phyz-examples`
 dev crate and built in CI, so they compile against the current API. Some crates
 also carry their own `examples/` directory (`phyz-coupling`, `phyz-guardian`),
 picked up by cargo directly.
-```
+```text
 phyz/
 ├── crates/
 │   ├── phyz/             # Umbrella — re-exports everything
