@@ -54,7 +54,8 @@ phyz/
 │   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
-│   ├── phyz-collision/   # GJK/EPA collision detection
+│   ├── phyz-urdf/        # URDF (ROS) robot description import
+│   ├── phyz-collision/   # GJK/EPA collision, ray casting
 │   ├── phyz-contact/     # Contact resolution, friction
 │   ├── phyz-gpu/         # WGPU compute, batched simulation
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
@@ -70,7 +71,7 @@ phyz/
 │   ├── phyz-guardian/    # Energy/momentum conservation guards
 │   ├── phyz-world/       # Scene graph, multi-physics world
 │   ├── phyz-real2sim/    # Inverse problems, parameter fitting
-│   ├── phyz-format/      # Serialization, model I/O
+│   ├── phyz-format/      # Serialization, model I/O (.phyz, MJCF, URDF)
 │   ├── phyz-validate/    # Closed-form physics benchmarks for every solver
 │   └── phyz-wasm/        # WASM bindings for browser demos
 ├── examples/             # Runnable examples

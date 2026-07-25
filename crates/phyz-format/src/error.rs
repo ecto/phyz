@@ -25,6 +25,12 @@ pub enum TauFormatError {
     #[error("MJCF import error: {0}")]
     MjcfError(#[from] phyz_mjcf::MjcfError),
 
+    #[error("URDF import error: {0}")]
+    UrdfError(#[from] phyz_urdf::UrdfError),
+
+    #[error("{format} import is not implemented; see the phyz-format docs for supported formats")]
+    UnsupportedImportFormat { format: &'static str },
+
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
 }
