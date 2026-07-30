@@ -141,11 +141,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
         } else if (jtype == 3u) {
+            // Coordinate map is the INVERSE of the integrated rotation
+            // (exp(-w)), matching the negated angle in rev_rot and the CPU
+            // joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
-            j_rot = cq_to_rot(cquat_exp(w));
+            j_rot = cq_to_rot(cquat_exp(-w));
         } else if (jtype == 4u) {
             let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
-            j_rot = cq_to_rot(cquat_exp(w));
+            j_rot = cq_to_rot(cquat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
         } else {
             j_rot = identity_rot();
@@ -1035,14 +1038,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             j_rot = revolute_rot(axis, q_val);
             j_pos = vec3<f32>(0.0, 0.0, 0.0);
         } else if (jtype == 3u) {
-            // Ball: q = exponential coordinates (3).
+            // Ball: q = exponential coordinates (3). Coordinate map is the
+            // INVERSE rotation (exp(-w)), matching revolute_rot's negated
+            // angle and the CPU joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
-            j_rot = quat_to_rot(quat_exp(w));
+            j_rot = quat_to_rot(quat_exp(-w));
             j_pos = vec3<f32>(0.0, 0.0, 0.0);
         } else if (jtype == 4u) {
             // Free: q = [pos(3), exponential coordinates(3)].
             let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
-            j_rot = quat_to_rot(quat_exp(w));
+            j_rot = quat_to_rot(quat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
         } else {
             // Prismatic
