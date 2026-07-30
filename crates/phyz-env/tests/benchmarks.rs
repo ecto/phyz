@@ -132,18 +132,19 @@ fn half_cheetah_has_no_task_termination_condition() {
     );
 }
 
-/// **Known limitation, deliberately asserted so it cannot be forgotten.**
+/// Half-cheetah must run stably: no divergence-guard terminations under a
+/// sinusoidal gait probe, and finite observations throughout.
 ///
-/// Half-cheetah's torso is a 1 m capsule. When it lands on one end, the contact
-/// torque about the other end is large enough that the penalty contact model
-/// overshoots and the environment diverges; the divergence guard then
-/// terminates and resets it. The other three benchmarks are stable.
-///
-/// This test asserts the *current* behaviour. When the contact model is
-/// replaced with a real solver (design doc, B5) this test should start failing
-/// — at which point delete it and re-enable a stability assertion.
+/// History: this used to be `half_cheetah_contact_is_known_to_be_unstable`,
+/// which deliberately asserted that the tumbling torso capsule tripped the
+/// divergence guard. The instability was never the penalty contact model —
+/// it was the free-joint `joint_transform_slice` returning the *rotation*
+/// instead of the *coordinate map* (missing inverse), which pumped energy
+/// into every floating-base model whenever it rotated. With that fixed, the
+/// old test failed exactly as its comment predicted, and per its own
+/// instructions it is replaced by this stability assertion.
 #[test]
-fn half_cheetah_contact_is_known_to_be_unstable() {
+fn half_cheetah_is_stable() {
     let n = 32;
     let mut env = make(Benchmark::HalfCheetah, MODELS, n).unwrap();
     let nu = env.action_space().dim();
@@ -156,20 +157,16 @@ fn half_cheetah_contact_is_known_to_be_unstable() {
             .collect();
         let batch = env.step(&a);
         terminations += batch.terminated.iter().filter(|t| **t).count();
+        assert!(
+            batch.obs.iter().all(|x| x.is_finite()),
+            "non-finite observation at step {t}"
+        );
     }
 
-    assert!(
-        terminations > 0,
-        "half-cheetah is expected to trip the divergence guard today; if it no \
-         longer does, the contact model was fixed — delete this test"
-    );
-
-    // Whatever the physics does, the batch must stay usable: the guard exists
-    // so one diverged environment never poisons the others.
-    let batch = env.step(&vec![0.0; n * nu]);
-    assert!(
-        batch.obs.iter().all(|x| x.is_finite()),
-        "the divergence guard must keep observations finite"
+    assert_eq!(
+        terminations, 0,
+        "half-cheetah tripped the divergence guard {terminations} times — \
+         floating-base energy is leaking again"
     );
 }
 

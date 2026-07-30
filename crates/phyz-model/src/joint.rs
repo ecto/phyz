@@ -267,23 +267,27 @@ impl Joint {
                 SpatialTransform::new(Mat3::identity(), pos)
             }
             JointType::Spherical | JointType::Ball => {
-                // q = [qw, qx, qy, qz] (quaternion components)
-                // But we store as exponential coordinates in integration
-                // For now, interpret as axis-angle representation (3 DOF)
-                let wx = q[0];
-                let wy = q[1];
-                let wz = q[2];
-                let w = Vec3::new(wx, wy, wz);
-                let quat = Quat::exp(&w);
-                let rot = quat.to_matrix();
+                // q = exponential coordinates (3) of the child→parent
+                // rotation R, integrated as R ← R·exp(ω·dt) (body angular
+                // velocity composed on the right — see
+                // phyz_rigid::integrate). The joint transform is the
+                // *coordinate map* parent→child, i.e. Rᵀ: same negation the
+                // hinge branch applies to its angle. Using R here made the
+                // dynamics (which see q only through this map) disagree with
+                // the integrator by an inverse, which pumped energy into any
+                // passive spherical joint the moment its axis moved.
+                let w = Vec3::new(q[0], q[1], q[2]);
+                let rot = Quat::exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, Vec3::zeros())
             }
             JointType::Free => {
-                // q = [x, y, z, wx, wy, wz] (position + exponential coordinates)
+                // q = [x, y, z, wx, wy, wz]: position in parent coords plus
+                // exp-coords of the child→parent rotation. Same transpose as
+                // Spherical; the Plücker translation is the joint origin in
+                // parent coordinates and stays as-is.
                 let pos = Vec3::new(q[0], q[1], q[2]);
                 let w = Vec3::new(q[3], q[4], q[5]);
-                let quat = Quat::exp(&w);
-                let rot = quat.to_matrix();
+                let rot = Quat::exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, pos)
             }
             JointType::Fixed => {
