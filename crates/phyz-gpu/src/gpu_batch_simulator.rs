@@ -66,6 +66,9 @@ pub struct GpuBatchSimulator {
     // Optional contact pipeline
     contact_pipeline: Option<ContactPipeline>,
 
+    // Optional PD position-servo pipeline
+    pd_pipeline: Option<crate::pd_pipeline::PdPipeline>,
+
     // Buffers (kept alive)
     _sim_params_buffer: wgpu::Buffer,
     bodies_buffer: wgpu::Buffer,
@@ -287,6 +290,7 @@ impl GpuBatchSimulator {
             aba_bind_group,
             integrate_bind_group,
             contact_pipeline: None,
+            pd_pipeline: None,
             _sim_params_buffer: sim_params_buffer,
             bodies_buffer,
         })
@@ -317,6 +321,34 @@ impl GpuBatchSimulator {
         Ok(())
     }
 
+    /// Enable PD position servos on the given DOFs.
+    ///
+    /// Each [`crate::pd_pipeline::PdDof`] names one single-DOF joint's slot in
+    /// `q`/`v` plus its gains; the pass writes `clamp(kp*(target-q) - kd*v)`
+    /// into `ctrl` before every ABA pass, so [`Self::set_position_targets`]
+    /// replaces [`Self::set_controls`] as the action interface. DOFs not
+    /// listed keep whatever `set_controls` wrote (zero by default) — a
+    /// floating base stays unactuated.
+    pub fn enable_pd_control(&mut self, dofs: &[crate::pd_pipeline::PdDof]) -> Result<(), String> {
+        let pipeline =
+            crate::pd_pipeline::PdPipeline::new(&self.device, &self.queue, &self.state, dofs)?;
+        self.pd_pipeline = Some(pipeline);
+        Ok(())
+    }
+
+    /// Upload per-environment position targets for the PD servos.
+    ///
+    /// `targets[env]` is indexed in the order the `PdDof` list was passed to
+    /// [`Self::enable_pd_control`]. Errors if PD control is not enabled.
+    pub fn set_position_targets(&self, targets: &[Vec<f64>]) -> Result<(), String> {
+        let pd = self
+            .pd_pipeline
+            .as_ref()
+            .ok_or("PD control not enabled — call enable_pd_control first")?;
+        pd.set_targets(&self.queue, targets);
+        Ok(())
+    }
+
     /// Upload initial states to GPU.
     pub fn load_states(&self, states: &[State]) {
         self.state.upload_states(states);
@@ -342,6 +374,11 @@ impl GpuBatchSimulator {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("batch_step_encoder"),
             });
+
+        // Pass -1: PD servos (writes ctrl from position targets)
+        if let Some(pd) = &self.pd_pipeline {
+            pd.encode(&mut encoder);
+        }
 
         // Pass 0: Contact detection (writes external forces)
         if let Some(contact) = &self.contact_pipeline {
