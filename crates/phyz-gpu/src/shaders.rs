@@ -17,8 +17,8 @@ struct ContactParams {
     nbodies: u32,
     nv: u32,
     ground_height: f32,
-    stiffness: f32,
-    damping: f32,
+    time_const: f32,
+    damp_ratio: f32,
     friction: f32,
     _padding: f32,
 }
@@ -30,11 +30,11 @@ struct ContactParams {
 @group(0) @binding(4) var<storage, read> v: array<f32>;
 @group(0) @binding(5) var<storage, read_write> ext_forces: array<f32>;
 
-// Body data access
 fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
 fn body_parent(bi: u32) -> i32 { return bitcast<i32>(bodies[bi * BODY_STRIDE]); }
 fn body_jtype(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 1u]); }
 fn body_qoff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 2u]); }
+fn body_voff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 3u]); }
 
 fn cross3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
@@ -78,12 +78,20 @@ fn cq_to_rot(qt: vec4<f32>) -> array<f32, 9> {
     );
 }
 
-// Multiply rotation (row-major) by vector
-fn rot_mul(r: array<f32, 9>, v: vec3<f32>) -> vec3<f32> {
+fn rot_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
-        r[0]*v.x + r[1]*v.y + r[2]*v.z,
-        r[3]*v.x + r[4]*v.y + r[5]*v.z,
-        r[6]*v.x + r[7]*v.y + r[8]*v.z
+        r[0]*vv.x + r[1]*vv.y + r[2]*vv.z,
+        r[3]*vv.x + r[4]*vv.y + r[5]*vv.z,
+        r[6]*vv.x + r[7]*vv.y + r[8]*vv.z
+    );
+}
+
+// R^T * v
+fn rot_t_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        r[0]*vv.x + r[3]*vv.y + r[6]*vv.z,
+        r[1]*vv.x + r[4]*vv.y + r[7]*vv.z,
+        r[2]*vv.x + r[5]*vv.y + r[8]*vv.z
     );
 }
 
@@ -105,6 +113,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let nb = cparams.nbodies;
     let q_base = world_idx * cparams.nv;
+    let v_base = world_idx * cparams.nv;
 
     // Clear external forces for this env
     let ef_env_base = world_idx * nb * 6u;
@@ -114,189 +123,177 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Compute FK: world rotation and position for each body
+    // Forward kinematics, in the SAME convention as phyz_rigid::
+    // forward_kinematics: `w_rot[i]` maps world coordinates into body i's
+    // frame, and `w_pos[i]` is body i's origin in world coordinates. The
+    // recursion is x_world_to_body[i] = x_tree[i].compose(x_world_to_body[parent])
+    // with compose(a, b) = { rot: a.rot*b.rot, pos: b.pos + b.rot^T * a.pos }.
+    //
+    // Getting this wrong is not subtle: an earlier version inverted both the
+    // root rotation and position, so a body 1 m ABOVE the plane reported 1 m
+    // below it, the penalty force pushed it further "up" into deeper
+    // apparent penetration, and a dropped box reached 1e17 m in 400 steps.
     var w_rot: array<array<f32, 9>, MAX_BODIES>;
     var w_pos: array<vec3<f32>, MAX_BODIES>;
+    // Body-frame spatial velocities (angular, linear), same recursion as the
+    // CPU: v_i = X_tree_i * v_parent + S_i * qd_i. Needed for contact
+    // damping and friction — without them a penalty contact is a pure
+    // spring and a foot bounces forever.
+    var w_omega: array<vec3<f32>, MAX_BODIES>;
+    var w_lin: array<vec3<f32>, MAX_BODIES>;
 
     for (var i = 0u; i < nb; i++) {
         let parent = body_parent(i);
         let jtype = body_jtype(i);
         let q_off = body_qoff(i);
+        let v_off = body_voff(i);
 
-        // Parent-to-joint transform
         var ptj_rot: array<f32, 9>;
         for (var k = 0u; k < 9u; k++) { ptj_rot[k] = bf(i, 14u + k); }
         let ptj_pos = vec3<f32>(bf(i, 23u), bf(i, 24u), bf(i, 25u));
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
 
-        // Joint transform. Ball and free joints must be handled here too: a
-        // floating-base model whose root is treated as fixed puts every body at
-        // the origin, so no foot ever reaches the ground and contact silently
-        // does nothing.
+        // Joint transform and the joint's own velocity contribution.
         var j_rot: array<f32, 9>;
         var j_pos = vec3<f32>(0.0, 0.0, 0.0);
+        var j_omega = vec3<f32>(0.0, 0.0, 0.0);
+        var j_lin = vec3<f32>(0.0, 0.0, 0.0);
         if (jtype == 0u) {
             j_rot = rev_rot(axis, q[q_base + q_off]);
+            j_omega = axis * v[v_base + v_off];
         } else if (jtype == 1u) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
+            j_lin = axis * v[v_base + v_off];
         } else if (jtype == 3u) {
             // Coordinate map is the INVERSE of the integrated rotation
             // (exp(-w)), matching the negated angle in rev_rot and the CPU
             // joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
         } else if (jtype == 4u) {
+            // Free joint: q is [pos(3), rot(3)], v is [angular(3), linear(3)].
             let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
             j_rot = cq_to_rot(cquat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
+            j_lin = vec3<f32>(v[v_base + v_off + 3u], v[v_base + v_off + 4u], v[v_base + v_off + 5u]);
         } else {
             j_rot = identity_rot();
         }
 
-        // x_tree = j.compose(ptj): rot = j_rot * ptj_rot, pos = ptj_pos + ptj_rot^T * j_pos
+        // x_tree = x_joint.compose(parent_to_joint)
         let tree_rot = rot_compose(j_rot, ptj_rot);
-        // ptj_rot^T * j_pos
-        let rt_jp = vec3<f32>(
-            ptj_rot[0]*j_pos.x + ptj_rot[3]*j_pos.y + ptj_rot[6]*j_pos.z,
-            ptj_rot[1]*j_pos.x + ptj_rot[4]*j_pos.y + ptj_rot[7]*j_pos.z,
-            ptj_rot[2]*j_pos.x + ptj_rot[5]*j_pos.y + ptj_rot[8]*j_pos.z
-        );
-        let tree_pos = ptj_pos + rt_jp;
+        let tree_pos = ptj_pos + rot_t_mul(ptj_rot, j_pos);
 
         if (parent < 0) {
             w_rot[i] = tree_rot;
-            // World position: the tree transform translates from world to body
-            // For the world position, we need to invert:
-            // p_world = -R^T * tree_pos
-            // Actually for FK, body origin in world = parent_world_pos + parent_world_rot^T * tree_pos
-            // With parent = world, parent_rot = I, parent_pos = 0
-            // So body_world_pos = tree_pos... but this depends on the spatial transform convention.
-            // In Featherstone: X transforms motion vectors from frame A to frame B
-            // The position stored is from body to joint in parent frame
-            // For world position: p_world[i] = p_world[parent] + R_world[parent]^T * (-tree_pos)
-            // Hmm, let's use the convention that tree_pos is the translation.
-            // Actually: X_tree transforms from parent to child frame.
-            // Position in world: p_i = R_parent^T * (p_parent_local + tree_pos_i)
-            // For root (parent = world): p_i = tree_pos
-            // Wait, this isn't right either. Let me think about this.
-            //
-            // In Featherstone, X_tree[i] = X_joint * X_parent_to_joint
-            // where X has rotation R and position p such that:
-            // v_child = X * v_parent means: w_c = R*w_p, v_c = R*(v_p - p x w_p)
-            // The body frame origin in parent frame is at position -R^T * p
-            // So: world_pos[i] = world_pos[parent] + world_R[parent]^T * (-tree_rot^T * tree_pos)
-            // For root: world_pos = -tree_rot^T * tree_pos
-
-            // Actually let me use a simpler approach: accumulate transforms
-            // World transform: from body frame to world frame
-            // If X_tree goes parent→child, then X_tree_inv goes child→parent
-            // world_to_body = X_tree[i] * world_to_parent
-            // body_to_world = parent_to_world * X_tree[i]^-1
-            // X_tree_inv has rot = R^T, pos = -R*p (SpatialTransform::inverse)
-            // Accumulating: world_rot = tree_rot^T * parent_world_rot (if parent is world: tree_rot^T)
-            // world_pos = parent_world_pos - parent_world_rot^T * tree_pos ... hmm
-
-            // Simplest approach: track body-to-world as (rot, pos)
-            // For root body: X_world_to_body = X_tree[0]
-            // X_body_to_world = X_tree[0]^-1
-            // inv.rot = tree_rot^T, inv.pos = -(tree_rot * tree_pos)... no
-            // SpatialTransform { rot: R, pos: p }.inverse() = { rot: R^T, pos: -(R^T * p) }
-            // Wait, let me re-check: compose(self, other) = { rot: self.rot * other.rot, pos: other.pos + other.rot^T * self.pos }
-            // inverse(): rt = R^T, pos' = -(R * pos)... actually from the code:
-            // fn inverse(&self) -> SpatialTransform { let rt = self.rot.transpose(); SpatialTransform { rot: rt, pos: -(rt * self.pos) } }
-            // Wait, I need to check the actual code. For now, let me just compute world positions.
-            // I'll use the convention: w_pos = accumulate parent offsets.
-
-            // For tree_rot and tree_pos: the child body's origin in the parent frame is at
-            // position = -(tree_rot^T * tree_pos)
-            // (since X transforms FROM parent TO child, the child origin in parent coords
-            //  is the inverse of the translation part)
-            let rt = array<f32, 9>(tree_rot[0], tree_rot[3], tree_rot[6],
-                                    tree_rot[1], tree_rot[4], tree_rot[7],
-                                    tree_rot[2], tree_rot[5], tree_rot[8]);
-            w_rot[i] = rt; // body-to-world rotation = tree_rot^T (for root body)
-            // The position of the body in the world frame:
-            // p_body_in_world = -(tree_rot^T * tree_pos)
-            let neg_rt_p = -rot_mul(rt, tree_pos);
-            w_pos[i] = neg_rt_p;
+            w_pos[i] = tree_pos;
+            w_omega[i] = j_omega;
+            w_lin[i] = j_lin;
         } else {
             let pi = u32(parent);
-            // Body-to-world: parent_body_to_world * tree_inv
-            // tree_inv.rot = tree_rot^T
-            // tree_inv.pos = -(tree_rot^T * tree_pos)
-            // Compose: body_to_world = parent_btw * tree_inv
-            // result.rot = parent_rot * tree_rot^T
-            // result.pos = tree_inv.pos + tree_inv.rot^T * parent_btw.pos
-            //            = -(tree_rot^T * tree_pos) + tree_rot * w_pos[parent]
-            let tree_rt = array<f32, 9>(tree_rot[0], tree_rot[3], tree_rot[6],
-                                         tree_rot[1], tree_rot[4], tree_rot[7],
-                                         tree_rot[2], tree_rot[5], tree_rot[8]);
-            w_rot[i] = rot_compose(w_rot[pi], tree_rt);
-            let neg_rt_tp = -rot_mul(tree_rt, tree_pos);
-            let tree_rot_wp = rot_mul(tree_rot, w_pos[pi]);
-            w_pos[i] = neg_rt_tp + tree_rot_wp;
+            // compose(x_tree, x_world_to_parent)
+            w_rot[i] = rot_compose(tree_rot, w_rot[pi]);
+            w_pos[i] = w_pos[pi] + rot_t_mul(w_rot[pi], tree_pos);
+            // apply_motion: w_c = R*w_p, v_c = R*(v_p) - R*(p x w_p)
+            let pw = rot_mul(tree_rot, w_omega[pi]);
+            let pv = rot_mul(tree_rot, w_lin[pi])
+                   - rot_mul(tree_rot, cross3(tree_pos, w_omega[pi]));
+            w_omega[i] = pw + j_omega;
+            w_lin[i] = pv + j_lin;
         }
     }
 
-    // Check ground contacts for each body
+    // Ground contact per body.
     for (var i = 0u; i < nb; i++) {
         let gtype = u32(geometry[i * GEOM_STRIDE]);
-        if (gtype == 0u) { continue; } // no geometry
+        if (gtype == 0u) { continue; }
 
-        let pos = w_pos[i];
+        // World +Z expressed in this body's frame. Every support-point and
+        // force computation below happens in body coordinates, matching the
+        // CPU contact model (which returns r x f and f in the body frame).
+        let n_body = rot_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
-        // Compute lowest point based on geometry type
-        var min_z = pos.z;
+        // Support point of the shape in the -Z world direction, in body
+        // coordinates. A rotated box touches down on a corner, not on the
+        // centre of a face — using pos.z - half_z assumes the body never
+        // tilts, which is false for every foot on a walking robot.
+        var support = vec3<f32>(0.0, 0.0, 0.0);
         if (gtype == 1u) {
-            // Sphere
             let radius = geometry[i * GEOM_STRIDE + 1u];
-            min_z = pos.z - radius;
+            support = -n_body * radius;
         } else if (gtype == 2u) {
-            // Box
-            let hz = geometry[i * GEOM_STRIDE + 3u];
-            min_z = pos.z - hz;
+            let h = vec3<f32>(
+                geometry[i * GEOM_STRIDE + 1u],
+                geometry[i * GEOM_STRIDE + 2u],
+                geometry[i * GEOM_STRIDE + 3u]
+            );
+            support = vec3<f32>(
+                -h.x * sign(n_body.x),
+                -h.y * sign(n_body.y),
+                -h.z * sign(n_body.z)
+            );
         } else if (gtype == 3u) {
-            // Capsule
             let radius = geometry[i * GEOM_STRIDE + 1u];
-            let length = geometry[i * GEOM_STRIDE + 2u];
-            min_z = pos.z - length * 0.5 - radius;
+            let half_len = geometry[i * GEOM_STRIDE + 2u] * 0.5;
+            // Lower cap centre along the body Z axis, then the sphere.
+            support = vec3<f32>(0.0, 0.0, -half_len * sign(n_body.z)) - n_body * radius;
         } else if (gtype == 4u) {
-            // Cylinder
-            let height = geometry[i * GEOM_STRIDE + 2u];
-            min_z = pos.z - height * 0.5;
+            let radius = geometry[i * GEOM_STRIDE + 1u];
+            let half_h = geometry[i * GEOM_STRIDE + 2u] * 0.5;
+            // Exact cylinder support: the rim, unless the axis is vertical.
+            let radial = vec3<f32>(-n_body.x, -n_body.y, 0.0);
+            let rl = length(radial);
+            var rim = vec3<f32>(0.0, 0.0, 0.0);
+            if (rl > 1e-6) { rim = radial / rl * radius; }
+            support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n_body.z));
         }
 
+        // World height of that support point.
+        let min_z = w_pos[i].z + dot(rot_t_mul(w_rot[i], support), vec3<f32>(0.0, 0.0, 1.0));
         let penetration = cparams.ground_height - min_z;
         if (penetration <= 0.0) { continue; }
 
-        // Penalty force: f = k * penetration - d * v_z (upward = +z)
-        // Approximate v_z from generalized velocities
-        // For simplicity, use a zero-order approximation of body linear velocity
-        let force_z = cparams.stiffness * penetration;
-        // Clamp to positive (no pulling into ground)
-        let f_z = max(force_z, 0.0);
+        // Velocity of the contact point, in body coordinates.
+        let v_point = w_lin[i] + cross3(w_omega[i], support);
+        let v_normal = dot(v_point, n_body);
 
-        // Write as spatial force in body frame
-        // For ground contact, force is [0,0,f_z] in world frame
-        // Transform to body frame: f_body = w_rot * f_world (since w_rot = body_to_world rot)
-        // Actually need world_to_body rot = w_rot^T
-        let fw = vec3<f32>(0.0, 0.0, f_z);
-        // w_rot is body-to-world, so world-to-body is transpose
-        let fb = vec3<f32>(
-            w_rot[i][0]*fw.x + w_rot[i][3]*fw.y + w_rot[i][6]*fw.z,
-            w_rot[i][1]*fw.x + w_rot[i][4]*fw.y + w_rot[i][7]*fw.z,
-            w_rot[i][2]*fw.x + w_rot[i][5]*fw.y + w_rot[i][8]*fw.z
-        );
+        // Stiffness is DERIVED from the body's own mass and a response time
+        // constant (MuJoCo's solref), never specified globally. A single
+        // stiffness that holds a 10 kg torso is explosive on a 0.3 kg foot:
+        // measured on the Booster K1, a global k >= 5e3 produced NaN within
+        // 400 ticks while k <= 1e3 was too soft to carry the robot at all,
+        // leaving no usable value anywhere. Per-body k = m/tc^2 gives every
+        // body the same natural frequency 1/tc, so stability depends on
+        // dt/tc alone and not on where in the robot the contact happens.
+        let mass = bf(i, 4u);
+        if (mass <= 0.0) { continue; }
+        let k = mass / (cparams.time_const * cparams.time_const);
+        let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
 
-        // Write to ext_forces: [angular(3), linear(3)]
-        // Torque from contact point offset (simplified: at body origin)
+        // Penalty normal force, damped. Clamped non-negative so contact can
+        // only push, never pull a body back down onto the plane.
+        let f_n = max(k * penetration - d * v_normal, 0.0);
+
+        // Coulomb friction opposing the tangential velocity, capped at mu*f_n.
+        let v_tan = v_point - n_body * v_normal;
+        let vt = length(v_tan);
+        var f_body = n_body * f_n;
+        if (vt > 1e-6) {
+            f_body = f_body - (v_tan / vt) * min(cparams.friction * f_n, d * vt);
+        }
+
+        // Spatial force in the body frame: [angular = r x f, linear = f].
+        let torque = cross3(support, f_body);
         let ef_base = ef_env_base + i * 6u;
-        // Angular part: r × f where r is from body COM to contact point
-        // Simplified: assume contact at body lowest point
-        ext_forces[ef_base + 3u] += fb.x;
-        ext_forces[ef_base + 4u] += fb.y;
-        ext_forces[ef_base + 5u] += fb.z;
+        ext_forces[ef_base + 0u] += torque.x;
+        ext_forces[ef_base + 1u] += torque.y;
+        ext_forces[ef_base + 2u] += torque.z;
+        ext_forces[ef_base + 3u] += f_body.x;
+        ext_forces[ef_base + 4u] += f_body.y;
+        ext_forces[ef_base + 5u] += f_body.z;
     }
 }
 "#;

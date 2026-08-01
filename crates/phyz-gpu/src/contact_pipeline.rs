@@ -17,8 +17,8 @@ struct ContactParams {
     nbodies: u32,
     nv: u32,
     ground_height: f32,
-    stiffness: f32,
-    damping: f32,
+    time_const: f32,
+    damp_ratio: f32,
     friction: f32,
     _padding: f32,
 }
@@ -44,14 +44,24 @@ pub struct ContactPipeline {
 }
 
 /// Physical parameters of the penalty ground-contact model.
+///
+/// Stiffness is *derived* per body from its mass and [`Self::time_const`],
+/// following MuJoCo's `solref`, rather than specified directly. A single
+/// global stiffness cannot work across a robot: measured on the Booster K1,
+/// every value at or above 5e3 diverged to NaN within 400 ticks (the feet)
+/// while every value at or below 1e3 was too soft to carry the robot (the
+/// torso). Per-body `k = m/tc^2` gives every body the same natural frequency
+/// `1/tc`, so stability depends on `dt/tc` and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundContactParams {
     /// Height of the ground plane along the gravity axis.
     pub ground_height: f64,
-    /// Penalty stiffness.
-    pub stiffness: f64,
-    /// Penalty damping.
-    pub damping: f64,
+    /// Contact response time constant, seconds. Must be comfortably larger
+    /// than the timestep; MuJoCo's default is `0.02`.
+    pub time_const: f64,
+    /// Damping ratio. `1.0` is critically damped — a foot that neither
+    /// bounces nor sinks.
+    pub damp_ratio: f64,
     /// Coulomb friction coefficient.
     pub friction: f64,
 }
@@ -68,10 +78,15 @@ impl ContactPipeline {
     ) -> Result<Self, String> {
         let GroundContactParams {
             ground_height,
-            stiffness,
-            damping,
+            time_const,
+            damp_ratio,
             friction,
         } = contact;
+        if time_const <= 0.0 {
+            return Err(format!(
+                "ground contact time_const must be positive, got {time_const}"
+            ));
+        }
         let nworld = state.nworld;
 
         // Pack contact params
@@ -80,8 +95,8 @@ impl ContactPipeline {
             nbodies: model.nbodies() as u32,
             nv: model.nv as u32,
             ground_height: ground_height as f32,
-            stiffness: stiffness as f32,
-            damping: damping as f32,
+            time_const: time_const as f32,
+            damp_ratio: damp_ratio as f32,
             friction: friction as f32,
             _padding: 0.0,
         };
@@ -95,7 +110,7 @@ impl ContactPipeline {
         queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
         // Pack geometry data
-        let geom_data = pack_geometries(model);
+        let geom_data = pack_geometries(model)?;
         let geom_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("geometry_buffer"),
             size: (geom_data.len() * std::mem::size_of::<f32>()).max(4) as u64,
@@ -191,8 +206,16 @@ impl ContactPipeline {
     }
 }
 
-/// Pack body geometry data into flat f32 array.
-fn pack_geometries(model: &Model) -> Vec<f32> {
+/// Pack per-body collision geometry for the contact shader.
+///
+/// Fails when a body carries a shape the shader cannot represent (a mesh or
+/// a plane) rather than packing it as "no collision". A dropped shape is
+/// invisible at runtime — the body simply falls through the ground — and
+/// that failure looks like a physics bug rather than a missing feature. The
+/// caller converts explicitly with
+/// [`phyz_model::Geometry::to_box_approximation`] and thereby records that
+/// it accepted the approximation.
+fn pack_geometries(model: &Model) -> Result<Vec<f32>, String> {
     let nb = model.nbodies();
     let mut data = vec![0.0f32; nb * GEOM_STRIDE];
 
@@ -222,13 +245,25 @@ fn pack_geometries(model: &Model) -> Vec<f32> {
                 data[base + 1] = *radius as f32;
                 data[base + 2] = *height as f32;
             }
-            _ => {
-                data[base] = 0.0; // unsupported → no collision
+            Some(other) => {
+                return Err(format!(
+                    "body {} ('{}') has collision geometry the GPU contact shader cannot \
+                     represent ({}). It would silently never collide. Convert it first \
+                     with Geometry::to_box_approximation, or leave the body without \
+                     geometry if it is not meant to collide.",
+                    i,
+                    body.name,
+                    match other {
+                        Geometry::Mesh { .. } => "mesh",
+                        Geometry::Plane { .. } => "plane",
+                        _ => "unsupported",
+                    }
+                ));
             }
         }
     }
 
-    data
+    Ok(data)
 }
 
 // Bind group layout helpers

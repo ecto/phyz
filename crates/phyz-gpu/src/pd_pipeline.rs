@@ -400,6 +400,51 @@ mod tests {
         );
     }
 
+    /// A mesh collider must be rejected by the contact pipeline rather than
+    /// packed as "no collision". Silently dropping it makes the body fall
+    /// through the ground at runtime, which reads as a physics bug rather
+    /// than a missing feature — and it is exactly what every vcad-built
+    /// model would have hit, since its colliders are meshes.
+    #[test]
+    fn contact_rejects_geometry_the_shader_cannot_represent() {
+        let inertia = SpatialInertia::new(1.0, Vec3::zeros(), Mat3::identity() * 0.1);
+        let mut model = ModelBuilder::new()
+            .add_revolute_body("link", -1, SpatialTransform::identity(), inertia)
+            .build();
+        model.bodies[0].geometry = Some(phyz_model::Geometry::Mesh {
+            vertices: vec![Vec3::new(0.1, 0.1, 0.1)],
+            faces: vec![],
+        });
+        let Ok(mut sim) = GpuBatchSimulator::new(model, 1) else {
+            eprintln!("skipping: no GPU adapter");
+            return;
+        };
+        let err = sim.enable_ground_contact(0.0, 1e4, 1e2, 0.8);
+        assert!(err.is_err(), "mesh geometry silently accepted");
+
+        // ...and the documented escape hatch makes it work.
+        let mut model2 = ModelBuilder::new()
+            .add_revolute_body(
+                "link",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::new(1.0, Vec3::zeros(), Mat3::identity() * 0.1),
+            )
+            .build();
+        let mesh = phyz_model::Geometry::Mesh {
+            vertices: vec![Vec3::new(0.1, 0.1, 0.1)],
+            faces: vec![],
+        };
+        model2.bodies[0].geometry = mesh.to_box_approximation();
+        let Ok(mut sim2) = GpuBatchSimulator::new(model2, 1) else {
+            return;
+        };
+        assert!(
+            sim2.enable_ground_contact(0.0, 1e4, 1e2, 0.8).is_ok(),
+            "box approximation rejected"
+        );
+    }
+
     /// Out-of-range DOF indices must be a construction error, not a silent
     /// out-of-bounds read in the shader.
     #[test]

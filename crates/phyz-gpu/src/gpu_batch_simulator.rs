@@ -296,12 +296,17 @@ impl GpuBatchSimulator {
         })
     }
 
-    /// Enable ground contact pipeline with penalty forces.
+    /// Enable ground contact with mass-derived penalty forces.
+    ///
+    /// `time_const` is the contact response time (MuJoCo's `solref`; 0.02 s
+    /// is a good default) and `damp_ratio` of 1.0 is critically damped. See
+    /// [`crate::contact_pipeline::GroundContactParams`] for why stiffness is
+    /// derived per body rather than passed in.
     pub fn enable_ground_contact(
         &mut self,
         ground_height: f64,
-        stiffness: f64,
-        damping: f64,
+        time_const: f64,
+        damp_ratio: f64,
         friction: f64,
     ) -> Result<(), String> {
         let pipeline = ContactPipeline::new(
@@ -312,8 +317,8 @@ impl GpuBatchSimulator {
             &self.bodies_buffer,
             crate::contact_pipeline::GroundContactParams {
                 ground_height,
-                stiffness,
-                damping,
+                time_const,
+                damp_ratio,
                 friction,
             },
         )?;
