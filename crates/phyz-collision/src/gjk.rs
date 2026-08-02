@@ -186,6 +186,15 @@ pub fn gjk_distance_rot(
 }
 
 /// Run GJK, reporting separation *or* the origin-enclosing simplex.
+///
+/// The reported separation is `|v|`, where `v` is the closest point of the
+/// current simplex to the origin. That distinction matters: the *search
+/// direction* produced by the Voronoi reduction below is an unnormalized triple
+/// cross product whose magnitude scales with the simplex edge lengths, so using
+/// `dir.norm()` as the distance (as this did previously) reported a number with
+/// no geometric meaning for any simplex bigger than a single point. Only
+/// sphere/sphere — where the simplex never grows past one point — came out
+/// right by accident.
 pub fn gjk_rot(
     geom_a: &Geometry,
     geom_b: &Geometry,
@@ -207,21 +216,23 @@ pub fn gjk_rot(
         sa - sb
     };
 
-    let mut s = support(&dir);
+    let s = support(&dir);
     if !is_finite(&s) {
         return GjkOutcome::Indeterminate;
     }
     simplex.add(s);
-    dir = -s;
 
     for _ in 0..64 {
-        let dir_norm = dir.norm();
-        if dir_norm < 1e-10 {
-            // The search direction collapsed: the origin lies on the current
-            // simplex. With a single point that means the two surfaces touch
-            // exactly (distance 0). With two or more the origin is enclosed by
-            // the simplex, so the shapes are penetrating — reporting separation
-            // here would make deep overlaps invisible to `find_contacts`.
+        // `v` is the closest point of the (already Voronoi-reduced) simplex to
+        // the origin, so `|v|` is the current best distance estimate.
+        let v = closest_point_to_origin(&simplex.points);
+        let vn = v.norm();
+        if vn < 1e-12 {
+            // The origin lies on the current simplex. With a single point that
+            // means the two surfaces touch exactly (distance 0). With two or
+            // more the origin is enclosed by the simplex, so the shapes are
+            // penetrating — reporting separation here would make deep overlaps
+            // invisible to `find_contacts`.
             return if simplex.len() >= 2 {
                 GjkOutcome::Penetrating {
                     simplex: simplex.points.clone(),
@@ -231,15 +242,28 @@ pub fn gjk_rot(
             };
         }
 
-        s = support(&dir);
-        if !is_finite(&s) {
+        dir = -v;
+        let w = support(&dir);
+        if !is_finite(&w) {
             return GjkOutcome::Indeterminate;
         }
-        if s.dot(dir) < 0.0 {
-            return GjkOutcome::Separated { distance: dir_norm };
+
+        // `w` lies on the supporting plane with normal `v̂`; the whole hull is
+        // on its far side, so `v·w/|v|` is a lower bound on the true distance.
+        // When it meets `|v|` the estimate is exact.
+        let lower_bound = v.dot(w) / vn;
+        if vn - lower_bound <= 1e-10 * (1.0 + vn) {
+            return GjkOutcome::Separated { distance: vn };
         }
-        simplex.add(s);
-        if simplex.contains_origin(&mut dir) {
+        // No progress (the support point is already in the simplex): the
+        // polytope cannot be refined further, so `|v|` is the answer.
+        if simplex.points.iter().any(|p| (*p - w).norm() < 1e-14) {
+            return GjkOutcome::Separated { distance: vn };
+        }
+
+        simplex.add(w);
+        let mut reduce_dir = dir;
+        if simplex.contains_origin(&mut reduce_dir) {
             return GjkOutcome::Penetrating {
                 simplex: simplex.points.clone(),
             };
@@ -247,6 +271,88 @@ pub fn gjk_rot(
     }
 
     GjkOutcome::Indeterminate
+}
+
+/// Closest point to the origin on a point / segment / triangle simplex.
+fn closest_point_to_origin(pts: &[Vec3]) -> Vec3 {
+    match pts.len() {
+        1 => pts[0],
+        2 => closest_on_segment(pts[0], pts[1]),
+        3 => closest_on_triangle(pts[0], pts[1], pts[2]),
+        // A 4-point simplex only survives `contains_origin` when it encloses
+        // the origin, which the caller handles separately.
+        _ => Vec3::zeros(),
+    }
+}
+
+fn closest_on_segment(a: Vec3, b: Vec3) -> Vec3 {
+    let ab = b - a;
+    let denom = ab.dot(ab);
+    if denom < 1e-30 {
+        return a;
+    }
+    let t = ((-a).dot(ab) / denom).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+/// Ericson, *Real-Time Collision Detection* §5.1.5, specialized to `p = 0`.
+fn closest_on_triangle(a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let ab = b - a;
+    let ac = c - a;
+
+    let d1 = ab.dot(-a);
+    let d2 = ac.dot(-a);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+
+    let d3 = ab.dot(-b);
+    let d4 = ac.dot(-b);
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let denom = d1 - d3;
+        return if denom.abs() < 1e-30 {
+            a
+        } else {
+            a + ab * (d1 / denom)
+        };
+    }
+
+    let d5 = ab.dot(-c);
+    let d6 = ac.dot(-c);
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let denom = d2 - d6;
+        return if denom.abs() < 1e-30 {
+            a
+        } else {
+            a + ac * (d2 / denom)
+        };
+    }
+
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let denom = (d4 - d3) + (d5 - d6);
+        return if denom.abs() < 1e-30 {
+            b
+        } else {
+            b + (c - b) * ((d4 - d3) / denom)
+        };
+    }
+
+    let denom = va + vb + vc;
+    if denom.abs() < 1e-30 {
+        return a;
+    }
+    a + ab * (vb / denom) + ac * (vc / denom)
 }
 
 fn is_finite(v: &Vec3) -> bool {

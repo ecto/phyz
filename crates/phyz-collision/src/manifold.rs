@@ -134,6 +134,12 @@ struct Face {
     verts: Vec<Vec3>,
     /// Outward unit normal.
     normal: Vec3,
+    /// A point known to lie on the face's plane. For a bounded polygon this is
+    /// just `verts[0]`; for an unbounded plane it is the only datum available,
+    /// and without it the clipper had to guess a datum from the *incident*
+    /// polygon, which made every depth relative and therefore always zero at
+    /// the deepest vertex.
+    point: Vec3,
 }
 
 /// The face of `geom` whose outward normal is most aligned with `dir`.
@@ -150,6 +156,7 @@ fn support_face(geom: &Geometry, pos: &Vec3, rot: &Mat3, dir: &Vec3) -> Option<F
             Some(Face {
                 verts: Vec::new(),
                 normal: n,
+                point: *pos,
             })
         }
         // Sphere: no flat face anywhere. Capsule/cylinder: flat only on the
@@ -193,7 +200,12 @@ fn box_support_face(half_extents: &Vec3, pos: &Vec3, rot: &Mat3, dir: &Vec3) -> 
     n_local[axis] = sign;
     let normal = (*rot * Vec3::new(n_local[0], n_local[1], n_local[2])).normalize();
 
-    Face { verts, normal }
+    let point = verts[0];
+    Face {
+        verts,
+        normal,
+        point,
+    }
 }
 
 /// Clip the incident polygon against the reference face's side planes and keep
@@ -238,15 +250,7 @@ fn clip_faces(reference: &Face, incident: &Face, normal: &Vec3) -> Option<Vec<Ma
     }
 
     // Reference plane offset along the shared normal.
-    let ref_point = if reference.verts.is_empty() {
-        // Infinite plane: its own supporting point is unknown here, so use the
-        // deepest incident vertex as the datum and measure relative depth.
-        *poly
-            .iter()
-            .min_by(|p, q| p.dot(normal).total_cmp(&q.dot(normal)))?
-    } else {
-        reference.verts[0]
-    };
+    let ref_point = reference.point;
 
     let out: Vec<ManifoldPoint> = poly
         .iter()
