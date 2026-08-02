@@ -212,8 +212,8 @@ pub fn initial_state(scene: Scene, model: &Model) -> State {
             state.q[1] = 0.5;
         }
         Scene::Ant => {
-            // Free joint q = [x, y, z, wx, wy, wz]; torso at its rest height.
-            state.q[2] = 0.75;
+            // Free joint q = [wx, wy, wz, x, y, z]; torso at its rest height.
+            state.q[5] = 0.75;
             for i in 6..model.nq {
                 state.q[i] = 0.1;
             }
@@ -221,7 +221,7 @@ pub fn initial_state(scene: Scene, model: &Model) -> State {
         Scene::BoxStack(n) => {
             for i in 0..n {
                 let base = model.q_offsets[i];
-                state.q[base + 2] = BOX_HALF_EXTENT + i as f64 * (2.0 * BOX_HALF_EXTENT + BOX_GAP);
+                state.q[base + 5] = BOX_HALF_EXTENT + i as f64 * (2.0 * BOX_HALF_EXTENT + BOX_GAP);
             }
         }
     }
@@ -301,9 +301,13 @@ impl PhyzSim {
         for i in 0..self.model.nv {
             self.state.v[i] += dt * qdd[i];
         }
-        for i in 0..self.model.nq {
-            self.state.q[i] += dt * self.state.v[i];
-        }
+        let v = self.state.v.clone();
+        phyz_rigid::integrate_configuration(
+            &self.model,
+            self.state.q.as_mut_slice(),
+            v.as_slice(),
+            dt,
+        );
         self.state.time += dt;
     }
 

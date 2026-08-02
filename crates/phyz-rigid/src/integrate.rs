@@ -12,16 +12,71 @@
 //! | hinge  | angle                       | angular rate                 |
 //! | slide  | displacement                | linear rate                  |
 //! | ball   | exp-coords (3)              | body angular velocity (3)    |
-//! | free   | `[pos(3), exp-coords(3)]`   | `[angular(3), linear(3)]`    |
+//! | free   | `[exp-coords(3), pos(3)]`   | `[angular(3), linear(3)]`    |
 //!
-//! Note the free joint: `q` is position-then-rotation while `v` is
-//! rotation-then-position (`kinematics.rs` `joint_velocity` vs
-//! `phyz_model::Joint::joint_transform_slice`). Adding them elementwise mixes
-//! angular velocity into position. This module is the single place that knows
-//! the mapping.
+//! The free joint's `q` and `v` now agree *slot for slot*: both are angular
+//! first, matching `SpatialVec`'s `[angular; linear]` order. They did not used
+//! to — `q` was `[pos(3), exp-coords(3)]`, so a flat `q += dt·v` dropped the
+//! vertical acceleration into the yaw coordinate and a falling body yawed
+//! instead of falling. Slot agreement is *not* a licence to go back to a flat
+//! update: the rotational slots are exponential coordinates (a flat add is only
+//! first-order accurate near identity and denormalises past π) and the linear
+//! slots hold a *body-frame* velocity that has to be rotated into the parent
+//! frame first. [`integrate_configuration`] is the single place that knows the
+//! mapping; every integration site in the workspace must go through it.
 
 use phyz_math::{Quat, Vec3};
 use phyz_model::{JointType, Model, State};
+
+/// Advance the configuration `q` by `dt` under the generalized velocity `v`.
+///
+/// This is the canonical `q ← q ⊕ dt·v` for this codebase's joint
+/// parameterisations. Rotational sub-blocks take a proper Lie-group step —
+/// `R ← R·exp(ω·dt)` composed on quaternions and re-logged — so a spinning
+/// body is exact for constant `ω` rather than first-order correct, and a free
+/// joint's translation integrates the body-frame linear velocity rotated into
+/// the parent frame.
+///
+/// `q` must be `Model::nq` long and `v` at least `Model::nv`.
+pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64) {
+    for (jidx, joint) in model.joints.iter().enumerate() {
+        let q_off = model.q_offsets[jidx];
+        let v_off = model.v_offsets[jidx];
+        match joint.joint_type {
+            JointType::Fixed => {}
+            JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => {
+                q[q_off] += dt * v[v_off];
+            }
+            JointType::Spherical | JointType::Ball => {
+                let omega = Vec3::new(v[v_off], v[v_off + 1], v[v_off + 2]);
+                let current = Quat::exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
+                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
+                let log = next.log();
+                q[q_off] = log.x;
+                q[q_off + 1] = log.y;
+                q[q_off + 2] = log.z;
+            }
+            JointType::Free => {
+                // q = [exp-coords(3), pos(3)], v = [angular(3), linear(3)].
+                let omega = Vec3::new(v[v_off], v[v_off + 1], v[v_off + 2]);
+                let lin = Vec3::new(v[v_off + 3], v[v_off + 4], v[v_off + 5]);
+
+                let current = Quat::exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
+                // Body-frame linear velocity → parent-frame displacement.
+                let world_lin = current.rotate(lin);
+                q[q_off + 3] += dt * world_lin.x;
+                q[q_off + 4] += dt * world_lin.y;
+                q[q_off + 5] += dt * world_lin.z;
+
+                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
+                let log = next.log();
+                q[q_off] = log.x;
+                q[q_off + 1] = log.y;
+                q[q_off + 2] = log.z;
+            }
+        }
+    }
+}
 
 /// Advance `state` by `dt` with semi-implicit Euler: velocity first, then
 /// position using the *updated* velocity.
@@ -30,50 +85,8 @@ pub fn semi_implicit_euler(model: &Model, state: &mut State, qdd: &[f64], dt: f6
         state.v[i] += dt * a;
     }
 
-    for (jidx, joint) in model.joints.iter().enumerate() {
-        let q_off = model.q_offsets[jidx];
-        let v_off = model.v_offsets[jidx];
-        match joint.joint_type {
-            JointType::Fixed => {}
-            JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => {
-                state.q[q_off] += dt * state.v[v_off];
-            }
-            JointType::Spherical | JointType::Ball => {
-                let omega = Vec3::new(state.v[v_off], state.v[v_off + 1], state.v[v_off + 2]);
-                let current = Quat::exp(&Vec3::new(
-                    state.q[q_off],
-                    state.q[q_off + 1],
-                    state.q[q_off + 2],
-                ));
-                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
-                let log = next.log();
-                state.q[q_off] = log.x;
-                state.q[q_off + 1] = log.y;
-                state.q[q_off + 2] = log.z;
-            }
-            JointType::Free => {
-                let omega = Vec3::new(state.v[v_off], state.v[v_off + 1], state.v[v_off + 2]);
-                let lin = Vec3::new(state.v[v_off + 3], state.v[v_off + 4], state.v[v_off + 5]);
-
-                let current = Quat::exp(&Vec3::new(
-                    state.q[q_off + 3],
-                    state.q[q_off + 4],
-                    state.q[q_off + 5],
-                ));
-                // Body-frame linear velocity → world displacement.
-                let world_lin = current.rotate(lin);
-                state.q[q_off] += dt * world_lin.x;
-                state.q[q_off + 1] += dt * world_lin.y;
-                state.q[q_off + 2] += dt * world_lin.z;
-
-                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
-                let log = next.log();
-                state.q[q_off + 3] = log.x;
-                state.q[q_off + 4] = log.y;
-                state.q[q_off + 5] = log.z;
-            }
-        }
-    }
+    let v = state.v.clone();
+    integrate_configuration(model, state.q.as_mut_slice(), v.as_slice(), dt);
 
     state.time += dt;
 }

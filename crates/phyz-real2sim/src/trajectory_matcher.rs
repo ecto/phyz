@@ -243,7 +243,12 @@ impl TrajectoryMatcher {
             let qdd = aba(model, &state);
             state.v += &(&qdd * self.dt);
             let v_clone = state.v.clone();
-            state.q += &(&v_clone * self.dt);
+            phyz_rigid::integrate_configuration(
+                model,
+                state.q.as_mut_slice(),
+                v_clone.as_slice(),
+                self.dt,
+            );
             state.time += self.dt;
 
             // Update body transforms for next iteration

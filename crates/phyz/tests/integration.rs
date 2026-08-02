@@ -168,8 +168,9 @@ fn ball_drop_with_contacts() {
     model.bodies[0].geometry = Some(Geometry::Sphere { radius: 0.1 });
 
     let mut state = model.default_state();
-    // Place ball at z=2.0 via q (FK will read this)
-    state.q[2] = 2.0;
+    // Place ball at z=2.0 via q (FK will read this).
+    // Free joint q = [wx, wy, wz, x, y, z], so z is slot 5.
+    state.q[5] = 2.0;
 
     // Run FK to update body_xform
     let (xforms, _) = phyz::phyz_rigid::forward_kinematics(&model, &state);
@@ -186,7 +187,7 @@ fn ball_drop_with_contacts() {
     );
 
     // Now place ball at z=0.05, sphere bottom at -0.05 -- should penetrate ground
-    state.q[2] = 0.05;
+    state.q[5] = 0.05;
     let (xforms, _) = phyz::phyz_rigid::forward_kinematics(&model, &state);
     state.body_xform = xforms;
 
@@ -281,13 +282,14 @@ fn aba_equals_minv_phyz_minus_c() {
 
 #[test]
 fn free_joint_freefall() {
-    // Test that ABA correctly computes freefall acceleration for a free body,
-    // and that the velocity integrates correctly over time.
+    // A free body released under gravity must FALL, and must not rotate.
     //
-    // Note: for free joints, q = [x, y, z, rx, ry, rz] and v = [wx, wy, wz, vx, vy, vz].
-    // The naive integrator q += v*dt maps v[5] (vz) to q[5] (rz), not q[2] (z).
-    // So we verify correctness via the velocity state (v[5]) and the known q-slot (q[5])
-    // where z-displacement actually accumulates.
+    // This used to be a characterisation test for the DOF-ordering bug: `q`
+    // was `[x, y, z, rx, ry, rz]` while `v` was `[wx, wy, wz, vx, vy, vz]`, and
+    // the integrator's flat `q += v*dt` therefore accumulated the vertical
+    // drop in `q[5]`, the yaw coordinate. `q` is now `[rx, ry, rz, x, y, z]`,
+    // matching `v` slot for slot, and integration goes through
+    // `phyz_rigid::integrate_configuration`.
     let dt = 0.001;
     let model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
@@ -307,11 +309,18 @@ fn free_joint_freefall() {
 
     // After t = 0.1s, free-fall velocity: vz = -g * t = -9.81 * 0.1 = -0.981
     let expected_vz = -GRAVITY * 0.1;
-    let actual_vz = state.v[5]; // linear z velocity in v-space
+    assert_relative_eq!(state.v[5], expected_vz, epsilon = 1e-3);
 
-    assert_relative_eq!(actual_vz, expected_vz, epsilon = 1e-3);
-
-    // The z displacement (-0.5 * g * t^2) ends up in q[5] due to the v->q index mapping.
+    // ...and the drop lands in q[5], the free joint's z coordinate.
     let expected_displacement = -0.5 * GRAVITY * 0.1 * 0.1;
     assert_relative_eq!(state.q[5], expected_displacement, epsilon = 1e-3);
+
+    // Nothing leaks into the rotational coordinates.
+    for i in 0..3 {
+        assert!(
+            state.q[i].abs() < 1e-12,
+            "q[{i}] = {} — the body rotated",
+            state.q[i]
+        );
+    }
 }

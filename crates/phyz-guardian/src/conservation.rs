@@ -154,7 +154,12 @@ mod tests {
             let qdd = aba(&model, &state);
             state.v += &(&qdd * model.dt);
             let v_copy = state.v.clone();
-            state.q += &(&v_copy * model.dt);
+            phyz_rigid::integrate_configuration(
+                &model,
+                state.q.as_mut_slice(),
+                v_copy.as_slice(),
+                model.dt,
+            );
         }
 
         let monitor = ConservationMonitor::check(&baseline, &model, &state);
@@ -196,7 +201,12 @@ mod tests {
             let qdd = aba(&model, &state);
             state.v += &(&qdd * model.dt);
             let v_copy = state.v.clone();
-            state.q += &(&v_copy * model.dt);
+            phyz_rigid::integrate_configuration(
+                &model,
+                state.q.as_mut_slice(),
+                v_copy.as_slice(),
+                model.dt,
+            );
         }
 
         let monitor = ConservationMonitor::check(&baseline, &model, &state);

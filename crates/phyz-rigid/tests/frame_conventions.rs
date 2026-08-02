@@ -35,7 +35,8 @@ fn xform_pos_is_the_world_position_not_its_inverse() {
         .build();
 
     let mut s = model.default_state();
-    s.q[2] = 2.5; // lift the root to z = 2.5
+    // Free joint q = [wx, wy, wz, x, y, z]; z is slot 5.
+    s.q[5] = 2.5; // lift the root to z = 2.5
 
     let (x, _) = forward_kinematics(&model, &s);
 
