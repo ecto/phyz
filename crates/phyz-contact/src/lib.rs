@@ -11,6 +11,7 @@
 pub struct ReadmeDocTests;
 
 pub mod assemble;
+pub mod cache;
 pub mod cone;
 pub mod convex;
 pub mod gradient;
@@ -18,11 +19,13 @@ pub mod material;
 pub mod solver;
 
 pub use assemble::{ContactAssembly, assemble, contact_wrenches, generalized_impulse};
+pub use cache::{ContactCache, ContactKey};
 pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
 pub use convex::{
-    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, solve_contacts,
+    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, regularization_diag,
+    solve_contacts, solve_contacts_warm,
 };
-pub use material::ContactMaterial;
+pub use material::{ContactMaterial, SolImp, SolRef};
 #[allow(deprecated)]
 pub use solver::{contact_forces, contact_forces_implicit};
 pub use solver::{find_contacts, find_ground_contacts};
