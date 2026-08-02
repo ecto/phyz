@@ -9,12 +9,14 @@
 //! Requires the `contact` and `diff` features (both on by default).
 
 use phyz_contact::{
-    ContactMaterial, ContactSolverConfig, find_contacts, find_ground_contacts, solve_contacts,
+    ContactCache, ContactMaterial, ContactSolverConfig, find_contacts, find_ground_contacts,
+    solve_contacts_warm,
 };
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
 use phyz_model::{Geometry, Model, State};
 use phyz_rigid::{aba, forward_kinematics};
+use std::cell::RefCell;
 
 /// Pluggable solver trait.
 ///
@@ -115,6 +117,15 @@ impl Solver for Rk4Solver {
 /// Main simulation driver.
 pub struct Simulator {
     solver: Box<dyn Solver>,
+    /// Previous step's contact impulses, keyed by feature, for warm starting
+    /// [`Simulator::step_with_contacts`].
+    ///
+    /// Behind a `RefCell` because stepping takes `&self` — the cache is a
+    /// solver-internal accelerator, not simulation state, and making the whole
+    /// API `&mut self` for it would ripple through every caller. It cannot
+    /// change results: the contact problem is strongly convex, so the seed
+    /// only moves the iteration count.
+    contact_cache: RefCell<ContactCache>,
 }
 
 impl Simulator {
@@ -122,6 +133,7 @@ impl Simulator {
     pub fn new() -> Self {
         Self {
             solver: Box::new(SemiImplicitEulerSolver),
+            contact_cache: RefCell::new(ContactCache::default()),
         }
     }
 
@@ -129,12 +141,25 @@ impl Simulator {
     pub fn rk4() -> Self {
         Self {
             solver: Box::new(Rk4Solver),
+            contact_cache: RefCell::new(ContactCache::default()),
         }
     }
 
     /// Create a simulator with a custom solver.
     pub fn with_solver(solver: Box<dyn Solver>) -> Self {
-        Self { solver }
+        Self {
+            solver,
+            contact_cache: RefCell::new(ContactCache::default()),
+        }
+    }
+
+    /// Forget the warm-start contact cache.
+    ///
+    /// Call after teleporting or resetting a state: last step's impulses are
+    /// then a guess about a world that no longer exists. Purely a performance
+    /// concern — the solve converges to the same answer either way.
+    pub fn reset_contact_cache(&self) {
+        self.contact_cache.borrow_mut().clear();
     }
 
     /// Advance simulation by one timestep.
@@ -199,11 +224,17 @@ impl Simulator {
             // operator, so pressing on one corner of a box correctly unloads
             // another — and friction is a real Coulomb cone with stiction
             // rather than a viscous damper that vanished at low sliding speed.
-            let materials = vec![material.clone()];
+            let materials = vec![material.clone(); model.bodies.len().max(1)];
             let config = ContactSolverConfig::simulation();
             let asm =
-                phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, &config);
-            let solution = solve_contacts(&asm.problem, &config);
+                phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
+            // Seed from the previous step's impulses. A stance foot is solving
+            // nearly the same problem every step, and from a cold start PGS
+            // spends its whole iteration budget rediscovering `m g dt`.
+            let mut cache = self.contact_cache.borrow_mut();
+            let seed = cache.warm_start(state, &contacts);
+            let solution = solve_contacts_warm(&asm.problem, &config, &seed);
+            cache.store(state, &contacts, &solution.impulses);
             // v' = v_free + M^-1 J^T f.
             state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }

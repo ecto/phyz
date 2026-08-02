@@ -13,6 +13,13 @@ Penalty-based contact resolution on top of
 | `contact_forces_implicit` | semi-implicit variant, stable at larger `dt` |
 | `compute_contact_force`, `compute_contact_force_implicit` | single-contact kernels |
 
+The convex solve (`assemble` + `solve_contacts`) is what the stepper uses, and
+what supersedes the penalty functions above. It carries MuJoCo-style
+`solref`/`solimp` position stabilization, so penetration is repaid rather than
+frozen in place, combines the two contacting bodies' materials
+(`ContactMaterial::combine`), and warm starts from the previous step's impulses
+via `ContactCache`.
+
 `ContactMaterial` carries stiffness, damping and friction. The implicit form
 solves for the normal impulse that the next step will produce, rather than the
 one the current penetration implies, which is what keeps stacks from exploding

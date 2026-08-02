@@ -60,6 +60,7 @@ impl Block {
                 mu,
                 restitution: 0.0,
                 depth: 0.0,
+                ..Default::default()
             }],
         };
         let sol = solve_contacts(&problem, cfg);
@@ -177,6 +178,7 @@ fn friction_is_isotropic_in_the_tangent_plane() {
                 mu,
                 restitution: 0.0,
                 depth: 0.0,
+                ..Default::default()
             }],
         };
         let sol = solve_contacts(&problem, &cfg);
@@ -219,6 +221,7 @@ fn restitution_matches_drop_height_ratio() {
                 mu: 0.0,
                 restitution: eff,
                 depth: 0.0,
+                ..Default::default()
             }],
         };
         let sol = solve_contacts(&problem, &cfg);
@@ -289,6 +292,7 @@ fn resting_manifold_shares_load_and_holds() {
                 mu: 0.6,
                 restitution: 0.0,
                 depth: 1e-4,
+                ..Default::default()
             };
             n
         ],
@@ -340,6 +344,7 @@ fn coupled_contacts_differ_from_independent_ones() {
                 mu: 0.5,
                 restitution: 0.0,
                 depth: 0.0,
+                ..Default::default()
             };
             n
         ],
@@ -391,6 +396,7 @@ fn solution_satisfies_kkt_conditions() {
             mu: 0.8,
             restitution: 0.0,
             depth: 0.0,
+            ..Default::default()
         }],
     };
     let sol = solve_contacts(&problem, &cfg);

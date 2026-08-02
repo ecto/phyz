@@ -141,19 +141,21 @@ pub fn impulse_sensitivity(
                 }
             }
             ContactRegime::Sticking => {
+                let reg = crate::convex::regularization_diag(problem, c, config);
                 for r in 0..3 {
                     for col in 0..dim {
                         k[(base + r) * dim + col] = problem.delassus[(base + r) * dim + col];
                     }
-                    k[(base + r) * dim + base + r] += config.regularization;
+                    k[(base + r) * dim + base + r] += reg[r];
                 }
             }
             ContactRegime::Sliding => {
                 // Normal row: the non-penetration equality.
+                let reg = crate::convex::regularization_diag(problem, c, config);
                 for col in 0..dim {
                     k[base * dim + col] = problem.delassus[base * dim + col];
                 }
-                k[base * dim + base] += config.regularization;
+                k[base * dim + base] += reg[0];
 
                 // Tangential rows: f_t is pinned to the cone boundary along
                 // the slip direction, so d f_t = mu * t_hat * d f_n.
@@ -267,6 +269,57 @@ pub fn friction_sensitivity(
                 } else {
                     0.0
                 };
+        }
+    }
+    Some(out)
+}
+
+/// Sensitivity of the solved impulses to each contact's penetration depth.
+///
+/// Returns `df/ddepth` as `3n x n`, row-major.
+///
+/// Position stabilization made the solve depend on the state through a second
+/// channel: alongside `b = J qd_free` there is now a per-contact bias
+/// `bias_c = d * erp * depth_c / dt`, and a trajectory adjoint that only
+/// contracted through `df/db` would be missing that channel entirely — it
+/// would report that penetration has no effect on the impulses, which is
+/// exactly backwards now that penetration is what repays itself.
+///
+/// The bias enters the normal row of the KKT system with the opposite sign to
+/// `b`, so `df/dbias = -df/db` on the normal rows, and the chain rule closes
+/// with `dbias/ddepth = d * erp / dt`. Pass the same `dt` the assembly used;
+/// `erp` comes from the pair material's [`crate::SolRef`].
+///
+/// The impedance `d` also depends on depth, through the solimp sigmoid. That
+/// second-order path is deliberately *not* included: it moves the regularizer
+/// `R`, i.e. the smoothing parameter of the relaxation, not the physics being
+/// relaxed — the same reason [`impulse_sensitivity`] holds the active set
+/// fixed. It is bounded by `(dmax-dmin)/dmin ~ 5%` of the primary term for the
+/// default solimp.
+pub fn depth_sensitivity(
+    problem: &ContactProblem,
+    solution: &ContactSolution,
+    config: &ContactSolverConfig,
+    solref: &crate::material::SolRef,
+    dt: f64,
+) -> Option<Vec<f64>> {
+    let n = problem.n;
+    let dim = 3 * n;
+    let sens = impulse_sensitivity(problem, solution, config)?;
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let erp = solref.error_reduction(dt);
+    let mut out = vec![0.0; dim * n];
+    for c in 0..n {
+        // No stabilization on a contact that is not overlapping.
+        if problem.rows[c].depth <= 0.0 || dt <= 0.0 {
+            continue;
+        }
+        let dbias = problem.rows[c].impedance * erp / dt;
+        for row in 0..dim {
+            // db_n = -dbias, hence the sign.
+            out[row * n + c] = -sens[row * dim + 3 * c] * dbias;
         }
     }
     Some(out)

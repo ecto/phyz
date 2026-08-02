@@ -64,6 +64,27 @@ pub struct ContactSolverConfig {
     /// settles. The ramp is `smoothstep`, not a hard cutoff, so restitution
     /// stays differentiable in both `e` and the approach speed.
     pub restitution_threshold: f64,
+    /// Reproduce MuJoCo's regularization on the **tangential** rows as well as
+    /// the normal one. Off by default, and it should stay off outside tests.
+    ///
+    /// [`regularization_diag`] documents the divergence in full: MuJoCo applies
+    /// the impedance-derived `R = (1-d)/d * A_nn` to all three rows of a
+    /// contact frame, which on a friction row means a fraction `1-d` of the
+    /// slip velocity survives every step. This crate applies it to the normal
+    /// row only, so a block below the friction angle holds *exactly*.
+    ///
+    /// Turning this on re-introduces MuJoCo's steady-state creep —
+    /// `g sin(alpha) dt (1-d)/d`, roughly a millimetre per second on a
+    /// 25-degree slope at `dt = 2 ms` — for a block Coulomb's law says is
+    /// stuck. That is the whole reason it is not the default.
+    ///
+    /// It exists so MuJoCo trajectories remain usable as a cross-validation
+    /// oracle: a divergence in the tangential regularizer makes a step-by-step
+    /// comparison against MuJoCo meaningless, and without a way to match its
+    /// behaviour there is no way to tell "phyz is right and MuJoCo creeps"
+    /// apart from a real bug. `mujoco_creep_matches_the_analytic_rate` in
+    /// `tests/stabilization.rs` measures both modes side by side.
+    pub mujoco_compat: bool,
 }
 
 impl Default for ContactSolverConfig {
@@ -81,6 +102,7 @@ impl ContactSolverConfig {
             max_iterations: 200,
             relaxation: 1.0,
             restitution_threshold: 0.05,
+            mujoco_compat: false,
         }
     }
 
@@ -95,6 +117,23 @@ impl ContactSolverConfig {
             max_iterations: 500,
             relaxation: 1.0,
             restitution_threshold: 0.05,
+            mujoco_compat: false,
+        }
+    }
+
+    /// [`Self::simulation`] with [`Self::mujoco_compat`] set — a test-only
+    /// oracle preset for cross-validating trajectories against MuJoCo.
+    ///
+    /// Sited alongside [`Self::gradients`] because it is the same kind of
+    /// thing: a named point in config space that trades one property away on
+    /// purpose. `gradients` trades fidelity for smoothness; this one trades
+    /// exact stiction for bit-comparability with a reference implementation.
+    /// Unlike `gradients`, it is not a preset anyone should ship with — see
+    /// the field docs for the creep it buys back.
+    pub fn mujoco_compat() -> Self {
+        Self {
+            mujoco_compat: true,
+            ..Self::simulation()
         }
     }
 }
@@ -108,6 +147,80 @@ pub struct ContactRow {
     pub restitution: f64,
     /// Penetration depth (positive = overlapping).
     pub depth: f64,
+    /// Target *separating* normal velocity, in m/s, from the solref reference
+    /// response (see [`crate::material::SolRef::error_reduction`]).
+    ///
+    /// This is the position-stabilization term. The normal solve drives the
+    /// post-step normal velocity to `bias` rather than to zero, so a contact
+    /// that is `d` deep is pushed apart at `d * erp / dt` and the penetration
+    /// is actually repaid. With `bias = 0` — the default, and what every
+    /// hand-built problem in the tests uses — the solve is exactly the
+    /// non-penetration constraint it always was, and a stack creeps down by
+    /// one integration error per step forever.
+    ///
+    /// It is kept out of `free_velocity` on purpose: `b = J qd_free` stays a
+    /// pure function of the state, and the bias enters as its own parameter,
+    /// so `df/db` from [`crate::gradient`] needs no reinterpretation and
+    /// `df/dbias = -df/db` falls out for free.
+    pub bias: f64,
+    /// Constraint impedance `d` in `(0, 1]` from solimp at this contact's
+    /// depth. The diagonal regularizer for the contact is
+    /// `R = (1-d)/d * diag(A)`, floored by
+    /// [`ContactSolverConfig::regularization`]. `1` means "as rigid as the
+    /// config floor allows".
+    pub impedance: f64,
+}
+
+impl ContactRow {
+    /// Build a row from a (already pair-combined) material.
+    ///
+    /// `depth` is the penetration in metres (negative or zero means the
+    /// surfaces are not overlapping, and no stabilization is applied),
+    /// `dt` the step the impulses will be applied over, and `restitution` the
+    /// effective restitution after the low-speed ramp.
+    ///
+    /// The bias is `d * erp * depth / dt`: `erp` is the fraction of the
+    /// violation the reference spring removes in one step, dividing by `dt`
+    /// turns that displacement into the separating velocity the impulse solve
+    /// speaks in, and scaling by the impedance `d` is what makes a
+    /// just-touching contact push back gently instead of snapping. Since
+    /// `erp <= 1` and `d < 1`, the bias can never exceed `depth/dt`, i.e. the
+    /// solve can never push the bodies further apart than they overlap — the
+    /// failure mode that makes naive Baumgarte stabilization explode.
+    pub fn from_material(
+        material: &ContactMaterial,
+        depth: f64,
+        dt: f64,
+        restitution: f64,
+    ) -> Self {
+        let violation = depth.max(0.0);
+        let d = material.solimp.impedance(violation);
+        let bias = if dt > 0.0 {
+            d * material.solref.error_reduction(dt) * violation / dt
+        } else {
+            0.0
+        };
+        Self {
+            mu: material.friction,
+            restitution,
+            depth,
+            bias,
+            impedance: d,
+        }
+    }
+}
+
+impl Default for ContactRow {
+    fn default() -> Self {
+        Self {
+            mu: 0.0,
+            restitution: 0.0,
+            depth: 0.0,
+            bias: 0.0,
+            // Fully rigid: the regularizer falls back to the config floor.
+            impedance: 1.0,
+        }
+    }
 }
 
 /// The assembled convex contact problem.
@@ -163,14 +276,94 @@ impl ContactProblem {
     }
 }
 
-/// Solve the convex contact problem.
+/// Diagonal regularizer `R` for contact `c`, one entry per row of its frame.
+///
+/// On the **normal** row, `R = (1-d)/d * A_nn` — MuJoCo's impedance form.
+/// Scaling by the Delassus diagonal is what makes it dimensionally consistent
+/// and mass-independent, so the same `solimp` behaves the same on a gram and
+/// on a tonne. A flat scalar (what `ContactSolverConfig::regularization` used
+/// to be on its own) does not have that property: it softens light bodies into
+/// mush and leaves heavy ones rigid.
+///
+/// On the **tangential** rows it is only the config floor, and that departure
+/// from MuJoCo is deliberate. Impedance `d` means "cancel a fraction `d` of
+/// the violation", and on a friction row the violation is the slip velocity,
+/// so `d = 0.9` leaves a tenth of the slip in place *every step*. That is a
+/// steady-state creep of `g sin(alpha) dt (1-d)/d` — about a millimetre per
+/// second on a 25-degree slope at 2 ms, forever, for a block that Coulomb's
+/// law says is stuck. Stiction is not a soft constraint that a reference
+/// response has to reach gradually; it either holds exactly or the contact is
+/// sliding, and the staged solve already decides which. MuJoCo pays this creep
+/// (it is a known characteristic of its solver); this crate's analytic
+/// benchmarks assert exact stiction, so it does not.
+///
+/// The config value is a floor on every row, which is what the
+/// [`ContactSolverConfig::gradients`] preset uses to buy extra smoothing.
+///
+/// [`ContactSolverConfig::mujoco_compat`] opts back into MuJoCo's form on the
+/// tangential rows, creep and all, for trajectory cross-validation. It is off
+/// by default and the paragraph above is why.
+pub fn regularization_diag(
+    problem: &ContactProblem,
+    c: usize,
+    config: &ContactSolverConfig,
+) -> [f64; 3] {
+    let dim = 3 * problem.n;
+    let base = 3 * c;
+    let d = problem.rows[c].impedance.clamp(1e-6, 1.0);
+    let scale = (1.0 - d) / d;
+    let a_nn = problem.delassus[base * dim + base];
+    let normal = (scale * a_nn).max(config.regularization);
+    let tangent = if config.mujoco_compat {
+        normal
+    } else {
+        config.regularization
+    };
+    [normal, tangent, tangent]
+}
+
+/// Solve the convex contact problem from a cold start (zero impulses).
+///
+/// [`solve_contacts_warm`] is the same solve seeded with a previous step's
+/// impulses; prefer it inside a stepper.
 // The loop indices here drive stride arithmetic into flat, row-major arrays
 // (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
 // the explicit ranges stay.
 #[allow(clippy::needless_range_loop)]
 pub fn solve_contacts(problem: &ContactProblem, config: &ContactSolverConfig) -> ContactSolution {
+    solve_contacts_warm(problem, config, &[])
+}
+
+/// Solve the convex contact problem, seeded with `initial`.
+///
+/// Warm starting is worth a module-level comment because it is not merely an
+/// optimization here. Projected Gauss-Seidel converges linearly, and the
+/// stance contacts of a standing or walking body are solving *almost the same
+/// problem* every step: seeded with last step's impulses the solve starts at
+/// the answer and terminates in a handful of iterations instead of hundreds.
+/// Since the solver only reports `converged` when it reaches
+/// `config.tolerance` — and [`crate::gradient`] refuses to differentiate
+/// anything else — cheaper convergence is directly more usable gradients.
+///
+/// The seed cannot change the answer: the problem is strongly convex, so the
+/// minimizer is unique and every start converges to it. `initial` may be
+/// shorter than `problem.n` (or empty, for a cold start); missing entries
+/// start at zero. Entries outside the friction cone are harmless — the first
+/// sweep projects them back.
+// The loop indices here drive stride arithmetic into flat, row-major arrays
+// (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
+// the explicit ranges stay.
+#[allow(clippy::needless_range_loop)]
+pub fn solve_contacts_warm(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    initial: &[Vec3],
+) -> ContactSolution {
     let n = problem.n;
     let mut f = vec![Vec3::zeros(); n];
+    for (slot, seed) in f.iter_mut().zip(initial) {
+        *slot = *seed;
+    }
     if n == 0 {
         return ContactSolution {
             impulses: f,
@@ -191,12 +384,13 @@ pub fn solve_contacts(problem: &ContactProblem, config: &ContactSolverConfig) ->
     let blocks: Vec<[[f64; 3]; 3]> = (0..n)
         .map(|c| {
             let base = 3 * c;
+            let reg = regularization_diag(problem, c, config);
             let mut m = [[0.0; 3]; 3];
             for (r, row) in m.iter_mut().enumerate() {
                 for (col, e) in row.iter_mut().enumerate() {
                     *e = at(base + r, base + col);
                     if r == col {
-                        *e += config.regularization;
+                        *e += reg[r];
                     }
                 }
             }
@@ -250,9 +444,14 @@ pub fn solve_contacts(problem: &ContactProblem, config: &ContactSolverConfig) ->
             // bounded by `mu * f_n`. So solve the normal first, then clamp the
             // tangential to the disc it admits. Stiction is the case where the
             // unconstrained tangential impulse already lies inside that disc.
+            // Non-penetration *plus* position stabilization: drive the
+            // post-step normal velocity to `row.bias` (a separating velocity
+            // proportional to the current penetration) rather than to zero.
+            // Driving it to zero freezes whatever penetration the previous
+            // steps accumulated, which is exactly how a stack creeps.
             let a_nn = blocks[c][0][0];
             let f_n = if a_nn > 0.0 {
-                (-r[0] / a_nn).max(0.0)
+                ((row.bias - r[0]) / a_nn).max(0.0)
             } else {
                 0.0
             };
@@ -317,6 +516,7 @@ pub fn point_mass_problem(
     free_vel: Vec3,
     material: &ContactMaterial,
     depth: f64,
+    dt: f64,
     restitution_threshold: f64,
 ) -> ContactProblem {
     let inv_m = 1.0 / mass;
@@ -335,10 +535,6 @@ pub fn point_mass_problem(
         // Restitution: the target normal velocity is `-e * v_approach`
         // rather than 0, folded into b.
         free_velocity: vec![free_vel.x * (1.0 + e), free_vel.y, free_vel.z],
-        rows: vec![ContactRow {
-            mu: material.friction,
-            restitution: e,
-            depth,
-        }],
+        rows: vec![ContactRow::from_material(material, depth, dt, e)],
     }
 }

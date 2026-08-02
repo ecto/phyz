@@ -34,6 +34,7 @@ fn problem(n: usize, mu: f64, b: &[f64], coupling: f64) -> ContactProblem {
                 mu,
                 restitution: 0.0,
                 depth: 1e-4,
+                ..Default::default()
             };
             n
         ],
@@ -309,4 +310,88 @@ fn regularization_smooths_the_response() {
         soft <= stiff + 1e-9,
         "softening should not worsen the kink: stiff {stiff}, soft {soft}"
     );
+}
+
+/// `df/ddepth` — the sensitivity channel that position stabilization added.
+///
+/// Penetration now enters the solve through the solref bias, so a trajectory
+/// adjoint that only contracted through `df/db` would report that penetration
+/// has no effect on the impulses. It has exactly one, and this pins it against
+/// a central difference taken through the *whole* pipeline: perturb the depth,
+/// rebuild the rows from the material, re-solve.
+///
+/// The depths here are past `solimp.width`, where the impedance is pinned at
+/// `dmax`. That is the regime the analytic form claims to cover — the
+/// deliberately excluded second-order path is the impedance's own depth
+/// dependence, which only exists inside the sigmoid's width.
+#[test]
+fn depth_gradient_matches_finite_difference() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::gradients();
+    let dt = 1e-3;
+    let material = ContactMaterial {
+        friction: 0.9,
+        ..ContactMaterial::default()
+    };
+    let depth = 5e-3; // Well past solimp.width, so `d` is pinned at dmax.
+
+    let build = |d: f64| {
+        let mut p = problem(1, material.friction, &[-0.4, 0.02, 0.0], 0.0);
+        p.rows[0] = ContactRow::from_material(&material, d, dt, 0.0);
+        p
+    };
+
+    let p = build(depth);
+    let sol = solve_contacts(&p, &cfg);
+    assert!(sol.converged);
+    assert_eq!(
+        classify(&p, &sol, 1e-7)[0],
+        ContactRegime::Sticking,
+        "this fixture is meant to exercise the sticking branch"
+    );
+
+    let sens = depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged");
+
+    for h in [1e-5, 1e-6, 1e-7] {
+        let plus = solve_contacts(&build(depth + h), &cfg);
+        let minus = solve_contacts(&build(depth - h), &cfg);
+        let fd = (plus.impulses[0] - minus.impulses[0]) / (2.0 * h);
+        for (k, want) in [fd.x, fd.y, fd.z].iter().enumerate() {
+            let got = sens[k * p.n];
+            assert!(
+                (got - want).abs() <= 1e-6 * want.abs().max(1.0),
+                "h={h}: d f[{k}]/d depth analytic {got} vs finite difference {want}"
+            );
+        }
+    }
+
+    // Deeper penetration must push harder, not less.
+    assert!(
+        sens[0] > 0.0,
+        "d f_n / d depth = {} should be positive",
+        sens[0]
+    );
+}
+
+/// A separating contact carries no impulse, so its depth cannot matter either.
+#[test]
+fn depth_gradient_is_zero_when_separating() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::simulation();
+    let material = ContactMaterial::default();
+    let dt = 1e-3;
+    // Moving apart fast enough that no bias this small closes the gap.
+    let mut p = problem(1, 0.5, &[2.0, 0.0, 0.0], 0.0);
+    p.rows[0] = ContactRow::from_material(&material, 1e-5, dt, 0.0);
+    let sol = solve_contacts(&p, &cfg);
+    assert_eq!(classify(&p, &sol, 1e-7)[0], ContactRegime::Separating);
+
+    let sens = depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged");
+    for (k, v) in sens.iter().enumerate() {
+        assert_eq!(*v, 0.0, "separating contact has a depth sensitivity at {k}");
+    }
 }
