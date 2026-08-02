@@ -3048,6 +3048,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-camera"
+version = "0.3.1"
+dependencies = [
+ "bytemuck",
+ "phyz-collision",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "phyz-urdf",
+ "phyz-world",
+ "pollster",
+ "thiserror 2.0.18",
+ "wgpu 23.0.1",
+]
+
+[[package]]
 name = "phyz-collision"
 version = "0.3.1"
 dependencies = [

@@ -60,6 +60,128 @@ pub enum Sensor {
     Imu { body_idx: usize },
     /// Snapshot of body transform: `[x, y, z, qw, qx, qy, qz]` in world frame.
     FrameCapture { body_idx: usize },
+    /// A pinhole RGBD camera rigidly mounted on a body.
+    ///
+    /// This variant is a *descriptor only*. Images are far too large to travel
+    /// through [`SensorOutput::data`], so reading a camera through
+    /// [`Sensor::read`] yields an empty `data` vector; the pixels come from the
+    /// `phyz-camera` crate, which renders this descriptor against the same
+    /// [`SensorContext`] and returns a `CameraFrame`.
+    ///
+    /// See [`CameraIntrinsics`] for the optical-frame and depth conventions.
+    Camera {
+        /// Body the camera is bolted to.
+        body_idx: usize,
+        /// Placement of the *optical* frame within the body frame.
+        ///
+        /// Same convention as [`phyz_model::GeomInstance::origin`]:
+        /// `origin.pos` is the optical-frame origin expressed in body
+        /// coordinates, and `origin.rot` is the coordinate transform
+        /// *body → optical*, so the camera's orientation in the body frame is
+        /// `origin.rot.transpose()`.
+        origin: SpatialTransform,
+        /// Pinhole intrinsics and image size.
+        intrinsics: CameraIntrinsics,
+    },
+}
+
+/// Pinhole intrinsics for [`Sensor::Camera`].
+///
+/// # Conventions (read this before believing any pixel)
+///
+/// **Optical frame: OpenCV.** The camera looks down its own **+Z** axis, **+X**
+/// points right across the image, and **+Y** points *down* the image. This is
+/// *not* the ROS body convention (+X forward, +Z up) — a REP-103 style mount is
+/// expressed by putting that rotation into the camera's extrinsics
+/// ([`Sensor::Camera::origin`]), not by changing the optical frame.
+///
+/// **Pixel coordinates.** `u` increases to the right, `v` increases downward,
+/// and pixel *centres* sit at half-integers: the top-left pixel's centre is
+/// `(0.5, 0.5)`. Projection is `u = fx·X/Z + cx`, `v = fy·Y/Z + cy`.
+///
+/// **Depth is linear metres along the optical axis** — the camera-space `Z`
+/// coordinate of the surface, *not* the Euclidean ray length to it, and not a
+/// normalised or reciprocal depth-buffer value. A wall 2 m in front of the
+/// camera reads exactly `2.0` at every pixel that sees it, corners included.
+/// Pixels with no return read `0.0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraIntrinsics {
+    /// Focal length in pixels along `x`.
+    pub fx: f64,
+    /// Focal length in pixels along `y`.
+    pub fy: f64,
+    /// Principal point `x`, in pixels from the left image edge.
+    pub cx: f64,
+    /// Principal point `y`, in pixels from the top image edge.
+    pub cy: f64,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Near clip distance in metres. Surfaces closer than this are not drawn.
+    pub near: f64,
+    /// Far clip distance in metres. Surfaces beyond this are not drawn.
+    pub far: f64,
+}
+
+impl CameraIntrinsics {
+    /// Intrinsics from a vertical field of view, with a centred principal point
+    /// and square pixels.
+    pub fn from_vfov(width: u32, height: u32, vfov_rad: f64, near: f64, far: f64) -> Self {
+        let fy = 0.5 * height as f64 / (0.5 * vfov_rad).tan();
+        Self {
+            fx: fy,
+            fy,
+            cx: width as f64 / 2.0,
+            cy: height as f64 / 2.0,
+            width,
+            height,
+            near,
+            far,
+        }
+    }
+
+    /// Number of pixels in one image.
+    pub fn pixel_count(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// Project a point given in the *optical* frame to pixel coordinates.
+    ///
+    /// Returns `None` when the point is outside `[near, far]` along the optical
+    /// axis, where projection is meaningless. The returned coordinates are
+    /// continuous and may fall outside the image.
+    pub fn project(&self, p_optical: Vec3) -> Option<(f64, f64)> {
+        if !(p_optical.z >= self.near && p_optical.z <= self.far) {
+            return None;
+        }
+        Some((
+            self.fx * p_optical.x / p_optical.z + self.cx,
+            self.fy * p_optical.y / p_optical.z + self.cy,
+        ))
+    }
+
+    /// Inverse of [`Self::project`]: pixel plus linear depth back to a point in
+    /// the optical frame. `depth` is metres along the optical axis.
+    pub fn unproject(&self, u: f64, v: f64, depth: f64) -> Vec3 {
+        Vec3::new(
+            (u - self.cx) * depth / self.fx,
+            (v - self.cy) * depth / self.fy,
+            depth,
+        )
+    }
+
+    /// Whether these intrinsics describe a usable image.
+    pub fn is_valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.fx.is_finite()
+            && self.fy.is_finite()
+            && self.fx > 0.0
+            && self.fy > 0.0
+            && self.near > 0.0
+            && self.far > self.near
+    }
 }
 
 /// Output from a sensor reading.
@@ -223,6 +345,15 @@ impl Sensor {
                 let (w, x, y, z) = mat3_to_quat(&xf.rot.transpose());
                 vec![xf.pos.x, xf.pos.y, xf.pos.z, w, x, y, z]
             }
+
+            // Images do not fit in a `Vec<f64>` observation and must not be
+            // smuggled through one. A camera reads as empty here; render it with
+            // `phyz-camera` to get pixels. `body_idx` is still validated so a
+            // mis-wired camera fails at the same place every other sensor does.
+            Sensor::Camera { body_idx, .. } => {
+                check_body(model, *body_idx);
+                Vec::new()
+            }
         };
 
         SensorOutput {
@@ -316,6 +447,9 @@ impl Sensor {
             Sensor::Contact { .. } => 5,      // count + depth + normal
             Sensor::Imu { .. } => 6,          // accel (3) + gyro (3)
             Sensor::FrameCapture { .. } => 7, // pos (3) + quat (4)
+            // Zero scalars by design: a camera's payload is an image, delivered
+            // out of band by `phyz-camera`, not packed into `SensorOutput`.
+            Sensor::Camera { .. } => 0,
         }
     }
 }
