@@ -489,7 +489,7 @@ mod tests {
 
             // Finite-difference check.
             let mut phases_work = phases.clone();
-            for i in 0..complex.n_edges().min(20) {
+            for i in 0..complex.n_edges() {
                 phases_work[i] = phases[i] + FD_STEP;
                 let sp = maxwell_action(&complex, &lengths, &phases_work);
                 phases_work[i] = phases[i] - FD_STEP;
