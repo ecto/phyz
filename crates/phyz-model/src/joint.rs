@@ -281,12 +281,29 @@ impl Joint {
                 SpatialTransform::new(rot, Vec3::zeros())
             }
             JointType::Free => {
-                // q = [x, y, z, wx, wy, wz]: position in parent coords plus
-                // exp-coords of the child→parent rotation. Same transpose as
-                // Spherical; the Plücker translation is the joint origin in
-                // parent coordinates and stays as-is.
-                let pos = Vec3::new(q[0], q[1], q[2]);
-                let w = Vec3::new(q[3], q[4], q[5]);
+                // ### FREE-JOINT DOF ORDER — ANGULAR FIRST. ###
+                //
+                // q = [wx, wy, wz, x, y, z]: exp-coords of the child→parent
+                // rotation, *then* position in parent coords. This matches
+                // `SpatialVec`'s `[angular; linear]` order, which is what the
+                // free joint's motion subspace (the 6×6 identity, see
+                // `motion_subspace_matrix`) and therefore `v`, `qdd`, `tau`,
+                // the Jacobians and the contact solver all use.
+                //
+                // It did NOT used to. Until this was fixed, `q` was
+                // `[x, y, z, wx, wy, wz]` — translation first — while `v` was
+                // angular first, so the flat `q += v·dt` that most callers
+                // performed fed the vertical acceleration into the yaw
+                // exponential coordinate: a free body released under gravity
+                // never fell, it spun up at 9.81 rad/s². If you are changing
+                // this, change `phyz_rigid::integrate_configuration` and the
+                // GPU `INTEGRATE_SHADER` in the same commit.
+                //
+                // Note this is *not* `phyz_diff`'s rollout layout, which packs
+                // a free joint as `[x, y, z, quat(4)]` in its own private
+                // `DofLayout` and never shares indices with `State::q`.
+                let w = Vec3::new(q[0], q[1], q[2]);
+                let pos = Vec3::new(q[3], q[4], q[5]);
                 let rot = Quat::exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, pos)
             }

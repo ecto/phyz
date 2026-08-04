@@ -55,10 +55,10 @@ fn body_drop_on_fixed_body_with_contacts() {
     let mut state = model.default_state();
 
     // Place the accessory just slightly overlapping the host on the +z side.
-    // Free joint q layout = [x, y, z, wx, wy, wz]; we only set z so the
+    // Free joint q layout = [wx, wy, wz, x, y, z]; we only set z so the
     // sphere centre sits at z = 0.05, penetrating the box's top face (z = 0.1).
     let q_offset = model.q_offsets[model.bodies[1].joint_idx];
-    state.q[q_offset + 2] = 0.05;
+    state.q[q_offset + 5] = 0.05;
 
     // Manually populate body transforms instead of going through FK so we have
     // an unambiguous contact geometry independent of joint conventions.

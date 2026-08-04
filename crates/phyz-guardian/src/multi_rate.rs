@@ -67,7 +67,12 @@ impl RRespaIntegrator {
 
             state.v += &(&acc_fast * self.dt_inner);
             let v_copy = state.v.clone();
-            state.q += &(&v_copy * self.dt_inner);
+            phyz_rigid::integrate_configuration(
+                model,
+                state.q.as_mut_slice(),
+                v_copy.as_slice(),
+                self.dt_inner,
+            );
         }
 
         // Outer half-step: slow forces

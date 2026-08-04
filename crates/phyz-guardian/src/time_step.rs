@@ -149,19 +149,19 @@ impl EmbeddedRkError {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &(&dq1 * (dt / 2.0));
+        phyz_rigid::integrate_configuration(model, s2.q.as_mut_slice(), dq1.as_slice(), dt / 2.0);
         s2.v += &(&dv1 * (dt / 2.0));
         let (dq2, dv2) = derivatives_fn(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &(&dq2 * (dt / 2.0));
+        phyz_rigid::integrate_configuration(model, s3.q.as_mut_slice(), dq2.as_slice(), dt / 2.0);
         s3.v += &(&dv2 * (dt / 2.0));
         let (dq3, dv3) = derivatives_fn(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &(&dq3 * dt);
+        phyz_rigid::integrate_configuration(model, s4.q.as_mut_slice(), dq3.as_slice(), dt);
         s4.v += &(&dv3 * dt);
         let (dq4, dv4) = derivatives_fn(model, &s4);
 
@@ -174,7 +174,8 @@ impl EmbeddedRkError {
             &dvec_add(&dv1, &(&dv2 * 2.0)),
             &dvec_add(&(&dv3 * 2.0), &dv4),
         );
-        result.q += &(&dq_sum * (dt / 6.0));
+        let dq_avg = &dq_sum * (1.0 / 6.0);
+        phyz_rigid::integrate_configuration(model, result.q.as_mut_slice(), dq_avg.as_slice(), dt);
         result.v += &(&dv_sum * (dt / 6.0));
 
         result
@@ -194,7 +195,7 @@ impl EmbeddedRkError {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &(&dq1 * (dt / 5.0));
+        phyz_rigid::integrate_configuration(model, s2.q.as_mut_slice(), dq1.as_slice(), dt / 5.0);
         s2.v += &(&dv1 * (dt / 5.0));
         let (dq2, dv2) = derivatives_fn(model, &s2);
 
@@ -202,7 +203,7 @@ impl EmbeddedRkError {
         let mut s3 = state.clone();
         let dq3_inc = dvec_add(&(&dq1 * (3.0 / 40.0)), &(&dq2 * (9.0 / 40.0)));
         let dv3_inc = dvec_add(&(&dv1 * (3.0 / 40.0)), &(&dv2 * (9.0 / 40.0)));
-        s3.q += &(&dq3_inc * dt);
+        phyz_rigid::integrate_configuration(model, s3.q.as_mut_slice(), dq3_inc.as_slice(), dt);
         s3.v += &(&dv3_inc * dt);
         let (dq3, dv3) = derivatives_fn(model, &s3);
 
@@ -216,7 +217,7 @@ impl EmbeddedRkError {
             &dvec_sub(&(&dv1 * (3.0 / 10.0)), &(&dv2 * (9.0 / 10.0))),
             &(&dv3 * (6.0 / 5.0)),
         );
-        s4.q += &(&dq4_inc * dt);
+        phyz_rigid::integrate_configuration(model, s4.q.as_mut_slice(), dq4_inc.as_slice(), dt);
         s4.v += &(&dv4_inc * dt);
         let (dq4, dv4) = derivatives_fn(model, &s4);
 
@@ -230,7 +231,7 @@ impl EmbeddedRkError {
             &dvec_add(&(&dv1 * (-11.0 / 54.0)), &(&dv2 * (5.0 / 2.0))),
             &dvec_add(&(&dv3 * (-70.0 / 27.0)), &(&dv4 * (35.0 / 27.0))),
         );
-        s5.q += &(&dq5_inc * dt);
+        phyz_rigid::integrate_configuration(model, s5.q.as_mut_slice(), dq5_inc.as_slice(), dt);
         s5.v += &(&dv5_inc * dt);
         let (dq5, dv5) = derivatives_fn(model, &s5);
 
@@ -243,7 +244,12 @@ impl EmbeddedRkError {
             &dvec_add(&(&dv1 * (37.0 / 378.0)), &(&dv3 * (250.0 / 621.0))),
             &dvec_add(&(&dv4 * (125.0 / 594.0)), &(&dv5 * (512.0 / 1771.0))),
         );
-        result.q += &(&dq_final * dt);
+        phyz_rigid::integrate_configuration(
+            model,
+            result.q.as_mut_slice(),
+            dq_final.as_slice(),
+            dt,
+        );
         result.v += &(&dv_final * dt);
 
         result

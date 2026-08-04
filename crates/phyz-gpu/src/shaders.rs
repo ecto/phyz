@@ -147,9 +147,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
         } else if (jtype == 4u) {
-            let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            // Free: q = [exp-coords(3), pos(3)] — angular first, matching v.
+            let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
-            j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
+            j_pos = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
         } else {
             j_rot = identity_rot();
         }
@@ -335,9 +336,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ///
 /// Must match `phyz_rigid::semi_implicit_euler` exactly. A flat `q += dt * v`
 /// is wrong for ball and free joints because `q` and `v` use different
-/// parameterisations — for a free joint `q` is `[pos(3), exp-coords(3)]` while
-/// `v` is `[angular(3), linear(3)]`, so the naive update adds angular velocity
-/// into position.
+/// parameterisations — a free joint's `q` is `[exp-coords(3), pos(3)]`, which
+/// matches `v`'s `[angular(3), linear(3)]` slot for slot, but the rotational
+/// slots are exponential coordinates (needing a Lie-group step) and the linear
+/// velocity is body-frame (needing a rotation into the parent frame).
 ///
 /// One thread per (environment, joint) pair, so joints in the same environment
 /// touch disjoint `q`/`v` ranges and no synchronisation is needed.
@@ -443,19 +445,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // Free: v = [angular(3), linear(3)], q = [pos(3), exp-coords(3)].
+    // Free: v = [angular(3), linear(3)], q = [exp-coords(3), pos(3)].
     let omega = vec3<f32>(v[v_off], v[v_off + 1u], v[v_off + 2u]);
     let lin = vec3<f32>(v[v_off + 3u], v[v_off + 4u], v[v_off + 5u]);
-    let cur = qexp(vec3<f32>(q[q_off + 3u], q[q_off + 4u], q[q_off + 5u]));
+    let cur = qexp(vec3<f32>(q[q_off], q[q_off + 1u], q[q_off + 2u]));
 
     let world_lin = qrotate(cur, lin);
-    q[q_off] = q[q_off] + dt * world_lin.x;
-    q[q_off + 1u] = q[q_off + 1u] + dt * world_lin.y;
-    q[q_off + 2u] = q[q_off + 2u] + dt * world_lin.z;
+    q[q_off + 3u] = q[q_off + 3u] + dt * world_lin.x;
+    q[q_off + 4u] = q[q_off + 4u] + dt * world_lin.y;
+    q[q_off + 5u] = q[q_off + 5u] + dt * world_lin.z;
 
     let nxt = normalize(qmul(cur, qexp(omega * dt)));
     let lg = qlog(nxt);
-    q[q_off + 3u] = lg.x; q[q_off + 4u] = lg.y; q[q_off + 5u] = lg.z;
+    q[q_off] = lg.x; q[q_off + 1u] = lg.y; q[q_off + 2u] = lg.z;
 }
 "#;
 
@@ -1045,10 +1047,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             j_rot = quat_to_rot(quat_exp(-w));
             j_pos = vec3<f32>(0.0, 0.0, 0.0);
         } else if (jtype == 4u) {
-            // Free: q = [pos(3), exponential coordinates(3)].
-            let w = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            // Free: q = [exponential coordinates(3), pos(3)] — angular first,
+            // matching v's [angular; linear].
+            let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = quat_to_rot(quat_exp(-w));
-            j_pos = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
+            j_pos = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
         } else {
             // Prismatic
             let q_val = q[q_base + q_off];

@@ -534,7 +534,7 @@ mod tests {
         let state = model.default_state();
         let qdd = aba(&model, &state);
 
-        // Free joint DOFs: [wx, wy, wz, vx, vy, vz] mapping to q = [x, y, z, wx, wy, wz]
+        // Free joint DOFs: v = [wx, wy, wz, vx, vy, vz], q = [wx, wy, wz, x, y, z]
         // Accelerations: angular should be 0, linear z should be -g
         assert!(qdd[0].abs() < 1e-10, "ang_x accel = {}", qdd[0]);
         assert!(qdd[1].abs() < 1e-10, "ang_y accel = {}", qdd[1]);

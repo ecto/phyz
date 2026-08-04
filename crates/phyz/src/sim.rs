@@ -15,7 +15,7 @@ use phyz_contact::{
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
 use phyz_model::{Geometry, Model, State};
-use phyz_rigid::{aba, forward_kinematics};
+use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
 use std::cell::RefCell;
 
 /// Pluggable solver trait.
@@ -40,7 +40,10 @@ impl Solver for SemiImplicitEulerSolver {
         // Semi-implicit Euler: update velocity first, then position
         state.v += &(&qdd * dt);
         let v_clone = state.v.clone();
-        state.q += &(&v_clone * dt);
+        // NOT `q += v*dt`: free and ball joints parameterise rotation with
+        // exponential coordinates, and a free joint's linear velocity is
+        // body-frame. See `phyz_rigid::integrate_configuration`.
+        integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
         state.time += dt;
 
         // Update body transforms via FK
@@ -78,25 +81,31 @@ impl Solver for Rk4Solver {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &(&dq1 * (dt / 2.0));
+        integrate_configuration(model, s2.q.as_mut_slice(), dq1.as_slice(), dt / 2.0);
         s2.v += &(&dv1 * (dt / 2.0));
         let (dq2, dv2) = Self::derivatives(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &(&dq2 * (dt / 2.0));
+        integrate_configuration(model, s3.q.as_mut_slice(), dq2.as_slice(), dt / 2.0);
         s3.v += &(&dv2 * (dt / 2.0));
         let (dq3, dv3) = Self::derivatives(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &(&dq3 * dt);
+        integrate_configuration(model, s4.q.as_mut_slice(), dq3.as_slice(), dt);
         s4.v += &(&dv3 * dt);
         let (dq4, dv4) = Self::derivatives(model, &s4);
 
         // Combine
         let dq_sum = &(&(&dq1 + &(&dq2 * 2.0)) + &(&dq3 * 2.0)) + &dq4;
-        state.q += &(&dq_sum * (dt / 6.0));
+        // The RK4 weighted average is applied as a single configuration step so
+        // rotational sub-blocks stay on the manifold. This makes the *stage*
+        // combination first-order-ish for rotations rather than a true RK4 on
+        // the Lie group (a Munthe-Kaas scheme would be); it is still strictly
+        // better than adding angular rates into position slots.
+        let dq_avg = &dq_sum * (1.0 / 6.0);
+        integrate_configuration(model, state.q.as_mut_slice(), dq_avg.as_slice(), dt);
         let dv_sum = &(&(&dv1 + &(&dv2 * 2.0)) + &(&dv3 * 2.0)) + &dv4;
         state.v += &(&dv_sum * (dt / 6.0));
         state.time += dt;
@@ -240,7 +249,7 @@ impl Simulator {
         }
 
         let v_clone = state.v.clone();
-        state.q += &(&v_clone * dt);
+        integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
 
         state.time += dt;
 

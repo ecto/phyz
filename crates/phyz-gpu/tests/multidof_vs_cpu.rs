@@ -112,7 +112,8 @@ fn compare(model: &Model, state: &State, tol: f64, label: &str) {
 fn free_joint_matches_cpu() {
     let model = free_body();
     let mut s = model.default_state();
-    s.q[2] = 1.0; // 1 m up
+    // Free joint q = [wx, wy, wz, x, y, z].
+    s.q[5] = 1.0; // 1 m up
     s.v[0] = 0.3; // spin about x
     s.v[5] = -0.2; // moving along body z
     compare(&model, &s, 1e-4, "free_joint");
@@ -124,7 +125,7 @@ fn free_joint_matches_cpu() {
 fn free_body_actually_falls_on_gpu() {
     let model = free_body();
     let mut s = model.default_state();
-    s.q[2] = 5.0;
+    s.q[5] = 5.0;
 
     let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
@@ -136,7 +137,7 @@ fn free_body_actually_falls_on_gpu() {
     }
     let out = sim.readback_states();
 
-    let dropped = 5.0 - out[0].q[2];
+    let dropped = 5.0 - out[0].q[5];
     // 0.2 s of free fall ≈ 0.196 m.
     assert!(
         dropped > 0.15 && dropped < 0.25,
@@ -222,7 +223,7 @@ fn ant_runs_on_gpu() {
     };
 
     let mut s = model.default_state();
-    s.q[2] = 0.75;
+    s.q[5] = 0.75; // free-joint z
     let states = vec![s; 64];
     sim.load_states(&states);
     for _ in 0..100 {
@@ -236,8 +237,8 @@ fn ant_runs_on_gpu() {
         "ant diverged on GPU"
     );
     assert!(
-        out[0].q[2] < 0.75,
+        out[0].q[5] < 0.75,
         "ant torso should fall without contact; z = {}",
-        out[0].q[2]
+        out[0].q[5]
     );
 }
