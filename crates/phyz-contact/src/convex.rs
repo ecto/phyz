@@ -219,6 +219,19 @@ pub struct ContactRow {
     /// [`ContactSolverConfig::regularization`]. `1` means "as rigid as the
     /// config floor allows".
     pub impedance: f64,
+    /// `d(impedance)/d(depth)` at this contact's depth, from
+    /// [`ContactMaterial::dimpedance_ddepth`].
+    ///
+    /// Carried on the row rather than recomputed because the material is only
+    /// in scope at assembly time, and because [`crate::gradient`] must
+    /// differentiate *the impedance this row was actually built with*. It is
+    /// the derivative of the same `impedance` field directly above it; the two
+    /// are set together by [`Self::from_material`] and should never be set
+    /// apart.
+    ///
+    /// Zero on a hand-built row, which is the right default: a row whose
+    /// impedance was pinned by hand does not vary with depth.
+    pub dimpedance_ddepth: f64,
 }
 
 impl ContactRow {
@@ -244,7 +257,12 @@ impl ContactRow {
         restitution: f64,
     ) -> Self {
         let violation = depth.max(0.0);
-        let d = material.solimp.impedance(violation);
+        // `impedance_at` is `solimp.impedance` exactly on the penetrating side
+        // and tapers to zero across `material.margin` below it, so a contact
+        // detected within the margin sheds its force continuously instead of
+        // being cut off while still carrying load. See
+        // [`ContactMaterial::impedance_at`].
+        let d = material.impedance_at(depth);
         let bias = if dt > 0.0 {
             d * material.solref.error_reduction(dt) * violation / dt
         } else {
@@ -256,6 +274,7 @@ impl ContactRow {
             depth,
             bias,
             impedance: d,
+            dimpedance_ddepth: material.dimpedance_ddepth(depth),
         }
     }
 }
@@ -269,6 +288,7 @@ impl Default for ContactRow {
             bias: 0.0,
             // Fully rigid: the regularizer falls back to the config floor.
             impedance: 1.0,
+            dimpedance_ddepth: 0.0,
         }
     }
 }
@@ -369,6 +389,55 @@ pub fn regularization_diag(
     } else {
         config.regularization
     };
+    [normal, tangent, tangent]
+}
+
+/// `d(R)/d(depth)` for contact `c`, one entry per row of its frame.
+///
+/// The exact derivative of [`regularization_diag`], and it must stay exact
+/// against *that function* rather than against the formula in its docs — every
+/// clamp and floor in the regularizer is a place where this channel is shut
+/// off, and a derivative that ignored them would be reporting motion in a
+/// quantity that is pinned:
+///
+/// - The impedance is clamped to `[1e-6, 1]` before use. Outside that range `R`
+///   does not respond to `d` at all, so the derivative is zero.
+/// - The normal entry is floored at `config.regularization`. Where the floor
+///   binds, `R` is constant and the derivative is zero.
+/// - The tangential entries are the config floor unless
+///   [`ContactSolverConfig::mujoco_compat`], so they are zero unless that flag
+///   puts the impedance-derived value on them too.
+///
+/// Inside the live region `R = (1-d)/d * A_nn`, so `dR/dd = -A_nn/d^2` and the
+/// chain rule closes with `dd/ddepth` from the row.
+///
+/// This exists because [`crate::gradient::depth_sensitivity`] needs it: with a
+/// contact margin, a separated-but-detected contact has zero stabilization
+/// bias, which makes the regularizer the *only* route from depth to force.
+pub fn regularization_depth_derivative(
+    problem: &ContactProblem,
+    c: usize,
+    config: &ContactSolverConfig,
+) -> [f64; 3] {
+    let dim = 3 * problem.n;
+    let base = 3 * c;
+    let row = &problem.rows[c];
+    let d_raw = row.impedance;
+    let d = d_raw.clamp(1e-6, 1.0);
+    // Where the clamp binds, `R` is frozen with respect to the impedance.
+    let dd = if d_raw > 1e-6 && d_raw < 1.0 {
+        row.dimpedance_ddepth
+    } else {
+        0.0
+    };
+    let a_nn = problem.delassus[base * dim + base];
+    let normal = if (1.0 - d) / d * a_nn > config.regularization {
+        -a_nn * dd / (d * d)
+    } else {
+        // The floor binds: `R` is the constant `config.regularization`.
+        0.0
+    };
+    let tangent = if config.mujoco_compat { normal } else { 0.0 };
     [normal, tangent, tangent]
 }
 

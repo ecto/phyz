@@ -112,6 +112,10 @@ pub fn assemble(
         // Target normal velocity is `+e * approach` instead of 0.
         free_velocity[3 * ci] *= 1.0 + e;
 
+        // `from_material` applies the margin ramp itself (and records the
+        // impedance's depth derivative alongside it, which the gradient needs),
+        // so a separated-but-detected contact comes out with a tapering
+        // impedance rather than the full `dmin`.
         rows.push(ContactRow::from_material(
             &material,
             c.penetration_depth,

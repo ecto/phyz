@@ -287,7 +287,10 @@ impl PhyzSim {
             // cheap plane query against the ground, and the full broad-phase +
             // GJK/EPA path between boxes. Benchmarking only the former would
             // flatter the engine.
-            let mut contacts: Vec<Collision> = find_ground_contacts(&self.state, &self.geoms, 0.0);
+            let mut contacts: Vec<Collision> = // Zero margin: the deprecated penalty force law this scene
+            // benchmarks ignores non-penetrating contacts anyway, so a margin
+            // would only add rows that contribute nothing.
+            find_ground_contacts(&self.state, &self.geoms, 0.0, 0.0);
             contacts.extend(find_contacts(&self.model, &self.state, &self.geoms));
             #[allow(deprecated)]
             let forces: Vec<SpatialVec> =

@@ -29,6 +29,19 @@ fn convert_geometry(g: &ModelGeometry) -> phyz_collision::Geometry {
 }
 
 /// Find all contacts in the current state.
+///
+/// # Known gap: this path has no margin
+///
+/// The `dist < 0.0` predicate below is the same zero-margin cutoff that
+/// [`find_ground_contacts`] used to have, and it has the same consequence: a
+/// pair at exactly touching distance still carries `solimp.dmin` of the load
+/// and then drops to nothing. It is deliberately *not* fixed here, because the
+/// fix is not the same one. Ground contacts have an analytic signed distance
+/// per candidate point, so a negative depth is just arithmetic; a general pair
+/// gets its manifold from `contact_manifold`, which is EPA-based and only
+/// defined on the penetrating side. Producing separated manifolds needs a
+/// GJK witness-point/closest-feature path that does not exist yet. Tracked
+/// separately; see the `find_ground_contacts` docs for the physics.
 pub fn find_contacts(
     _model: &Model,
     state: &State,
@@ -300,12 +313,52 @@ pub fn contact_forces_implicit(
 /// axis-aligned half-extent for depth and put one contact at the body centre's
 /// `(x, y)`. A tilted box therefore reported the wrong depth at a point that
 /// was not on the box, and no box could resist tipping.
+///
+/// # Margin
+///
+/// `margin` (metres) is the band *above* the plane in which a candidate still
+/// produces a contact, reported with a **negative** `penetration_depth` equal to
+/// minus its gap. Pass [`ContactMaterial::margin`] — that is the knob, and it is
+/// what [`ContactMaterial::combine`] already mixes with `max`. Pass `0.0` to get
+/// the old hard `p.z < ground_height` predicate back.
+///
+/// The predicate used to be exactly that hard cutoff, and that was a real bug
+/// rather than a cosmetic one. Contact here is *soft*: a candidate at exactly
+/// zero depth still has impedance `solimp.dmin` (0.9 by default), so it carries
+/// nearly its full share of the load right up to the instant it stops existing.
+/// On a K1 humanoid stance the least-loaded foot corner was measured carrying
+/// **22.3 N — 11% of body weight — on the step before it vanished**, and 0 N on
+/// the next. Total vertical force was conserved (the load redistributed to the
+/// remaining corners), so nothing leaked; but the contact *set* jumped, and it
+/// jumped underneath a balancing controller.
+///
+/// With a margin the candidate survives past the surface with a negative depth,
+/// and [`ContactMaterial::impedance_at`] tapers its impedance — and hence the
+/// normal force, which is linear in impedance — smoothly to zero at the band
+/// edge. Separated contacts get no stabilization bias and cannot pull, so this
+/// buys continuity without buying adhesion.
+///
+/// Candidates are still ranked deepest-first before the manifold cap, so the
+/// margin never lets a barely-separated point displace a genuinely loaded one.
+///
+/// [`ContactMaterial::margin`]: crate::material::ContactMaterial::margin
+/// [`ContactMaterial::combine`]: crate::material::ContactMaterial::combine
+/// [`ContactMaterial::impedance_at`]: crate::material::ContactMaterial::impedance_at
 pub fn find_ground_contacts(
     state: &State,
     geometries: &[Option<ModelGeometry>],
     ground_height: f64,
+    margin: f64,
 ) -> Vec<Collision> {
     let mut contacts = Vec::new();
+    // A negative margin would mean "ignore contacts that are already
+    // penetrating", which is never what a caller wants.
+    let margin = if margin.is_finite() {
+        margin.max(0.0)
+    } else {
+        0.0
+    };
+    let cutoff = ground_height + margin;
 
     for (i, geom_opt) in geometries.iter().enumerate() {
         let Some(geom) = geom_opt else { continue };
@@ -359,10 +412,15 @@ pub fn find_ground_contacts(
             ModelGeometry::Plane { .. } => continue,
         };
 
-        // Keep the penetrating points, deepest first, capped at a manifold.
+        // Keep the points within `margin` of the plane, deepest first, capped
+        // at a manifold. `depth` is signed: positive is penetration, negative
+        // is a gap inside the margin band. The comparison is strict, so a point
+        // at exactly `margin` is already excluded — and by then its impedance
+        // has already ramped to zero, which is what makes the exclusion a
+        // no-op rather than a step.
         let mut hits: Vec<(f64, Vec3)> = candidates
             .into_iter()
-            .filter(|p| p.z.is_finite() && p.z < ground_height)
+            .filter(|p| p.z.is_finite() && p.z < cutoff)
             .map(|p| (ground_height - p.z, p))
             .collect();
         if hits.is_empty() {
@@ -375,7 +433,9 @@ pub fn find_ground_contacts(
             contacts.push(Collision {
                 body_i: i,
                 body_j: usize::MAX, // Ground is not a body
-                // On the midsurface between the vertex and the plane.
+                // On the midsurface between the vertex and the plane. This
+                // stays correct for a negative depth: the midpoint simply sits
+                // above the plane rather than below it.
                 contact_point: Vec3::new(p.x, p.y, ground_height - depth * 0.5),
                 contact_normal: Vec3::z(),
                 penetration_depth: depth,

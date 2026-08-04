@@ -213,7 +213,10 @@ impl Simulator {
             model.bodies.iter().map(|b| b.geometry.clone()).collect();
 
         // Find ground contacts
-        let mut contacts = find_ground_contacts(state, &geometries, ground_height);
+        // The margin is what keeps a lightly-loaded support point from
+        // leaving the contact set while it is still carrying force; see
+        // `find_ground_contacts`.
+        let mut contacts = find_ground_contacts(state, &geometries, ground_height, material.margin);
 
         // Find body-body contacts
         let body_contacts = find_contacts(model, state, &geometries);
