@@ -97,7 +97,7 @@ use phyz_collision::Collision;
 use phyz_contact::gradient::FixedPointSensitivity;
 use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
-    find_contacts, find_ground_contacts, regularization_diag, solve_contacts_warm,
+    find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
 };
 use phyz_math::{DVec, Vec3};
 use phyz_model::{Geometry, Model, State};
@@ -256,18 +256,17 @@ struct Anchor {
 impl Anchor {
     /// Recover the anchor of a detected collision.
     ///
-    /// `find_ground_contacts` reports the *midsurface* point; the support
-    /// point itself is at `z = ground_height − depth`.
-    fn of(c: &Collision, geom: &Geometry, state: &State, ground_height: f64) -> Option<Self> {
-        let world_offset = match geom {
-            Geometry::Sphere { radius } | Geometry::Capsule { radius, .. } => {
-                Vec3::new(0.0, 0.0, -radius)
-            }
-            Geometry::Box { .. } | Geometry::Cylinder { .. } | Geometry::Mesh { .. } => {
-                Vec3::zeros()
-            }
-            Geometry::Plane { .. } => return None,
-        };
+    /// `drop` is the contact's world-axis drop as reported by
+    /// `find_ground_contacts_model_with_drop`: the radius by which a sphere or
+    /// capsule support point hangs below its centre along world `−ẑ`, zero for
+    /// material-point contacts (box corners, cylinder rims, mesh vertices).
+    /// Detection reports it per contact because a multi-shape body no longer
+    /// determines the producing shape by itself.
+    ///
+    /// Ground detection reports the *midsurface* point; the support point
+    /// itself is at `z = ground_height − depth`.
+    fn of(c: &Collision, drop: f64, state: &State, ground_height: f64) -> Self {
+        let world_offset = Vec3::new(0.0, 0.0, -drop);
         let xform = &state.body_xform[c.body_i];
         let support = Vec3::new(
             c.contact_point.x,
@@ -277,11 +276,11 @@ impl Anchor {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`.
         let material_point = xform.rot * (support - xform.pos - world_offset);
-        Some(Self {
+        Self {
             body: c.body_i,
             material_point,
             world_offset,
-        })
+        }
     }
 
     /// Re-evaluate the collision this anchor stands for at (the FK of) a
@@ -318,6 +317,10 @@ struct StepRecord {
     contact: Option<(ContactAssembly, ContactSolution)>,
 }
 
+/// The assembled problem and its solution for a contacted step (`None` when
+/// the step had no contacts).
+type StepSolve = Option<(ContactAssembly, ContactSolution)>;
+
 /// One step of the forward pass, mirroring `Simulator::step_with_contacts`
 /// operation for operation (FK → detect → free velocity → assemble →
 /// warm-started solve → integrate → FK).
@@ -328,7 +331,7 @@ fn forward_step(
     material: &ContactMaterial,
     config: &ContactSolverConfig,
     cache: &mut ContactCache,
-) -> (Vec<Collision>, Option<(ContactAssembly, ContactSolution)>) {
+) -> (Vec<(Collision, f64)>, StepSolve) {
     let dt = model.dt;
 
     let (xforms, _velocities) = forward_kinematics(model, state);
@@ -337,22 +340,28 @@ fn forward_step(
     let geometries: Vec<Option<Geometry>> =
         model.bodies.iter().map(|b| b.geometry.clone()).collect();
 
-    let mut contacts = find_ground_contacts(state, &geometries, ground_height, material.margin);
+    // Same detection as `Simulator::step_with_contacts` — the full collision
+    // set — plus each ground contact's world-axis drop, which the anchor
+    // recovery below needs. Body-body contacts carry a drop of zero; they are
+    // rejected as unsupported before it is ever read.
+    let mut contacts: Vec<(Collision, f64)> =
+        find_ground_contacts_model_with_drop(model, state, ground_height, material.margin);
     let body_contacts = find_contacts(model, state, &geometries);
-    contacts.extend(body_contacts);
+    contacts.extend(body_contacts.into_iter().map(|c| (c, 0.0)));
 
     let qdd = aba(model, state);
     let free_qd = &state.v + &(&qdd * dt);
 
+    let bare: Vec<Collision> = contacts.iter().map(|(c, _)| c.clone()).collect();
     let record = if contacts.is_empty() {
         state.v = free_qd;
         None
     } else {
         let materials = vec![material.clone(); model.bodies.len().max(1)];
-        let asm = assemble(model, state, &contacts, &materials, &free_qd, dt, config);
-        let seed = cache.warm_start(state, &contacts);
+        let asm = assemble(model, state, &bare, &materials, &free_qd, dt, config);
+        let seed = cache.warm_start(state, &bare);
         let solution = solve_contacts_warm(&asm.problem, config, &seed);
-        cache.store(state, &contacts, &solution.impulses);
+        cache.store(state, &bare, &solution.impulses);
         state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         Some((asm, solution))
     };
@@ -377,8 +386,6 @@ fn forward_rollout(
     state.v = rollout.v0.clone();
     let mut cache = ContactCache::default();
     let mut records = Vec::with_capacity(rollout.steps);
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
 
     for t in 0..rollout.steps {
         let q = state.q.clone();
@@ -408,24 +415,11 @@ fn forward_rollout(
         pre.v = v.clone();
         let (pre_xf, _) = forward_kinematics(model, &pre);
         pre.body_xform = pre_xf;
-        for c in &contacts {
+        for (c, drop) in &contacts {
             if c.body_j != usize::MAX {
                 return Err(ConvexAdjointError::BodyBodyContact { step: t });
             }
-            let geom =
-                geometries[c.body_i]
-                    .as_ref()
-                    .ok_or(ConvexAdjointError::UnsupportedGeometry {
-                        step: t,
-                        body: c.body_i,
-                    })?;
-            let anchor = Anchor::of(c, geom, &pre, rollout.ground_height).ok_or(
-                ConvexAdjointError::UnsupportedGeometry {
-                    step: t,
-                    body: c.body_i,
-                },
-            )?;
-            anchors.push(anchor);
+            anchors.push(Anchor::of(c, *drop, &pre, rollout.ground_height));
         }
 
         records.push(StepRecord {
