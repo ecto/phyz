@@ -48,7 +48,7 @@
 //! let mut camera = RgbdCamera::new(intrinsics)?;
 //!
 //! let scene = Scene::empty().with_ground(0.0);
-//! let ctx = SensorContext::new(model, state, &scene);
+//! let ctx = SensorContext::free_flight(model, state, &scene);
 //! let render_scene = RenderScene::from_context(&ctx, &SceneOptions::new());
 //!
 //! let pose = CameraPose::look_at(Vec3::new(0.0, -2.0, 1.0), Vec3::zeros(), Vec3::new(0.0, 0.0, 1.0));

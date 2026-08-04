@@ -158,7 +158,7 @@ fn head_mounted_camera_renders_the_robot_and_the_ground() {
     // A camera reads as an empty scalar observation: images must never be
     // smuggled through `SensorOutput.data`.
     let scene = Scene::empty().with_ground(0.0);
-    let ctx = SensorContext::new(&model, &state, &scene);
+    let ctx = SensorContext::free_flight(&model, &state, &scene);
     let out = sensor.read(&ctx, 0);
     assert!(out.data.is_empty(), "camera must not emit scalar samples");
     assert_eq!(sensor.output_dim(), 0);
@@ -223,7 +223,7 @@ fn a_non_camera_sensor_is_rejected() {
     let model = robot.model;
     let state = model.default_state();
     let scene = Scene::empty();
-    let ctx = SensorContext::new(&model, &state, &scene);
+    let ctx = SensorContext::free_flight(&model, &state, &scene);
 
     let err = sensor_pose(&ctx, &Sensor::Imu { body_idx: 0 }, 3).unwrap_err();
     assert!(matches!(err, CameraError::NotACamera { sensor_id: 3 }));

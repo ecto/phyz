@@ -3027,6 +3027,7 @@ dependencies = [
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
+ "phyz-world",
 ]
 
 [[package]]

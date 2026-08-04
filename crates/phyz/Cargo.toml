@@ -31,3 +31,9 @@ approx = "0.5"
 # Only the multi-DOF adjoint gate needs it: models/ant.xml is the free-floating
 # base regression case, and it lives in MJCF.
 phyz-mjcf.workspace = true
+# The contact-aware sensor gate needs both halves of the seam: the contact solve
+# lives here, the sensors live in phyz-world. Dev-only, so no dependency cycle.
+phyz-world.workspace = true
+phyz-contact.workspace = true
+phyz-math.workspace = true
+phyz-model.workspace = true
