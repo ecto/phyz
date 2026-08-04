@@ -363,7 +363,13 @@ pub fn find_ground_contacts(
     for (i, geom_opt) in geometries.iter().enumerate() {
         let Some(geom) = geom_opt else { continue };
         let xform = &state.body_xform[i];
-        let (pos, rot) = (xform.pos, xform.rot);
+        // `SpatialTransform::rot` is the *world→body* rotation (see
+        // `phyz_rigid::jacobian`, which spells this out and takes the transpose
+        // for exactly this purpose). Mapping a body-frame support offset out to
+        // world therefore needs the transpose. Using `rot` directly rotates the
+        // offset the wrong way, which is invisible at identity and inverts as
+        // soon as the body tilts.
+        let (pos, rot) = (xform.pos, xform.rot.transpose());
         if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
             continue;
         }
