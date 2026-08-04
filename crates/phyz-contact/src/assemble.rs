@@ -112,18 +112,16 @@ pub fn assemble(
         // Target normal velocity is `+e * approach` instead of 0.
         free_velocity[3 * ci] *= 1.0 + e;
 
-        let mut row = ContactRow::from_material(&material, c.penetration_depth, dt, e);
-        // Margin ramp. `from_material` reads impedance off `solimp` at
-        // `depth.max(0)`, so every separated contact would come out at the full
-        // `dmin` — which is the whole reason a contact could carry 11% of body
-        // weight on the step before it left the set. `impedance_at` is the same
-        // function on the penetrating side and tapers to zero across the margin
-        // band, and normal force is linear in impedance, so the force ramps out
-        // instead of being cut off. The bias stays whatever `from_material`
-        // computed (zero, for depth <= 0): a separated contact must not be
-        // pushed apart, and must certainly not be pulled together.
-        row.impedance = material.impedance_at(c.penetration_depth);
-        rows.push(row);
+        // `from_material` applies the margin ramp itself (and records the
+        // impedance's depth derivative alongside it, which the gradient needs),
+        // so a separated-but-detected contact comes out with a tapering
+        // impedance rather than the full `dmin`.
+        rows.push(ContactRow::from_material(
+            &material,
+            c.penetration_depth,
+            dt,
+            e,
+        ));
     }
 
     ContactAssembly {

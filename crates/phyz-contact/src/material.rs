@@ -115,6 +115,37 @@ impl SolImp {
         };
         dmin + y * (dmax - dmin)
     }
+
+    /// `d(impedance)/dr` at a **non-negative** violation `r`.
+    ///
+    /// Mirrors [`Self::impedance`] branch for branch, including its clamps: past
+    /// `width` the impedance is pinned at `dmax`, so the derivative is zero, and
+    /// a non-positive `width` makes it constant everywhere.
+    ///
+    /// Defined for `r >= 0` only. `impedance` takes `r.abs()`, so the function
+    /// has a kink at the origin whenever `power == 1`; for `power > 1` (the
+    /// default) both one-sided derivatives are zero there and this returns the
+    /// value that is correct from either side.
+    pub fn impedance_derivative(&self, r: f64) -> f64 {
+        let dmin = self.dmin.clamp(1e-4, 1.0 - 1e-9);
+        let dmax = self.dmax.clamp(1e-4, 1.0 - 1e-9);
+        if self.width <= 0.0 || r < 0.0 {
+            return 0.0;
+        }
+        let x = r / self.width;
+        if x >= 1.0 {
+            // Clamped at dmax: the sigmoid has stopped moving.
+            return 0.0;
+        }
+        let mid = self.midpoint.clamp(1e-6, 1.0 - 1e-6);
+        let p = self.power.max(1.0);
+        let dy_dx = if x <= mid {
+            p * x.powf(p - 1.0) / mid.powf(p - 1.0)
+        } else {
+            p * (1.0 - x).powf(p - 1.0) / (1.0 - mid).powf(p - 1.0)
+        };
+        dy_dx * (dmax - dmin) / self.width
+    }
 }
 
 /// Material properties for contact interactions.
@@ -242,6 +273,36 @@ impl ContactMaterial {
         let s = 1.0 - gap / self.margin;
         let ramp = s * s * (3.0 - 2.0 * s);
         ramp * self.solimp.impedance(0.0)
+    }
+
+    /// `d(impedance)/d(depth)`, the derivative of [`Self::impedance_at`].
+    ///
+    /// This is not a nicety. Inside the margin band the stabilization bias is
+    /// identically zero, so impedance is the *only* channel by which depth
+    /// reaches the impulses — and it is a strong one: the measured force ramps
+    /// from 17.66 N to 0 across a 1 mm band, roughly `1.8e4 N/m`. A gradient
+    /// that dropped this term would report exactly zero sensitivity across the
+    /// whole region where contact activation is differentiable, which is
+    /// precisely the region a contact-timing gradient lives in.
+    ///
+    /// On the penetrating side it is the solimp sigmoid's own slope, worth up
+    /// to `(dmax-dmin)/dmin` of the primary term. That used to be dropped as a
+    /// "second-order path"; it is included now, so there is one expression
+    /// rather than two regimes with different honesty.
+    ///
+    /// Both branches are exact, and they agree at `depth = 0` (both zero for
+    /// `power > 1`), which is what makes [`Self::impedance_at`] `C^1` there.
+    pub fn dimpedance_ddepth(&self, depth: f64) -> f64 {
+        if depth >= 0.0 {
+            return self.solimp.impedance_derivative(depth);
+        }
+        let gap = -depth;
+        if self.margin <= 0.0 || gap >= self.margin {
+            return 0.0;
+        }
+        // d/d(depth) of `smoothstep(s) * dmin` with `s = 1 + depth/margin`.
+        let s = 1.0 - gap / self.margin;
+        6.0 * s * (1.0 - s) / self.margin * self.solimp.impedance(0.0)
     }
 
     /// Create a bouncy material (high restitution).
@@ -466,6 +527,39 @@ mod tests {
             );
             prev = d;
         }
+    }
+
+    /// `dimpedance_ddepth` against a central difference of `impedance_at`,
+    /// across both branches and the join between them.
+    #[test]
+    fn impedance_derivative_matches_finite_difference() {
+        let m = ContactMaterial::default();
+        let h = 1e-9;
+        let mut worst = 0.0f64;
+        // Inside the margin band and through the solimp sigmoid, but not at
+        // the two clamp kinks (-margin and +width) where the derivative is
+        // genuinely one-sided, and not at the join itself: a central difference
+        // at zero straddles both branches, so it measures the curvature there
+        // rather than the slope. The join is covered by
+        // `impedance_at_is_c1_across_zero_depth`, which is the assertion that
+        // actually belongs there — both one-sided slopes are zero.
+        for k in (-95i32..=95).filter(|k| *k != 0) {
+            let depth = if k < 0 {
+                m.margin * k as f64 / 100.0
+            } else {
+                m.solimp.width * k as f64 / 100.0
+            };
+            let fd = (m.impedance_at(depth + h) - m.impedance_at(depth - h)) / (2.0 * h);
+            let got = m.dimpedance_ddepth(depth);
+            let rel = (got - fd).abs() / fd.abs().max(1.0);
+            worst = worst.max(rel);
+            assert!(rel < 1e-5, "depth {depth}: analytic {got} vs FD {fd}");
+        }
+        assert!(worst < 1e-5, "worst relative error {worst}");
+
+        // Past the clamps the impedance is pinned and the derivative is zero.
+        assert_eq!(m.dimpedance_ddepth(-2.0 * m.margin), 0.0);
+        assert_eq!(m.dimpedance_ddepth(2.0 * m.solimp.width), 0.0);
     }
 
     #[test]

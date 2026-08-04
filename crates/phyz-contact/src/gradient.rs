@@ -346,12 +346,56 @@ pub fn friction_sensitivity(
 /// with `dbias/ddepth = d * erp / dt`. Pass the same `dt` the assembly used;
 /// `erp` comes from the pair material's [`crate::SolRef`].
 ///
-/// The impedance `d` also depends on depth, through the solimp sigmoid. That
-/// second-order path is deliberately *not* included: it moves the regularizer
-/// `R`, i.e. the smoothing parameter of the relaxation, not the physics being
-/// relaxed — the same reason [`impulse_sensitivity`] holds the active set
-/// fixed. It is bounded by `(dmax-dmin)/dmin ~ 5%` of the primary term for the
-/// default solimp.
+/// # Two channels, not one
+///
+/// Depth reaches the impulses two ways, and both are included.
+///
+/// **The bias.** `bias_c = d * erp * violation_c / dt` with
+/// `violation = max(depth, 0)`. Since `d` is itself a function of depth, the
+/// product rule gives `dbias/ddepth = erp/dt * (d + d' * depth)` while
+/// penetrating, and exactly zero once separated.
+///
+/// **The regularizer.** `R_c = (1-d)/d * A_nn` moves with `d` too, and it is a
+/// coefficient *on the impulse itself*, so it perturbs the KKT residual by
+/// `f_c * dR/ddepth`. This term used to be dropped, on the argument that it
+/// moves the smoothing parameter of the relaxation rather than the physics
+/// being relaxed, and was described as bounded by `(dmax-dmin)/dmin ~ 5%`.
+///
+/// That argument does not survive the contact margin. Inside the margin band a
+/// contact is separated, so the bias is identically zero and the regularizer is
+/// the **only** channel from depth to force. Dropping it would report a depth
+/// sensitivity of exactly zero across the entire band — while the force in fact
+/// ramps from 17.66 N to 0 across a 1 mm band, about `1.8e4 N/m`. And the band
+/// is not an edge case for this crate: it is precisely the region where contact
+/// activation is differentiable at all, which is where a contact-timing
+/// gradient for system identification would live.
+///
+/// Including it on the penetrating side as well is the same fix rather than a
+/// separate one. It restores the `~5%` the old form knowingly gave up, and it
+/// means there is one expression valid everywhere instead of two regimes with
+/// different accuracy.
+///
+/// # The derivation
+///
+/// The KKT residual for a loaded contact is `F = (A + R) f + b - e_n bias`.
+/// Differentiating in `depth_c`, holding the active set fixed as everywhere
+/// else in this module:
+///
+/// ```text
+/// dF/ddepth_c = f_c ⊙ dR_c/ddepth_c  -  e_n dbias_c/ddepth_c
+/// ```
+///
+/// supported only on contact `c`'s own rows, because `R` and `bias` are both
+/// per-contact. Then `df/ddepth = -K^-1 dF/ddepth`, and `-K^-1` restricted to
+/// the responding rows is exactly the `df/db` that [`impulse_sensitivity`]
+/// already computed — so the whole thing is a contraction of `sens` against a
+/// three-entry vector, with no second factorization.
+///
+/// Separating contacts fall out correctly with no special case: they carry
+/// `f = 0`, so the `R` term vanishes, and their columns of `df/db` are zero.
+///
+/// Pass the same `dt` the assembly used; `erp` comes from the pair material's
+/// [`crate::SolRef`].
 pub fn depth_sensitivity(
     problem: &ContactProblem,
     solution: &ContactSolution,
@@ -368,14 +412,38 @@ pub fn depth_sensitivity(
     let erp = solref.error_reduction(dt);
     let mut out = vec![0.0; dim * n];
     for c in 0..n {
-        // No stabilization on a contact that is not overlapping.
-        if problem.rows[c].depth <= 0.0 || dt <= 0.0 {
-            continue;
+        let base = 3 * c;
+        let contact_row = &problem.rows[c];
+        let f = solution.impulses[c];
+
+        // Channel 1: the stabilization bias, which exists only while the
+        // surfaces actually overlap. Product rule over `d * violation`.
+        let dbias = if contact_row.depth > 0.0 && dt > 0.0 {
+            erp / dt * (contact_row.impedance + contact_row.dimpedance_ddepth * contact_row.depth)
+        } else {
+            0.0
+        };
+
+        // Channel 2: the regularizer, which is a coefficient on the impulse.
+        // Live on both sides of zero depth, and the only live channel inside
+        // the margin band.
+        let dreg = crate::convex::regularization_depth_derivative(problem, c, config);
+        let f_components = [f.x, f.y, f.z];
+
+        // dF/ddepth_c, supported on contact c's own three rows.
+        let mut dresidual = [0.0; 3];
+        for r in 0..3 {
+            dresidual[r] = f_components[r] * dreg[r];
         }
-        let dbias = problem.rows[c].impedance * erp / dt;
+        dresidual[0] -= dbias;
+
+        // df/ddepth_c = (df/db) * dF/ddepth_c.
         for row in 0..dim {
-            // db_n = -dbias, hence the sign.
-            out[row * n + c] = -sens[row * dim + 3 * c] * dbias;
+            let mut acc = 0.0;
+            for (r, dres) in dresidual.iter().enumerate() {
+                acc += sens[row * dim + base + r] * dres;
+            }
+            out[row * n + c] = acc;
         }
     }
     Some(out)

@@ -395,3 +395,314 @@ fn depth_gradient_is_zero_when_separating() {
         assert_eq!(*v, 0.0, "separating contact has a depth sensitivity at {k}");
     }
 }
+
+/// The depth sensitivity **inside the contact margin band**, where the
+/// stabilization bias is identically zero and the impedance is the only channel
+/// from depth to force.
+///
+/// This is the region the previous form of `depth_sensitivity` reported as
+/// exactly zero: it bailed on `depth <= 0.0`, which is every contact in the
+/// band. The force across the band is not flat — it ramps from most of body
+/// weight to nothing over `margin` — so "zero" was wrong by the entire
+/// derivative, not by the documented few percent.
+///
+/// It matters more than a normal gap in coverage because the band is precisely
+/// where contact activation is differentiable. A contact-timing gradient for
+/// system identification lives here and nowhere else.
+#[test]
+fn depth_gradient_inside_the_margin_matches_finite_difference() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::gradients();
+    let dt = 1e-3;
+    let material = ContactMaterial {
+        friction: 0.9,
+        ..ContactMaterial::default()
+    };
+    let margin = material.margin;
+    assert!(margin > 0.0);
+
+    let build = |d: f64| {
+        let mut p = problem(1, material.friction, &[-0.4, 0.02, 0.0], 0.0);
+        p.rows[0] = ContactRow::from_material(&material, d, dt, 0.0);
+        p
+    };
+
+    let mut worst = 0.0f64;
+    // Fractions of the way into the band, from just separated to most of the
+    // way out. Stopping short of the very edge is deliberate and documented
+    // below.
+    for frac in [0.05, 0.15, 0.3, 0.5, 0.65, 0.8] {
+        let depth = -frac * margin;
+        let p = build(depth);
+        let sol = solve_contacts(&p, &cfg);
+        assert!(sol.converged);
+        assert_ne!(
+            classify(&p, &sol, 1e-7)[0],
+            ContactRegime::Separating,
+            "gap {frac} of the band should still carry load"
+        );
+
+        let sens = depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged");
+        assert!(
+            sens[0] > 0.0,
+            "at gap {frac} of the band, closing the gap must increase the \
+             normal impulse; got d f_n / d depth = {}",
+            sens[0]
+        );
+
+        for h in [1e-7, 1e-8] {
+            let plus = solve_contacts(&build(depth + h), &cfg);
+            let minus = solve_contacts(&build(depth - h), &cfg);
+            assert!(plus.converged && minus.converged);
+            let fd = (plus.impulses[0] - minus.impulses[0]) / (2.0 * h);
+            for (k, want) in [fd.x, fd.y, fd.z].iter().enumerate() {
+                let got = sens[k * p.n];
+                let rel = (got - want).abs() / want.abs().max(1e-9);
+                worst = worst.max(rel);
+                assert!(
+                    rel < 1e-5,
+                    "gap {frac} of band, h={h}: d f[{k}]/d depth analytic {got} \
+                     vs finite difference {want} (rel {rel:.3e})"
+                );
+            }
+        }
+    }
+    // Printed so the PR can quote a number rather than a tolerance.
+    println!("worst relative FD error inside the margin band: {worst:.3e}");
+}
+
+/// Straddling `depth = 0`: the sensitivity has a **hinge** there, and this
+/// test pins it to its exact analytic cause rather than papering over it.
+///
+/// The impedance channel is `C^1` across zero — both one-sided derivatives of
+/// `impedance_at` are zero there — so it contributes nothing to the jump. The
+/// *bias* channel is what hinges: `bias = d * erp * max(depth, 0) / dt`, whose
+/// slope is `0` below zero and `d * erp / dt` above it. That is a `max()`, so
+/// the bias is `C^0` but not `C^1`, and it has been that way since position
+/// stabilization landed — it is not something the contact margin introduced.
+///
+/// This is a kink, not a cliff, and the distinction is the whole point of the
+/// margin work: the *force* stays continuous across zero (a hinge in the
+/// derivative), whereas the zero-margin contact-set cutoff was a discontinuity
+/// in the force itself. An optimizer handles the former the way it handles any
+/// ReLU; the latter it cannot see coming at all.
+///
+/// So the assertion is not "no jump". It is that each one-sided derivative is
+/// individually correct, and that their difference is exactly the bias hinge.
+#[test]
+fn depth_gradient_has_a_documented_hinge_at_zero_depth() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::gradients();
+    let dt = 1e-3;
+    let material = ContactMaterial {
+        friction: 0.9,
+        ..ContactMaterial::default()
+    };
+    let build = |d: f64| {
+        let mut p = problem(1, material.friction, &[-0.4, 0.02, 0.0], 0.0);
+        p.rows[0] = ContactRow::from_material(&material, d, dt, 0.0);
+        p
+    };
+    let sens_at = |depth: f64| {
+        let p = build(depth);
+        let sol = solve_contacts(&p, &cfg);
+        assert!(sol.converged);
+        depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged")[0]
+    };
+
+    // Each side matches a finite difference taken *entirely within that side*.
+    // A difference straddling the hinge would match neither, and a one-sided
+    // difference is only O(h) — the smoothstep's curvature near the band top is
+    // large enough that the truncation error would swamp the comparison. A
+    // central difference at 1% into each regime is O(h^2) and stays put.
+    let fd_at = |depth: f64, h: f64| {
+        let plus = solve_contacts(&build(depth + h), &cfg);
+        let minus = solve_contacts(&build(depth - h), &cfg);
+        assert!(plus.converged && minus.converged);
+        (plus.impulses[0].x - minus.impulses[0].x) / (2.0 * h)
+    };
+    let off = 1e-5; // 1% of the margin, and 1% of solimp.width.
+    let h = 1e-8; // Comfortably inside `off`, so neither side crosses zero.
+    for (side, depth) in [("below", -off), ("above", off)] {
+        let analytic = sens_at(depth);
+        let fd = fd_at(depth, h);
+        let rel = (analytic - fd).abs() / fd.abs().max(1e-9);
+        assert!(
+            rel < 1e-5,
+            "{side} zero depth: analytic {analytic} vs finite difference {fd} \
+             (rel {rel:.3e})"
+        );
+    }
+
+    // The jump itself, measured as close to the hinge as floating point allows.
+    // There the impedance channel has vanished on both sides (it is C^1 with
+    // zero slope at the join), so whatever is left is the bias switching on.
+    let eps = 1e-9;
+    let below = sens_at(-eps);
+    let above = sens_at(eps);
+    assert!(
+        above > below,
+        "crossing into penetration must strengthen the response: {below} -> {above}"
+    );
+
+    // And that jump is exactly `df_n/db_n * (-d * erp / dt)` — the bias term
+    // and nothing else. Pinning the discontinuity to a closed form is what
+    // makes it a documented property rather than an unexplained artifact.
+    let p = build(eps);
+    let sol = solve_contacts(&p, &cfg);
+    assert!(sol.converged);
+    let db = impulse_sensitivity(&p, &sol, &cfg).expect("converged");
+    let erp = material.solref.error_reduction(dt);
+    let predicted = -db[0] * p.rows[0].impedance * erp / dt;
+    let observed = above - below;
+    assert!(
+        (observed - predicted).abs() / predicted.abs() < 1e-3,
+        "the hinge must be exactly the bias term switching on: \
+         observed {observed} vs predicted {predicted}"
+    );
+
+    // And the force itself is continuous across zero — the hinge is in the
+    // slope only. This is precisely what the margin bought, and it is the
+    // difference between a kink an optimizer can walk through and the cliff
+    // this PR removed.
+    let force_at = |depth: f64| {
+        let sol = solve_contacts(&build(depth), &cfg);
+        assert!(sol.converged);
+        sol.impulses[0].x
+    };
+    let f_below = force_at(-eps);
+    let f_above = force_at(eps);
+    assert!(
+        (f_above - f_below).abs() < 1e-6 * f_above.abs().max(1e-9),
+        "force must be continuous across zero depth: {f_below} vs {f_above}"
+    );
+}
+
+/// On the penetrating side, inside `solimp.width`, the impedance term is the
+/// `~5%` correction the old form knowingly dropped. It is included now, so FD
+/// must agree here too — the existing `depth_gradient_matches_finite_difference`
+/// sits past `width`, where the sigmoid is pinned and the term is exactly zero,
+/// so it could never have caught this.
+#[test]
+fn depth_gradient_inside_the_solimp_sigmoid_matches_finite_difference() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::gradients();
+    let dt = 1e-3;
+    let material = ContactMaterial {
+        friction: 0.9,
+        ..ContactMaterial::default()
+    };
+    let width = material.solimp.width;
+
+    let build = |d: f64| {
+        let mut p = problem(1, material.friction, &[-0.4, 0.02, 0.0], 0.0);
+        p.rows[0] = ContactRow::from_material(&material, d, dt, 0.0);
+        p
+    };
+
+    let mut worst = 0.0f64;
+    for frac in [0.2, 0.4, 0.6, 0.8] {
+        let depth = frac * width;
+        let p = build(depth);
+        let sol = solve_contacts(&p, &cfg);
+        assert!(sol.converged);
+        let sens = depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged");
+
+        for h in [1e-7, 1e-8] {
+            let plus = solve_contacts(&build(depth + h), &cfg);
+            let minus = solve_contacts(&build(depth - h), &cfg);
+            let fd = (plus.impulses[0] - minus.impulses[0]) / (2.0 * h);
+            for (k, want) in [fd.x, fd.y, fd.z].iter().enumerate() {
+                let got = sens[k * p.n];
+                let rel = (got - want).abs() / want.abs().max(1e-9);
+                worst = worst.max(rel);
+                assert!(
+                    rel < 1e-5,
+                    "depth {frac}*width, h={h}: d f[{k}]/d depth analytic {got} \
+                     vs finite difference {want} (rel {rel:.3e})"
+                );
+            }
+        }
+    }
+    println!("worst relative FD error inside the solimp sigmoid: {worst:.3e}");
+}
+
+/// Depth sensitivity across *coupled* contacts, with one of them inside the
+/// margin band.
+///
+/// The single-contact tests would pass even if the impedance perturbation were
+/// wired only into its own contact's rows. It is not: `dF/ddepth_c` is
+/// supported on contact `c`'s rows but propagates to every other contact
+/// through `A`, exactly as the friction sensitivity does. Perturbing the depth
+/// of a barely-touching corner has to move the impulse on the corner across
+/// from it, which is the whole reason the Delassus operator is here.
+#[test]
+fn coupled_depth_gradient_in_the_margin_matches_finite_difference() {
+    use phyz_contact::ContactMaterial;
+    use phyz_contact::gradient::depth_sensitivity;
+
+    let cfg = ContactSolverConfig::gradients();
+    let dt = 1e-3;
+    let material = ContactMaterial {
+        friction: 0.9,
+        ..ContactMaterial::default()
+    };
+    let margin = material.margin;
+
+    // Contact 0 sits inside the margin band; contact 1 is genuinely
+    // penetrating. They are coupled through the off-diagonal of A.
+    let other_depth = 2e-4;
+    let build = |d0: f64| {
+        let mut p = problem(
+            2,
+            material.friction,
+            &[-0.4, 0.02, 0.0, -0.5, 0.0, 0.0],
+            0.35,
+        );
+        p.rows[0] = ContactRow::from_material(&material, d0, dt, 0.0);
+        p.rows[1] = ContactRow::from_material(&material, other_depth, dt, 0.0);
+        p
+    };
+
+    let depth0 = -0.3 * margin;
+    let p = build(depth0);
+    let sol = solve_contacts(&p, &cfg);
+    assert!(sol.converged);
+    let sens = depth_sensitivity(&p, &sol, &cfg, &material.solref, dt).expect("converged");
+
+    let mut worst = 0.0f64;
+    for h in [1e-7, 1e-8] {
+        let plus = solve_contacts(&build(depth0 + h), &cfg);
+        let minus = solve_contacts(&build(depth0 - h), &cfg);
+        assert!(plus.converged && minus.converged);
+        // Column 0 of df/ddepth: the response of *both* contacts to contact
+        // zero's depth.
+        for c in 0..2 {
+            let fd = (plus.impulses[c] - minus.impulses[c]) / (2.0 * h);
+            for (k, want) in [fd.x, fd.y, fd.z].iter().enumerate() {
+                let got = sens[(3 * c + k) * p.n];
+                let rel = (got - want).abs() / want.abs().max(1e-9);
+                worst = worst.max(rel);
+                assert!(
+                    rel < 1e-5,
+                    "h={h}: d f{c}[{k}]/d depth0 analytic {got} vs finite \
+                     difference {want} (rel {rel:.3e})"
+                );
+            }
+        }
+    }
+
+    // The cross term is real, not incidentally zero.
+    assert!(
+        sens[3 * p.n].abs() > 1e-6,
+        "contact 1 must respond to contact 0's depth through A; got {}",
+        sens[3 * p.n]
+    );
+    println!("worst relative FD error, coupled, contact 0 in band: {worst:.3e}");
+}
