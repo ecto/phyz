@@ -14,6 +14,19 @@
 //!    surface pullback (vcad's `surface_gradient`) consumes.
 //!
 //! See [`step`] and [`adjoint`] for the forward-model and contract details.
+//!
+//! # Which adjoint to use
+//!
+//! The contact model here is the module's **own** differentiable per-vertex
+//! ground-penalty law — *not* the convex solve the forward simulator
+//! (`phyz::Simulator::step_with_contacts`) integrates. It exists for the
+//! vcad surface-gradient seam (`∂J/∂vertex`), which needs a smooth force per
+//! vertex. For gradients of the physics the engine actually runs — state,
+//! control and inertia channels through the convex contact solve — use
+//! [`crate::contact_adjoint`] instead; its gradients match a finite
+//! difference of the real forward path, and this module's do not (measured:
+//! ~94% error on a box-drop mass gradient, `phyz`'s `diff_convex_contact.rs`
+//! gate).
 
 pub mod adjoint;
 pub mod step;

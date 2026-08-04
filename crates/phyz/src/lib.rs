@@ -81,6 +81,12 @@ pub mod diff {
     pub use phyz_diff::{
         StepJacobians, finite_diff_jacobians, rollout, semi_implicit_step_jacobians, symbolic,
     };
+    // The unified adjoint through the convex contact solve — the same
+    // contact model [`crate::Simulator::step_with_contacts`] integrates.
+    pub use phyz_diff::{
+        ConvexAdjointError, ConvexAdjointGradients, ConvexContactRollout, contact_adjoint,
+        convex_adjoint_gradient, convex_rollout_objective,
+    };
 }
 
 /// Integrated time stepping: the [`Simulator`] driver and its solvers.

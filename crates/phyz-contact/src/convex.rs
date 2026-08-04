@@ -56,11 +56,14 @@
 //! would differentiate the algorithm, not the physics.
 //!
 //! The linear system Newton solves is `gradient::kkt_matrix` (crate-private),
-//! the same matrix [`crate::gradient::impulse_sensitivity`] differentiates through, and
-//! the regime is read with the same classifier. Solving and differentiating one
-//! shared object is deliberate: this crate has twice shipped a solver and a
-//! gradient that disagreed about the system being solved, and both times the
-//! symptom was a confident wrong number rather than a failure.
+//! and the regime is read with the same classifier the gradient uses. The
+//! gradient's [`crate::gradient::FixedPointSensitivity`] starts from that same
+//! matrix and adds the sliding slip-rotation rows (which the solver does not
+//! need — its sweeps re-derive the slip direction, while a derivative must
+//! linearize it). Sharing the base object is deliberate: this crate has twice
+//! shipped a solver and a gradient that disagreed about the system being
+//! solved, and both times the symptom was a confident wrong number rather
+//! than a failure.
 //!
 //! The design doc specifies a primal-dual interior-point SOCP for the final
 //! form, whose central-path parameter doubles as the gradient-smoothing knob.
