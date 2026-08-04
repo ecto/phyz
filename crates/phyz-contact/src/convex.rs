@@ -55,8 +55,8 @@
 //! the converged point a valid IFT anchor; differentiating a truncated iterate
 //! would differentiate the algorithm, not the physics.
 //!
-//! The linear system Newton solves is [`crate::gradient::kkt_matrix`], the same
-//! matrix [`crate::gradient::impulse_sensitivity`] differentiates through, and
+//! The linear system Newton solves is `gradient::kkt_matrix` (crate-private),
+//! the same matrix [`crate::gradient::impulse_sensitivity`] differentiates through, and
 //! the regime is read with the same classifier. Solving and differentiating one
 //! shared object is deliberate: this crate has twice shipped a solver and a
 //! gradient that disagreed about the system being solved, and both times the
