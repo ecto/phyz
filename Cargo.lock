@@ -3108,6 +3108,8 @@ name = "phyz-diff"
 version = "0.3.1"
 dependencies = [
  "criterion",
+ "phyz-collision",
+ "phyz-contact",
  "phyz-math",
  "phyz-model",
  "phyz-rigid",

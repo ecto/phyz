@@ -26,8 +26,10 @@
 //! - **Sticking** (`f` strictly inside the cone): the constraint is active as
 //!   an equality in all three directions, so `(A + R) df = -db`.
 //! - **Sliding** (`f` on the cone boundary): the normal direction is an
-//!   equality and the tangential magnitude is pinned to `mu * f_n`, so the
-//!   tangential rows are replaced by the differential of that relation.
+//!   equality and the tangential impulse rides the cone boundary along the
+//!   slip direction. Both the magnitude (`mu * f_n`) and the **direction**
+//!   respond to a perturbation — see [`FixedPointSensitivity`] for the exact
+//!   linearization, including the slip-rotation channel.
 //!
 //! The regime is read off the primal solution and **held fixed** while
 //! differentiating. That is what makes the derivative well-defined: at the
@@ -114,6 +116,329 @@ pub(crate) fn classify_impulses(
         .collect()
 }
 
+/// Exact linearization of the staged fixed-point map at a converged solution.
+///
+/// # Why this exists alongside `kkt_matrix`
+///
+/// The staged solve's fixed point pins a **sliding** contact's tangential
+/// impulse to the cone boundary along the direction of the *unconstrained*
+/// tangential minimizer `t* = -M_t^-1 r_t`:
+///
+/// ```text
+/// f_t = mu * f_n * t_hat,     t_hat = t* / ||t*||
+/// ```
+///
+/// `kkt_matrix` (crate-private, shared with the solver's Newton step)
+/// linearizes this holding `t_hat` fixed — the right system for
+/// the *solver* (whose iterates re-derive the direction every sweep), but an
+/// incomplete derivative of the *map*: under a parameter change the slip
+/// direction rotates, `d t_hat = (I - t_hat t_hat^T) dt* / ||t*||`, and that
+/// rotation couples every contact's impulse into every sliding contact's
+/// tangential rows. On a redundant manifold (a box face on the plane) the
+/// dropped channel is a few parts in 1e4 of the total step Jacobian —
+/// invisible on the axis-aligned single-contact cases the original validation
+/// used, and a systematic bias on anything that tilts.
+///
+/// This struct carries `-K'^-1` for the **complete** linearization `K'`,
+/// plus the per-contact tangential data a caller needs to close the chain
+/// rule for parameters that enter through `A` and `b`:
+///
+/// - sticking rows and sliding normal rows: the stationarity residual
+///   `(A + R) f + b - e_n bias`, as before;
+/// - sliding tangential rows: `F_t = f_t - mu f_n t_hat(t*)`, whose
+///   differential in the parameters is
+///   `C * (dRes_t + dM_t (t* - f_t))` with `C = s P M_t^-1`,
+///   `s = ||f_t|| / ||t*||`, `P = I - t_hat t_hat^T`, and `dRes_t` the
+///   tangential rows of the stationarity differential.
+///
+/// The solver keeps using `kkt_matrix`; the two agree about the fixed point
+/// itself, and disagree only about its derivative — where this one is the
+/// exact one.
+pub struct FixedPointSensitivity {
+    n: usize,
+    /// `-K'^-1`, row-major `3n x 3n`: maps a residual differential to `df`.
+    inv: Vec<f64>,
+    /// Per contact: sliding tangential data, `None` unless the contact is
+    /// sliding with a well-defined slip direction.
+    slide: Vec<Option<SlideTangent>>,
+    /// The regime each contact was linearized in.
+    regimes: Vec<ContactRegime>,
+}
+
+/// Tangential linearization data of one sliding contact.
+#[derive(Debug, Clone, Copy)]
+pub struct SlideTangent {
+    /// `C = s P M_t^-1` (2x2, rows/cols in `[u, w]`).
+    pub map: [[f64; 2]; 2],
+    /// `t* - f_t` (in `[u, w]`) — the vector `dM_t` acts on in the parameter
+    /// channel.
+    pub t_rel: [f64; 2],
+}
+
+impl FixedPointSensitivity {
+    /// Build the exact map linearization at a converged solution.
+    ///
+    /// Returns `None` when the solve did not converge (not a fixed point) or
+    /// the linearized system is singular (the derivative genuinely does not
+    /// exist at a degenerate active set).
+    pub fn at(
+        problem: &ContactProblem,
+        solution: &ContactSolution,
+        config: &ContactSolverConfig,
+    ) -> Option<Self> {
+        if !solution.converged {
+            return None;
+        }
+        let n = problem.n;
+        let dim = 3 * n;
+        if n == 0 {
+            return Some(Self {
+                n,
+                inv: Vec::new(),
+                slide: Vec::new(),
+                regimes: Vec::new(),
+            });
+        }
+        let regimes = classify(problem, solution, 1e-7);
+        // Start from the solver's pinned-direction system and correct the
+        // sliding tangential rows.
+        let mut k = kkt_matrix(problem, config, &regimes, &solution.impulses);
+        let a = &problem.delassus;
+        let mut slide: Vec<Option<SlideTangent>> = vec![None; n];
+
+        for c in 0..n {
+            if regimes[c] != ContactRegime::Sliding {
+                continue;
+            }
+            let base = 3 * c;
+            let f = solution.impulses[c];
+            let ft = (f.y * f.y + f.z * f.z).sqrt();
+            if ft <= 1e-14 {
+                // Frictionless-but-loaded (or exactly zero slip): the pin rows
+                // already say `df_t = 0`, and there is no direction to rotate.
+                continue;
+            }
+            let reg = crate::convex::regularization_diag(problem, c, config);
+            // M_t: the contact's own regularized tangential 2x2 block.
+            let m = [
+                [
+                    a[(base + 1) * dim + base + 1] + reg[1],
+                    a[(base + 1) * dim + base + 2],
+                ],
+                [
+                    a[(base + 2) * dim + base + 1],
+                    a[(base + 2) * dim + base + 2] + reg[2],
+                ],
+            ];
+            let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+            if det.abs() < 1e-30 {
+                continue;
+            }
+            let minv = [
+                [m[1][1] / det, -m[0][1] / det],
+                [-m[1][0] / det, m[0][0] / det],
+            ];
+            // r_t = [(A + R) f + b]_t - M_t f_t, then t* = -M_t^-1 r_t.
+            let flat = flat_impulses(&solution.impulses);
+            let mut r = [0.0f64; 2];
+            for (i, ri) in r.iter_mut().enumerate() {
+                let row = base + 1 + i;
+                let mut acc = problem.free_velocity[row];
+                for (col, fc) in flat.iter().enumerate() {
+                    acc += a[row * dim + col] * fc;
+                }
+                acc += reg[1 + i] * flat[row];
+                acc -= m[i][0] * f.y + m[i][1] * f.z;
+                *ri = acc;
+            }
+            let t_star = [
+                -(minv[0][0] * r[0] + minv[0][1] * r[1]),
+                -(minv[1][0] * r[0] + minv[1][1] * r[1]),
+            ];
+            let t_norm = (t_star[0] * t_star[0] + t_star[1] * t_star[1]).sqrt();
+            if t_norm <= 1e-14 {
+                continue;
+            }
+            let that = [t_star[0] / t_norm, t_star[1] / t_norm];
+            // s = ||f_t|| / ||t*||, clamped: at the clamp boundary the two
+            // coincide and s = 1; s > 1 would mean the contact was not
+            // actually clamped, i.e. a borderline-sticking classification.
+            let s = (ft / t_norm).min(1.0);
+            let p = [
+                [1.0 - that[0] * that[0], -that[0] * that[1]],
+                [-that[1] * that[0], 1.0 - that[1] * that[1]],
+            ];
+            let mut cmap = [[0.0f64; 2]; 2];
+            for i in 0..2 {
+                for j in 0..2 {
+                    cmap[i][j] = s * (p[i][0] * minv[0][j] + p[i][1] * minv[1][j]);
+                }
+            }
+
+            // Rewrite the two tangential rows of K:
+            //   df_t - mu t_hat df_n + C (sum_{cols != own t} A_{t,col} df_col) = -dF_theta
+            let mu = problem.rows[c].mu;
+            for i in 0..2 {
+                let row = base + 1 + i;
+                for col in 0..dim {
+                    let in_own_t = col == base + 1 || col == base + 2;
+                    k[row * dim + col] = if in_own_t {
+                        if col == row { 1.0 } else { 0.0 }
+                    } else {
+                        cmap[i][0] * a[(base + 1) * dim + col]
+                            + cmap[i][1] * a[(base + 2) * dim + col]
+                    };
+                }
+                k[row * dim + base] -= mu * that[i];
+            }
+            slide[c] = Some(SlideTangent {
+                map: cmap,
+                t_rel: [t_star[0] - f.y, t_star[1] - f.z],
+            });
+        }
+
+        // inv = -K'^-1: solve K X = -I.
+        let mut rhs = vec![0.0; dim * dim];
+        for i in 0..dim {
+            rhs[i * dim + i] = -1.0;
+        }
+        solve_dense(&mut k, &mut rhs, dim, dim)?;
+        Some(Self {
+            n,
+            inv: rhs,
+            slide,
+            regimes,
+        })
+    }
+
+    /// The tangential data of contact `c`, if it is sliding with a defined
+    /// slip direction.
+    pub fn slide_tangent(&self, c: usize) -> Option<&SlideTangent> {
+        self.slide[c].as_ref()
+    }
+
+    /// Chain a parameter differential through the map: given the differential
+    /// of the stationarity residual `(A + R) f + b - e_n bias` on every row
+    /// (`d_stationarity`, length `3n`, computed with the impulses held fixed)
+    /// and, per sliding contact, `dM_t (t* - f_t)` (`d_mt_rel`, the
+    /// contact's own tangential-block differential applied to
+    /// [`SlideTangent::t_rel`]; entries for non-sliding contacts are ignored),
+    /// return `df`.
+    ///
+    /// Rows the map does not respond on (separating contacts) are ignored by
+    /// construction: their rows of `-K'^-1` produce zero.
+    // The loop indices drive stride arithmetic into flat, row-major arrays
+    // (base = 3*c), matching the rest of this module.
+    #[allow(clippy::needless_range_loop)]
+    pub fn apply(&self, d_stationarity: &[f64], d_mt_rel: &[[f64; 2]]) -> Vec<Vec3> {
+        let n = self.n;
+        let dim = 3 * n;
+        let mut dres = vec![0.0; dim];
+        for c in 0..n {
+            let base = 3 * c;
+            if self.regimes[c] == ContactRegime::Separating {
+                // The map's rows for a separating contact are `f = 0`,
+                // which carries no parameter dependence at all.
+                continue;
+            }
+            match &self.slide[c] {
+                None => {
+                    dres[base] = d_stationarity[base];
+                    if self.regimes[c] != ContactRegime::Sliding {
+                        // Sticking: all three rows are stationarity rows. A
+                        // sliding contact with no defined slip direction
+                        // (frictionless under load) keeps the tangential pin
+                        // `f_t = 0`, which has no parameter channel.
+                        dres[base + 1] = d_stationarity[base + 1];
+                        dres[base + 2] = d_stationarity[base + 2];
+                    }
+                }
+                Some(st) => {
+                    dres[base] = d_stationarity[base];
+                    let dr = [
+                        d_stationarity[base + 1] + d_mt_rel[c][0],
+                        d_stationarity[base + 2] + d_mt_rel[c][1],
+                    ];
+                    dres[base + 1] = st.map[0][0] * dr[0] + st.map[0][1] * dr[1];
+                    dres[base + 2] = st.map[1][0] * dr[0] + st.map[1][1] * dr[1];
+                }
+            }
+        }
+        let mut out = vec![Vec3::zeros(); n];
+        for c in 0..n {
+            let mut d = [0.0; 3];
+            for (r, dr) in d.iter_mut().enumerate() {
+                let row = 3 * c + r;
+                let mut acc = 0.0;
+                for (col, dc) in dres.iter().enumerate() {
+                    acc += self.inv[row * dim + col] * dc;
+                }
+                *dr = acc;
+            }
+            out[c] = Vec3::new(d[0], d[1], d[2]);
+        }
+        out
+    }
+
+    /// `df/db` under the exact map linearization, same layout as
+    /// [`impulse_sensitivity`].
+    // Stride arithmetic into flat, row-major arrays, as above.
+    #[allow(clippy::needless_range_loop)]
+    pub fn free_velocity_sensitivity(&self) -> Vec<f64> {
+        let n = self.n;
+        let dim = 3 * n;
+        // df/db = inv * D, D block-diagonal: sticking I3, sliding
+        // [[1, 0], [0, C]], separating 0 (its inv rows are zero anyway, and
+        // its stationarity rows do not respond).
+        let mut out = vec![0.0; dim * dim];
+        for row in 0..dim {
+            for c in 0..n {
+                let base = 3 * c;
+                if self.regimes[c] == ContactRegime::Separating {
+                    // `b` does not enter a separating contact's rows.
+                    continue;
+                }
+                match &self.slide[c] {
+                    None => {
+                        // Sticking: all three rows respond to `db`. A sliding
+                        // contact with no defined slip direction (frictionless
+                        // under load) responds on the normal row only — its
+                        // tangential rows are the algebraic pin `f_t = 0`.
+                        let rows = if self.regimes[c] == ContactRegime::Sliding {
+                            1
+                        } else {
+                            3
+                        };
+                        for r in 0..rows {
+                            out[row * dim + base + r] += self.inv[row * dim + base + r];
+                        }
+                    }
+                    Some(st) => {
+                        out[row * dim + base] += self.inv[row * dim + base];
+                        for i in 0..2 {
+                            for j in 0..2 {
+                                out[row * dim + base + 1 + j] +=
+                                    self.inv[row * dim + base + 1 + i] * st.map[i][j];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+fn flat_impulses(impulses: &[Vec3]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(3 * impulses.len());
+    for f in impulses {
+        out.push(f.x);
+        out.push(f.y);
+        out.push(f.z);
+    }
+    out
+}
+
 /// The sensitivity of the solved impulses to the free contact-space velocity.
 ///
 /// Returns `df/db` as a dense row-major `3n x 3n` matrix. This is the block
@@ -121,12 +446,14 @@ pub(crate) fn classify_impulses(
 /// `df/dqd_free = (df/db) J`, and the whole contact channel of the adjoint
 /// follows from it by the chain rule.
 ///
-/// The KKT system differentiated is, per contact:
+/// The linearized system is, per contact:
 /// - separating: `df = 0`;
 /// - sticking:   `sum_k (A + R)_ck df_k = -db_c` in all three rows;
-/// - sliding:    the normal row as above; the tangential rows replaced by the
-///   differential of `f_t = -mu * f_n * t_hat`, with `t_hat` the (fixed) slip
-///   direction.
+/// - sliding:    the normal row as above; the tangential rows follow the cone
+///   boundary along the slip direction, **including its rotation** — the
+///   `d t_hat` channel [`FixedPointSensitivity`] documents. (An earlier form
+///   held `t_hat` fixed; the box-on-plane trajectory adjoint measured that as
+///   a systematic few-parts-in-1e4 bias of the step Jacobian.)
 // The loop indices here drive stride arithmetic into flat, row-major arrays
 // (base = 3*c, k*dim + ...). Iterator form would hide the linear algebra, so
 // the explicit ranges stay.
@@ -137,43 +464,19 @@ pub fn impulse_sensitivity(
     config: &ContactSolverConfig,
 ) -> Option<Vec<f64>> {
     if !solution.converged {
-        // The IFT anchors on a KKT point. An unconverged iterate is not one,
-        // and silently differentiating it would produce a confident wrong
-        // number — the worst failure mode for a gradient.
+        // The IFT anchors on a fixed point. An unconverged iterate is not
+        // one, and silently differentiating it would produce a confident
+        // wrong number — the worst failure mode for a gradient.
         return None;
     }
-
-    let n = problem.n;
-    let dim = 3 * n;
-    if n == 0 {
+    if problem.n == 0 {
         return Some(Vec::new());
     }
-
-    let regimes = classify(problem, solution, 1e-7);
-
-    // Build the KKT matrix K with dK = -db, then solve K X = -I.
-    let mut k = kkt_matrix(problem, config, &regimes, &solution.impulses);
-
-    // Right-hand side: -I for the rows that respond to db, 0 for rows that are
-    // pure algebraic relations (separating, and the sliding tangential rows).
-    let mut rhs = vec![0.0; dim * dim];
-    for c in 0..n {
-        let base = 3 * c;
-        match regimes[c] {
-            ContactRegime::Separating => {}
-            ContactRegime::Sticking => {
-                for r in 0..3 {
-                    rhs[(base + r) * dim + base + r] = -1.0;
-                }
-            }
-            ContactRegime::Sliding => {
-                rhs[base * dim + base] = -1.0;
-            }
-        }
-    }
-
-    solve_dense(&mut k, &mut rhs, dim, dim)?;
-    Some(rhs)
+    // Delegate to the exact map linearization: for sticking/separating
+    // contacts it coincides with the historical KKT form, and for sliding
+    // contacts it additionally carries the slip-direction rotation the
+    // pinned-`t_hat` form dropped.
+    Some(FixedPointSensitivity::at(problem, solution, config)?.free_velocity_sensitivity())
 }
 
 /// The KKT matrix of the contact problem at a fixed active set.

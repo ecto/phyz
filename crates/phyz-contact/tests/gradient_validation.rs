@@ -706,3 +706,80 @@ fn coupled_depth_gradient_in_the_margin_matches_finite_difference() {
     );
     println!("worst relative FD error, coupled, contact 0 in band: {worst:.3e}");
 }
+
+/// A sliding contact whose slip direction **rotates** under a perturbation.
+///
+/// The historical sensitivity pinned the slip direction `t_hat` and dropped
+/// `d t_hat = (I - t_hat t_hat^T) dt* / ||t*||`, which is exact only when the
+/// perturbation happens to move the unconstrained tangential minimizer along
+/// its own direction (every axis-aligned single-contact case above). A `b`
+/// perturbation on the *other* tangential axis rotates the slip, and the
+/// dropped channel is first-order. This gate would have caught the box-face
+/// bias the trajectory adjoint exposed (a few parts in `1e4` of the step
+/// Jacobian, systematic).
+#[test]
+fn rotating_slip_direction_sensitivity_matches_finite_difference() {
+    let cfg = ContactSolverConfig::gradients();
+    // Slip along a mixed (u, w) direction, definitely on the cone boundary.
+    let p = problem(1, 0.4, &[-1.0, 1.5, 0.8], 0.0);
+    let sol = solve_contacts(&p, &cfg);
+    assert!(sol.converged);
+    assert_eq!(classify(&p, &sol, 1e-7)[0], ContactRegime::Sliding);
+
+    let sens = impulse_sensitivity(&p, &sol, &cfg).expect("sensitivity available");
+    let dim = 3;
+    // Every column, including the tangential ones the pinned form zeroed.
+    for j in 0..dim {
+        let fd = fd_wrt_b(&p, &cfg, j, 1e-6);
+        for row in 0..dim {
+            let a = sens[row * dim + j];
+            assert!(
+                (fd[row] - a).abs() < 5e-5,
+                "col {j} row {row}: analytic {a} vs fd {}",
+                fd[row]
+            );
+        }
+    }
+    // And the rotation channel is genuinely non-zero here: perturbing the
+    // *w* free velocity must move the *u* impulse.
+    let fd_w = fd_wrt_b(&p, &cfg, 2, 1e-6);
+    assert!(
+        fd_w[1].abs() > 1e-3,
+        "test setup: the slip rotation channel should be live, got {}",
+        fd_w[1]
+    );
+    assert!(
+        (sens[dim + 2] - fd_w[1]).abs() / fd_w[1].abs() < 1e-3,
+        "df_u/db_w: analytic {} vs fd {}",
+        sens[dim + 2],
+        fd_w[1]
+    );
+}
+
+/// Two coupled sliding contacts: the slip rotation couples *across* contacts
+/// through the Delassus off-diagonal, which is exactly the box-on-plane
+/// configuration where the pinned-direction form was measurably biased.
+#[test]
+fn coupled_sliding_contacts_match_finite_difference() {
+    let cfg = ContactSolverConfig::gradients();
+    let p = problem(2, 0.5, &[-1.0, 1.2, 0.5, -0.8, 0.9, -0.4], 0.3);
+    let sol = solve_contacts(&p, &cfg);
+    assert!(sol.converged);
+    let regimes = classify(&p, &sol, 1e-7);
+    assert_eq!(regimes[0], ContactRegime::Sliding);
+    assert_eq!(regimes[1], ContactRegime::Sliding);
+
+    let sens = impulse_sensitivity(&p, &sol, &cfg).expect("sensitivity available");
+    let dim = 6;
+    for j in 0..dim {
+        let fd = fd_wrt_b(&p, &cfg, j, 1e-6);
+        for row in 0..dim {
+            let a = sens[row * dim + j];
+            assert!(
+                (fd[row] - a).abs() < 5e-5,
+                "col {j} row {row}: analytic {a} vs fd {}",
+                fd[row]
+            );
+        }
+    }
+}
