@@ -1,6 +1,6 @@
 //! [`Solver`] adapter for the Featherstone rigid-body solver in `phyz-rigid`.
 
-use phyz_math::{SpatialVec, Vec3};
+use phyz_math::{SpatialTransformExt, SpatialVec, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{aba_with_external_forces, forward_kinematics, total_energy};
 
@@ -63,7 +63,7 @@ impl RigidSolver {
         // `xf` is world→body; its translation is the body origin in world
         // coordinates and `rot` maps world vectors into the body frame.
         let position = xf.pos;
-        let velocity = xf.rot.transpose() * vels[body].linear;
+        let velocity = xf.body_to_world_dir(vels[body].linear);
         (position, velocity)
     }
 
@@ -114,9 +114,8 @@ impl Solver for RigidSolver {
                 let (xforms, _) = forward_kinematics(&self.model, &self.state);
                 // ABA takes external forces as body-frame spatial forces
                 // (torque; force). `xf.rot` maps world → body.
-                let rot = xforms[body].rot;
-                let f_body = rot * force;
-                let t_body = rot * torque;
+                let f_body = xforms[body].world_to_body_dir(force);
+                let t_body = xforms[body].world_to_body_dir(torque);
                 self.pending[body] = self.pending[body] + SpatialVec::new(t_body, f_body);
             }
             // A rigid domain has an explicit momentum integral, so a Reaction

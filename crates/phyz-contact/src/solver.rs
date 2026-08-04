@@ -2,7 +2,7 @@
 
 use crate::material::ContactMaterial;
 use phyz_collision::{AABB, Collision, gjk_distance_rot, sweep_and_prune};
-use phyz_math::{SpatialVec, Vec3};
+use phyz_math::{SpatialTransformExt, SpatialVec, Vec3};
 use phyz_model::{Geometry as ModelGeometry, Model, State};
 
 /// Convert phyz_model::Geometry to phyz_collision::Geometry.
@@ -363,14 +363,13 @@ pub fn find_ground_contacts(
     for (i, geom_opt) in geometries.iter().enumerate() {
         let Some(geom) = geom_opt else { continue };
         let xform = &state.body_xform[i];
-        // `SpatialTransform::rot` is the *world→body* rotation (see
-        // `phyz_rigid::jacobian`, which spells this out and takes the transpose
-        // for exactly this purpose). Mapping a body-frame support offset out to
-        // world therefore needs the transpose. Using `rot` directly rotates the
-        // offset the wrong way, which is invisible at identity and inverts as
-        // soon as the body tilts.
-        let (pos, rot) = (xform.pos, xform.rot.transpose());
-        if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
+        // `SpatialTransform::rot` is the *world→body* rotation; the
+        // direction-carrying `SpatialTransformExt` methods used below exist so
+        // this file never has to hand-roll the transpose again. (Using `rot`
+        // directly here once rotated the offsets the wrong way — invisible at
+        // identity, inverted as soon as the body tilted.)
+        let pos = xform.pos;
+        if !pos_is_finite(&pos) || !rot_is_finite(&xform.rot) {
             continue;
         }
 
@@ -382,7 +381,11 @@ pub fn find_ground_contacts(
                 for sx in [-1.0, 1.0] {
                     for sy in [-1.0, 1.0] {
                         for sz in [-1.0, 1.0] {
-                            v.push(pos + rot * Vec3::new(sx * h.x, sy * h.y, sz * h.z));
+                            v.push(xform.body_to_world_point(Vec3::new(
+                                sx * h.x,
+                                sy * h.y,
+                                sz * h.z,
+                            )));
                         }
                     }
                 }
@@ -393,7 +396,7 @@ pub fn find_ground_contacts(
             }
             ModelGeometry::Capsule { radius, length } => {
                 // The two hemisphere centres, each dropped by the radius.
-                let axis = rot * Vec3::new(0.0, 0.0, length * 0.5);
+                let axis = xform.body_to_world_dir(Vec3::new(0.0, 0.0, length * 0.5));
                 vec![
                     pos + axis - Vec3::new(0.0, 0.0, *radius),
                     pos - axis - Vec3::new(0.0, 0.0, *radius),
@@ -401,8 +404,11 @@ pub fn find_ground_contacts(
             }
             ModelGeometry::Cylinder { radius, height } => {
                 // Rim points of both end caps, sampled around the circle.
-                let hz = rot * Vec3::new(0.0, 0.0, height * 0.5);
-                let (ex, ey) = (rot * Vec3::x() * *radius, rot * Vec3::y() * *radius);
+                let hz = xform.body_to_world_dir(Vec3::new(0.0, 0.0, height * 0.5));
+                let (ex, ey) = (
+                    xform.body_to_world_dir(Vec3::x()) * *radius,
+                    xform.body_to_world_dir(Vec3::y()) * *radius,
+                );
                 let mut v = Vec::with_capacity(8);
                 for k in 0..4 {
                     let t = k as f64 * std::f64::consts::FRAC_PI_2;
@@ -412,9 +418,10 @@ pub fn find_ground_contacts(
                 }
                 v
             }
-            ModelGeometry::Mesh { vertices, .. } => {
-                vertices.iter().map(|v| pos + rot * *v).collect()
-            }
+            ModelGeometry::Mesh { vertices, .. } => vertices
+                .iter()
+                .map(|v| xform.body_to_world_point(*v))
+                .collect(),
             ModelGeometry::Plane { .. } => continue,
         };
 

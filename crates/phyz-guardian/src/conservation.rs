@@ -3,7 +3,7 @@
 //! Tracks energy, momentum, and angular momentum conservation to detect
 //! numerical drift and instabilities.
 
-use phyz_math::Vec3;
+use phyz_math::{SpatialTransformExt, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{forward_kinematics, total_energy};
 
@@ -103,7 +103,7 @@ pub fn total_angular_momentum(model: &Model, state: &State) -> Vec3 {
 
         // Transform CoM to world frame
         let com_local = body.inertia.com;
-        let com_world = xf.rot.transpose() * com_local + xf.pos;
+        let com_world = xf.body_to_world_point(com_local);
 
         // Linear part: r x (m * v)
         let vel_linear = vel.linear;
