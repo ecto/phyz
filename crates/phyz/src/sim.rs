@@ -195,14 +195,22 @@ impl Simulator {
     /// 3. Computes contact forces
     /// 4. Runs ABA with contact forces as external forces
     /// 5. Integrates and updates FK
+    ///
+    /// Returns the **realized** generalized acceleration `(v' − v) / dt` for
+    /// the *pre-step* state — free dynamics plus the contact impulses the
+    /// solver just found. That is what inertial sensors need: pass it to
+    /// `phyz_world::SensorContext::with_acceleration` together with a
+    /// snapshot of the pre-step state. To read sensors at the current state
+    /// without integrating, use [`Simulator::contact_acceleration`] instead.
     pub fn step_with_contacts(
         &self,
         model: &Model,
         state: &mut State,
         ground_height: f64,
         material: &ContactMaterial,
-    ) {
+    ) -> DVec {
         let dt = model.dt;
+        let v_before = state.v.clone();
 
         // Run FK to get current transforms and velocities
         let (xforms, _velocities) = forward_kinematics(model, state);
@@ -251,6 +259,9 @@ impl Simulator {
             state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }
 
+        // The acceleration the step actually realized, contacts included.
+        let realized_qdd = &(&state.v - &v_before) * (1.0 / dt);
+
         let v_clone = state.v.clone();
         integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
 
@@ -259,6 +270,65 @@ impl Simulator {
         // Update body transforms
         let (xforms, _) = forward_kinematics(model, state);
         state.body_xform = xforms;
+
+        realized_qdd
+    }
+
+    /// The **realized** generalized acceleration at `state`: free dynamics plus
+    /// whatever the contact solver produces for the contacts active right now.
+    ///
+    /// This is the acceleration inertial sensors are supposed to see, and the
+    /// one to hand to `phyz_world::SensorContext::with_acceleration`. Unlike
+    /// [`Simulator::step_with_contacts`] it does not advance or mutate the
+    /// state, so it can be called before or after a step to read sensors at
+    /// that exact configuration.
+    ///
+    /// It runs the same detection and solve a step does — same contact set,
+    /// same warm start — so it costs roughly one extra step's contact work.
+    /// When a step is happening anyway, prefer the value
+    /// [`Simulator::step_with_contacts`] returns.
+    ///
+    /// The contact solve is impulse-based over `model.dt`, so this is the
+    /// average acceleration across a step rather than an instantaneous one;
+    /// for a resting body the two agree to solver tolerance.
+    pub fn contact_acceleration(
+        &self,
+        model: &Model,
+        state: &State,
+        ground_height: f64,
+        material: &ContactMaterial,
+    ) -> DVec {
+        let dt = model.dt;
+        let mut probe = state.clone();
+        let (xforms, _) = forward_kinematics(model, &probe);
+        probe.body_xform = xforms;
+
+        let geometries: Vec<Option<Geometry>> =
+            model.bodies.iter().map(|b| b.geometry.clone()).collect();
+        let mut contacts =
+            find_ground_contacts(&probe, &geometries, ground_height, material.margin);
+        contacts.extend(find_contacts(model, &probe, &geometries));
+
+        let qdd = aba(model, &probe);
+        if contacts.is_empty() {
+            return qdd;
+        }
+
+        let free_qd = &probe.v + &(&qdd * dt);
+        let materials = vec![material.clone(); model.bodies.len().max(1)];
+        let config = ContactSolverConfig::simulation();
+        let asm =
+            phyz_contact::assemble(model, &probe, &contacts, &materials, &free_qd, dt, &config);
+        // Seed from the cache but never `store` back into it, so asking for
+        // sensor data cannot perturb the stepping trajectory. The solve is
+        // strongly convex, so the seed only moves the iteration count anyway.
+        let seed = self
+            .contact_cache
+            .borrow_mut()
+            .warm_start(&probe, &contacts);
+        let solution = solve_contacts_warm(&asm.problem, &config, &seed);
+        let v_next = &free_qd + &asm.velocity_delta(&solution.impulses);
+        &(&v_next - &probe.v) * (1.0 / dt)
     }
 }
 
