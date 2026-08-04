@@ -23,6 +23,16 @@ pub type SpatialMat = tang::SpatialMat<f64>;
 ///
 /// Represents a coordinate transform from frame A to frame B.
 /// Stored as rotation R and translation p (position of B's origin in A's frame).
+///
+/// **Do not write `xf.rot * v` or `xf.rot.transpose() * v` by hand.** For a
+/// body transform from forward kinematics, `rot` is the *world→body* rotation
+/// and `pos` is the body origin in world coordinates — a convention every raw
+/// call site must independently remember, and getting it backwards is
+/// invisible at identity. Use the named, direction-carrying methods on
+/// [`SpatialTransformExt`] instead: [`SpatialTransformExt::body_to_world_point`],
+/// [`SpatialTransformExt::world_to_body_point`],
+/// [`SpatialTransformExt::body_to_world_dir`], and
+/// [`SpatialTransformExt::world_to_body_dir`].
 pub type SpatialTransform = tang::SpatialTransform<f64>;
 
 /// Spatial inertia of a rigid body about its center of mass.
@@ -30,6 +40,64 @@ pub type SpatialTransform = tang::SpatialTransform<f64>;
 /// Stored as mass, center of mass offset, and rotational inertia.
 /// Can be converted to a 6x6 spatial inertia matrix.
 pub type SpatialInertia = tang::SpatialInertia<f64>;
+
+/// Direction-carrying frame conversions for [`SpatialTransform`].
+///
+/// **The convention, stated once and authoritatively:** in a body transform
+/// produced by forward kinematics, `rot` is the **world→body** rotation
+/// (Featherstone's `E`) and `pos` is the **body origin in world coordinates**.
+/// So mapping a body-frame vector out to world requires `rot.transpose()`,
+/// and mapping a world-frame vector into the body frame requires `rot`.
+///
+/// Every call site that writes `xf.rot * v` or `xf.rot.transpose() * v` by
+/// hand must independently remember which direction `rot` points — and a
+/// mistake is invisible at identity, only inverting once the body tilts.
+/// These methods exist so no call site ever writes that arithmetic by hand
+/// again: the method name carries the direction, and the point/dir split
+/// carries whether the translation applies.
+///
+/// * `*_point` methods transform **positions** (rotation *and* translation).
+/// * `*_dir` methods transform **directions** — axes, forces, velocities,
+///   offsets — with rotation only.
+pub trait SpatialTransformExt {
+    /// Map a point in body coordinates to world coordinates:
+    /// `pos + rot.transpose() * p`.
+    fn body_to_world_point(&self, p: crate::Vec3) -> crate::Vec3;
+
+    /// Map a point in world coordinates to body coordinates:
+    /// `rot * (p - pos)`.
+    fn world_to_body_point(&self, p: crate::Vec3) -> crate::Vec3;
+
+    /// Rotate a direction (axis, force, velocity, offset) from body to world:
+    /// `rot.transpose() * d`. No translation.
+    fn body_to_world_dir(&self, d: crate::Vec3) -> crate::Vec3;
+
+    /// Rotate a direction (axis, force, velocity, offset) from world to body:
+    /// `rot * d`. No translation.
+    fn world_to_body_dir(&self, d: crate::Vec3) -> crate::Vec3;
+}
+
+impl SpatialTransformExt for SpatialTransform {
+    #[inline]
+    fn body_to_world_point(&self, p: crate::Vec3) -> crate::Vec3 {
+        self.pos + self.rot.transpose() * p
+    }
+
+    #[inline]
+    fn world_to_body_point(&self, p: crate::Vec3) -> crate::Vec3 {
+        self.rot * (p - self.pos)
+    }
+
+    #[inline]
+    fn body_to_world_dir(&self, d: crate::Vec3) -> crate::Vec3 {
+        self.rot.transpose() * d
+    }
+
+    #[inline]
+    fn world_to_body_dir(&self, d: crate::Vec3) -> crate::Vec3 {
+        self.rot * d
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -47,6 +115,95 @@ mod tests {
     fn assert_sv_eq(a: &SpatialVec, b: &SpatialVec, msg: &str) {
         assert_vec_eq(a.angular, b.angular, &format!("{msg} angular"));
         assert_vec_eq(a.linear, b.linear, &format!("{msg} linear"));
+    }
+
+    #[test]
+    fn test_frame_conversion_round_trips() {
+        let xf = SpatialTransform::new(
+            Mat3::rotation_z(0.5).mul_mat(&Mat3::rotation_x(-0.3)),
+            Vec3::new(1.0, -2.0, 3.0),
+        );
+        let p = Vec3::new(0.7, -1.1, 2.9);
+        assert_vec_eq(
+            xf.world_to_body_point(xf.body_to_world_point(p)),
+            p,
+            "point round trip b->w->b",
+        );
+        assert_vec_eq(
+            xf.body_to_world_point(xf.world_to_body_point(p)),
+            p,
+            "point round trip w->b->w",
+        );
+        assert_vec_eq(
+            xf.world_to_body_dir(xf.body_to_world_dir(p)),
+            p,
+            "dir round trip b->w->b",
+        );
+        assert_vec_eq(
+            xf.body_to_world_dir(xf.world_to_body_dir(p)),
+            p,
+            "dir round trip w->b->w",
+        );
+    }
+
+    #[test]
+    fn test_frame_conversion_known_rotation() {
+        use std::f64::consts::FRAC_PI_2;
+        // Body frame rotated +90 deg about world Y: body->world is R_y(pi/2),
+        // so the stored world->body rotation is R_y(-pi/2).
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        let xf = SpatialTransform::new(Mat3::rotation_y(-FRAC_PI_2), pos);
+
+        // R_y(pi/2) * (1,0,0) = (0,0,-1): the body x-axis points down world -z.
+        assert_vec_eq(
+            xf.body_to_world_dir(Vec3::x()),
+            Vec3::new(0.0, 0.0, -1.0),
+            "body x-axis in world",
+        );
+        // Points get the translation on top of the rotation.
+        assert_vec_eq(
+            xf.body_to_world_point(Vec3::x()),
+            Vec3::new(1.0, 2.0, 2.0),
+            "body point (1,0,0) in world",
+        );
+        // The inverse maps agree with hand-computed values.
+        assert_vec_eq(
+            xf.world_to_body_dir(Vec3::new(0.0, 0.0, -1.0)),
+            Vec3::x(),
+            "world -z in body",
+        );
+        assert_vec_eq(
+            xf.world_to_body_point(Vec3::new(1.0, 2.0, 2.0)),
+            Vec3::x(),
+            "world point back to body",
+        );
+    }
+
+    #[test]
+    fn test_point_vs_dir_distinction() {
+        let xf = SpatialTransform::new(Mat3::rotation_z(0.8), Vec3::new(5.0, -4.0, 3.0));
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        // Directions never see the translation.
+        assert_vec_eq(
+            xf.body_to_world_point(v) - xf.body_to_world_dir(v),
+            xf.pos,
+            "point = dir + translation",
+        );
+        assert_vec_eq(
+            xf.body_to_world_dir(Vec3::zero()),
+            Vec3::zero(),
+            "zero dir stays zero",
+        );
+        assert_vec_eq(
+            xf.body_to_world_point(Vec3::zero()),
+            xf.pos,
+            "body origin maps to pos",
+        );
+        assert_vec_eq(
+            xf.world_to_body_point(xf.pos),
+            Vec3::zero(),
+            "pos maps to body origin",
+        );
     }
 
     #[test]
