@@ -10,7 +10,8 @@ use phyz_model::{Model, State};
 /// # Armature
 ///
 /// [`phyz_model::Joint::armature`] (MuJoCo's rotor inertia) is added to the
-/// diagonal, exactly as [`crate::aba`] adds it to `D = Sᵀ Iᴬ S`. It has to be:
+/// diagonal, exactly as [`aba`](fn@crate::aba) adds it to `D = Sᵀ Iᴬ S`. It has
+/// to be:
 /// the contact solver builds its Delassus operator `J M⁻¹ Jᵀ` from *this*
 /// matrix, so if CRBA omitted the armature that ABA applies, contact would be
 /// solved against a lighter system than the dynamics then integrate. It used
