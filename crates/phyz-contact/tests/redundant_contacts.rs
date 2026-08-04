@@ -18,6 +18,11 @@
 //!
 //! The four-contact case is kept alongside because it converged before this
 //! was fixed, and must keep doing so.
+//!
+//! These assert *correctness* on a redundant manifold. The *cost* of getting
+//! there is pinned separately, in `convergence_benchmark.rs`, because the two
+//! regressed independently: the sweep was made to reach a KKT point long
+//! before it could reach one at a price worth paying.
 
 use phyz_collision::Collision;
 use phyz_contact::{

@@ -24,29 +24,50 @@
 //!
 //! # Method
 //!
-//! Projected over-relaxed Gauss–Seidel with a per-contact **staged Coulomb
-//! update** — normal impulse first, then the tangential impulse clamped into
-//! the friction disc that normal admits — run to a residual tolerance rather
-//! than a fixed iteration count. Because the problem is strongly convex this
-//! converges to the unique minimizer, and running to tolerance is what makes
-//! the converged point a valid IFT anchor — differentiating a truncated
-//! iterate would differentiate the algorithm, not the physics.
+//! An **active-set Newton** solve, globalized by projected Gauss-Seidel.
 //!
-//! The sweep runs in two phases: the normal rows are equilibrated first with
-//! the tangential impulses held, then the friction rows open and both run to
-//! tolerance together. That is a schedule, not a different problem — the KKT
-//! system, and therefore [`crate::gradient`], is unchanged. It matters on
-//! *redundant* contact sets (a foot on a flat floor, where `A` is singular),
-//! where the load-sharing transient would otherwise inject friction impulses
-//! into the null space of `J^T` that nothing in `A` can remove. See the
-//! comment on `normals_only` in [`solve_contacts_warm`].
+//! The PGS half is a sweep with a per-contact **staged Coulomb update** —
+//! normal impulse first, then the tangential impulse clamped into the friction
+//! disc that normal admits. It is cheap, monotone, and good at discovering
+//! *which* contacts carry load and which way they slide. It is also, on its
+//! own, hopeless on a redundant contact set, and for a structural reason:
+//! its rate is set by the conditioning of `A + R`, and where `A` is singular
+//! — eight coplanar contacts under one foot supply 24 impulse components to
+//! constrain 6 body DoF — all that is left in the null space is `R`, which on
+//! the tangential rows is deliberately tiny (see [`regularization_diag`]).
+//! A null-space impulse decays over `A_tt / R_t ~ 1e5` sweeps. Acceleration
+//! schemes move that constant; they do not move the exponent.
+//!
+//! The Newton half fixes the active set read off the current iterate, which
+//! makes the KKT conditions *linear*, and solves that `3n x 3n` system
+//! directly. Redundancy stops mattering: the null-space directions are
+//! resolved exactly rather than asymptotically, and because `b = J qd_free`
+//! lies in the range of `J` — orthogonal to `null(J^T)` — the minimizer has no
+//! null-space component to remove in the first place. Measured on a symmetric
+//! coplanar ring, this took thirty-two contacts from "never converges inside
+//! 1000 sweeps" to 18 iterations, the same as four.
+//!
+//! The two alternate, with each Newton proposal accepted only if a real PGS
+//! sweep from it reduces the residual. Convergence is still reported against
+//! a residual tolerance rather than an iteration count, and the residual still
+//! means exactly what it did — "a full staged sweep no longer moves anything"
+//! — because a sweep is what measures it. Running to tolerance is what makes
+//! the converged point a valid IFT anchor; differentiating a truncated iterate
+//! would differentiate the algorithm, not the physics.
+//!
+//! The linear system Newton solves is [`crate::gradient::kkt_matrix`], the same
+//! matrix [`crate::gradient::impulse_sensitivity`] differentiates through, and
+//! the regime is read with the same classifier. Solving and differentiating one
+//! shared object is deliberate: this crate has twice shipped a solver and a
+//! gradient that disagreed about the system being solved, and both times the
+//! symptom was a confident wrong number rather than a failure.
 //!
 //! The design doc specifies a primal-dual interior-point SOCP for the final
 //! form, whose central-path parameter doubles as the gradient-smoothing knob.
-//! This module implements the projected-splitting solve of the *same convex
-//! problem*; `regularization` plays the smoothing role for now. Swapping the
-//! inner solver does not change the problem being solved, the KKT conditions,
-//! or the IFT derivation built on them.
+//! This module solves the *same convex problem* by a different inner method;
+//! `regularization` plays the smoothing role for now. Swapping the inner solver
+//! does not change the problem being solved, the KKT conditions, or the IFT
+//! derivation built on them.
 
 use crate::material::ContactMaterial;
 use phyz_math::Vec3;
@@ -62,8 +83,14 @@ pub struct ContactSolverConfig {
     pub regularization: f64,
     /// Residual tolerance for the fixed point (units of velocity).
     pub tolerance: f64,
-    /// Iteration cap. Hitting it means the solve did *not* converge; the
-    /// result is still feasible but is not a valid point to differentiate.
+    /// Iteration cap, counted in units of solver work: one PGS sweep or one
+    /// dense KKT solve each. Reaching it means the solve did *not* converge;
+    /// the result is still feasible but is not a valid point to differentiate.
+    ///
+    /// The solve may also stop short of the cap when the residual has stopped
+    /// falling fast enough to reach [`Self::tolerance`] within it. That is
+    /// reported identically — `converged: false` — because it means the same
+    /// thing: this is not a KKT point.
     pub max_iterations: usize,
     /// Successive over-relaxation factor in `(0, 2)`.
     pub relaxation: f64,
@@ -108,14 +135,20 @@ impl ContactSolverConfig {
         Self {
             regularization: 1e-6,
             tolerance: 1e-10,
-            // A redundant support polygon needs more sweeps than a determined
-            // one, and needs them legitimately: Gauss-Seidel's rate degrades
-            // with the conditioning of `A`, and eight coplanar contacts under
-            // a humanoid want ~180 where four want ~90. At 200 the eight-
-            // contact stance was a hair inside the cap and a sixteen-contact
-            // one had no chance, so the solve reported `converged: false` and
-            // the gradient path refused a point that was in fact fine. The cap
-            // only costs anything when the solve has not converged.
+            // Generous, and it should stay generous, because it is now almost
+            // never approached. With the active-set Newton in the loop a
+            // coplanar ring converges in 18 iterations whether it has four
+            // contacts or thirty-two, and the worst measured case — a tipped
+            // foot sliding into a 2.5cm penetration at 6 m/s with dt = 5ms —
+            // gives up at 100 on the stagnation check rather than by running
+            // out of budget. The cap only costs anything when the solve is not
+            // going to converge, and that case now exits on its own.
+            //
+            // It used to be the binding constraint: pure Gauss-Seidel wanted
+            // ~180 sweeps for eight coplanar contacts, ~530 for sixteen, and
+            // more than 1000 for thirty-two, so raising the cap was the only
+            // thing keeping the gradient path from refusing points that were
+            // in fact fine.
             max_iterations: 1000,
             relaxation: 1.0,
             restitution_threshold: 0.05,
@@ -354,10 +387,11 @@ pub fn solve_contacts(problem: &ContactProblem, config: &ContactSolverConfig) ->
 /// Solve the convex contact problem, seeded with `initial`.
 ///
 /// Warm starting is worth a module-level comment because it is not merely an
-/// optimization here. Projected Gauss-Seidel converges linearly, and the
-/// stance contacts of a standing or walking body are solving *almost the same
-/// problem* every step: seeded with last step's impulses the solve starts at
-/// the answer and terminates in a handful of iterations instead of hundreds.
+/// optimization here. The stance contacts of a standing or walking body are
+/// solving *almost the same problem* every step, and the seed carries both the
+/// impulses and — more valuably — the active set, which is the input Newton
+/// cannot derive for itself. Seeded with last step's impulses a resting
+/// manifold terminates in two sweeps without ever building a KKT matrix.
 /// Since the solver only reports `converged` when it reaches
 /// `config.tolerance` — and [`crate::gradient`] refuses to differentiate
 /// anything else — cheaper convergence is directly more usable gradients.
@@ -415,13 +449,21 @@ pub fn solve_contacts_warm(
         })
         .collect();
 
-    let mut residual = f64::INFINITY;
     let mut iterations = 0;
 
-    // Phase 1 holds the tangential impulses fixed and equilibrates the normals
-    // alone; phase 2 is the full staged sweep. This is a solver-internal
-    // schedule, not a change of problem — the same KKT system is solved and
-    // phase 2 runs to the same tolerance either way.
+    // ---------------------------------------------------------------- stage 1
+    //
+    // Projected Gauss-Seidel warm-up. Two things come out of it that the
+    // Newton stage below cannot get for itself: a feasible iterate, and an
+    // *active set* — which contacts carry load, which slide, and in which
+    // direction. Newton takes the active set as given and solves the resulting
+    // linear system exactly; PGS is what discovers it, and it is good at that
+    // even where it is hopeless at the last digits.
+    //
+    // Phase 1a holds the tangential impulses fixed and equilibrates the
+    // normals alone; phase 1b is the full staged sweep. This is a
+    // solver-internal schedule, not a change of problem — the same KKT system
+    // is solved either way.
     //
     // It exists because of what redundancy does to the *transient*. On a
     // rank-deficient manifold — eight coplanar contacts under one foot, say —
@@ -430,152 +472,150 @@ pub fn solve_contacts_warm(
     // friction engages hard. By the time the normals have levelled out that
     // slip is gone, but the friction impulses it created live in the null
     // space of `J^T`: they cancel in the net wrench, so `A` exerts no
-    // restoring force on them at all. The only thing that removes them is the
-    // tangential regularizer, and that is deliberately tiny (see
-    // `regularization_diag` on why it must stay tiny for stiction to be
-    // exact), so the mode decays with a time constant of `A_tt/R_t ~ 1e5`
-    // sweeps. That is what "the eight-contact stance never converges" was:
-    // not the normals, which settle to six digits in ~100 sweeps, but a
-    // self-sustaining friction mode with nothing to damp it.
+    // restoring force on them at all. Equilibrating the normals first means
+    // the slip that seeds them never happens, which leaves the active set
+    // handed to Newton clean. Tangential impulses are held, not zeroed, so a
+    // warm start keeps its friction seed.
+    let normal_warmup = WARMUP_SWEEPS.min(config.max_iterations);
+    for _ in 0..normal_warmup {
+        iterations += 1;
+        if sweep(problem, config, &blocks, &mut f, true) < config.tolerance {
+            break;
+        }
+    }
+
+    let mut residual = f64::INFINITY;
+    while iterations < config.max_iterations.min(2 * WARMUP_SWEEPS) {
+        iterations += 1;
+        residual = sweep(problem, config, &blocks, &mut f, false);
+        if residual < config.tolerance {
+            return ContactSolution {
+                impulses: f,
+                iterations,
+                residual,
+                converged: true,
+            };
+        }
+    }
+
+    // ---------------------------------------------------------------- stage 2
     //
-    // Equilibrating the normals first means the slip that seeds the mode never
-    // happens. Tangential impulses are held, not zeroed, so a warm start keeps
-    // its friction seed.
-    let mut normals_only = true;
-
-    for it in 0..config.max_iterations {
-        iterations = it + 1;
-        let mut max_move: f64 = 0.0;
-
-        for c in 0..n {
-            let base = 3 * c;
-
-            // r = b_c + sum_{k != c} A_ck f_k  (Gauss-Seidel: uses updated f)
-            let mut r = [0.0f64; 3];
-            for (row, r_row) in r.iter_mut().enumerate() {
-                let mut acc = problem.free_velocity[base + row];
-                for k in 0..n {
-                    if k == c {
-                        continue;
-                    }
-                    let kb = 3 * k;
-                    acc += at(base + row, kb) * f[k].x
-                        + at(base + row, kb + 1) * f[k].y
-                        + at(base + row, kb + 2) * f[k].z;
-                }
-                *r_row = acc;
-            }
-
-            // Restitution is already folded into `free_velocity` as a target
-            // normal velocity (see `point_mass_problem`) rather than applied
-            // as a post-solve velocity reset. That keeps it differentiable in
-            // `e` and in the approach speed, and stops it fighting the solver.
-            let row = problem.rows[c];
-
-            // Coulomb's law is *staged*, not a Euclidean cone projection of
-            // the unconstrained impulse. Projecting `(f_n, f_t)` onto the cone
-            // moves the normal component too: for a fast-sliding contact the
-            // boundary projection sets `f_n = (mu||f_t|| + f_n)/(mu^2+1)`,
-            // which inflates the normal impulse far above the value that
-            // actually cancels the approach velocity, and the block then
-            // decelerates too hard. (Measured: 2.04 m/s^2 instead of the
-            // analytic 2.55 on a 40-degree incline.)
+    // Active-set Newton. This is the part that makes a redundant contact set
+    // tractable, and the reason is structural rather than a matter of tuning.
+    //
+    // PGS iterates on `A + R`, so its rate is set by that operator's
+    // conditioning. On a redundant manifold `A` is singular — thirty-two
+    // coplanar contacts supply 96 impulse components to constrain 6 body DoF —
+    // and in the null space the only thing left is `R`, which on the
+    // tangential rows is deliberately tiny (`regularization_diag` explains at
+    // length why it has to stay tiny for stiction to be exact). A null-space
+    // impulse therefore decays with a time constant of `A_tt / R_t ~ 1e5`
+    // sweeps. That is not a mode you accelerate your way out of: over-
+    // relaxation, Chebyshev and momentum all move the constant, not the
+    // exponent.
+    //
+    // A direct solve does not care. Given the active set, the KKT system is
+    // *linear*, `3n x 3n`, and dense-factorizable in `O(n^3)` — 96 unknowns
+    // for the thirty-two-contact case, which is nothing next to a thousand
+    // sweeps of an `O(n^2)` kernel. The null-space directions are handled
+    // exactly instead of asymptotically, and since `b = J qd_free` lies in the
+    // range of `J`, which is orthogonal to `null(J^T)`, the minimizer's
+    // null-space component is zero: the direct solve simply returns it.
+    //
+    // The matrix is [`crate::gradient::kkt_matrix`] — the same function
+    // [`crate::gradient::impulse_sensitivity`] differentiates through. Solving
+    // and differentiating the same object is the invariant that keeps the two
+    // from drifting apart.
+    //
+    // Newton alternates with blocks of PGS rather than running to exhaustion.
+    // The two failure modes are complementary: PGS is slow when the *linear
+    // algebra* is ill-conditioned (redundancy), Newton is unreliable when the
+    // *active set* is wrong (a sliding contact whose slip direction is still
+    // rotating during an impact, where the semi-smooth system's linearization
+    // point moves under it). A block of sweeps between attempts re-establishes
+    // the slip directions cheaply and hands Newton a better linearization
+    // point, and a damped step keeps a bad proposal from undoing progress.
+    let mut newton_solves = 0;
+    let mut stalls = 0;
+    while iterations < config.max_iterations {
+        let entry_residual = residual;
+        if newton_solves < NEWTON_ATTEMPTS
+            && let Some(candidate) = newton_step(problem, config, &f)
+        {
+            newton_solves += 1;
+            iterations += 1;
+            // A Newton iterate is only a *proposal*: the active set it was
+            // built from may be wrong, and nothing in the linear solve
+            // enforces the cone. Verifying it with a real PGS sweep costs one
+            // iteration and settles both questions at once — the sweep
+            // re-projects into the cone, and the movement it reports is the
+            // same residual the pure-PGS solver reported, so `converged` keeps
+            // its exact former meaning: "a full staged sweep no longer moves
+            // anything".
             //
-            // The physical statement is conditional: the normal impulse is
-            // whatever enforces non-penetration, and *given* that, friction is
-            // bounded by `mu * f_n`. So solve the normal first, then clamp the
-            // tangential to the disc it admits. Stiction is the case where the
-            // unconstrained tangential impulse already lies inside that disc.
-            // Non-penetration *plus* position stabilization: drive the
-            // post-step normal velocity to `row.bias` (a separating velocity
-            // proportional to the current penetration) rather than to zero.
-            // Driving it to zero freezes whatever penetration the previous
-            // steps accumulated, which is exactly how a stack creeps.
-            // The residual above deliberately excludes the whole of contact
-            // `c`'s own block, so the *intra*-block coupling has to be put
-            // back by hand — and it has to be, or this stops being coordinate
-            // descent on the objective and its fixed point stops being the
-            // KKT point. `A_nu`/`A_nw` are the lever-arm coupling between this
-            // contact's own normal and tangential rows; they are non-zero
-            // whenever the contact is off the body's centre of mass, which is
-            // every contact in a real support polygon. Dropping them made the
-            // normal solve ignore the slip its own friction causes and the
-            // tangential solve ignore the load its own normal carries, so the
-            // sweep converged to a point where friction saturated at `mu*f_n`
-            // with no slip to oppose. On a redundant (rank-deficient) manifold
-            // those spurious tangential impulses feed back through the
-            // off-diagonal blocks and the sweep walks off along the null
-            // space instead of terminating.
-            let a_nn = blocks[c][0][0];
-            let (a_nu, a_nw) = (blocks[c][0][1], blocks[c][0][2]);
-            let f_n = if a_nn > 0.0 {
-                ((row.bias - r[0] - a_nu * f[c].y - a_nw * f[c].z) / a_nn).max(0.0)
-            } else {
-                0.0
-            };
-
-            // Tangential 2x2 solve at the fixed normal impulse — including the
-            // velocity that normal impulse itself induces on the tangent rows.
-            let (a_un, a_wn) = (blocks[c][1][0], blocks[c][2][0]);
-            let r_u = r[1] + a_un * f_n;
-            let r_w = r[2] + a_wn * f_n;
-            let (m00, m01) = (blocks[c][1][1], blocks[c][1][2]);
-            let (m10, m11) = (blocks[c][2][1], blocks[c][2][2]);
-            let det = m00 * m11 - m01 * m10;
-            let (mut t_u, mut t_w) = if !normals_only {
-                if det.abs() > 1e-18 {
-                    (
-                        -(m11 * r_u - m01 * r_w) / det,
-                        -(m00 * r_w - m10 * r_u) / det,
-                    )
-                } else {
-                    (0.0, 0.0)
+            // Backtracking on that residual is the globalization. The friction
+            // cone is convex, so every point on the segment from `f` to the
+            // proposal is feasible and the halved steps need no re-projection;
+            // and because the accepted iterate is the *swept* one, a rejected
+            // Newton step costs sweeps, never progress.
+            let mut alpha = 1.0;
+            for _ in 0..LINE_SEARCH_STEPS {
+                let mut trial: Vec<Vec3> = f
+                    .iter()
+                    .zip(&candidate)
+                    .map(|(cur, cand)| *cur + (*cand - *cur) * alpha)
+                    .collect();
+                iterations += 1;
+                let trial_residual = sweep(problem, config, &blocks, &mut trial, false);
+                if trial_residual < residual {
+                    residual = trial_residual;
+                    f = trial;
+                    break;
                 }
-            } else {
-                (f[c].y, f[c].z)
-            };
-
-            // Clamp into the friction disc of radius mu*f_n. The clamp is
-            // isotropic, so a block sliding at any heading loses speed
-            // identically — the property a pyramidal cone gives up.
-            let limit = row.mu * f_n;
-            let t_norm = (t_u * t_u + t_w * t_w).sqrt();
-            if t_norm > limit {
-                if t_norm > 0.0 {
-                    let s = limit / t_norm;
-                    t_u *= s;
-                    t_w *= s;
-                } else {
-                    t_u = 0.0;
-                    t_w = 0.0;
-                }
+                alpha *= 0.5;
             }
-
-            let target = Vec3::new(f_n, t_u, t_w);
-            // Relative tolerance, not absolute. The clamp above is exact in
-            // exact arithmetic, so the only slack needed is rounding in
-            // `limit / t_norm`, which scales with `|f|`. A fixed `1e-9` is
-            // fine at impulses of order one and spuriously fires at order 1e6
-            // — turning a numerical problem into an aborted process in any
-            // debug build, which is the least useful moment to lose the state.
-            debug_assert!(
-                crate::cone::in_cone(target, row.mu, 1e-9 * (1.0 + target.norm())),
-                "staged solve must land in the friction cone"
-            );
-            let next = f[c] + (target - f[c]) * config.relaxation;
-            max_move = max_move.max((next - f[c]).norm());
-            f[c] = next;
+            if residual < config.tolerance {
+                break;
+            }
         }
 
-        residual = max_move;
-        if residual < config.tolerance {
-            if normals_only {
-                // Normals are settled; open the friction rows and keep going.
-                normals_only = false;
-                residual = f64::INFINITY;
-                continue;
+        // PGS block: monotone coordinate descent on a strongly convex
+        // objective, so this always makes progress even where Newton will not.
+        // It is also what refines the active set for the next attempt.
+        for _ in 0..PGS_BLOCK {
+            if iterations >= config.max_iterations {
+                break;
             }
+            iterations += 1;
+            residual = sweep(problem, config, &blocks, &mut f, false);
+            if residual < config.tolerance {
+                break;
+            }
+        }
+        if residual < config.tolerance {
             break;
+        }
+
+        // Stagnation exit. A block that removed less than `STALL_RATIO` of the
+        // residual is on a linear rate that cannot reach the tolerance inside
+        // the cap — `0.99` per block over the whole remaining budget is barely
+        // a factor of two — so the sweeps that follow are pure cost. This
+        // matters for throughput rather than correctness: a batched trainer's
+        // step time is set by its *worst* contact solve, and burning the full
+        // cap on a solve that was never going to converge is the difference
+        // between a bounded step and a stall.
+        //
+        // The result is reported honestly as `converged: false`, exactly as an
+        // exhausted cap would be, and [`crate::gradient`] refuses it on the
+        // same grounds. Nothing downstream can mistake an early exit for
+        // success.
+        if residual > entry_residual * STALL_RATIO {
+            stalls += 1;
+            if stalls >= STALL_BLOCKS {
+                break;
+            }
+        } else {
+            stalls = 0;
         }
     }
 
@@ -585,6 +625,256 @@ pub fn solve_contacts_warm(
         residual,
         converged: residual < config.tolerance,
     }
+}
+
+/// PGS sweeps spent establishing the active set before Newton takes over.
+///
+/// Small on purpose. Its job is to decide which contacts are loaded and which
+/// way they slide, not to converge; a determined contact set converges inside
+/// it anyway and never pays for the factorization.
+const WARMUP_SWEEPS: usize = 8;
+
+/// Cap on active-set changes. Each one is a dense `3n x 3n` solve, and an
+/// active set that has not settled in this many revisions is oscillating
+/// between two nearly-degenerate assignments — a case for the PGS fallback,
+/// not for more Newton steps.
+const NEWTON_ATTEMPTS: usize = 24;
+
+/// Backtracking steps allowed per Newton proposal, halving each time.
+const LINE_SEARCH_STEPS: usize = 3;
+
+/// PGS sweeps between Newton attempts. Enough to move the slip directions to
+/// where the next linearization wants them, few enough that a problem Newton
+/// can finish does not pay for a long tail of sweeps first.
+const PGS_BLOCK: usize = 4;
+
+/// Residual reduction a Newton-plus-PGS block must achieve to count as
+/// progress. Anything above this is a linear rate too slow to reach tolerance
+/// inside any sane iteration cap.
+const STALL_RATIO: f64 = 0.99;
+
+/// Consecutive stalled blocks before the solve gives up and reports
+/// `converged: false`. More than one so a single unlucky block — a Newton
+/// proposal rejected by the line search, say — does not end the solve.
+const STALL_BLOCKS: usize = 3;
+
+/// One projected Gauss-Seidel sweep with the staged Coulomb update.
+///
+/// Returns the largest per-contact movement, which is the fixed-point residual
+/// the solve terminates on. With `normals_only`, the tangential impulses are
+/// held at their current values rather than re-solved.
+#[allow(clippy::needless_range_loop)]
+fn sweep(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    blocks: &[[[f64; 3]; 3]],
+    f: &mut [Vec3],
+    normals_only: bool,
+) -> f64 {
+    let n = problem.n;
+    let dim = 3 * n;
+    let a = &problem.delassus;
+    let at = |i: usize, j: usize| a[i * dim + j];
+    let mut max_move: f64 = 0.0;
+
+    for c in 0..n {
+        let base = 3 * c;
+
+        // r = b_c + sum_{k != c} A_ck f_k  (Gauss-Seidel: uses updated f)
+        let mut r = [0.0f64; 3];
+        for (row, r_row) in r.iter_mut().enumerate() {
+            let mut acc = problem.free_velocity[base + row];
+            for k in 0..n {
+                if k == c {
+                    continue;
+                }
+                let kb = 3 * k;
+                acc += at(base + row, kb) * f[k].x
+                    + at(base + row, kb + 1) * f[k].y
+                    + at(base + row, kb + 2) * f[k].z;
+            }
+            *r_row = acc;
+        }
+
+        // Restitution is already folded into `free_velocity` as a target
+        // normal velocity (see `point_mass_problem`) rather than applied
+        // as a post-solve velocity reset. That keeps it differentiable in
+        // `e` and in the approach speed, and stops it fighting the solver.
+        let row = problem.rows[c];
+
+        // Coulomb's law is *staged*, not a Euclidean cone projection of
+        // the unconstrained impulse. Projecting `(f_n, f_t)` onto the cone
+        // moves the normal component too: for a fast-sliding contact the
+        // boundary projection sets `f_n = (mu||f_t|| + f_n)/(mu^2+1)`,
+        // which inflates the normal impulse far above the value that
+        // actually cancels the approach velocity, and the block then
+        // decelerates too hard. (Measured: 2.04 m/s^2 instead of the
+        // analytic 2.55 on a 40-degree incline.)
+        //
+        // The physical statement is conditional: the normal impulse is
+        // whatever enforces non-penetration, and *given* that, friction is
+        // bounded by `mu * f_n`. So solve the normal first, then clamp the
+        // tangential to the disc it admits. Stiction is the case where the
+        // unconstrained tangential impulse already lies inside that disc.
+        // Non-penetration *plus* position stabilization: drive the
+        // post-step normal velocity to `row.bias` (a separating velocity
+        // proportional to the current penetration) rather than to zero.
+        // Driving it to zero freezes whatever penetration the previous
+        // steps accumulated, which is exactly how a stack creeps.
+        // The residual above deliberately excludes the whole of contact
+        // `c`'s own block, so the *intra*-block coupling has to be put
+        // back by hand — and it has to be, or this stops being coordinate
+        // descent on the objective and its fixed point stops being the
+        // KKT point. `A_nu`/`A_nw` are the lever-arm coupling between this
+        // contact's own normal and tangential rows; they are non-zero
+        // whenever the contact is off the body's centre of mass, which is
+        // every contact in a real support polygon. Dropping them made the
+        // normal solve ignore the slip its own friction causes and the
+        // tangential solve ignore the load its own normal carries, so the
+        // sweep converged to a point where friction saturated at `mu*f_n`
+        // with no slip to oppose. On a redundant (rank-deficient) manifold
+        // those spurious tangential impulses feed back through the
+        // off-diagonal blocks and the sweep walks off along the null
+        // space instead of terminating.
+        let a_nn = blocks[c][0][0];
+        let (a_nu, a_nw) = (blocks[c][0][1], blocks[c][0][2]);
+        let f_n = if a_nn > 0.0 {
+            ((row.bias - r[0] - a_nu * f[c].y - a_nw * f[c].z) / a_nn).max(0.0)
+        } else {
+            0.0
+        };
+
+        // Tangential 2x2 solve at the fixed normal impulse — including the
+        // velocity that normal impulse itself induces on the tangent rows.
+        let (a_un, a_wn) = (blocks[c][1][0], blocks[c][2][0]);
+        let r_u = r[1] + a_un * f_n;
+        let r_w = r[2] + a_wn * f_n;
+        let (m00, m01) = (blocks[c][1][1], blocks[c][1][2]);
+        let (m10, m11) = (blocks[c][2][1], blocks[c][2][2]);
+        let det = m00 * m11 - m01 * m10;
+        let (mut t_u, mut t_w) = if !normals_only {
+            if det.abs() > 1e-18 {
+                (
+                    -(m11 * r_u - m01 * r_w) / det,
+                    -(m00 * r_w - m10 * r_u) / det,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (f[c].y, f[c].z)
+        };
+
+        // Clamp into the friction disc of radius mu*f_n. The clamp is
+        // isotropic, so a block sliding at any heading loses speed
+        // identically — the property a pyramidal cone gives up.
+        let limit = row.mu * f_n;
+        let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+        if t_norm > limit {
+            if t_norm > 0.0 {
+                let s = limit / t_norm;
+                t_u *= s;
+                t_w *= s;
+            } else {
+                t_u = 0.0;
+                t_w = 0.0;
+            }
+        }
+
+        let target = Vec3::new(f_n, t_u, t_w);
+        // Relative tolerance, not absolute. The clamp above is exact in
+        // exact arithmetic, so the only slack needed is rounding in
+        // `limit / t_norm`, which scales with `|f|`. A fixed `1e-9` is
+        // fine at impulses of order one and spuriously fires at order 1e6
+        // — turning a numerical problem into an aborted process in any
+        // debug build, which is the least useful moment to lose the state.
+        debug_assert!(
+            crate::cone::in_cone(target, row.mu, 1e-9 * (1.0 + target.norm())),
+            "staged solve must land in the friction cone"
+        );
+        let next = f[c] + (target - f[c]) * config.relaxation;
+        max_move = max_move.max((next - f[c]).norm());
+        f[c] = next;
+    }
+
+    max_move
+}
+
+/// One active-set Newton step: classify the current iterate, then solve the
+/// resulting linear KKT system exactly.
+///
+/// The regime is read with [`crate::gradient::classify_impulses`] and the
+/// matrix built with [`crate::gradient::kkt_matrix`], so the system solved here
+/// is the same one the sensitivity differentiates. The right-hand side is the
+/// constant part of the same equations:
+///
+/// - separating: `f_c = 0`;
+/// - sticking: `(A + R) f + b = bias` on the normal row, `= 0` on the
+///   tangential rows;
+/// - sliding: the normal row as above, tangential rows the homogeneous
+///   `f_t - mu t_hat f_n = 0`.
+///
+/// Returns `None` if the KKT matrix is singular at this active set — the
+/// caller falls back to PGS, which needs no such assumption.
+// `c` indexes three flat arrays at stride 3 as well as `regimes`; enumerating
+// one of them would hide the correspondence the others depend on.
+#[allow(clippy::needless_range_loop)]
+fn newton_step(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    f: &[Vec3],
+) -> Option<Vec<Vec3>> {
+    use crate::gradient::ContactRegime;
+
+    let n = problem.n;
+    let dim = 3 * n;
+    // The classification tolerance is relative to the normal impulse and
+    // matches `impulse_sensitivity`'s, so a solve that lands here lands in the
+    // regime the gradient will assume.
+    let regimes = crate::gradient::classify_impulses(problem, f, 1e-7);
+    let mut k = crate::gradient::kkt_matrix(problem, config, &regimes, f);
+
+    let mut rhs = vec![0.0; dim];
+    for c in 0..n {
+        let base = 3 * c;
+        match regimes[c] {
+            ContactRegime::Separating => {}
+            ContactRegime::Sticking => {
+                rhs[base] = problem.rows[c].bias - problem.free_velocity[base];
+                rhs[base + 1] = -problem.free_velocity[base + 1];
+                rhs[base + 2] = -problem.free_velocity[base + 2];
+            }
+            ContactRegime::Sliding => {
+                rhs[base] = problem.rows[c].bias - problem.free_velocity[base];
+            }
+        }
+    }
+
+    crate::gradient::solve_dense(&mut k, &mut rhs, dim, 1)?;
+    if rhs.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+
+    // Project back into the cone with the *staged* clamp, not a Euclidean cone
+    // projection: an infeasible proposal must not be allowed to inflate a
+    // normal impulse (see the long note in `sweep`).
+    Some(
+        (0..n)
+            .map(|c| {
+                let base = 3 * c;
+                let f_n = rhs[base].max(0.0);
+                let (mut t_u, mut t_w) = (rhs[base + 1], rhs[base + 2]);
+                let limit = problem.rows[c].mu * f_n;
+                let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+                if t_norm > limit {
+                    let s = if t_norm > 0.0 { limit / t_norm } else { 0.0 };
+                    t_u *= s;
+                    t_w *= s;
+                }
+                Vec3::new(f_n, t_u, t_w)
+            })
+            .collect(),
+    )
 }
 
 /// Convenience: build a single-contact problem for a point mass of effective

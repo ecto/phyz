@@ -73,8 +73,24 @@ pub fn classify(
     solution: &ContactSolution,
     tol: f64,
 ) -> Vec<ContactRegime> {
-    solution
-        .impulses
+    classify_impulses(problem, &solution.impulses, tol)
+}
+
+/// [`classify`] on a bare impulse vector.
+///
+/// The solver needs this on an *iterate*, before there is a
+/// [`ContactSolution`] to wrap it in: [`crate::convex::solve_contacts_warm`]
+/// drives an active-set Newton whose linear system is exactly the `K` built
+/// below, so it has to read the regime off the current iterate with precisely
+/// the rule the gradient will later use. Sharing one function is the point —
+/// a solver that converges to a different active set than the gradient
+/// linearizes around is the mismatch that has bitten this crate before.
+pub(crate) fn classify_impulses(
+    problem: &ContactProblem,
+    impulses: &[Vec3],
+    tol: f64,
+) -> Vec<ContactRegime> {
+    impulses
         .iter()
         .zip(&problem.rows)
         .map(|(f, row)| {
@@ -83,7 +99,13 @@ pub fn classify(
             }
             let ft = (f.y * f.y + f.z * f.z).sqrt();
             let limit = row.mu * f.x;
-            if ft >= limit - tol * f.x.max(1.0) && limit > 0.0 {
+            // `limit <= 0` is a frictionless contact carrying load. Its
+            // tangential impulse is pinned to zero, which is the *same*
+            // algebraic row as the sliding case with a zero slip direction —
+            // not a sticking row, which would let `f_t` respond to `db`. A
+            // frictionless contact transmits no tangential impulse and no
+            // tangential sensitivity.
+            if limit <= 0.0 || ft >= limit - tol * f.x.max(1.0) {
                 ContactRegime::Sliding
             } else {
                 ContactRegime::Sticking
@@ -130,6 +152,60 @@ pub fn impulse_sensitivity(
     let regimes = classify(problem, solution, 1e-7);
 
     // Build the KKT matrix K with dK = -db, then solve K X = -I.
+    let mut k = kkt_matrix(problem, config, &regimes, &solution.impulses);
+
+    // Right-hand side: -I for the rows that respond to db, 0 for rows that are
+    // pure algebraic relations (separating, and the sliding tangential rows).
+    let mut rhs = vec![0.0; dim * dim];
+    for c in 0..n {
+        let base = 3 * c;
+        match regimes[c] {
+            ContactRegime::Separating => {}
+            ContactRegime::Sticking => {
+                for r in 0..3 {
+                    rhs[(base + r) * dim + base + r] = -1.0;
+                }
+            }
+            ContactRegime::Sliding => {
+                rhs[base * dim + base] = -1.0;
+            }
+        }
+    }
+
+    solve_dense(&mut k, &mut rhs, dim, dim)?;
+    Some(rhs)
+}
+
+/// The KKT matrix of the contact problem at a fixed active set.
+///
+/// This is the single definition of "the linear system the contact solve is
+/// solving", and both directions of the crate go through it: the active-set
+/// Newton in [`crate::convex`] *solves* it for the impulses, and
+/// [`impulse_sensitivity`] *differentiates* through it. Deriving them from one
+/// function is deliberate. Twice now this crate has shipped a solver and a
+/// gradient that disagreed about the system being solved, and both times the
+/// symptom was a confidently wrong number rather than a failure.
+///
+/// Row structure, per contact and per regime:
+///
+/// - **Separating**: `f_c = 0`, so the three rows are the identity.
+/// - **Sticking**: the three rows of `A + R`. The constraint is active as an
+///   equality in all directions.
+/// - **Sliding**: the normal row of `A + R`, plus two algebraic rows pinning
+///   `f_t` to `mu * f_n * t_hat` along the (fixed) slip direction read off
+///   `impulses`.
+///
+/// `impulses` supplies only the slip directions; the matrix is otherwise a
+/// function of the problem, the config and the regimes.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn kkt_matrix(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    regimes: &[ContactRegime],
+    impulses: &[Vec3],
+) -> Vec<f64> {
+    let n = problem.n;
+    let dim = 3 * n;
     let mut k = vec![0.0; dim * dim];
     for c in 0..n {
         let base = 3 * c;
@@ -159,7 +235,7 @@ pub fn impulse_sensitivity(
 
                 // Tangential rows: f_t is pinned to the cone boundary along
                 // the slip direction, so d f_t = mu * t_hat * d f_n.
-                let f = solution.impulses[c];
+                let f = impulses[c];
                 let ft = (f.y * f.y + f.z * f.z).sqrt();
                 let (tu, tw) = if ft > 1e-14 {
                     (f.y / ft, f.z / ft)
@@ -176,27 +252,7 @@ pub fn impulse_sensitivity(
             }
         }
     }
-
-    // Right-hand side: -I for the rows that respond to db, 0 for rows that are
-    // pure algebraic relations (separating, and the sliding tangential rows).
-    let mut rhs = vec![0.0; dim * dim];
-    for c in 0..n {
-        let base = 3 * c;
-        match regimes[c] {
-            ContactRegime::Separating => {}
-            ContactRegime::Sticking => {
-                for r in 0..3 {
-                    rhs[(base + r) * dim + base + r] = -1.0;
-                }
-            }
-            ContactRegime::Sliding => {
-                rhs[base * dim + base] = -1.0;
-            }
-        }
-    }
-
-    solve_dense(&mut k, &mut rhs, dim)?;
-    Some(rhs)
+    k
 }
 
 /// Sensitivity of the solved impulses to each contact's friction coefficient.
@@ -350,10 +406,15 @@ pub fn pullback_to_free_velocity(sensitivity: &[f64], dim: usize, cotangent: &[V
 
 /// Gauss-Jordan solve of `A X = B` in place; `B` becomes `X`.
 ///
-/// `A` is `dim x dim` and `B` is `dim x dim`, both row-major. Returns `None`
+/// `A` is `dim x dim` row-major, `B` is `dim x ncols` row-major. Returns `None`
 /// if `A` is singular, which for the KKT matrix means the active set is
 /// degenerate — a case where the derivative genuinely does not exist.
-fn solve_dense(a: &mut [f64], b: &mut [f64], dim: usize) -> Option<()> {
+///
+/// `ncols` is a parameter rather than `dim` because the same factorization
+/// serves two callers with different right-hand sides: the sensitivity below
+/// solves against `-I` (`ncols == dim`), and the active-set Newton step in
+/// [`crate::convex`] solves against a single vector (`ncols == 1`).
+pub(crate) fn solve_dense(a: &mut [f64], b: &mut [f64], dim: usize, ncols: usize) -> Option<()> {
     for col in 0..dim {
         let mut pivot = col;
         for r in col + 1..dim {
@@ -367,13 +428,17 @@ fn solve_dense(a: &mut [f64], b: &mut [f64], dim: usize) -> Option<()> {
         if pivot != col {
             for k in 0..dim {
                 a.swap(col * dim + k, pivot * dim + k);
-                b.swap(col * dim + k, pivot * dim + k);
+            }
+            for k in 0..ncols {
+                b.swap(col * ncols + k, pivot * ncols + k);
             }
         }
         let d = a[col * dim + col];
         for k in 0..dim {
             a[col * dim + k] /= d;
-            b[col * dim + k] /= d;
+        }
+        for k in 0..ncols {
+            b[col * ncols + k] /= d;
         }
         for r in 0..dim {
             if r == col {
@@ -385,7 +450,9 @@ fn solve_dense(a: &mut [f64], b: &mut [f64], dim: usize) -> Option<()> {
             }
             for k in 0..dim {
                 a[r * dim + k] -= factor * a[col * dim + k];
-                b[r * dim + k] -= factor * b[col * dim + k];
+            }
+            for k in 0..ncols {
+                b[r * ncols + k] -= factor * b[col * ncols + k];
             }
         }
     }
