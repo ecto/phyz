@@ -17,7 +17,6 @@
 //! The observable contradiction is simple enough to state without any of that
 //! context: **a rigid box pitched toe-down cannot be loaded at its heel.**
 
-use phyz_collision::Collision;
 use phyz_contact::find_ground_contacts;
 use phyz_math::{GRAVITY, Mat3, Quat, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Geometry, Model, ModelBuilder, State};
