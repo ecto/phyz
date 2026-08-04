@@ -35,7 +35,7 @@
 //! answer. That is the property that makes this safe to do at all.
 
 use phyz_collision::Collision;
-use phyz_math::Vec3;
+use phyz_math::{SpatialTransformExt, Vec3};
 use phyz_model::State;
 use std::collections::HashMap;
 
@@ -101,11 +101,14 @@ impl ContactCache {
         } else {
             (c.body_j, c.body_i)
         };
-        // Express the point in the reference body's frame: p_local =
-        // R^T (p - t). Invariant to that body's own rigid motion, which is
-        // what a world-space key would lose.
+        // Express the point in the reference body's frame — invariant to that
+        // body's own rigid motion, which is what a world-space key would lose.
+        // `rot` is already world→body here, so the old `rot.transpose() *`
+        // rotated the offset *out* of the body frame instead of into it: the
+        // key silently varied under rotation and a rolling or pivoting contact
+        // lost its warm start exactly when warm starts pay.
         let local = match state.body_xform.get(lo) {
-            Some(x) => x.rot.transpose() * (c.contact_point - x.pos),
+            Some(x) => x.world_to_body_point(c.contact_point),
             None => c.contact_point,
         };
         let q = |v: f64| (v / self.cell).round() as i64;
@@ -264,5 +267,69 @@ mod tests {
         let seed = cache.warm_start(&state, &corners);
         assert_eq!(seed[0].x, 3.0);
         assert_eq!(seed[1], Vec3::zeros());
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+    use phyz_math::{Quat, SpatialTransform, SpatialTransformExt, Vec3};
+
+    /// A body pivoting on a fixed feature keeps that feature's key.
+    ///
+    /// This is the case the old `rot.transpose()` broke: it rotated the offset
+    /// *out* of the body frame instead of into it, so the key varied with the
+    /// body's orientation and a rolling or pivoting contact lost its warm start
+    /// exactly when warm starts pay. Every prior test used an identity or
+    /// translation-only transform, which is why it survived.
+    #[test]
+    fn a_pivoting_body_keeps_the_key_of_the_feature_it_pivots_on() {
+        let model = phyz_model::ModelBuilder::new()
+            .dt(1e-3)
+            .add_free_body(
+                "b",
+                -1,
+                SpatialTransform::identity(),
+                phyz_math::SpatialInertia::sphere(1.0, 0.1),
+            )
+            .build();
+
+        // The body-frame feature: a corner at (0.1, 0, -0.1) in the body.
+        let feature_local = Vec3::new(0.1, 0.0, -0.1);
+        let impulse = Vec3::new(3.0, 0.5, 0.0);
+        let mut cache = ContactCache::default();
+
+        // Step 0: unrotated. World point = local point.
+        let mut s0 = model.default_state();
+        s0.body_xform[0] = SpatialTransform::identity();
+        let c0 = Collision {
+            body_i: 0,
+            body_j: usize::MAX,
+            contact_point: feature_local,
+            contact_normal: Vec3::z(),
+            penetration_depth: 1e-4,
+        };
+        cache.store(&s0, std::slice::from_ref(&c0), &[impulse]);
+
+        // Step 1: the body has pitched 0.1 rad about the feature. Same
+        // body-frame feature, new world position — computed with the named
+        // body→world method so the test cannot itself have the convention bug.
+        let mut s1 = model.default_state();
+        let xf = SpatialTransform {
+            rot: Quat::from_axis_angle(Vec3::y(), -0.1).to_matrix(),
+            pos: Vec3::new(0.003, 0.0, 0.001),
+        };
+        s1.body_xform[0] = xf;
+        let c1 = Collision {
+            contact_point: xf.body_to_world_point(feature_local),
+            ..c0
+        };
+
+        let seed = cache.warm_start(&s1, &[c1]);
+        assert_eq!(
+            seed[0], impulse,
+            "the same body-frame feature under rotation lost its warm start — \
+             the key is not rotation-invariant"
+        );
     }
 }
