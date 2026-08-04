@@ -32,6 +32,15 @@
 //! the converged point a valid IFT anchor — differentiating a truncated
 //! iterate would differentiate the algorithm, not the physics.
 //!
+//! The sweep runs in two phases: the normal rows are equilibrated first with
+//! the tangential impulses held, then the friction rows open and both run to
+//! tolerance together. That is a schedule, not a different problem — the KKT
+//! system, and therefore [`crate::gradient`], is unchanged. It matters on
+//! *redundant* contact sets (a foot on a flat floor, where `A` is singular),
+//! where the load-sharing transient would otherwise inject friction impulses
+//! into the null space of `J^T` that nothing in `A` can remove. See the
+//! comment on `normals_only` in [`solve_contacts_warm`].
+//!
 //! The design doc specifies a primal-dual interior-point SOCP for the final
 //! form, whose central-path parameter doubles as the gradient-smoothing knob.
 //! This module implements the projected-splitting solve of the *same convex
@@ -99,7 +108,15 @@ impl ContactSolverConfig {
         Self {
             regularization: 1e-6,
             tolerance: 1e-10,
-            max_iterations: 200,
+            // A redundant support polygon needs more sweeps than a determined
+            // one, and needs them legitimately: Gauss-Seidel's rate degrades
+            // with the conditioning of `A`, and eight coplanar contacts under
+            // a humanoid want ~180 where four want ~90. At 200 the eight-
+            // contact stance was a hair inside the cap and a sixteen-contact
+            // one had no chance, so the solve reported `converged: false` and
+            // the gradient path refused a point that was in fact fine. The cap
+            // only costs anything when the solve has not converged.
+            max_iterations: 1000,
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
@@ -114,7 +131,7 @@ impl ContactSolverConfig {
         Self {
             regularization: 1e-3,
             tolerance: 1e-12,
-            max_iterations: 500,
+            max_iterations: 2000,
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
@@ -401,6 +418,31 @@ pub fn solve_contacts_warm(
     let mut residual = f64::INFINITY;
     let mut iterations = 0;
 
+    // Phase 1 holds the tangential impulses fixed and equilibrates the normals
+    // alone; phase 2 is the full staged sweep. This is a solver-internal
+    // schedule, not a change of problem — the same KKT system is solved and
+    // phase 2 runs to the same tolerance either way.
+    //
+    // It exists because of what redundancy does to the *transient*. On a
+    // rank-deficient manifold — eight coplanar contacts under one foot, say —
+    // the first sweeps hand almost the whole load to whichever contact is
+    // swept first, which tips the body, which is real tangential velocity, so
+    // friction engages hard. By the time the normals have levelled out that
+    // slip is gone, but the friction impulses it created live in the null
+    // space of `J^T`: they cancel in the net wrench, so `A` exerts no
+    // restoring force on them at all. The only thing that removes them is the
+    // tangential regularizer, and that is deliberately tiny (see
+    // `regularization_diag` on why it must stay tiny for stiction to be
+    // exact), so the mode decays with a time constant of `A_tt/R_t ~ 1e5`
+    // sweeps. That is what "the eight-contact stance never converges" was:
+    // not the normals, which settle to six digits in ~100 sweeps, but a
+    // self-sustaining friction mode with nothing to damp it.
+    //
+    // Equilibrating the normals first means the slip that seeds the mode never
+    // happens. Tangential impulses are held, not zeroed, so a warm start keeps
+    // its friction seed.
+    let mut normals_only = true;
+
     for it in 0..config.max_iterations {
         iterations = it + 1;
         let mut max_move: f64 = 0.0;
@@ -449,24 +491,48 @@ pub fn solve_contacts_warm(
             // proportional to the current penetration) rather than to zero.
             // Driving it to zero freezes whatever penetration the previous
             // steps accumulated, which is exactly how a stack creeps.
+            // The residual above deliberately excludes the whole of contact
+            // `c`'s own block, so the *intra*-block coupling has to be put
+            // back by hand — and it has to be, or this stops being coordinate
+            // descent on the objective and its fixed point stops being the
+            // KKT point. `A_nu`/`A_nw` are the lever-arm coupling between this
+            // contact's own normal and tangential rows; they are non-zero
+            // whenever the contact is off the body's centre of mass, which is
+            // every contact in a real support polygon. Dropping them made the
+            // normal solve ignore the slip its own friction causes and the
+            // tangential solve ignore the load its own normal carries, so the
+            // sweep converged to a point where friction saturated at `mu*f_n`
+            // with no slip to oppose. On a redundant (rank-deficient) manifold
+            // those spurious tangential impulses feed back through the
+            // off-diagonal blocks and the sweep walks off along the null
+            // space instead of terminating.
             let a_nn = blocks[c][0][0];
+            let (a_nu, a_nw) = (blocks[c][0][1], blocks[c][0][2]);
             let f_n = if a_nn > 0.0 {
-                ((row.bias - r[0]) / a_nn).max(0.0)
+                ((row.bias - r[0] - a_nu * f[c].y - a_nw * f[c].z) / a_nn).max(0.0)
             } else {
                 0.0
             };
 
-            // Tangential 2x2 solve at the fixed normal impulse.
+            // Tangential 2x2 solve at the fixed normal impulse — including the
+            // velocity that normal impulse itself induces on the tangent rows.
+            let (a_un, a_wn) = (blocks[c][1][0], blocks[c][2][0]);
+            let r_u = r[1] + a_un * f_n;
+            let r_w = r[2] + a_wn * f_n;
             let (m00, m01) = (blocks[c][1][1], blocks[c][1][2]);
             let (m10, m11) = (blocks[c][2][1], blocks[c][2][2]);
             let det = m00 * m11 - m01 * m10;
-            let (mut t_u, mut t_w) = if det.abs() > 1e-18 {
-                (
-                    -(m11 * r[1] - m01 * r[2]) / det,
-                    -(m00 * r[2] - m10 * r[1]) / det,
-                )
+            let (mut t_u, mut t_w) = if !normals_only {
+                if det.abs() > 1e-18 {
+                    (
+                        -(m11 * r_u - m01 * r_w) / det,
+                        -(m00 * r_w - m10 * r_u) / det,
+                    )
+                } else {
+                    (0.0, 0.0)
+                }
             } else {
-                (0.0, 0.0)
+                (f[c].y, f[c].z)
             };
 
             // Clamp into the friction disc of radius mu*f_n. The clamp is
@@ -486,8 +552,14 @@ pub fn solve_contacts_warm(
             }
 
             let target = Vec3::new(f_n, t_u, t_w);
+            // Relative tolerance, not absolute. The clamp above is exact in
+            // exact arithmetic, so the only slack needed is rounding in
+            // `limit / t_norm`, which scales with `|f|`. A fixed `1e-9` is
+            // fine at impulses of order one and spuriously fires at order 1e6
+            // — turning a numerical problem into an aborted process in any
+            // debug build, which is the least useful moment to lose the state.
             debug_assert!(
-                crate::cone::in_cone(target, row.mu, 1e-9),
+                crate::cone::in_cone(target, row.mu, 1e-9 * (1.0 + target.norm())),
                 "staged solve must land in the friction cone"
             );
             let next = f[c] + (target - f[c]) * config.relaxation;
@@ -497,6 +569,12 @@ pub fn solve_contacts_warm(
 
         residual = max_move;
         if residual < config.tolerance {
+            if normals_only {
+                // Normals are settled; open the friction rows and keep going.
+                normals_only = false;
+                residual = f64::INFINITY;
+                continue;
+            }
             break;
         }
     }
