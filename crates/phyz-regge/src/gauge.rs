@@ -358,6 +358,39 @@ fn maxwell_action_grad_lengths_fd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    /// A deterministic generator for the tests that need a perturbed mesh.
+    ///
+    /// These were written against `rand::thread_rng()`, which made them
+    /// unreproducible: every run drew a different mesh, and
+    /// `test_analytical_length_grad_vs_fd` failed roughly one run in eight
+    /// because some draws put an edge's finite-difference gradient near enough
+    /// to zero that a 1e-7 step could not resolve it to 1e-4 relative — while
+    /// still landing above the 1e-10 absolute escape hatch.
+    ///
+    /// A randomized check is the right instinct here; an *unrepeatable* one is
+    /// not. Seeding keeps the symmetry-breaking and makes a failure something
+    /// you can sit down and debug. Change the seed deliberately if you want to
+    /// sweep for new configurations — that is a decision, not an accident.
+    fn seeded(seed: u64) -> StdRng {
+        StdRng::seed_from_u64(seed)
+    }
+
+    /// Smallest gradient component a central difference can actually resolve.
+    ///
+    /// Central differencing subtracts two nearly-equal actions and divides by
+    /// `2·eps`, so its roundoff is about `machine_eps · |S| / eps`. With
+    /// `eps = 1e-7` and an action of order one that is ~1e-9 — meaning the FD
+    /// reference is itself uncertain at the 1e-9 level, and a component near
+    /// 1e-6 can only be trusted to about 1e-3 relative no matter how correct
+    /// the analytical gradient is.
+    ///
+    /// The old escape hatch was 1e-10, an order of magnitude *below* that
+    /// floor, so the test demanded of the finite difference a precision the
+    /// finite difference does not have. It failed on whichever edges happened
+    /// to land near zero.
+    const FD_NOISE_FLOOR: f64 = 1e-8;
     use crate::mesh;
 
     #[test]
@@ -380,8 +413,7 @@ mod tests {
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
         // Random phases → non-zero field strengths → positive action.
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0xA10E);
         let phases: Vec<f64> = (0..complex.n_edges())
             .map(|_| rng.r#gen::<f64>() * 0.1)
             .collect();
@@ -396,8 +428,7 @@ mod tests {
         // the field strength F_t should be invariant.
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0x6A06);
         let phases: Vec<f64> = (0..complex.n_edges())
             .map(|_| rng.r#gen::<f64>() * 0.5)
             .collect();
@@ -441,8 +472,7 @@ mod tests {
     fn test_phase_gradient_vs_fd() {
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0x5EED);
         let phases: Vec<f64> = (0..complex.n_edges())
             .map(|_| rng.r#gen::<f64>() * 0.1)
             .collect();
@@ -475,8 +505,7 @@ mod tests {
         let (complex, mut lengths) = mesh::flat_hypercubic(2, 1.0);
 
         // Perturb lengths slightly to break symmetry.
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0x1E46);
         for l in lengths.iter_mut() {
             *l *= 1.0 + 0.05 * (rng.r#gen::<f64>() - 0.5);
         }
@@ -493,7 +522,7 @@ mod tests {
             let scale = grad_fd[i].abs().max(1e-12);
             let rel_err = abs_err / scale;
             assert!(
-                rel_err < 1e-4 || abs_err < 1e-10,
+                rel_err < 1e-4 || abs_err < FD_NOISE_FLOOR,
                 "edge {i}: analytical={}, fd={}, rel_err={}",
                 grad_analytical[i],
                 grad_fd[i],
