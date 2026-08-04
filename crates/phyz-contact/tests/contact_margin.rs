@@ -58,8 +58,24 @@ fn place(model: &Model, state: &mut State, z: f64) {
     state.body_xform = xforms;
 }
 
-/// Solve one step's contacts for `contacts` and return the total *world* normal
+/// Solve one step's contacts for `contacts` and return the total **world +z**
 /// force, in newtons.
+///
+/// # The frame assumption, and why it is asserted rather than described
+///
+/// `sol.impulses[i].x` is the impulse along the *contact frame's* first axis,
+/// not along world z. Summing those components and calling the result a world
+/// force is only valid because every contact here is a ground contact with
+/// `contact_normal == +z`, and [`phyz_contact::contact_frame`] puts the normal
+/// on the first axis. For a tilted contact the sum would silently be a
+/// projection onto a mix of frames and the number would be quietly wrong.
+///
+/// Every force figure in this file — and every number quoted for the
+/// continuity of the ramp — comes out of this helper, so the assumption is
+/// load-bearing evidence rather than a local convenience. It is checked below
+/// on each call instead of documented and hoped for: if a future caller reuses
+/// this with a non-axis-aligned contact, the test fails loudly rather than
+/// reporting a plausible wrong force.
 fn normal_force(
     model: &Model,
     state: &State,
@@ -69,6 +85,20 @@ fn normal_force(
     if contacts.is_empty() {
         return 0.0;
     }
+    // The assumption that makes the sum below a world-z force. Checked, not
+    // assumed: `contact_frame`'s first axis must really be the contact normal,
+    // and that normal must really be +z.
+    for c in contacts {
+        let (nrm, _, _) = phyz_contact::contact_frame(&c.contact_normal);
+        assert!(
+            (nrm - Vec3::z()).norm() < 1e-12,
+            "normal_force sums contact-frame x-components as world-z force, \
+             which requires every contact frame's first axis to be +z; got \
+             {nrm:?} from contact normal {:?}",
+            c.contact_normal
+        );
+    }
+
     // Free velocity after one step of gravity alone.
     let mut free_qd = DVec::zeros(model.nv);
     free_qd[5] = -GRAVITY * DT;
@@ -81,8 +111,7 @@ fn normal_force(
         sol.converged,
         "contact solve must converge to be meaningful"
     );
-    // Every ground contact's normal is +z here, so the normal components sum
-    // directly. Impulse -> force over the step.
+    // Safe given the assertion above. Impulse -> force over the step.
     sol.impulses.iter().map(|f| f.x).sum::<f64>() / DT
 }
 
@@ -370,6 +399,8 @@ fn a_resting_box_still_carries_exactly_its_own_weight() {
             let sol = solve_contacts(&asm.problem, &cfg);
             assert!(sol.converged);
             state.v = &free_qd + &asm.velocity_delta(&sol.impulses);
+            // Same contact-frame assumption as `normal_force`, and it holds for
+            // the same reason: these are all ground contacts with normal +z.
             total = sol.impulses.iter().map(|f| f.x).sum::<f64>() / DT;
             ncontacts = contacts.len();
         }
@@ -471,5 +502,27 @@ fn print_the_ramp() {
     println!(
         "worst single-sample jump over dz = {dz:.3e} m: {worst:.6} N ({:.4}% of weight)",
         100.0 * worst / (MASS * GRAVITY)
+    );
+}
+
+/// The guard inside [`normal_force`] has to actually discriminate, or it is
+/// decoration rather than a check.
+///
+/// A guard that passed for every normal would be worse than the comment it
+/// replaced: it would read as verification while verifying nothing.
+#[test]
+fn the_normal_force_frame_guard_is_live() {
+    // The case the helper relies on.
+    let (nrm, _, _) = phyz_contact::contact_frame(&Vec3::z());
+    assert!((nrm - Vec3::z()).norm() < 1e-12);
+
+    // And a tilted contact, which the guard must reject. If this ever starts
+    // returning +z, the guard has stopped discriminating and every force number
+    // in this file needs re-deriving.
+    let tilted = Vec3::new(0.3, 0.0, 0.954).normalize();
+    let (nrm, _, _) = phyz_contact::contact_frame(&tilted);
+    assert!(
+        (nrm - Vec3::z()).norm() > 1e-3,
+        "the frame guard would not catch a tilted contact: {nrm:?}"
     );
 }
