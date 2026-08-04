@@ -83,7 +83,7 @@ fn body_drop_on_fixed_body_with_contacts() {
     assert_relative_eq!(contact.contact_normal.z, 1.0, epsilon = 1e-10);
 
     // No ground contacts in this scenario.
-    let ground = find_ground_contacts(&state, &geometries, -10.0);
+    let ground = find_ground_contacts(&state, &geometries, -10.0, 0.0);
     assert!(ground.is_empty());
 
     let materials = vec![ContactMaterial::default()];

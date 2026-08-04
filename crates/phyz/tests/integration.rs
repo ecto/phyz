@@ -179,7 +179,7 @@ fn ball_drop_with_contacts() {
     // At z=2.0, sphere bottom is at 1.9 -- no contact with ground at z=0
     let geometries: Vec<Option<Geometry>> =
         model.bodies.iter().map(|b| b.geometry.clone()).collect();
-    let contacts = find_ground_contacts(&state, &geometries, 0.0);
+    let contacts = find_ground_contacts(&state, &geometries, 0.0, 0.0);
     assert!(
         contacts.is_empty(),
         "should have no contacts at z=2.0, got {}",
@@ -191,7 +191,7 @@ fn ball_drop_with_contacts() {
     let (xforms, _) = phyz::phyz_rigid::forward_kinematics(&model, &state);
     state.body_xform = xforms;
 
-    let contacts = find_ground_contacts(&state, &geometries, 0.0);
+    let contacts = find_ground_contacts(&state, &geometries, 0.0, 0.0);
     assert_eq!(contacts.len(), 1, "should have 1 ground contact at z=0.05");
     let contact = &contacts[0];
 

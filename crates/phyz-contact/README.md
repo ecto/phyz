@@ -34,8 +34,12 @@ use phyz_contact::{ContactMaterial, contact_forces, find_ground_contacts};
 // `phyz_rigid::forward_kinematics` first.
 # fn demo(model: &phyz_model::Model, state: &phyz_model::State) {
 let geometries: Vec<_> = model.bodies.iter().map(|b| b.geometry.clone()).collect();
-let contacts = find_ground_contacts(state, &geometries, 0.0);
-let materials = vec![ContactMaterial::default(); contacts.len()];
+let material = ContactMaterial::default();
+// The last argument is the contact margin: candidates within it of the plane
+// are kept with a negative depth, so a support point's normal force ramps to
+// zero instead of being cut off while it is still carrying load.
+let contacts = find_ground_contacts(state, &geometries, 0.0, material.margin);
+let materials = vec![material; contacts.len()];
 let wrenches = contact_forces(&contacts, state, &materials, None);
 // feed `wrenches` to phyz_rigid::aba_with_external_forces
 # }

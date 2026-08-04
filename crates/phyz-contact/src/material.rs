@@ -150,9 +150,29 @@ pub struct ContactMaterial {
     /// with the config value acting as a floor.
     pub solimp: SolImp,
     /// Contact margin, in metres: how far apart surfaces may be and still be
-    /// included in the solve. Purely informational to this crate today — the
-    /// narrow-phase owns detection — but it combines like MuJoCo's does so a
-    /// broadphase can read it off the combined pair material.
+    /// included in the solve.
+    ///
+    /// This used to be inert ("the narrow phase owns detection"). It is not:
+    /// with *soft* contact a candidate at exactly zero depth still carries the
+    /// full `solimp.dmin` share of the load, so a detection predicate that cuts
+    /// off at zero gap cuts off a contact that was carrying real force. Measured
+    /// on a humanoid stance, the least-loaded foot corner was carrying 22.3 N —
+    /// 11% of body weight — on the step before it left the contact set, and went
+    /// to 0 N the moment it rose a nanometre above the plane.
+    ///
+    /// The margin is the band above the surface over which a contact is still
+    /// generated, with a *negative* `penetration_depth`, and its impedance
+    /// tapers to zero — see [`ContactMaterial::impedance_at`]. That turns the
+    /// step into a ramp.
+    ///
+    /// The default is [`SolImp::default`]'s `width`, i.e. the same 1 mm scale
+    /// over which solimp already varies the impedance on the penetrating side.
+    /// Picking the same scale makes impedance one continuous, `C^1` function of
+    /// signed gap across the whole band `[-margin, +width]` rather than two
+    /// curves glued at zero.
+    ///
+    /// Combines with `max` (MuJoCo's rule): the larger margin is the one asking
+    /// for earlier detection, and `min` would silently defeat it.
     pub margin: f64,
 }
 
@@ -167,7 +187,8 @@ impl Default for ContactMaterial {
             soft_erp: 0.2,
             solref: SolRef::default(),
             solimp: SolImp::default(),
-            margin: 0.0,
+            // Same scale as `SolImp::default().width`; see the field docs.
+            margin: 0.001,
         }
     }
 }
@@ -184,6 +205,43 @@ impl ContactMaterial {
             soft_erp: 0.2,
             ..Default::default()
         }
+    }
+
+    /// Constraint impedance for a contact at *signed* penetration `depth`,
+    /// where negative means the surfaces are separated by `-depth` metres.
+    ///
+    /// On the penetrating side (`depth >= 0`) this is exactly
+    /// [`SolImp::impedance`] and nothing has changed. Inside the margin band
+    /// (`-margin < depth < 0`) it is `dmin` scaled by a smoothstep that reaches
+    /// zero at `depth = -margin`.
+    ///
+    /// **Why impedance, and why this makes the force continuous.** The
+    /// regularizer is `R = (1-d)/d * A_nn` (see
+    /// [`crate::convex::regularization_diag`]), so a single contact resolving a
+    /// free approach velocity `v` carries a normal impulse of about
+    /// `v / (A_nn + R) = d * v / A_nn` — *linear in `d`*. Taking `d` smoothly to
+    /// zero therefore takes the normal force smoothly to zero, and the contact
+    /// leaves the set carrying nothing instead of carrying 11% of body weight.
+    ///
+    /// It also cannot pull: `d -> 0` means "infinitely soft", not "attractive".
+    /// The normal impulse stays in the friction cone's `f_n >= 0` half-line, and
+    /// `ContactRow::from_material` clamps the stabilization bias at
+    /// `depth.max(0.0)`, so a separated contact has no bias to push *or* pull
+    /// with. Friction rides on `mu * f_n` and vanishes with it.
+    ///
+    /// The join at `depth = 0` is `C^1`: smoothstep has zero slope at its top
+    /// end, and the solimp sigmoid has zero slope at `x = 0` for `power > 1`.
+    pub fn impedance_at(&self, depth: f64) -> f64 {
+        if depth >= 0.0 {
+            return self.solimp.impedance(depth);
+        }
+        let gap = -depth;
+        if self.margin <= 0.0 || gap >= self.margin {
+            return 0.0;
+        }
+        let s = 1.0 - gap / self.margin;
+        let ramp = s * s * (3.0 - 2.0 * s);
+        ramp * self.solimp.impedance(0.0)
     }
 
     /// Create a bouncy material (high restitution).
@@ -339,6 +397,89 @@ mod tests {
             dampratio: 1.0,
         };
         assert!((instant.error_reduction(2e-3) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn impedance_at_ramps_to_zero_across_the_margin() {
+        let m = ContactMaterial::default();
+        assert!(m.margin > 0.0);
+
+        // Penetrating side is untouched.
+        for r in [0.0, 1e-5, 1e-4, 1e-3, 1e-2] {
+            assert_eq!(m.impedance_at(r), m.solimp.impedance(r));
+        }
+
+        // Monotone down to exactly zero at the band edge, and zero past it.
+        let mut prev = m.impedance_at(0.0);
+        for k in 1..=100 {
+            let d = m.impedance_at(-m.margin * k as f64 / 100.0);
+            assert!(d <= prev + 1e-15, "must be monotone: {prev} -> {d}");
+            assert!(d >= 0.0, "impedance must never go negative: {d}");
+            prev = d;
+        }
+        assert_eq!(m.impedance_at(-m.margin), 0.0);
+        assert_eq!(m.impedance_at(-2.0 * m.margin), 0.0);
+
+        // A zero margin is the old hard cutoff, exactly.
+        let hard = ContactMaterial {
+            margin: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(hard.impedance_at(-1e-12), 0.0);
+        assert_eq!(hard.impedance_at(0.0), hard.solimp.dmin);
+    }
+
+    /// The join at zero depth is `C^1`, which is the property that makes the
+    /// contact-activation event differentiable rather than merely continuous.
+    /// Both one-sided derivatives are zero there: smoothstep is flat at its top
+    /// end, and the solimp sigmoid is flat at `x = 0` for `power > 1`.
+    #[test]
+    fn impedance_at_is_c1_across_zero_depth() {
+        let m = ContactMaterial::default();
+        let h = 1e-9;
+        let below = (m.impedance_at(0.0) - m.impedance_at(-h)) / h;
+        let above = (m.impedance_at(h) - m.impedance_at(0.0)) / h;
+        // Compared against the ramp's own characteristic slope — smoothstep
+        // peaks at `1.5 * dmin / margin` — since an absolute tolerance would
+        // just be measuring the choice of `margin`.
+        let scale = 1.5 * m.solimp.dmin / m.margin;
+        assert!(
+            below.abs() < 1e-4 * scale,
+            "left slope at 0 is {below}, vs ramp slope scale {scale}"
+        );
+        assert!(
+            above.abs() < 1e-4 * scale,
+            "right slope at 0 is {above}, vs ramp slope scale {scale}"
+        );
+        // And they agree with each other, which is what "C^1" means here.
+        assert!((below - above).abs() < 1e-4 * scale);
+
+        // Continuous everywhere in the band: no sample-to-sample cliff.
+        let n = 20_000;
+        let mut prev = m.impedance_at(-m.margin);
+        for k in 1..=n {
+            let d = m.impedance_at(-m.margin + 2.0 * m.margin * k as f64 / n as f64);
+            assert!(
+                (d - prev).abs() < 1e-3,
+                "impedance jumped by {} at step {k}",
+                (d - prev).abs()
+            );
+            prev = d;
+        }
+    }
+
+    #[test]
+    fn margin_combines_by_max() {
+        let a = ContactMaterial {
+            margin: 5e-3,
+            ..Default::default()
+        };
+        let b = ContactMaterial {
+            margin: 1e-4,
+            ..Default::default()
+        };
+        assert_eq!(ContactMaterial::combine(&a, &b).margin, 5e-3);
+        assert_eq!(ContactMaterial::combine(&b, &a).margin, 5e-3);
     }
 
     #[test]
