@@ -8,7 +8,8 @@ Penalty-based contact resolution on top of
 | Function | Purpose |
 | --- | --- |
 | `find_contacts` | body-body contacts from model geometry |
-| `find_ground_contacts` | contacts against a horizontal ground plane |
+| `find_ground_contacts` | contacts against a horizontal ground plane (one centred shape per body) |
+| `find_ground_contacts_model` | ground contacts over `Body::collisions` — every shape, offsets and orientations included |
 | `contact_forces` | explicit penalty wrenches |
 | `contact_forces_implicit` | semi-implicit variant, stable at larger `dt` |
 | `compute_contact_force`, `compute_contact_force_implicit` | single-contact kernels |
