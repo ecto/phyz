@@ -224,7 +224,7 @@ impl Simulator {
         let mut contacts = find_ground_contacts_model(model, state, ground_height, material.margin);
 
         // Find body-body contacts
-        let body_contacts = find_contacts(model, state);
+        let body_contacts = find_contacts(model, state, material.margin);
         contacts.extend(body_contacts);
 
         // Free velocity: where the system lands after one step with every
@@ -302,7 +302,7 @@ impl Simulator {
 
         let mut contacts =
             find_ground_contacts_model(model, &probe, ground_height, material.margin);
-        contacts.extend(find_contacts(model, &probe));
+        contacts.extend(find_contacts(model, &probe, material.margin));
 
         let qdd = aba(model, &probe);
         if contacts.is_empty() {

@@ -58,6 +58,22 @@ impl AABB {
         Self { min, max }
     }
 
+    /// Grow the box by `pad` in every direction.
+    ///
+    /// A broad phase that culls on the un-padded boxes decides which pairs the
+    /// narrow phase is even allowed to see, so a margin applied only in the
+    /// narrow phase is silently capped by it: an AABB gap never exceeds the
+    /// true surface gap, so any pair inside the margin has AABBs at most
+    /// `margin` apart, and padding each by half of that is exactly enough to
+    /// keep them. Without it the margin band is unreachable for most pairs.
+    pub fn expanded(&self, pad: f64) -> Self {
+        let p = Vec3::new(pad, pad, pad);
+        Self {
+            min: self.min - p,
+            max: self.max + p,
+        }
+    }
+
     /// Compute AABB for a geometry at given position and rotation.
     pub fn from_geometry(geom: &Geometry, pos: &Vec3, rot: &Mat3) -> Self {
         match geom {

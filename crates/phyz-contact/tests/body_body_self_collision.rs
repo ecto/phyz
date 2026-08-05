@@ -63,7 +63,7 @@ fn offset_shapes_collide_where_the_shapes_are() {
     place(&mut state, 0, Vec3::zeros());
     place(&mut state, 1, Vec3::new(0.0, 0.0, 0.0));
     assert!(
-        !find_contacts(&model, &state).is_empty(),
+        !find_contacts(&model, &state, 0.0).is_empty(),
         "two coincident offset boxes did not collide; offsets are being ignored"
     );
 
@@ -74,7 +74,7 @@ fn offset_shapes_collide_where_the_shapes_are() {
         Vec3::zeros(),
     );
     assert!(
-        find_contacts(&model, &state).is_empty(),
+        find_contacts(&model, &state, 0.0).is_empty(),
         "boxes 1 m apart reported a contact — the offset is not rotating with \
          the body, so the shape is being placed at the link origin"
     );
@@ -102,7 +102,7 @@ fn a_joint_is_not_a_collision() {
     place(&mut state, 1, Vec3::zeros());
 
     assert!(
-        find_contacts(&model, &state).is_empty(),
+        find_contacts(&model, &state, 0.0).is_empty(),
         "parent and child reported a contact; every joint in a humanoid would \
          produce one and they would swamp every real self-touch"
     );
@@ -132,7 +132,7 @@ fn a_fixed_joint_chain_is_one_part() {
         "a and c are welded through b but landed in different groups"
     );
     assert!(
-        find_contacts(&model, &state).is_empty(),
+        find_contacts(&model, &state, 0.0).is_empty(),
         "welded bodies reported contacts; a fixed-joint chain is one rigid \
          part and cannot collide with itself"
     );
@@ -155,13 +155,13 @@ fn an_explicit_exclusion_is_honoured() {
     place(&mut state, 1, Vec3::new(0.1, 0.0, 0.0));
 
     assert!(
-        !find_contacts(&model, &state).is_empty(),
+        !find_contacts(&model, &state, 0.0).is_empty(),
         "two unrelated overlapping bodies should collide"
     );
 
     model.contact_exclude.push((1, 0)); // order must not matter
     assert!(
-        find_contacts(&model, &state).is_empty(),
+        find_contacts(&model, &state, 0.0).is_empty(),
         "the explicit exclusion was ignored"
     );
 }
@@ -192,7 +192,7 @@ fn a_limb_can_touch_another_limb() {
     place(&mut state, 1, Vec3::new(1.0, 0.0, 0.3));
     place(&mut state, 2, Vec3::new(1.0, 0.0, -0.3));
     assert!(
-        find_contacts(&model, &state).is_empty(),
+        find_contacts(&model, &state, 0.0).is_empty(),
         "arm and leg are 0.6 m apart"
     );
 
@@ -200,7 +200,7 @@ fn a_limb_can_touch_another_limb() {
     // other, so nothing structural excludes the pair.
     place(&mut state, 1, Vec3::new(1.0, 0.0, 0.03));
     place(&mut state, 2, Vec3::new(1.0, 0.0, -0.03));
-    let contacts = find_contacts(&model, &state);
+    let contacts = find_contacts(&model, &state, 0.0);
     assert!(
         !contacts.is_empty(),
         "an arm and a leg touching each other produced no contact — this is \
@@ -237,7 +237,7 @@ fn one_body_does_not_collide_with_itself() {
     ];
     let mut state = model.default_state();
     place(&mut state, 0, Vec3::zeros());
-    assert!(find_contacts(&model, &state).is_empty());
+    assert!(find_contacts(&model, &state, 0.0).is_empty());
 }
 
 /// A body with a non-finite transform contributes nothing rather than a
@@ -254,5 +254,5 @@ fn a_poisoned_transform_produces_no_contact() {
     let mut state = model.default_state();
     place(&mut state, 0, Vec3::zeros());
     place(&mut state, 1, Vec3::new(f64::NAN, 0.0, 0.0));
-    assert!(find_contacts(&model, &state).is_empty());
+    assert!(find_contacts(&model, &state, 0.0).is_empty());
 }

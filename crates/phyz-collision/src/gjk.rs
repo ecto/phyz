@@ -132,6 +132,20 @@ pub enum GjkOutcome {
     Separated {
         /// Separation between the two surfaces (> 0).
         distance: f64,
+        /// Closest point of the Minkowski difference `A ⊖ B` to the origin.
+        ///
+        /// This is `a* − b*` for the witness pair, so it points from `B`'s
+        /// surface toward `A`'s and its norm is `distance`. Negated and
+        /// normalized it is the **separating normal from `A` toward `B`** —
+        /// the same sense EPA reports for an overlapping pair, which is what
+        /// lets one manifold builder serve both branches.
+        ///
+        /// GJK always computed this (it is the `v` the iteration converges
+        /// on); it simply used to be discarded, and without it a separated
+        /// pair had a distance but no direction, so no manifold could be
+        /// built for it. That is the whole reason the body-body path had no
+        /// margin.
+        closest: Vec3,
     },
     /// The shapes overlap. `simplex` is the terminating simplex — a set of
     /// Minkowski-difference points enclosing the origin, which is exactly the
@@ -171,7 +185,7 @@ pub fn gjk_distance_rot(
     rot_b: &Mat3,
 ) -> f64 {
     match gjk_rot(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b) {
-        GjkOutcome::Separated { distance } => distance,
+        GjkOutcome::Separated { distance, .. } => distance,
         GjkOutcome::Indeterminate => 0.0,
         GjkOutcome::Penetrating { simplex } => {
             match crate::epa::epa_from_simplex(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, &simplex)
@@ -238,7 +252,12 @@ pub fn gjk_rot(
                     simplex: simplex.points.clone(),
                 }
             } else {
-                GjkOutcome::Separated { distance: 0.0 }
+                // Exactly touching: the surfaces meet, and the direction is
+                // degenerate. Report it as such rather than inventing one.
+                GjkOutcome::Separated {
+                    distance: 0.0,
+                    closest: Vec3::zeros(),
+                }
             };
         }
 
@@ -253,12 +272,18 @@ pub fn gjk_rot(
         // When it meets `|v|` the estimate is exact.
         let lower_bound = v.dot(w) / vn;
         if vn - lower_bound <= 1e-10 * (1.0 + vn) {
-            return GjkOutcome::Separated { distance: vn };
+            return GjkOutcome::Separated {
+                distance: vn,
+                closest: v,
+            };
         }
         // No progress (the support point is already in the simplex): the
         // polytope cannot be refined further, so `|v|` is the answer.
         if simplex.points.iter().any(|p| (*p - w).norm() < 1e-14) {
-            return GjkOutcome::Separated { distance: vn };
+            return GjkOutcome::Separated {
+                distance: vn,
+                closest: v,
+            };
         }
 
         simplex.add(w);

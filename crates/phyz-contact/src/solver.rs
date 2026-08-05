@@ -1,7 +1,7 @@
 //! Contact detection and force computation.
 
 use crate::material::ContactMaterial;
-use phyz_collision::{AABB, Collision, gjk_distance_rot, sweep_and_prune};
+use phyz_collision::{AABB, Collision, sweep_and_prune};
 use phyz_math::{SpatialTransformExt, SpatialVec, Vec3};
 use phyz_model::{Geometry as ModelGeometry, Model, State};
 
@@ -47,30 +47,53 @@ fn convert_geometry(g: &ModelGeometry) -> phyz_collision::Geometry {
 /// contact per joint. Model-specific exclusions live in
 /// [`phyz_model::Model::contact_exclude`].
 ///
-/// # Known gap: this path has no margin
+/// # Margin
 ///
-/// The `dist < 0.0` predicate below is the same zero-margin cutoff that
-/// [`find_ground_contacts`] used to have, and it has the same consequence: a
-/// pair at exactly touching distance still carries `solimp.dmin` of the load
-/// and then drops to nothing. It is deliberately *not* fixed here, because the
-/// fix is not the same one. Ground contacts have an analytic signed distance
-/// per candidate point, so a negative depth is just arithmetic; a general pair
-/// gets its manifold from `contact_manifold`, which is EPA-based and only
-/// defined on the penetrating side. Producing separated manifolds needs a
-/// GJK witness-point/closest-feature path that does not exist yet. Tracked
-/// separately; see the `find_ground_contacts` docs for the physics.
-pub fn find_contacts(model: &Model, state: &State) -> Vec<Collision> {
+/// `margin` (metres) is the band outside which a separated pair is ignored.
+/// Inside it a pair still produces a manifold, reported with a **negative**
+/// `penetration_depth` equal to minus its gap. Pass
+/// [`ContactMaterial::margin`] — the same knob the ground path takes.
+///
+/// This path had no margin for a long time, and the reason it now does is
+/// worth stating: contact is *soft*, so a pair at zero distance carries nearly
+/// its full share of the load and then vanishes, and the contact set jumps
+/// underneath the solver. On the ground path that cost a balancing controller
+/// a 22 N discontinuity; here it cost stability outright. A limb pinched
+/// between two bodies chattered rather than settling, which put hard bounds on
+/// what a humanoid simulation could do — measured on a Booster K1 side-fall:
+/// tucked-arm poses diverged, drops above 0.5 m diverged, and `dt = 2 ms`
+/// diverged where 1 ms survived, non-monotonically in drop height, which is
+/// the signature of a contact set flickering rather than of a stiffness
+/// problem.
+///
+/// [`ContactMaterial::margin`]: crate::material::ContactMaterial::margin
+pub fn find_contacts(model: &Model, state: &State, margin: f64) -> Vec<Collision> {
     let shapes = placed_shapes(model, state);
     if shapes.len() < 2 {
         return Vec::new();
     }
 
+    let margin = if margin.is_finite() {
+        margin.max(0.0)
+    } else {
+        0.0
+    };
+
     // Broad phase over *shapes*, not bodies: a body with two far-apart
     // primitives would otherwise present one AABB spanning both and pair with
     // everything in between.
+    //
+    // Each box is padded by half the margin, because the broad phase decides
+    // what the narrow phase is even allowed to see: an AABB gap never exceeds
+    // the true surface gap, so a pair inside the margin has AABBs at most
+    // `margin` apart, and half each closes exactly that. Culling on unpadded
+    // boxes caps the effective margin at zero for any pair whose AABBs do not
+    // already touch — which is most of them, and is why the first version of
+    // this reported band contacts on only 4 of 158 body-body contacts through
+    // a humanoid fall.
     let aabbs: Vec<AABB> = shapes
         .iter()
-        .map(|s| AABB::from_geometry(&s.geometry, &s.pos, &s.rot))
+        .map(|s| AABB::from_geometry(&s.geometry, &s.pos, &s.rot).expanded(0.5 * margin))
         .collect();
     let pairs = sweep_and_prune(&aabbs);
 
@@ -83,23 +106,20 @@ pub fn find_contacts(model: &Model, state: &State) -> Vec<Collision> {
             continue;
         }
 
-        let dist = gjk_distance_rot(&a.geometry, &b.geometry, &a.pos, &b.pos, &a.rot, &b.rot);
-        if dist >= 0.0 {
-            continue;
-        }
-
-        // Full manifold from the narrow phase: an EPA normal (not the
-        // body-centre difference, which is not a contact normal at all),
-        // contact points on the surfaces (not the midpoint of the two body
-        // centres, which lies inside both bodies), and up to four points per
-        // pair so face contacts resist tipping.
-        let Some(manifold) = phyz_collision::contact_manifold(
+        // Full manifold from the narrow phase, penetrating or within the
+        // margin band: an EPA normal when overlapping and the GJK closest-point
+        // direction when separated (not the body-centre difference, which is
+        // not a contact normal at all), contact points on the surfaces (not the
+        // midpoint of the two body centres, which lies inside both bodies), and
+        // up to four points per pair so face contacts resist tipping.
+        let Some(manifold) = phyz_collision::contact_manifold_within(
             &a.geometry,
             &b.geometry,
             &a.pos,
             &a.rot,
             &b.pos,
             &b.rot,
+            margin,
         ) else {
             continue;
         };
