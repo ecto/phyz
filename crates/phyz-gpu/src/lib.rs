@@ -21,7 +21,9 @@ pub mod shaders;
 pub mod sparse;
 pub mod sparse_shaders;
 
-pub use contact_pipeline::ContactPipeline;
+pub use contact_pipeline::{
+    BodyContactGains, BodyContactState, ContactPipeline, GroundContactParams,
+};
 pub use gpu_batch_simulator::GpuBatchSimulator;
 pub use gpu_simulator::GpuSimulator;
 pub use gpu_state::GpuState;
