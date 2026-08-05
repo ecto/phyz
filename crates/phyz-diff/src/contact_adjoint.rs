@@ -100,7 +100,7 @@ use phyz_contact::{
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
 };
 use phyz_math::{DVec, Vec3};
-use phyz_model::{Geometry, Model, State};
+use phyz_model::{Model, State};
 use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
 
 use crate::rollout::FinalStateObjective;
@@ -337,16 +337,13 @@ fn forward_step(
     let (xforms, _velocities) = forward_kinematics(model, state);
     state.body_xform = xforms;
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
     // Same detection as `Simulator::step_with_contacts` — the full collision
     // set — plus each ground contact's world-axis drop, which the anchor
     // recovery below needs. Body-body contacts carry a drop of zero; they are
     // rejected as unsupported before it is ever read.
     let mut contacts: Vec<(Collision, f64)> =
         find_ground_contacts_model_with_drop(model, state, ground_height, material.margin);
-    let body_contacts = find_contacts(model, state, &geometries);
+    let body_contacts = find_contacts(model, state);
     contacts.extend(body_contacts.into_iter().map(|c| (c, 0.0)));
 
     let qdd = aba(model, state);

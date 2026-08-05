@@ -28,7 +28,24 @@ fn convert_geometry(g: &ModelGeometry) -> phyz_collision::Geometry {
     }
 }
 
-/// Find all contacts in the current state.
+/// Find all body-body contacts in the current state.
+///
+/// Walks every collision shape of every body — [`phyz_model::Body::collisions`]
+/// at its own offset and orientation, falling back to the centred
+/// [`phyz_model::Body::geometry`] for bodies with an empty collision list — so
+/// a humanoid whose URDF hangs a capsule off the shoulder can have that capsule
+/// hit something. The `geometries` argument is gone: the shapes come from
+/// `model`, which is the only place the offsets live.
+///
+/// # Which pairs are considered
+///
+/// Structural exclusions come from [`phyz_model::Model::may_collide`]: a body
+/// never collides with itself, with its parent or child, or with anything a
+/// fixed-joint chain has welded to it. Those pairs overlap in *every*
+/// configuration — a joint's two links intersect at the joint by construction —
+/// so reporting them would bury every genuine self-touch under one permanent
+/// contact per joint. Model-specific exclusions live in
+/// [`phyz_model::Model::contact_exclude`].
 ///
 /// # Known gap: this path has no margin
 ///
@@ -42,103 +59,119 @@ fn convert_geometry(g: &ModelGeometry) -> phyz_collision::Geometry {
 /// defined on the penetrating side. Producing separated manifolds needs a
 /// GJK witness-point/closest-feature path that does not exist yet. Tracked
 /// separately; see the `find_ground_contacts` docs for the physics.
-pub fn find_contacts(
-    _model: &Model,
-    state: &State,
-    geometries: &[Option<ModelGeometry>],
-) -> Vec<Collision> {
-    let mut contacts = Vec::new();
-
-    // Build AABBs for broad phase. If a body's transform contains any
-    // non-finite component (NaN/inf — e.g. left over from an upstream blowup),
-    // emit a NaN-tagged AABB. The broad phase will skip it via its own
-    // finiteness filter, but emitting it keeps the index alignment with
-    // `geometries`/`state.body_xform`.
-    let mut aabbs = Vec::new();
-    for (i, geom_opt) in geometries.iter().enumerate() {
-        if let Some(geom) = geom_opt {
-            let xform = &state.body_xform[i];
-            let pos = xform.pos;
-            let rot = xform.rot;
-            if !pos_is_finite(&pos) || !rot_is_finite(&rot) {
-                // Poisoned transform; degrade gracefully and skip this body
-                // by giving it a degenerate, non-finite-tagged AABB.
-                aabbs.push(AABB::new(
-                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
-                    Vec3::new(f64::NAN, f64::NAN, f64::NAN),
-                ));
-                continue;
-            }
-            let collision_geom = convert_geometry(geom);
-            let aabb = AABB::from_geometry(&collision_geom, &pos, &rot);
-            aabbs.push(aabb);
-        } else {
-            // No geometry for this body
-            aabbs.push(AABB::new(Vec3::zeros(), Vec3::zeros()));
-        }
+pub fn find_contacts(model: &Model, state: &State) -> Vec<Collision> {
+    let shapes = placed_shapes(model, state);
+    if shapes.len() < 2 {
+        return Vec::new();
     }
 
-    // Broad phase: find potentially colliding pairs
+    // Broad phase over *shapes*, not bodies: a body with two far-apart
+    // primitives would otherwise present one AABB spanning both and pair with
+    // everything in between.
+    let aabbs: Vec<AABB> = shapes
+        .iter()
+        .map(|s| AABB::from_geometry(&s.geometry, &s.pos, &s.rot))
+        .collect();
     let pairs = sweep_and_prune(&aabbs);
 
-    // Narrow phase: GJK/EPA for each pair
-    for (i, j) in pairs {
-        if let (Some(geom_i), Some(geom_j)) = (&geometries[i], &geometries[j]) {
-            let xform_i = &state.body_xform[i];
-            let xform_j = &state.body_xform[j];
-            let pos_i = xform_i.pos;
-            let pos_j = xform_j.pos;
-            let rot_i = xform_i.rot;
-            let rot_j = xform_j.rot;
+    let welds = model.weld_groups();
+    let mut contacts = Vec::new();
 
-            // Defensive: even if the broad phase let through a body with a
-            // NaN transform we refuse to produce a contact with a NaN normal.
-            if !pos_is_finite(&pos_i) || !pos_is_finite(&pos_j) {
-                continue;
-            }
+    for (si, sj) in pairs {
+        let (a, b) = (&shapes[si], &shapes[sj]);
+        if !model.may_collide(a.body, b.body, &welds) {
+            continue;
+        }
 
-            let collision_geom_i = convert_geometry(geom_i);
-            let collision_geom_j = convert_geometry(geom_j);
-            let dist = gjk_distance_rot(
-                &collision_geom_i,
-                &collision_geom_j,
-                &pos_i,
-                &pos_j,
-                &rot_i,
-                &rot_j,
-            );
+        let dist = gjk_distance_rot(&a.geometry, &b.geometry, &a.pos, &b.pos, &a.rot, &b.rot);
+        if dist >= 0.0 {
+            continue;
+        }
 
-            if dist < 0.0 {
-                // Full manifold from the narrow phase: an EPA normal (not the
-                // body-centre difference, which is not a contact normal at
-                // all), contact points on the surfaces (not the midpoint of
-                // the two body centres, which lies inside both bodies), and up
-                // to four points per pair so face contacts resist tipping.
-                let Some(manifold) = phyz_collision::contact_manifold(
-                    &collision_geom_i,
-                    &collision_geom_j,
-                    &pos_i,
-                    &rot_i,
-                    &pos_j,
-                    &rot_j,
-                ) else {
-                    continue;
-                };
+        // Full manifold from the narrow phase: an EPA normal (not the
+        // body-centre difference, which is not a contact normal at all),
+        // contact points on the surfaces (not the midpoint of the two body
+        // centres, which lies inside both bodies), and up to four points per
+        // pair so face contacts resist tipping.
+        let Some(manifold) = phyz_collision::contact_manifold(
+            &a.geometry,
+            &b.geometry,
+            &a.pos,
+            &a.rot,
+            &b.pos,
+            &b.rot,
+        ) else {
+            continue;
+        };
 
-                for point in &manifold.points {
-                    contacts.push(Collision {
-                        body_i: i,
-                        body_j: j,
-                        contact_point: point.position,
-                        contact_normal: manifold.normal,
-                        penetration_depth: point.depth,
-                    });
-                }
-            }
+        for point in &manifold.points {
+            contacts.push(Collision {
+                body_i: a.body,
+                body_j: b.body,
+                contact_point: point.position,
+                // `Manifold::normal` points from shape `a` toward shape `b`;
+                // `Collision::contact_normal` is the direction `body_i` must
+                // move to *separate*. Opposite senses — see the field docs for
+                // what passing it through unnegated did.
+                contact_normal: -manifold.normal,
+                penetration_depth: point.depth,
+            });
         }
     }
 
     contacts
+}
+
+/// One collision shape, resolved to world coordinates.
+struct PlacedShape {
+    body: usize,
+    geometry: phyz_collision::Geometry,
+    pos: Vec3,
+    /// World→shape rotation, the same convention as `State::body_xform`.
+    rot: phyz_math::Mat3,
+}
+
+/// Every collision shape in the model, in world coordinates.
+///
+/// Bodies with a non-empty `collisions` list contribute all of them at their
+/// own offsets; the rest fall back to the centred legacy `geometry` field.
+/// Shapes on a body with a non-finite transform are dropped rather than
+/// emitted with a NaN pose — the broad phase would skip them anyway, and a
+/// contact with a NaN normal is worse than a missing one.
+fn placed_shapes(model: &Model, state: &State) -> Vec<PlacedShape> {
+    let mut out = Vec::new();
+    for (i, body) in model.bodies.iter().enumerate() {
+        let Some(xform) = state.body_xform.get(i) else {
+            continue;
+        };
+        if !pos_is_finite(&xform.pos) || !rot_is_finite(&xform.rot) {
+            continue;
+        }
+
+        let mut push = |geom: &ModelGeometry, origin: &phyz_math::SpatialTransform| {
+            let sx = shape_world_xform(xform, origin);
+            if !pos_is_finite(&sx.pos) || !rot_is_finite(&sx.rot) {
+                return;
+            }
+            out.push(PlacedShape {
+                body: i,
+                geometry: convert_geometry(geom),
+                pos: sx.pos,
+                rot: sx.rot,
+            });
+        };
+
+        if body.collisions.is_empty() {
+            if let Some(g) = &body.geometry {
+                push(g, &phyz_math::SpatialTransform::identity());
+            }
+        } else {
+            for inst in &body.collisions {
+                push(&inst.geometry, &inst.origin);
+            }
+        }
+    }
+    out
 }
 
 fn pos_is_finite(v: &Vec3) -> bool {
@@ -201,20 +234,34 @@ pub fn contact_forces(
                 .unwrap_or(Vec3::zeros())
         };
 
-        // Compute force
+        // Same convention adaptation as `contact_forces_implicit`:
+        // `compute_contact_force` reads `contact_normal` as pointing from `i`
+        // toward `j` and returns the force on `j`, while
+        // `Collision::contact_normal` is now the direction `i` separates
+        // along. The ground branch already agreed and is untouched; the body
+        // pair flips the normal back for the call.
+        let adapted;
+        let (query, on_i) = if j == usize::MAX {
+            (contact, true)
+        } else {
+            adapted = Collision {
+                contact_normal: -contact.contact_normal,
+                ..contact.clone()
+            };
+            (&adapted, false)
+        };
         #[allow(deprecated)]
-        let force = crate::compute_contact_force(contact, material, &vel_i, &vel_j);
+        let force = crate::compute_contact_force(query, material, &vel_i, &vel_j);
         let f_linear = force.linear;
 
-        // Apply equal and opposite forces AT THE CONTACT POINT. Sign
-        // convention follows Goal 1; the torque component follows Goal 4
-        // (τ = r × F where r is from the body's frame origin to the contact
-        // point in world frame). For ground contacts, only body i is updated.
-        if j == usize::MAX {
-            let r_i = contact.contact_point - state.body_xform[i].pos;
+        // Apply equal and opposite forces AT THE CONTACT POINT; the torque
+        // component is `τ = r × F` with `r` from the body frame origin to the
+        // contact point in world frame. For ground contacts only body i is
+        // updated.
+        let r_i = contact.contact_point - state.body_xform[i].pos;
+        if on_i {
             forces[i] = forces[i] + SpatialVec::new(r_i.cross(f_linear), f_linear);
         } else {
-            let r_i = contact.contact_point - state.body_xform[i].pos;
             let r_j = contact.contact_point - state.body_xform[j].pos;
             forces[i] = forces[i] + SpatialVec::new(r_i.cross(-f_linear), -f_linear);
             forces[j] = forces[j] + SpatialVec::new(r_j.cross(f_linear), f_linear);
@@ -282,21 +329,37 @@ pub fn contact_forces_implicit(
             masses.get(j).copied().unwrap_or(f64::INFINITY)
         };
 
+        // `compute_contact_force_implicit` predates the unified normal
+        // convention: it reads `contact_normal` as pointing from `i` toward
+        // `j` and returns the force on `j`. For a ground contact `j` is the
+        // world and the caller has always applied the result to `i`, which
+        // happens to agree with today's convention — so that path is left
+        // exactly as it was. For a body pair the two senses are opposite, so
+        // the normal is flipped back for the call and the result applied to
+        // `j` with its reaction on `i`.
+        let adapted;
+        let (query, on_i) = if j == usize::MAX {
+            (contact, true)
+        } else {
+            adapted = Collision {
+                contact_normal: -contact.contact_normal,
+                ..contact.clone()
+            };
+            (&adapted, false)
+        };
         #[allow(deprecated)]
         let force = crate::compute_contact_force_implicit(
-            contact, material, &vel_i, &vel_j, mass_i, mass_j, dt,
+            query, material, &vel_i, &vel_j, mass_i, mass_j, dt,
         );
         let f_linear = force.linear;
 
-        // Apply at the contact point (Goal 4). Sign convention from Goal 1.
-        if j == usize::MAX {
-            let r_i = contact.contact_point - state.body_xform[i].pos;
+        let r_i = contact.contact_point - state.body_xform[i].pos;
+        if on_i {
             forces[i] = forces[i] + SpatialVec::new(r_i.cross(f_linear), f_linear);
         } else {
-            let r_i = contact.contact_point - state.body_xform[i].pos;
             let r_j = contact.contact_point - state.body_xform[j].pos;
-            forces[i] = forces[i] + SpatialVec::new(r_i.cross(-f_linear), -f_linear);
             forces[j] = forces[j] + SpatialVec::new(r_j.cross(f_linear), f_linear);
+            forces[i] = forces[i] + SpatialVec::new(r_i.cross(-f_linear), -f_linear);
         }
     }
 
