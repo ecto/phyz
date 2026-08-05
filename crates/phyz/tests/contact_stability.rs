@@ -65,7 +65,7 @@ fn body_drop_on_fixed_body_with_contacts() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, 0.0, 0.05));
 
-    let contacts = find_contacts(&model, &state);
+    let contacts = find_contacts(&model, &state, 0.0);
     assert_eq!(
         contacts.len(),
         1,
@@ -149,7 +149,7 @@ fn nan_body_xform_does_not_panic_broad_phase() {
         SpatialTransform::new(Mat3::identity(), Vec3::new(f64::NAN, f64::NAN, f64::NAN));
 
     // Must not panic.
-    let contacts = find_contacts(&model, &state);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -189,7 +189,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::identity();
 
-    let contacts = find_contacts(&model, &state);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()

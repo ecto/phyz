@@ -63,7 +63,7 @@ fn a_box_dropped_on_a_box_rests_on_top_of_it() {
     );
 
     // And it is genuinely in contact, at a rigid-contact depth.
-    let contacts = phyz_contact::find_contacts(&model, &state);
+    let contacts = phyz_contact::find_contacts(&model, &state, 0.0);
     assert_eq!(contacts.len(), 4, "a face contact is four corners");
     for c in &contacts {
         assert!(

@@ -343,7 +343,7 @@ fn forward_step(
     // rejected as unsupported before it is ever read.
     let mut contacts: Vec<(Collision, f64)> =
         find_ground_contacts_model_with_drop(model, state, ground_height, material.margin);
-    let body_contacts = find_contacts(model, state);
+    let body_contacts = find_contacts(model, state, material.margin);
     contacts.extend(body_contacts.into_iter().map(|c| (c, 0.0)));
 
     let qdd = aba(model, state);

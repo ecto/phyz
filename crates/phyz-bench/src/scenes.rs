@@ -291,7 +291,7 @@ impl PhyzSim {
             // benchmarks ignores non-penetrating contacts anyway, so a margin
             // would only add rows that contribute nothing.
             find_ground_contacts(&self.state, &self.geoms, 0.0, 0.0);
-            contacts.extend(find_contacts(&self.model, &self.state));
+            contacts.extend(find_contacts(&self.model, &self.state, 0.0));
             #[allow(deprecated)]
             let forces: Vec<SpatialVec> =
                 contact_forces(&contacts, &self.state, &self.materials, Some(&velocities));
