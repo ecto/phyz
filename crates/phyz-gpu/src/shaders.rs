@@ -197,9 +197,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var i = 0u; i < nb; i++) {
         let gbase = i * GEOM_STRIDE;
         let gtype = u32(geometry[gbase]);
-        if (gtype == 0u) { continue; } // no geometry — state slot stays zero
-
+        // Slots are indexed by BODY index, matching readback_contacts, so a
+        // body with no geometry still owns its slot — clear it here rather
+        // than relying on the buffer never having been written, so the
+        // "not touching" invariant holds without an allocation-order argument.
         let cs_base = (world_idx * nb + i) * CS_STRIDE;
+        if (gtype == 0u) {
+            for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
+            continue;
+        }
+
         let pos = w_pos[i];
 
         // Lowest point of the shape, and its world x/y for the contact point.
@@ -251,11 +258,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // Penalty force with per-body gains: f = k * pen + d * pen_rate.
-        // The penetration rate (finite difference against the previous step)
-        // stands in for the contact point's approach velocity, giving real
-        // damping without a velocity FK. On first touch prev_pen is 0, so the
-        // rate is the impact velocity — which is what damping should resist.
+        // Penalty force with per-body gains: f = k * pen + d * pen_rate,
+        // the standard Kelvin-Voigt contact model. The penetration rate
+        // (finite difference against the previous step) stands in for the
+        // contact point's approach velocity, giving real damping without a
+        // velocity FK.
+        //
+        // ### THE PLUS SIGN IS CORRECT. ###
+        //
+        // pen_rate > 0 means the body is still moving INTO the ground, so the
+        // damper must push back harder — the force opposes the velocity, which
+        // is what damping means. It reads like an amplifier only if you take
+        // pen_rate for a displacement rather than an approach speed. Flipping
+        // to `- d * pen_rate` would make the damper *assist* penetration on
+        // impact and *resist separation* on rebound, i.e. pump energy in on
+        // both halves of the bounce. On first touch prev_pen is 0, so the rate
+        // is the impact velocity — the moment damping matters most.
+        // The max(_, 0) below is what stops the damper pulling the body down
+        // as it separates (pen_rate < 0), which is the real hazard here.
         let k_body = geometry[gbase + 8u];
         let d_body = geometry[gbase + 9u];
         let pen_rate = (penetration - prev_pen) / cparams.dt;
@@ -283,12 +303,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ext_forces[ef_base + 4u] += fb.y;
         ext_forces[ef_base + 5u] += fb.z;
 
-        // Contact state for readback (world frame).
+        // Contact state for readback (world frame). The contact point sits on
+        // the ground plane, not at the shape's lowest point: min_z is below
+        // the plane by exactly `penetration` whenever there is contact at all,
+        // and the depth is already reported in its own slot.
         contact_state[cs_base]      = 1.0;
         contact_state[cs_base + 1u] = penetration;
         contact_state[cs_base + 2u] = cx;
         contact_state[cs_base + 3u] = cy;
-        contact_state[cs_base + 4u] = min_z;
+        contact_state[cs_base + 4u] = cparams.ground_height;
         contact_state[cs_base + 5u] = 0.0;
         contact_state[cs_base + 6u] = 0.0;
         contact_state[cs_base + 7u] = f_z;

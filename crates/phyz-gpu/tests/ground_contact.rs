@@ -110,9 +110,184 @@ fn sphere_rests_on_ground_and_reports_contact() {
         c.force.z
     );
     assert!(
-        c.point.z.abs() < 0.01,
+        c.point.z.abs() < 1e-6,
         "contact point should sit on the ground plane, got z = {}",
         c.point.z
+    );
+}
+
+/// The reported contact point must lie on the ground plane wherever that
+/// plane is — a ground height of zero would hide a point reported at the
+/// shape's lowest vertex (which is `penetration` *below* the plane) or at
+/// the body origin.
+#[test]
+fn contact_point_tracks_a_nonzero_ground_plane() {
+    let mass = 1.0;
+    let radius = 0.1;
+    let ground = -0.75;
+    let model = free_body_model(mass, radius, Geometry::Sphere { radius });
+    let Some(mut sim) = gpu_sim(&model, 1) else {
+        return;
+    };
+
+    let (omega, zeta) = (200.0, 1.0);
+    sim.enable_ground_contact(ground, mass * omega * omega, 2.0 * zeta * mass * omega, 0.5)
+        .unwrap();
+
+    let mut s = model.default_state();
+    s.q[3] = 0.4; // x, so a point at the body origin is distinguishable too
+    s.q[5] = ground + 0.4;
+    sim.load_states(&[s]);
+    for _ in 0..2000 {
+        sim.step();
+    }
+
+    let contacts = sim.readback_contacts().unwrap();
+    let c = &contacts[0][0];
+    assert!(c.touching, "sphere should be resting on the lowered plane");
+    assert!(
+        (c.point.z - ground).abs() < 1e-6,
+        "contact point z should be the ground height {ground}, got {}",
+        c.point.z
+    );
+    assert!(
+        (c.point.x - 0.4).abs() < 0.01,
+        "contact point x should track the body, got {}",
+        c.point.x
+    );
+}
+
+/// Contact-state slots are indexed by body index, so a body with no
+/// collidable geometry owns a slot it never fills from a contact. It must
+/// read back as "not touching" rather than as whatever its neighbours wrote.
+#[test]
+fn bodies_without_geometry_read_back_clear() {
+    let mass = 1.0;
+    let radius = 0.1;
+    // Body 0 has no geometry and sits before the collidable body, so an
+    // index confusion between "body index" and "collidable index" would
+    // shift the sphere's contact into slot 0.
+    let model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -G))
+        .dt(DT)
+        .add_free_body(
+            "bare",
+            -1,
+            SpatialTransform::identity(),
+            ball_inertia(mass, radius),
+        )
+        .add_free_body_with_geometry(
+            "ball",
+            -1,
+            SpatialTransform::identity(),
+            ball_inertia(mass, radius),
+            with_geometry(
+                "ball",
+                ball_inertia(mass, radius),
+                Geometry::Sphere { radius },
+            ),
+        )
+        .build();
+    let Some(mut sim) = gpu_sim(&model, 1) else {
+        return;
+    };
+
+    let omega = 200.0;
+    let collidable = sim
+        .enable_ground_contact(0.0, mass * omega * omega, 2.0 * mass * omega, 0.5)
+        .unwrap();
+    assert_eq!(collidable, 1, "only one body carries geometry");
+
+    let mut s = model.default_state();
+    s.q[5] = 0.3; // bare body z
+    s.q[11] = 0.3; // ball z
+    sim.load_states(&[s]);
+    for _ in 0..2000 {
+        sim.step();
+    }
+
+    let contacts = sim.readback_contacts().unwrap();
+    let bare = &contacts[0][0];
+    let ball = &contacts[0][1];
+
+    assert!(
+        !bare.touching,
+        "body with no geometry must never report contact"
+    );
+    assert_eq!(bare.force.z, 0.0, "cleared slot must carry no force");
+    assert_eq!(bare.penetration, 0.0, "cleared slot must carry no depth");
+    assert!(
+        ball.touching,
+        "the collidable body's contact must land in its own slot"
+    );
+
+    // The geometry-less body keeps falling; the sphere rests.
+    let states = sim.readback_states();
+    assert!(
+        states[0].q[5] < 0.0,
+        "body with no geometry should fall through, got z = {}",
+        states[0].q[5]
+    );
+    assert!(
+        (states[0].q[11] - radius).abs() < 0.02,
+        "collidable body should rest on the ground, got z = {}",
+        states[0].q[11]
+    );
+}
+
+/// Damping must dissipate energy, not inject it.
+///
+/// The penalty force is `k*pen + d*pen_rate` (Kelvin-Voigt). The plus sign
+/// looks wrong at a glance — it has already been reported as a bug once — so
+/// this test measures the thing directly: a critically damped drop must
+/// rebound far less than an undamped one. Flipping the sign to `- d*pen_rate`
+/// makes the damper assist penetration and resist separation, which turns a
+/// 0.5 m drop into a rebound of roughly 18 m; the assertion below fails
+/// loudly rather than leaving that to a plausible-sounding review argument.
+#[test]
+fn damping_dissipates_rather_than_pumping() {
+    let mass = 1.0;
+    let radius = 0.1;
+    let drop_from = 0.5;
+    let omega = 200.0;
+    let model = free_body_model(mass, radius, Geometry::Sphere { radius });
+
+    let rebound = |damping: f64| -> Option<f64> {
+        let mut sim = gpu_sim(&model, 1)?;
+        sim.enable_ground_contact(0.0, mass * omega * omega, damping, 0.5)
+            .unwrap();
+        let mut s = model.default_state();
+        s.q[5] = drop_from;
+        sim.load_states(&[s]);
+
+        let mut touched = false;
+        let mut peak: f64 = -1.0;
+        for _ in 0..3000 {
+            sim.step();
+            let z = sim.readback_states()[0].q[5];
+            if z <= radius * 1.05 {
+                touched = true;
+            }
+            if touched {
+                peak = peak.max(z);
+            }
+        }
+        Some(peak)
+    };
+
+    let (Some(undamped), Some(damped)) = (rebound(0.0), rebound(2.0 * mass * omega)) else {
+        return; // no adapter
+    };
+
+    assert!(
+        damped < 0.25 * undamped,
+        "critical damping should kill the bounce: damped rebound {damped:.3} m vs \
+         undamped {undamped:.3} m"
+    );
+    assert!(
+        damped < drop_from,
+        "damped rebound {damped:.3} m exceeds the {drop_from} m drop height — \
+         the damper is injecting energy, which is what an inverted sign does"
     );
 }
 
