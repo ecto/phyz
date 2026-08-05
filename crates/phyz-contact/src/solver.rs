@@ -147,7 +147,23 @@ struct PlacedShape {
     body: usize,
     geometry: phyz_collision::Geometry,
     pos: Vec3,
-    /// World→shape rotation, the same convention as `State::body_xform`.
+    /// **Shape→world** rotation — the convention `phyz_collision` wants, which
+    /// is the *transpose* of the one `State::body_xform` carries.
+    ///
+    /// `Geometry::support` computes a shape's world axis as `rot * ẑ`, and
+    /// `box_support_face` takes a world direction into shape coordinates with
+    /// `rot.transpose() * dir`; both therefore read `rot` as local→world. FK
+    /// hands out the opposite (`SpatialTransform::rot` is world→body), and
+    /// this pipeline used to pass it straight through to `AABB::from_geometry`,
+    /// GJK and EPA.
+    ///
+    /// That is an error of `2θ` in every shape's orientation, and it is
+    /// invisible at the identity — which is why it survived: body-body
+    /// contacts only ever ran on upright test fixtures. The observable
+    /// contradiction is that it made contact *non-equivariant*: the K1 lying
+    /// on its side reported a 13 mm trunk/upper-arm overlap that vanished when
+    /// the same joint angles were evaluated with the base upright, even though
+    /// a body-body overlap depends only on the relative configuration.
     rot: phyz_math::Mat3,
 }
 
@@ -177,7 +193,9 @@ fn placed_shapes(model: &Model, state: &State) -> Vec<PlacedShape> {
                 body: i,
                 geometry: convert_geometry(geom),
                 pos: sx.pos,
-                rot: sx.rot,
+                // `shape_world_xform` returns world→shape, matching FK; the
+                // collision crate wants its inverse. See `PlacedShape::rot`.
+                rot: sx.rot.transpose(),
             });
         };
 

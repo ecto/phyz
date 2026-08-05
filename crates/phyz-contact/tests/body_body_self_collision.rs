@@ -256,3 +256,92 @@ fn a_poisoned_transform_produces_no_contact() {
     place(&mut state, 1, Vec3::new(f64::NAN, 0.0, 0.0));
     assert!(find_contacts(&model, &state, 0.0).is_empty());
 }
+
+// -------------------------------------------------------------------------
+// Frame equivariance
+// -------------------------------------------------------------------------
+
+/// A body-body contact depends only on the *relative* configuration of the
+/// two bodies. Rigidly rotating the whole world cannot create or destroy one.
+///
+/// This is the property the world→body / body→world mix-up broke.
+/// `phyz_collision` reads a shape's `rot` as local→world (`Geometry::support`
+/// computes the axis as `rot * ẑ`), while `SpatialTransform::rot` from forward
+/// kinematics is world→body. Passing the latter straight into
+/// `AABB::from_geometry`, GJK and EPA rotates every shape by `-θ` instead of
+/// `+θ` — an error of `2θ` that is exactly zero at the identity, which is why
+/// every existing fixture (all axis-aligned) passed.
+///
+/// Measured on a K1 lying on its side: a 13 mm `Trunk`/`Right_Arm_2` overlap
+/// that disappeared when the same joint angles were evaluated with the base
+/// upright. The contact then never resolved — penetration grew monotonically
+/// for dozens of steps and then discharged as a 65 000 rad/s² impulse.
+#[test]
+fn contacts_do_not_depend_on_the_orientation_of_the_world() {
+    let mut model = ModelBuilder::new()
+        .add_free_body("a", -1, SpatialTransform::identity(), inertia())
+        .add_free_body("b", -1, SpatialTransform::identity(), inertia())
+        .build();
+    // Long thin boxes, so orientation matters a great deal to whether they
+    // overlap. A cube would hide the bug almost as well as the identity does.
+    for i in 0..2 {
+        model.bodies[i].geometry = Some(Geometry::Box {
+            half_extents: Vec3::new(0.30, 0.04, 0.04),
+        });
+    }
+
+    // `b` is offset along x and yawed, so the pair is a genuine edge/face
+    // configuration rather than a symmetric one.
+    let rel_rot = Quat::from_axis_angle(Vec3::z(), 0.6).to_matrix();
+    let rel_pos = Vec3::new(0.25, 0.05, 0.0);
+
+    let baseline = {
+        let mut state = model.default_state();
+        state.body_xform[0] = SpatialTransform::new(Mat3::identity(), Vec3::zeros());
+        state.body_xform[1] = SpatialTransform::new(rel_rot, rel_pos);
+        find_contacts(&model, &state, 0.0)
+    };
+    assert!(
+        !baseline.is_empty(),
+        "the fixture must actually be in contact for this test to mean anything"
+    );
+
+    // Now rigidly re-orient the whole world. `SpatialTransform::rot` is
+    // world→body, so a world rotated by `w` composes as `rot * wᵀ` on each
+    // body and `w * pos` on each origin.
+    for (axis, angle) in [
+        (Vec3::x(), std::f64::consts::FRAC_PI_2),
+        (Vec3::y(), 0.7),
+        (Vec3::z(), 2.1),
+        (Vec3::new(1.0, 1.0, 1.0).normalize(), 1.3),
+    ] {
+        let w = Quat::from_axis_angle(axis, angle).to_matrix();
+        let mut state = model.default_state();
+        state.body_xform[0] = SpatialTransform::new(w.transpose(), Vec3::zeros());
+        state.body_xform[1] =
+            SpatialTransform::new(rel_rot.mul_mat(&w.transpose()), w.mul_vec(rel_pos));
+
+        let rotated = find_contacts(&model, &state, 0.0);
+        assert_eq!(
+            rotated.len(),
+            baseline.len(),
+            "rotating the world by {angle:.2} rad about {axis:?} changed the \
+             contact count from {} to {} — contact is not frame-equivariant, \
+             so a rotation is being applied in the wrong direction somewhere",
+            baseline.len(),
+            rotated.len()
+        );
+
+        // Depths are frame-invariant scalars; they must match too.
+        let mut a: Vec<f64> = baseline.iter().map(|c| c.penetration_depth).collect();
+        let mut b: Vec<f64> = rotated.iter().map(|c| c.penetration_depth).collect();
+        a.sort_by(f64::total_cmp);
+        b.sort_by(f64::total_cmp);
+        for (x, y) in a.iter().zip(&b) {
+            assert!(
+                (x - y).abs() < 1e-9,
+                "penetration depth changed with world orientation: {x:.6} vs {y:.6}"
+            );
+        }
+    }
+}
