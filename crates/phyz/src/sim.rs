@@ -14,7 +14,7 @@ use phyz_contact::{
 };
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
-use phyz_model::{Geometry, Model, State};
+use phyz_model::{Model, State};
 use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
 use std::cell::RefCell;
 
@@ -216,11 +216,6 @@ impl Simulator {
         let (xforms, _velocities) = forward_kinematics(model, state);
         state.body_xform = xforms;
 
-        // Collect body geometries (the centred legacy field; body-body
-        // detection below still reads it).
-        let geometries: Vec<Option<Geometry>> =
-            model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
         // Find ground contacts against the full collision set — every shape
         // in `Body::collisions`, offsets included, not just the centred
         // `Body::geometry`. The margin is what keeps a lightly-loaded support
@@ -229,7 +224,7 @@ impl Simulator {
         let mut contacts = find_ground_contacts_model(model, state, ground_height, material.margin);
 
         // Find body-body contacts
-        let body_contacts = find_contacts(model, state, &geometries);
+        let body_contacts = find_contacts(model, state);
         contacts.extend(body_contacts);
 
         // Free velocity: where the system lands after one step with every
@@ -305,11 +300,9 @@ impl Simulator {
         let (xforms, _) = forward_kinematics(model, &probe);
         probe.body_xform = xforms;
 
-        let geometries: Vec<Option<Geometry>> =
-            model.bodies.iter().map(|b| b.geometry.clone()).collect();
         let mut contacts =
             find_ground_contacts_model(model, &probe, ground_height, material.margin);
-        contacts.extend(find_contacts(model, &probe, &geometries));
+        contacts.extend(find_contacts(model, &probe));
 
         let qdd = aba(model, &probe);
         if contacts.is_empty() {

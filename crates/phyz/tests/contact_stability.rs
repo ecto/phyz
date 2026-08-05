@@ -14,7 +14,7 @@ use phyz::{
     ContactMaterial, Geometry, Mat3, ModelBuilder, SpatialInertia, SpatialTransform, SpatialVec,
     Vec3,
     collision::sweep_and_prune,
-    contact::{contact_forces, find_contacts, find_ground_contacts},
+    contact::{contact_forces, find_contacts, find_ground_contacts_model},
 };
 
 /// Goal 1 — body-pair contact force pushes the free body AWAY from the fixed body.
@@ -65,10 +65,7 @@ fn body_drop_on_fixed_body_with_contacts() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, 0.0, 0.05));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state);
     assert_eq!(
         contacts.len(),
         1,
@@ -79,11 +76,15 @@ fn body_drop_on_fixed_body_with_contacts() {
     assert_eq!(contact.body_i, 0);
     assert_eq!(contact.body_j, 1);
 
-    // body_j is above body_i, so the normal (pos_j - pos_i).normalize() points +z.
-    assert_relative_eq!(contact.contact_normal.z, 1.0, epsilon = 1e-10);
+    // `contact_normal` is the direction `body_i` must move to separate from
+    // `body_j`. body_j sits above body_i, so body_i separates downward: −z.
+    // (This read `+1.0` while `find_contacts` passed the manifold normal
+    // through unnegated — the sign that made the solver pull overlapping
+    // bodies together.)
+    assert_relative_eq!(contact.contact_normal.z, -1.0, epsilon = 1e-10);
 
     // No ground contacts in this scenario.
-    let ground = find_ground_contacts(&state, &geometries, -10.0, 0.0);
+    let ground = find_ground_contacts_model(&model, &state, -10.0, 0.0);
     assert!(ground.is_empty());
 
     let materials = vec![ContactMaterial::default()];
@@ -147,11 +148,8 @@ fn nan_body_xform_does_not_panic_broad_phase() {
     state.body_xform[1] =
         SpatialTransform::new(Mat3::identity(), Vec3::new(f64::NAN, f64::NAN, f64::NAN));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
     // Must not panic.
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -191,10 +189,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::identity();
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -413,7 +408,9 @@ fn contact_force_torque_at_contact_point() {
         body_i: 0,
         body_j: 1,
         contact_point: contact_point_world,
-        contact_normal: Vec3::z(),
+        // `contact_normal` is the direction `body_i` separates along. Body 0
+        // is the support, *below* the rod, so it separates downward.
+        contact_normal: -Vec3::z(),
         penetration_depth: 1e-3,
     };
     let materials = vec![ContactMaterial::default()];

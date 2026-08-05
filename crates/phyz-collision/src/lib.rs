@@ -37,7 +37,21 @@ pub struct Collision {
     pub body_j: usize,
     /// Contact point in world frame.
     pub contact_point: Vec3,
-    /// Contact normal (direction from i to j).
+    /// Contact normal: **the direction `body_i` must move to separate from
+    /// `body_j`**, i.e. it points from `j` toward `i`.
+    ///
+    /// Stated this way because the two producers used to disagree and only one
+    /// of them was ever exercised. `find_ground_contacts` emits `+z` for a
+    /// body resting on the ground — the separating direction for that body,
+    /// and the sense the contact solver is built around, since its
+    /// non-penetration row is `J·v ≥ 0` with `J = J_i − J_j`.
+    /// `find_contacts` used to pass [`Manifold::normal`] straight through, and
+    /// that points from shape *a* toward shape *b* — the exact opposite. The
+    /// constraint therefore measured approach instead of separation and the
+    /// solver drove overlapping bodies *together*: a box dropped on a box sank
+    /// clean through it to full overlap, with four contacts detected the whole
+    /// way down. Invisible until bodies other than the feet had collision
+    /// geometry, because before that no body-body contact ever occurred.
     pub contact_normal: Vec3,
     /// Penetration depth (positive = penetrating).
     pub penetration_depth: f64,

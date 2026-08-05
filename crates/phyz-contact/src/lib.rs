@@ -53,6 +53,12 @@ pub fn compute_contact_force(
         return SpatialVec::zero();
     }
 
+    // NOTE: this deprecated penalty law keeps its own historical sense —
+    // `contact_normal` read as pointing from `i` toward `j`, and the returned
+    // force as the one on `j`. `contact_forces` adapts the unified
+    // `Collision::contact_normal` convention at the call site rather than
+    // changing the arithmetic here, so the ground path's behaviour (which is
+    // pinned by tests) is bit-identical.
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
     let normal_vel = rel_vel.dot(normal);
@@ -127,6 +133,12 @@ pub fn compute_contact_force_implicit(
         return SpatialVec::zero();
     }
 
+    // NOTE: this deprecated penalty law keeps its own historical sense —
+    // `contact_normal` read as pointing from `i` toward `j`, and the returned
+    // force as the one on `j`. `contact_forces` adapts the unified
+    // `Collision::contact_normal` convention at the call site rather than
+    // changing the arithmetic here, so the ground path's behaviour (which is
+    // pinned by tests) is bit-identical.
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
     let normal_vel = rel_vel.dot(normal);
