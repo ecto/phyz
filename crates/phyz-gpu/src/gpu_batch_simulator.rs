@@ -297,13 +297,24 @@ impl GpuBatchSimulator {
     }
 
     /// Enable ground contact pipeline with penalty forces.
+    ///
+    /// Every body uses the same `stiffness`/`damping`. Returns the number of
+    /// bodies whose geometry the contact pass can collide, and errors when
+    /// that count is zero (a contact pass that can see nothing is a model
+    /// bug, not a valid configuration).
+    ///
+    /// One global stiffness has to be stiff enough to hold the heaviest body
+    /// up and soft enough for the lightest to integrate stably — for models
+    /// with a wide mass spread no value satisfies both (see
+    /// [`crate::contact_pipeline::GroundContactParams::check_stability`]).
+    /// Use [`Self::enable_ground_contact_per_body`] for those.
     pub fn enable_ground_contact(
         &mut self,
         ground_height: f64,
         stiffness: f64,
         damping: f64,
         friction: f64,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let pipeline = ContactPipeline::new(
             &self.device,
             &self.queue,
@@ -317,8 +328,41 @@ impl GpuBatchSimulator {
                 friction,
             },
         )?;
+        let collidable = pipeline.collidable_bodies();
         self.contact_pipeline = Some(pipeline);
-        Ok(())
+        Ok(collidable)
+    }
+
+    /// Enable ground contact with per-body penalty gains.
+    ///
+    /// `gains` holds one entry per body, in body order — most easily built
+    /// with [`crate::BodyContactGains::uniform_frequency`], which gives every
+    /// body the same contact frequency so a 1-gram link and a 5-kg torso are
+    /// both integrable at the same `dt`. Returns the collidable-body count,
+    /// erroring when it is zero.
+    pub fn enable_ground_contact_per_body(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+    ) -> Result<usize, String> {
+        let pipeline = ContactPipeline::with_body_gains(
+            &self.device,
+            &self.queue,
+            &self.model,
+            &self.state,
+            &self.bodies_buffer,
+            crate::contact_pipeline::GroundContactParams {
+                ground_height,
+                stiffness: 0.0,
+                damping: 0.0,
+                friction,
+            },
+            Some(gains),
+        )?;
+        let collidable = pipeline.collidable_bodies();
+        self.contact_pipeline = Some(pipeline);
+        Ok(collidable)
     }
 
     /// Enable PD position servos on the given DOFs.
@@ -431,6 +475,46 @@ impl GpuBatchSimulator {
         }
 
         states
+    }
+
+    /// Download per-body ground-contact state from the GPU.
+    ///
+    /// Returns one [`crate::BodyContactState`] per body per environment
+    /// (`result[env][body]`), reflecting the most recent [`Self::step`]:
+    /// whether the body touches the ground, its penetration depth, and the
+    /// contact point and penalty force in world coordinates. This is the
+    /// observation channel a contact-bearing RL task needs (touch flags,
+    /// normal forces) without recomputing contacts on the CPU.
+    ///
+    /// Errors when ground contact is not enabled.
+    pub fn readback_contacts(&self) -> Result<Vec<Vec<crate::BodyContactState>>, String> {
+        if self.contact_pipeline.is_none() {
+            return Err(
+                "ground contact not enabled — call enable_ground_contact first".to_string(),
+            );
+        }
+
+        let data = pollster::block_on(self.state.download_contact_states())?;
+        let stride = crate::contact_pipeline::CONTACT_STATE_STRIDE;
+        let nb = self.state.nbodies;
+
+        let mut result = Vec::with_capacity(self.state.nworld);
+        for env in 0..self.state.nworld {
+            let mut bodies = Vec::with_capacity(nb);
+            for body in 0..nb {
+                let base = (env * nb + body) * stride;
+                let s = &data[base..base + stride];
+                bodies.push(crate::BodyContactState {
+                    touching: s[0] != 0.0,
+                    penetration: s[1] as f64,
+                    point: phyz_math::Vec3::new(s[2] as f64, s[3] as f64, s[4] as f64),
+                    force: phyz_math::Vec3::new(s[5] as f64, s[6] as f64, s[7] as f64),
+                });
+            }
+            result.push(bodies);
+        }
+
+        Ok(result)
     }
 }
 
