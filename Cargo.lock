@@ -3061,7 +3061,7 @@ dependencies = [
  "phyz-world",
  "pollster",
  "thiserror 2.0.18",
- "wgpu 23.0.1",
+ "wgpu 24.0.5",
 ]
 
 [[package]]
@@ -3212,7 +3212,7 @@ dependencies = [
  "phyz-model",
  "phyz-rigid",
  "pollster",
- "wgpu 23.0.1",
+ "wgpu 24.0.5",
 ]
 
 [[package]]

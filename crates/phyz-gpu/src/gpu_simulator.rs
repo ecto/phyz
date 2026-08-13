@@ -58,7 +58,7 @@ impl GpuSimulator {
     /// Create a new GPU simulator for batch simulation.
     pub fn new(model: Model, nworld: usize) -> Result<Self, String> {
         // Initialize wgpu
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });

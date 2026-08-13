@@ -82,7 +82,7 @@ impl GpuBatchSimulator {
     ///
     /// `nworld` is the number of parallel environments to simulate.
     pub fn new(model: Model, nworld: usize) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
