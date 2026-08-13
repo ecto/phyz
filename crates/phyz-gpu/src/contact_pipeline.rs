@@ -20,8 +20,12 @@ struct ContactParams {
     ground_height: f32,
     dt: f32,
     friction: f32,
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
 }
 
 /// Packed geometry data per body (24 f32 values).
@@ -157,6 +161,35 @@ impl BodyContactGains {
     }
 }
 
+/// A contact plane welded to a body: the deck of a skateboard, the bed of a
+/// truck, any flat top surface other bodies stand on.
+///
+/// This is deliberately NOT general body-body contact. The plane is the
+/// body's local `+Z` face at `offset` along local Z, infinite in extent; a
+/// foot only ever meets a deck's top face, and an infinite moving plane
+/// captures that at a fraction of a broad phase's cost. Forces are applied
+/// to **both** bodies — the board must feel the rider or it cannot be
+/// kicked out from under one.
+///
+/// Plane contacts do not appear in [`BodyContactState`] readback: those
+/// slots are per body and already carry the ground result, and a foot
+/// standing on a deck would otherwise overwrite its ground reading with a
+/// different surface entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyPlane {
+    /// Body index the plane is attached to.
+    pub body: usize,
+    /// Face offset along the body's local `+Z`, metres (deck half-thickness).
+    pub offset: f64,
+    /// Penetration beyond which the contact is ignored, metres. Guards a
+    /// body approaching from *below* the infinite plane against being
+    /// captured and catapulted through it.
+    pub max_depth: f64,
+    /// Bodies that never contact the plane (the plane body itself is always
+    /// excluded): wheels and hangers under a deck, for instance.
+    pub exclude: Vec<usize>,
+}
+
 /// Per-body ground-contact state read back from the GPU.
 ///
 /// Reported by [`crate::GpuBatchSimulator::readback_contacts`]; everything is
@@ -189,7 +222,7 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
     ) -> Result<Self, String> {
-        Self::with_body_gains(device, queue, model, state, bodies_buffer, contact, None)
+        Self::with_body_gains(device, queue, model, state, bodies_buffer, contact, None, None)
     }
 
     /// Create a contact pipeline with optional per-body gains.
@@ -204,8 +237,24 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
         body_gains: Option<&[BodyContactGains]>,
+        plane: Option<&BodyPlane>,
     ) -> Result<Self, String> {
         let nworld = state.nworld;
+
+        if let Some(p) = plane {
+            if p.body >= model.nbodies() {
+                return Err(format!(
+                    "plane body {} out of range for a model with {} bodies",
+                    p.body,
+                    model.nbodies()
+                ));
+            }
+            for &b in &p.exclude {
+                if b >= model.nbodies() {
+                    return Err(format!("plane exclude body {b} out of range"));
+                }
+            }
+        }
 
         if let Some(gains) = body_gains
             && gains.len() != model.nbodies()
@@ -225,8 +274,12 @@ impl ContactPipeline {
             ground_height: contact.ground_height as f32,
             dt: model.dt as f32,
             friction: contact.friction as f32,
+            plane_body: plane.map_or(-1, |p| p.body as i32),
+            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
+            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
             _pad0: 0.0,
             _pad1: 0.0,
+            _pad2: 0.0,
         };
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -238,7 +291,12 @@ impl ContactPipeline {
         queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
         // Pack geometry data
-        let (geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
+        let (mut geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
+        if let Some(p) = plane {
+            for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
+                geom_data[b * GEOM_STRIDE + 7] = 1.0;
+            }
+        }
         if collidable_bodies == 0 {
             let skipped: Vec<&str> = model
                 .bodies

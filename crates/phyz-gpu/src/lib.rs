@@ -22,7 +22,7 @@ pub mod sparse;
 pub mod sparse_shaders;
 
 pub use contact_pipeline::{
-    BodyContactGains, BodyContactState, ContactPipeline, GroundContactParams,
+    BodyContactGains, BodyContactState, BodyPlane, ContactPipeline, GroundContactParams,
 };
 pub use gpu_batch_simulator::GpuBatchSimulator;
 pub use gpu_simulator::GpuSimulator;

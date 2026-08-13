@@ -20,8 +20,13 @@ struct ContactParams {
     ground_height: f32,
     dt: f32,
     friction: f32,
+    // Body-attached contact plane; plane_body < 0 disables it.
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -435,6 +440,94 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         contact_state[cs_base + 5u] = f_w_total.x;
         contact_state[cs_base + 6u] = f_w_total.y;
         contact_state[cs_base + 7u] = f_w_total.z;
+    }
+
+    // ── Body-attached contact plane (the deck's top face) ──
+    //
+    // Same penalty model as the ground, two differences: the plane moves
+    // with its body, and the reaction lands on that body — a deck that felt
+    // no rider could never be kicked out from under one.
+    //
+    // Deliberately NOT general body-body contact. The plane is the body's
+    // local +Z face at `offset`, infinite in extent; a foot only ever meets
+    // a deck's top face, and an infinite moving plane captures that at a
+    // fraction of a broad phase's cost.
+    //
+    // Contacts here are not written to contact_state: those slots are
+    // per-body and already hold the ground result, and a foot on a deck
+    // would otherwise overwrite the ground reading with a different surface.
+    if (cparams.plane_body >= 0) {
+        let pb = u32(cparams.plane_body);
+        // Plane frame in world. w_rot is body→world, so the body's local +Z
+        // in world coordinates is rot_mul.
+        let n_w = rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, 1.0));
+        let p0_w = w_pos[pb] + rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, cparams.plane_offset));
+
+        for (var i = 0u; i < nb; i++) {
+            if (i == pb) { continue; }
+            let gbase = i * GEOM_STRIDE;
+            let gtype = u32(geometry[gbase]);
+            if (gtype == 0u) { continue; }
+            if (geometry[gbase + 7u] != 0.0) { continue; }
+
+            let n_body = rot_t_mul(w_rot[i], n_w);
+            var n_pts = 1u;
+            var pt_scale = 1.0;
+            if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+
+            for (var cpt = 0u; cpt < n_pts; cpt++) {
+                var support: vec3<f32>;
+                if (gtype == 2u) { support = box_corner(i, cpt); }
+                else { support = support_point(i, n_body); }
+                let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
+                let penetration = -dot(sup_w - p0_w, n_w);
+                // The upper bound guards a body approaching from BELOW an
+                // infinite plane against being captured and catapulted through.
+                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
+
+                // Relative velocity of the two material points at the contact,
+                // world frame. Body-frame spatial velocities rotate out with
+                // rot_mul, matching the FK convention above.
+                let v_i_w = rot_mul(w_rot[i], w_lin[i] + cross3(w_omega[i], support));
+                let r_p = rot_t_mul(w_rot[pb], sup_w - w_pos[pb]);
+                let v_p_w = rot_mul(w_rot[pb], w_lin[pb] + cross3(w_omega[pb], r_p));
+                let v_rel = v_i_w - v_p_w;
+                let v_normal = dot(v_rel, n_w);
+
+                let k_body = pt_scale * geometry[gbase + 8u];
+                let d_body = pt_scale * geometry[gbase + 9u];
+                let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
+
+                let v_tan = v_rel - n_w * v_normal;
+                let vt = length(v_tan);
+                var f_w = n_w * f_n;
+                if (vt > 1e-6) {
+                    f_w = f_w - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+                }
+
+                // Action on the touching body, in its own frame.
+                let f_i = rot_t_mul(w_rot[i], f_w);
+                let torque_i = cross3(support, f_i);
+                let ef_i = ef_env_base + i * 6u;
+                ext_forces[ef_i + 0u] += torque_i.x;
+                ext_forces[ef_i + 1u] += torque_i.y;
+                ext_forces[ef_i + 2u] += torque_i.z;
+                ext_forces[ef_i + 3u] += f_i.x;
+                ext_forces[ef_i + 4u] += f_i.y;
+                ext_forces[ef_i + 5u] += f_i.z;
+
+                // Equal and opposite on the plane's body, at the same point.
+                let f_p = rot_t_mul(w_rot[pb], -f_w);
+                let torque_p = cross3(r_p, f_p);
+                let ef_p = ef_env_base + pb * 6u;
+                ext_forces[ef_p + 0u] += torque_p.x;
+                ext_forces[ef_p + 1u] += torque_p.y;
+                ext_forces[ef_p + 2u] += torque_p.z;
+                ext_forces[ef_p + 3u] += f_p.x;
+                ext_forces[ef_p + 4u] += f_p.y;
+                ext_forces[ef_p + 5u] += f_p.z;
+            }
+        }
     }
 }
 "#;
