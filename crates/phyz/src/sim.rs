@@ -209,6 +209,39 @@ impl Simulator {
         ground_height: f64,
         material: &ContactMaterial,
     ) -> DVec {
+        self.step_with_ground(model, state, material, &|m, s| {
+            find_ground_contacts_model(m, s, ground_height, material.margin)
+        })
+    }
+
+    /// [`Simulator::step_with_contacts`] against a
+    /// [`phyz_model::Heightfield`] instead of a flat plane: same convex
+    /// contact solve, same body-body detection, but ground contacts come
+    /// from `phyz_contact::find_heightfield_contacts_model`, so each support
+    /// point pushes back along the local terrain normal. A
+    /// [`phyz_model::Heightfield::flat`] field reproduces
+    /// `step_with_contacts` exactly.
+    pub fn step_with_contacts_heightfield(
+        &self,
+        model: &Model,
+        state: &mut State,
+        heightfield: &phyz_model::Heightfield,
+        material: &ContactMaterial,
+    ) -> DVec {
+        self.step_with_ground(model, state, material, &|m, s| {
+            phyz_contact::find_heightfield_contacts_model(m, s, heightfield, material.margin)
+        })
+    }
+
+    /// The step body shared by the flat-plane and heightfield entry points;
+    /// `ground` runs after FK has refreshed `state.body_xform`.
+    fn step_with_ground(
+        &self,
+        model: &Model,
+        state: &mut State,
+        material: &ContactMaterial,
+        ground: &dyn Fn(&Model, &State) -> Vec<phyz_collision::Collision>,
+    ) -> DVec {
         let dt = model.dt;
         let v_before = state.v.clone();
 
@@ -221,7 +254,7 @@ impl Simulator {
         // `Body::geometry`. The margin is what keeps a lightly-loaded support
         // point from leaving the contact set while it is still carrying
         // force; see `find_ground_contacts`.
-        let mut contacts = find_ground_contacts_model(model, state, ground_height, material.margin);
+        let mut contacts = ground(model, state);
 
         // Find body-body contacts
         let body_contacts = find_contacts(model, state, material.margin);
