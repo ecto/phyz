@@ -640,7 +640,10 @@ fn validate_heightfield(hf: &Heightfield) -> Result<(), String> {
         ));
     }
     if !(hf.cell.is_finite() && hf.cell > 0.0) {
-        return Err(format!("heightfield cell must be positive, got {}", hf.cell));
+        return Err(format!(
+            "heightfield cell must be positive, got {}",
+            hf.cell
+        ));
     }
     Ok(())
 }

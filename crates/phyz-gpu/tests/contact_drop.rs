@@ -37,7 +37,8 @@ fn gpu_contact_stops_a_dropped_box() {
         return;
     };
     let gains = BodyContactGains::uniform_frequency(&sim.model, OMEGA, 1.0);
-    sim.enable_ground_contact_per_body(0.0, 0.8, &gains).unwrap();
+    sim.enable_ground_contact_per_body(0.0, 0.8, &gains)
+        .unwrap();
     let st = sim.model.default_state();
     sim.load_states(&[st]);
 

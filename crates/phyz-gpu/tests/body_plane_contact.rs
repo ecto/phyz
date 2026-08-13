@@ -109,7 +109,10 @@ fn a_rider_settles_on_the_deck() {
         "rider is not sitting on the deck: rider z {rider_z:.4}, deck top {deck_top:.4}"
     );
     // And it is at rest, not vibrating.
-    let speed: f64 = (0..model.nv).map(|i| out.v[i] * out.v[i]).sum::<f64>().sqrt();
+    let speed: f64 = (0..model.nv)
+        .map(|i| out.v[i] * out.v[i])
+        .sum::<f64>()
+        .sqrt();
     assert!(speed < 0.05, "stack still moving at {speed:.3}");
 }
 

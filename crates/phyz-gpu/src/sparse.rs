@@ -89,7 +89,8 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok().ok_or("No GPU adapter found")?;
+    .ok()
+    .ok_or("No GPU adapter found")?;
 
     let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
 
@@ -105,14 +106,13 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
     limits.max_buffer_size = adapter_limits.max_buffer_size;
     limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-                trace: wgpu::Trace::Off,
-            label: Some("phyz-sparse-device"),
-            required_features,
-            required_limits: limits,
-            memory_hints: Default::default(),
-        }))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        trace: wgpu::Trace::Off,
+        label: Some("phyz-sparse-device"),
+        required_features,
+        required_limits: limits,
+        memory_hints: Default::default(),
+    }))
     .map_err(|e| format!("Failed to create device: {e}"))?;
 
     let precision = if has_f64 {
@@ -148,7 +148,8 @@ pub async fn request_device_async()
             force_fallback_adapter: false,
         })
         .await
-        .ok().ok_or("No GPU adapter found")?;
+        .ok()
+        .ok_or("No GPU adapter found")?;
 
     let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
 
@@ -164,14 +165,13 @@ pub async fn request_device_async()
     limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
 
     let (device, queue) = adapter
-        .request_device(
-            &wgpu::DeviceDescriptor {
-                trace: wgpu::Trace::Off,
-                label: Some("phyz-sparse-device-async"),
-                required_features,
-                required_limits: limits,
-                memory_hints: Default::default(),
-            })
+        .request_device(&wgpu::DeviceDescriptor {
+            trace: wgpu::Trace::Off,
+            label: Some("phyz-sparse-device-async"),
+            required_features,
+            required_limits: limits,
+            memory_hints: Default::default(),
+        })
         .await
         .map_err(|e| format!("Failed to create device: {e}"))?;
 

@@ -664,15 +664,15 @@ fn copy_to_buffer(
     height: u32,
 ) {
     encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        wgpu::ImageCopyBuffer {
+        wgpu::TexelCopyBufferInfo {
             buffer,
-            layout: wgpu::ImageDataLayout {
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(row_bytes),
                 rows_per_image: Some(height),
@@ -697,16 +697,16 @@ pub fn default_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok().ok_or(CameraError::NoAdapter)?;
+    .ok()
+    .ok_or(CameraError::NoAdapter)?;
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-                trace: wgpu::Trace::Off,
-            label: Some("phyz_camera_device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
-            memory_hints: Default::default(),
-        }))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        trace: wgpu::Trace::Off,
+        label: Some("phyz_camera_device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::downlevel_defaults(),
+        memory_hints: Default::default(),
+    }))
     .map_err(|e| CameraError::DeviceCreation(e.to_string()))?;
 
     Ok((Arc::new(device), Arc::new(queue)))
