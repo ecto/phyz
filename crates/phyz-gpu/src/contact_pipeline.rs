@@ -23,6 +23,8 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
+    plane_half_x: f32,
+    plane_half_y: f32,
     // Heightfield terrain header; hf_nx == 0 means "flat plane at
     // ground_height", the pre-heightfield behaviour.
     hf_nx: u32,
@@ -193,9 +195,27 @@ pub struct BodyPlane {
     /// Face offset along the body's local `+Z`, metres (deck half-thickness).
     pub offset: f64,
     /// Penetration beyond which the contact is ignored, metres. Guards a
-    /// body approaching from *below* the infinite plane against being
-    /// captured and catapulted through it.
+    /// body approaching from *below* the plane against being captured and
+    /// catapulted through it.
     pub max_depth: f64,
+    /// Half-extents of the face in the body's own x/y, metres. The plane
+    /// only supports what is actually over it.
+    ///
+    /// A shape's contact points are clamped into the overlap between its own
+    /// footprint and this rectangle, and a shape with no overlap at all gets
+    /// no contact and falls. Clamping rather than discarding is deliberate: a
+    /// deck narrower than a foot still carries that foot, along its edge. The
+    /// K1's foot is 22 cm across a 19.7 cm deck — feet point ACROSS a board,
+    /// so toes and heel overhang, as a real skater's do — and simply dropping
+    /// the overhanging corners deletes the whole roll support. Measured, that
+    /// took standing from 3.00 s to 0.8 s in every stance.
+    ///
+    /// The footprint is an AABB in face coordinates: exact while the shape is
+    /// aligned with the face, a slight over-estimate under yaw.
+    pub half_x: f64,
+    /// Half-extent of the face along the body's own `y`, metres. See
+    /// [`Self::half_x`].
+    pub half_y: f64,
     /// Bodies that never contact the plane (the plane body itself is always
     /// excluded): wheels and hangers under a deck, for instance.
     pub exclude: Vec<usize>,
@@ -303,6 +323,8 @@ impl ContactPipeline {
             plane_body: plane.map_or(-1, |p| p.body as i32),
             plane_offset: plane.map_or(0.0, |p| p.offset as f32),
             plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
+            plane_half_x: plane.map_or(0.0, |p| p.half_x as f32),
+            plane_half_y: plane.map_or(0.0, |p| p.half_y as f32),
             hf_nx: heightfield.map_or(0, |h| h.nx as u32),
             hf_ny: heightfield.map_or(0, |h| h.ny as u32),
             hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),

@@ -65,8 +65,47 @@ fn plane(deck_half: Vec3) -> BodyPlane {
         body: 0,
         offset: deck_half.z,
         max_depth: 0.05,
+        half_x: deck_half.x,
+        half_y: deck_half.y,
         exclude: vec![],
     }
+}
+
+/// The face supports what is over it and nothing else.
+///
+/// An unbounded face is harmless while the surface is level and wrong the
+/// moment it pitches — a skateboard pop measured 14 deg of nose lift on the
+/// GPU against the CPU solver's 22 deg, because a foot beyond the nose was
+/// still pressing down through the phantom part of the plane.
+#[test]
+fn the_face_does_not_support_what_is_past_its_edge() {
+    let (model, deck_half, rider_half) = deck_and_rider(-9.81);
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        -100.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        Some(&plane(deck_half)),
+    )
+    .expect("contact");
+
+    // Rider placed just past the deck's edge, at face height.
+    let mut s = model.default_state();
+    s.q[9] = deck_half.x + rider_half.x + 0.05;
+    s.q[11] = deck_half.z + rider_half.z;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..300 {
+        sim.step();
+    }
+    let out = &sim.readback_states()[0];
+    assert!(
+        out.v[11] < -1e-3,
+        "a body past the face's edge was still held up by it (v_z = {:.5})",
+        out.v[11]
+    );
 }
 
 /// Gravity on, deck resting on the ground plane, rider dropped onto the

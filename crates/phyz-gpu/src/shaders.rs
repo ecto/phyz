@@ -24,6 +24,8 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
+    plane_half_x: f32,
+    plane_half_y: f32,
     // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
     // the flat plane at ground_height, exactly as before the feature.
     hf_nx: u32,
@@ -78,6 +80,102 @@ const SLIP_EPS: f32 = 1e-3;
 fn coulomb(mu_fn: f32, vt: f32) -> f32 {
     return mu_fn * min(1.0, vt / SLIP_EPS);
 }
+
+// ── Impulse-like bounds on the dissipative contact terms ──
+//
+// A penalty contact's SPRING is bounded by omega*dt; its DAMPERS are bounded
+// by something else entirely, and that bound is what a skateboard exposed.
+//
+// Both dissipative terms here — the normal damper `d*v_n`, and the friction
+// regularization `mu*f_n*vt/SLIP_EPS`, which is a tangential damper of slope
+// `mu*f_n/SLIP_EPS` — are integrated explicitly. An explicit damper is stable
+// only while `d*dt <= m_eff`, where `m_eff` is the mass the contact point
+// actually presents along the force. Above that the damper overshoots: it
+// does not merely stop the relative motion, it REVERSES it, larger every
+// step.
+//
+// Measured, on the pop that this exists for: a skate wheel has a 0.1 kg mass
+// and a 2.9e-5 kg m^2 spin inertia at a 27 mm radius, while its gains were
+// sized for the ~5.75 kg it carries. `mu*f_n/SLIP_EPS` came to 5.7e4 N s/m,
+// or 41 N m s/rad about the axle against 2.9e-5 — an explicit decay rate of
+// 1.4e6 /s at dt = 1 ms, so the wheel's spin was multiplied by about -1400
+// per step. Four wheels reached 19000 rad/s in twenty steps and the state was
+// NaN by 0.02 s. The pop never happened; `f64::max` skipped the NaN frames
+// and reported frame 0's numbers as the peak.
+//
+// The fix is the one an impulse solver gets for free: a dissipative impulse
+// may bring the relative velocity to zero and no further. Capping each damper
+// at `m_eff/dt` is exactly that cap, and it is unconditionally stable for any
+// gain. Where the old gains were already stable the cap does not bind, so the
+// quiet regime is untouched.
+//
+// `m_eff` is the FREE-BODY effective mass at the contact point — articulation
+// is ignored, because the contact pass has no articulated inertia to hand.
+// Attaching a body to a chain generally raises the inertia it presents, so
+// this under-estimates, which errs toward damping too little. Too little
+// damping is a softer contact; too much is divergence.
+
+// I^-1 * w for the body's rotational inertia about its COM, body frame.
+// Stored as (xx, yy, zz, xy, xz, yz) at [8..14]; inverted by cofactors.
+fn inertia_solve(bidx: u32, w: vec3<f32>) -> vec3<f32> {
+    let xx = bf(bidx, 8u); let yy = bf(bidx, 9u); let zz = bf(bidx, 10u);
+    let xy = bf(bidx, 11u); let xz = bf(bidx, 12u); let yz = bf(bidx, 13u);
+    let c00 = yy * zz - yz * yz;
+    let c01 = xz * yz - xy * zz;
+    let c02 = xy * yz - xz * yy;
+    let det = xx * c00 + xy * c01 + xz * c02;
+    // A massless or degenerate body carries no rotational inertia; report an
+    // unbounded angular response rather than dividing by zero.
+    if (abs(det) < 1e-20) { return vec3<f32>(0.0, 0.0, 0.0); }
+    let c11 = xx * zz - xz * xz;
+    let c12 = xy * xz - xx * yz;
+    let c22 = xx * yy - xy * xy;
+    let inv = 1.0 / det;
+    return vec3<f32>(
+        inv * (c00 * w.x + c01 * w.y + c02 * w.z),
+        inv * (c01 * w.x + c11 * w.y + c12 * w.z),
+        inv * (c02 * w.x + c12 * w.y + c22 * w.z),
+    );
+}
+
+// Effective mass this body presents at contact offset `r` (from the body
+// ORIGIN, body frame) along unit direction `u` (body frame):
+//
+//     1/m_eff = 1/m + (r_c x u)^T I^-1 (r_c x u),   r_c = r - com
+//
+// the standard contact-point effective mass. A massless body is treated as
+// immovable, which is what the world body is.
+fn contact_eff_mass(bidx: u32, r: vec3<f32>, u: vec3<f32>) -> f32 {
+    let m = bf(bidx, 4u);
+    if (m <= 0.0) { return 1e30; }
+    let rc = r - vec3<f32>(bf(bidx, 5u), bf(bidx, 6u), bf(bidx, 7u));
+    let a = cross3(rc, u);
+    let ang = max(dot(a, inertia_solve(bidx, a)), 0.0);
+    return 1.0 / (1.0 / m + ang);
+}
+
+// The largest damping coefficient an explicit step may apply against `m_eff`
+// without reversing the velocity it is meant to remove.
+fn max_damping(m_eff: f32) -> f32 {
+    return m_eff / max(cparams.dt, 1e-9);
+}
+
+// The largest spring an explicit step may carry against `m_eff`: semi-implicit
+// Euler is stable while `w*dt < 2`, i.e. `k*dt^2/m_eff < 4`.
+//
+// The damping bound alone leaves this one standing, and it is the next wall a
+// pop hits. Measured: a skate wheel presents 0.1 kg to its ground contact while
+// its gains are sized for 5.75 kg, so `k = 5.75*w^2` crosses `4*m/dt^2` at
+// w = 264 — and the sweep degrades between 250 and 275, exactly there. Bounding
+// it lets the FOOT contact, which presents far more mass and so has a much
+// higher wall of its own, go on stiffening past the point where the wheel has
+// stopped. A stiffer contact stores less energy and returns less of it, which
+// is what moves a penalty pop toward the impulse solver's.
+fn max_stiffness(m_eff: f32) -> f32 {
+    let dt = max(cparams.dt, 1e-9);
+    return 4.0 * m_eff / (dt * dt);
+}
+
 
 // ── Heightfield terrain ──
 //
@@ -472,8 +570,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // a damper that always opposes the approach. max(_, 0) stops it
             // pulling the body back down as it separates, which is the real
             // hazard in any penalty contact.
-            let k_body = pt_scale * geometry[gbase + 8u];
-            let d_body = pt_scale * geometry[gbase + 9u];
+            let m_n = contact_eff_mass(i, support, n_body);
+            let k_body = min(pt_scale * geometry[gbase + 8u], max_stiffness(m_n));
+            var d_body = pt_scale * geometry[gbase + 9u];
+            // The damper may remove the approach velocity, never reverse it.
+            d_body = min(d_body, max_damping(m_n));
             let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
 
             // Coulomb friction opposing the tangential velocity.
@@ -481,7 +582,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let vt = length(v_tan);
             var f_body = n_body * f_n;
             if (vt > 1e-6) {
-                f_body = f_body - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+                let t_dir = v_tan / vt;
+                // min(Coulomb limit, impulse that just stops the slip): the
+                // physical cap and the non-reversal cap, which is the same
+                // projection an impulse solver applies.
+                let f_t = min(
+                    coulomb(cparams.friction * f_n, vt),
+                    max_damping(contact_eff_mass(i, support, t_dir)) * vt,
+                );
+                f_body = f_body - t_dir * f_t;
             }
 
             // Spatial force in the body frame: [angular = r x f, linear = f].
@@ -560,39 +669,106 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var pt_scale = 1.0;
             if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
 
+            // ── How much of this shape is actually over the face ──
+            //
+            // The face is a rectangle, not an infinite plane, and a shape may
+            // hang over its edge. Dropping the overhanging points outright is
+            // the obvious reading and it is wrong: a deck narrower than a foot
+            // still carries that foot, along its edge. Measured on the K1, the
+            // foot is 22 cm across a 19.7 cm deck — feet point ACROSS the board,
+            // so toes and heel overhang, as a real skater's do — and deleting
+            // those corners deleted the whole roll support. Standing fell from
+            // 3.00 s to 0.8 s in every stance.
+            //
+            // So: intersect the shape's footprint with the face, in the face's
+            // own 2-D coordinates. No overlap means nothing is over the face and
+            // the shape genuinely falls. Otherwise every contact point is
+            // clamped into the overlap, which puts the force on the deck's edge
+            // where the deck actually has material — support is kept, and the
+            // phantom support out past the edge, which is what an infinite plane
+            // invents, is gone.
+            //
+            // The footprint is taken as an AABB in face coordinates: exact while
+            // the shape is aligned with the face, and a slight over-estimate
+            // under yaw.
+            var lo = vec2<f32>(1e30, 1e30);
+            var hi = vec2<f32>(-1e30, -1e30);
+            for (var cpt = 0u; cpt < n_pts; cpt++) {
+                var sp: vec3<f32>;
+                if (gtype == 2u) { sp = box_corner(i, cpt); }
+                else { sp = support_point(i, n_body); }
+                let rp = rot_t_mul(w_rot[pb], w_pos[i] + rot_mul(w_rot[i], sp) - w_pos[pb]);
+                lo = min(lo, rp.xy);
+                hi = max(hi, rp.xy);
+            }
+            let face_lo = vec2<f32>(-cparams.plane_half_x, -cparams.plane_half_y);
+            let face_hi = vec2<f32>(cparams.plane_half_x, cparams.plane_half_y);
+            let ov_lo = max(lo, face_lo);
+            let ov_hi = min(hi, face_hi);
+            if (ov_lo.x > ov_hi.x || ov_lo.y > ov_hi.y) { continue; }
+
             for (var cpt = 0u; cpt < n_pts; cpt++) {
                 var support: vec3<f32>;
                 if (gtype == 2u) { support = box_corner(i, cpt); }
                 else { support = support_point(i, n_body); }
-                let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
-                let penetration = -dot(sup_w - p0_w, n_w);
+                let sup_w0 = w_pos[i] + rot_mul(w_rot[i], support);
+                // Penetration is measured at the shape's own point: that is
+                // where its material is, and the face is planar, so sliding the
+                // application point along the face does not change the depth.
+                let penetration = -dot(sup_w0 - p0_w, n_w);
                 // The upper bound guards a body approaching from BELOW an
                 // infinite plane against being captured and catapulted through.
                 if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
 
+                // The contact point in the plane body's own frame, pulled into
+                // the overlap: the force lands where the face has material.
+                var r_p = rot_t_mul(w_rot[pb], sup_w0 - w_pos[pb]);
+                let in_face = clamp(r_p.xy, ov_lo, ov_hi);
+                r_p = vec3<f32>(in_face.x, in_face.y, r_p.z);
+                let sup_w = w_pos[pb] + rot_mul(w_rot[pb], r_p);
+                // The same world point, as a lever arm on the touching body, so
+                // action and reaction act at one point rather than two.
+                let support_c = rot_t_mul(w_rot[i], sup_w - w_pos[i]);
+
                 // Relative velocity of the two material points at the contact,
                 // world frame. Body-frame spatial velocities rotate out with
                 // rot_mul, matching the FK convention above.
-                let v_i_w = rot_mul(w_rot[i], w_lin[i] + cross3(w_omega[i], support));
-                let r_p = rot_t_mul(w_rot[pb], sup_w - w_pos[pb]);
+                let v_i_w = rot_mul(w_rot[i], w_lin[i] + cross3(w_omega[i], support_c));
                 let v_p_w = rot_mul(w_rot[pb], w_lin[pb] + cross3(w_omega[pb], r_p));
                 let v_rel = v_i_w - v_p_w;
                 let v_normal = dot(v_rel, n_w);
 
-                let k_body = pt_scale * geometry[gbase + 8u];
-                let d_body = pt_scale * geometry[gbase + 9u];
+                // Both bodies move, so the pair's effective mass is the series
+                // combination of what each presents at the contact point.
+                let n_i = rot_t_mul(w_rot[i], n_w);
+                let n_p = rot_t_mul(w_rot[pb], n_w);
+                let m_n = 1.0 / (1.0 / contact_eff_mass(i, support_c, n_i)
+                    + 1.0 / contact_eff_mass(pb, r_p, n_p));
+
+                let k_body = min(pt_scale * geometry[gbase + 8u], max_stiffness(m_n));
+                var d_body = pt_scale * geometry[gbase + 9u];
+                d_body = min(d_body, max_damping(m_n));
                 let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
 
                 let v_tan = v_rel - n_w * v_normal;
                 let vt = length(v_tan);
                 var f_w = n_w * f_n;
                 if (vt > 1e-6) {
-                    f_w = f_w - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+                    let t_dir = v_tan / vt;
+                    let t_i = rot_t_mul(w_rot[i], t_dir);
+                    let t_p = rot_t_mul(w_rot[pb], t_dir);
+                    let m_t = 1.0 / (1.0 / contact_eff_mass(i, support_c, t_i)
+                        + 1.0 / contact_eff_mass(pb, r_p, t_p));
+                    let f_t = min(
+                        coulomb(cparams.friction * f_n, vt),
+                        max_damping(m_t) * vt,
+                    );
+                    f_w = f_w - t_dir * f_t;
                 }
 
                 // Action on the touching body, in its own frame.
                 let f_i = rot_t_mul(w_rot[i], f_w);
-                let torque_i = cross3(support, f_i);
+                let torque_i = cross3(support_c, f_i);
                 let ef_i = ef_env_base + i * 6u;
                 ext_forces[ef_i + 0u] += torque_i.x;
                 ext_forces[ef_i + 1u] += torque_i.y;
