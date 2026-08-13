@@ -36,7 +36,11 @@ struct ContactParams {
 /// [4]      skip-plane flag (1.0 = this body never contacts the attached plane)
 /// [5..8]   instance origin position, body frame
 /// [8..17]  instance origin rotation, row-major (body -> shape coordinates)
-/// [17..20] reserved
+/// [17]     carried mass override, kg (0 = use the body's own mass). The
+///          penalty k = m/tc² assumes a body carries its own weight; a foot
+///          carries the whole robot, and without this override it sinks
+///          0.15 m instead of 4 mm.
+/// [18..20] reserved
 /// ```
 ///
 /// The shape comes from `Body::collisions[0]` when present — offsets
@@ -113,6 +117,7 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
         plane: Option<&BodyPlane>,
+        carried_mass: &[(usize, f64)],
     ) -> Result<Self, String> {
         let GroundContactParams {
             ground_height,
@@ -157,6 +162,12 @@ impl ContactPipeline {
 
         // Pack geometry data
         let mut geom_data = pack_geometries(model)?;
+        for &(b, m) in carried_mass {
+            if b >= model.nbodies() {
+                return Err(format!("carried_mass body {b} out of range"));
+            }
+            geom_data[b * GEOM_STRIDE + 17] = m as f32;
+        }
         if let Some(p) = plane {
             for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
                 geom_data[b * GEOM_STRIDE + 4] = 1.0;

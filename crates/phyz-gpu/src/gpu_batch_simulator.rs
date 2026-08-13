@@ -333,6 +333,20 @@ impl GpuBatchSimulator {
         contact: crate::contact_pipeline::GroundContactParams,
         plane: Option<&crate::contact_pipeline::BodyPlane>,
     ) -> Result<(), String> {
+        self.enable_contact_full(contact, plane, &[])
+    }
+
+    /// The full contact configuration: ground, optional body plane, and
+    /// per-body carried-mass overrides for the penalty stiffness. `k = m/tc²`
+    /// with the body's own mass is right for a box on the floor and wrong by
+    /// the mass ratio for a foot under a robot — the override is where the
+    /// caller states what each support actually holds up.
+    pub fn enable_contact_full(
+        &mut self,
+        contact: crate::contact_pipeline::GroundContactParams,
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        carried_mass: &[(usize, f64)],
+    ) -> Result<(), String> {
         let pipeline = ContactPipeline::new(
             &self.device,
             &self.queue,
@@ -341,6 +355,7 @@ impl GpuBatchSimulator {
             &self.bodies_buffer,
             contact,
             plane,
+            carried_mass,
         )?;
         self.contact_pipeline = Some(pipeline);
         Ok(())

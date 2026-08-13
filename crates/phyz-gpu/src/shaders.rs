@@ -288,7 +288,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // leaving no usable value anywhere. Per-body k = m/tc^2 gives every
         // body the same natural frequency 1/tc, so stability depends on
         // dt/tc alone and not on where in the robot the contact happens.
-        let mass = bf(i, 4u);
+        var mass = bf(i, 4u);
+        let carried = geometry[i * GEOM_STRIDE + 17u];
+        if (carried > 0.0) { mass = carried; }
         if (mass <= 0.0) { continue; }
         let k = mass / (cparams.time_const * cparams.time_const);
         let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
@@ -350,8 +352,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let v_rel = v_i_w - v_p_w;
             let v_normal = dot(v_rel, n_w);
 
-            // Mass-derived penalty, same recipe and reasons as the ground.
-            let mass = bf(i, 4u);
+            // Mass-derived penalty, same recipe, reasons and carried-mass
+            // override as the ground pass.
+            var mass = bf(i, 4u);
+            let carried = geometry[i * GEOM_STRIDE + 17u];
+            if (carried > 0.0) { mass = carried; }
             if (mass <= 0.0) { continue; }
             let k = mass / (cparams.time_const * cparams.time_const);
             let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
