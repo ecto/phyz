@@ -25,9 +25,9 @@ struct BatchSimParams {
     _padding: u32,
 }
 
-/// Packed body data for GPU upload (32 f32 values per body).
+/// Packed body data for GPU upload (36 f32 values per body).
 ///
-/// Layout matches the WGSL shader's `BODY_STRIDE` of 32:
+/// Layout matches the WGSL shader's `BODY_STRIDE` of 36:
 /// ```text
 /// [0]  parent (bitcast i32)
 /// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
@@ -40,9 +40,12 @@ struct BatchSimParams {
 /// [23..26] ptj translation (x,y,z)
 /// [26..29] axis (x,y,z)
 /// [29] damping
-/// [30..32] padding
+/// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
+/// [31] spring reference angle
+/// [32] armature (rotor inertia, added to the D diagonal like the CPU's crba/aba)
+/// [33..36] padding
 /// ```
-const BODY_STRIDE: usize = 32;
+const BODY_STRIDE: usize = 36;
 
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
@@ -79,7 +82,7 @@ impl GpuBatchSimulator {
     ///
     /// `nworld` is the number of parallel environments to simulate.
     pub fn new(model: Model, nworld: usize) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -89,17 +92,16 @@ impl GpuBatchSimulator {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
+        .ok()
         .ok_or("Failed to find GPU adapter")?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("phyz-gpu-batch-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: Default::default(),
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            trace: wgpu::Trace::Off,
+            label: Some("phyz-gpu-batch-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: Default::default(),
+        }))
         .map_err(|e| format!("Failed to create device: {e}"))?;
 
         let device = Arc::new(device);
@@ -346,6 +348,41 @@ impl GpuBatchSimulator {
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
     ) -> Result<usize, String> {
+        self.enable_ground_contact_with_plane(ground_height, friction, gains, None)
+    }
+
+    /// [`Self::enable_ground_contact_per_body`] plus an optional
+    /// body-attached contact plane (see [`crate::contact_pipeline::BodyPlane`])
+    /// — the deck a rider stands on. One compute pass handles both: the same
+    /// FK feeds the ground test and the plane test, and forces land on both
+    /// the touching body and the plane's body.
+    pub fn enable_ground_contact_with_plane(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+    ) -> Result<usize, String> {
+        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+    }
+
+    /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain
+    /// instead of the flat plane.
+    ///
+    /// `ground_height` is ignored while a heightfield is loaded — the
+    /// surface comes from the field, and a
+    /// [`phyz_model::Heightfield::flat`] field reproduces the plane exactly.
+    /// Swap terrain between training iterations with
+    /// [`Self::set_heightfield`]; the node buffer is sized to this first
+    /// field, so start with the largest grid the run will use.
+    pub fn enable_contact_terrain(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        heightfield: Option<&phyz_model::Heightfield>,
+    ) -> Result<usize, String> {
         let pipeline = ContactPipeline::with_body_gains(
             &self.device,
             &self.queue,
@@ -359,10 +396,23 @@ impl GpuBatchSimulator {
                 friction,
             },
             Some(gains),
+            plane,
+            heightfield,
         )?;
         let collidable = pipeline.collidable_bodies();
         self.contact_pipeline = Some(pipeline);
         Ok(collidable)
+    }
+
+    /// Replace the contact terrain in place — a buffer write, no pipeline
+    /// rebuild. Errors if contact is not enabled or the new field outgrows
+    /// the buffer allocated by [`Self::enable_contact_terrain`].
+    pub fn set_heightfield(&mut self, hf: &phyz_model::Heightfield) -> Result<(), String> {
+        let pipeline = self
+            .contact_pipeline
+            .as_mut()
+            .ok_or("contact not enabled — call enable_contact_terrain first")?;
+        pipeline.set_heightfield(&self.queue, hf)
     }
 
     /// Enable PD position servos on the given DOFs.
@@ -572,7 +622,13 @@ fn pack_bodies(model: &Model) -> Vec<f32> {
         data[base + 28] = joint.axis.z as f32;
         // [29] damping
         data[base + 29] = joint.damping as f32;
-        // [30..32] padding
+        // [30..31] passive spring, the truck-bushing term. Packed here
+        // because the ABA pass applies it explicitly, exactly as the CPU's
+        // `Joint::passive_force` does — same clause, same sign.
+        data[base + 30] = joint.stiffness as f32;
+        data[base + 31] = joint.spring_ref as f32;
+        data[base + 32] = joint.armature as f32;
+        // [33..36] padding
     }
 
     data

@@ -9,8 +9,8 @@
 /// One thread per environment, serial tree traversal within.
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
-const GEOM_STRIDE: u32 = 16u;
+const BODY_STRIDE: u32 = 36u;
+const GEOM_STRIDE: u32 = 24u;
 const CS_STRIDE: u32 = 8u;
 
 struct ContactParams {
@@ -20,8 +20,18 @@ struct ContactParams {
     ground_height: f32,
     dt: f32,
     friction: f32,
-    _pad0: f32,
-    _pad1: f32,
+    // Body-attached contact plane; plane_body < 0 disables it.
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
+    // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
+    // the flat plane at ground_height, exactly as before the feature.
+    hf_nx: u32,
+    hf_ny: u32,
+    hf_ox: f32,
+    hf_oy: f32,
+    hf_oz: f32,
+    hf_cell: f32,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -34,15 +44,101 @@ struct ContactParams {
 // Persists across steps so the previous penetration can supply a damping
 // rate; every collidable body's slot is rewritten each pass.
 @group(0) @binding(6) var<storage, read_write> contact_state: array<f32>;
+// Heightfield nodes, row-major (iy * nx + ix). Bound even when there is no
+// terrain — the binding count is fixed — with hf_nx == 0 routing around it.
+@group(0) @binding(7) var<storage, read> hf_heights: array<f32>;
 
 // Body data access
 fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
 fn body_parent(bi: u32) -> i32 { return bitcast<i32>(bodies[bi * BODY_STRIDE]); }
 fn body_jtype(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 1u]); }
 fn body_qoff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 2u]); }
+fn body_voff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 3u]); }
 
 fn cross3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
+}
+
+// Coulomb friction, regularized by slip SPEED rather than by the normal
+// damping coefficient.
+//
+// Capping friction at `d * vt` (with `d` the contact's normal damping) is
+// the tempting form, and it is wrong: at the slip speeds a standing robot
+// actually produces — millimetres per second — that cap sits orders of
+// magnitude below `mu * f_n`, so a foot cannot hold a static sideways load
+// and creeps. Measured on the K1's skate stance: hip-roll spread pushes the
+// feet apart, and the left foot slid 16 cm across the deck in 0.2 s and off
+// the rail, while the CPU impulse solver held it indefinitely. That is not
+// a penalty-vs-impulse difference; it is a missing static friction.
+//
+// `mu * f_n * min(1, vt / SLIP_EPS)` is the standard regularization: full
+// Coulomb above a 1 mm/s slip, linear (and therefore stable) below it.
+const SLIP_EPS: f32 = 1e-3;
+
+fn coulomb(mu_fn: f32, vt: f32) -> f32 {
+    return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
+// ── Heightfield terrain ──
+//
+// Mirrors phyz_model::Heightfield exactly: node (ix, iy) at
+// (hf_ox + ix*cell, hf_oy + iy*cell), height hf_oz + hf_heights[iy*nx + ix],
+// bilinear between nodes, border-clamped outside the grid — with a ZERO
+// slope beyond the border, matching the clamped (flat) surface there rather
+// than the border cell's slope, which describes a surface that no longer
+// exists. The CPU detector samples the same f32 node buffer, so both
+// engines stand on identical terrain rather than terrain that agrees to
+// rounding.
+
+fn hf_node(ix: u32, iy: u32) -> f32 {
+    return cparams.hf_oz + hf_heights[iy * cparams.hf_nx + ix];
+}
+
+// Cell index and intra-cell fraction along one axis, clamped to the grid.
+fn hf_locate(w: f32, o: f32, n: u32) -> vec2<f32> {
+    if (n < 2u) { return vec2<f32>(0.0, 0.0); }
+    let u = clamp((w - o) / cparams.hf_cell, 0.0, f32(n - 1u));
+    // A query exactly on the far border indexes the last cell at t = 1
+    // rather than one past it.
+    let i = min(u32(u), n - 2u);
+    return vec2<f32>(f32(i), u - f32(i));
+}
+
+// Terrain sample at world (x, y): xyz = unit surface normal, w = height.
+// With no heightfield loaded this is the flat plane at ground_height.
+fn terrain(p: vec2<f32>) -> vec4<f32> {
+    let nx = cparams.hf_nx;
+    let ny = cparams.hf_ny;
+    if (nx == 0u) {
+        return vec4<f32>(0.0, 0.0, 1.0, cparams.ground_height);
+    }
+    let lx = hf_locate(p.x, cparams.hf_ox, nx);
+    let ly = hf_locate(p.y, cparams.hf_oy, ny);
+    let ix = u32(lx.x); let tx = lx.y;
+    let iy = u32(ly.x); let ty = ly.y;
+    let ix1 = min(ix + 1u, nx - 1u);
+    let iy1 = min(iy + 1u, ny - 1u);
+
+    let h00 = hf_node(ix, iy);
+    let h10 = hf_node(ix1, iy);
+    let h01 = hf_node(ix, iy1);
+    let h11 = hf_node(ix1, iy1);
+    let h = (h00 * (1.0 - tx) + h10 * tx) * (1.0 - ty)
+          + (h01 * (1.0 - tx) + h11 * tx) * ty;
+
+    // Analytic bilinear-patch gradient, zeroed outside the grid.
+    var dhdx = 0.0;
+    var dhdy = 0.0;
+    let span_x = f32(nx - 1u) * cparams.hf_cell;
+    let span_y = f32(ny - 1u) * cparams.hf_cell;
+    if (nx >= 2u && p.x >= cparams.hf_ox && p.x <= cparams.hf_ox + span_x) {
+        dhdx = ((h10 - h00) * (1.0 - ty) + (h11 - h01) * ty) / cparams.hf_cell;
+    }
+    if (ny >= 2u && p.y >= cparams.hf_oy && p.y <= cparams.hf_oy + span_y) {
+        dhdy = ((h01 - h00) * (1.0 - tx) + (h11 - h10) * tx) / cparams.hf_cell;
+    }
+    let n = normalize(vec3<f32>(-dhdx, -dhdy, 1.0));
+    return vec4<f32>(n, h);
 }
 
 // Revolute rotation (Rodrigues, -angle convention matching ABA)
@@ -103,6 +199,90 @@ fn rot_compose(a: array<f32, 9>, b: array<f32, 9>) -> array<f32, 9> {
     return r;
 }
 
+// R^T * v
+fn rot_t_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        r[0]*vv.x + r[3]*vv.y + r[6]*vv.z,
+        r[1]*vv.x + r[4]*vv.y + r[7]*vv.z,
+        r[2]*vv.x + r[5]*vv.y + r[8]*vv.z
+    );
+}
+
+// Corner `c` (0..8) of body i's box, in BODY coordinates with the collision
+// instance's origin applied. Boxes contact through all penetrating corners —
+// a single support point lets an angled foot rock on one corner, which is
+// exactly what felled the loose-stance rollouts.
+fn box_corner(i: u32, c: u32) -> vec3<f32> {
+    let gbase = i * GEOM_STRIDE;
+    let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+    let sx = select(-1.0, 1.0, (c & 1u) != 0u);
+    let sy = select(-1.0, 1.0, (c & 2u) != 0u);
+    let sz = select(-1.0, 1.0, (c & 4u) != 0u);
+    let corner = vec3<f32>(h.x * sx, h.y * sy, h.z * sz);
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    return o_p + rot_t_mul(o_r, corner);
+}
+
+// Support point of body i's shape in the direction of -n_body (n_body a unit
+// vector in the body's own frame): the point of the shape that reaches
+// furthest against the contact normal, returned in BODY coordinates with the
+// collision instance's own origin (offset + rotation) applied.
+//
+// The offset is not a detail: a K1 foot pad sits 2.6 cm forward of its
+// ankle, and ignoring it costs the robot its whole sagittal support margin.
+// The rotation is not either — an axis-aligned lowest point is only the true
+// support point while the body is upright, which is exactly the case a
+// test fixture starts in and a walking robot never stays in.
+fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
+    let gbase = i * GEOM_STRIDE;
+    let gtype = u32(geometry[gbase]);
+    // Instance origin: pos at [10..13], rot (body -> shape, row-major) at [13..22].
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    let n = rot_mul(o_r, n_body);
+
+    var support = vec3<f32>(0.0, 0.0, 0.0);
+    if (gtype == 1u) {
+        support = -n * geometry[gbase + 1u];
+    } else if (gtype == 2u) {
+        let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+        support = vec3<f32>(-h.x * sign(n.x), -h.y * sign(n.y), -h.z * sign(n.z));
+    } else if (gtype == 3u) {
+        let radius = geometry[gbase + 1u];
+        let half_len = geometry[gbase + 2u] * 0.5;
+        support = vec3<f32>(0.0, 0.0, -half_len * sign(n.z)) - n * radius;
+    } else if (gtype == 4u) {
+        let radius = geometry[gbase + 1u];
+        let half_h = geometry[gbase + 2u] * 0.5;
+        let radial = vec3<f32>(-n.x, -n.y, 0.0);
+        let rl = length(radial);
+        var rim = vec3<f32>(0.0, 0.0, 0.0);
+        if (rl > 1e-6) { rim = radial / rl * radius; }
+        support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n.z));
+    } else if (gtype == 5u) {
+        // Mesh, via its body-frame AABB — asymmetric (min/max, not
+        // half-extents), so an off-centre hull keeps its true offset.
+        //
+        // Resolved through sign(), like the box above, and that matters:
+        // an AABB's support is DEGENERATE whenever a normal component is
+        // zero (flat on the ground, the whole bottom face ties). sign(0)
+        // is 0, which picks the face centre; a `select` on `n > 0` would
+        // break the tie toward a corner instead, and the r x f torque
+        // about that corner tips a body that should rest flat — measured
+        // as a mesh cube launching to z = 1.27 m from a 0.5 m drop.
+        let mn = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+        let mx = vec3<f32>(geometry[gbase + 4u], geometry[gbase + 5u], geometry[gbase + 6u]);
+        let mc = (mn + mx) * 0.5;
+        let mh = (mx - mn) * 0.5;
+        support = mc - vec3<f32>(mh.x * sign(n.x), mh.y * sign(n.y), mh.z * sign(n.z));
+    }
+    return o_p + rot_t_mul(o_r, support);
+}
+
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_idx = gid.x;
@@ -110,6 +290,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let nb = cparams.nbodies;
     let q_base = world_idx * cparams.nv;
+    let v_base = world_idx * cparams.nv;
 
     // Clear external forces for this env
     let ef_env_base = world_idx * nb * 6u;
@@ -122,11 +303,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Compute FK: world rotation and position for each body
     var w_rot: array<array<f32, 9>, MAX_BODIES>;
     var w_pos: array<vec3<f32>, MAX_BODIES>;
+    // Body-frame spatial velocities (angular, linear), same recursion as the
+    // CPU: v_i = X_tree_i * v_parent + S_i * qd_i. Contact damping and
+    // friction both need the velocity of the contact POINT, which a
+    // finite-differenced penetration cannot supply once a shape reports more
+    // than one contact point — and friction cannot be had from it at all.
+    var w_omega: array<vec3<f32>, MAX_BODIES>;
+    var w_lin: array<vec3<f32>, MAX_BODIES>;
 
     for (var i = 0u; i < nb; i++) {
         let parent = body_parent(i);
         let jtype = body_jtype(i);
         let q_off = body_qoff(i);
+        let v_off = body_voff(i);
 
         // Parent-to-joint transform
         var ptj_rot: array<f32, 9>;
@@ -140,22 +329,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // does nothing.
         var j_rot: array<f32, 9>;
         var j_pos = vec3<f32>(0.0, 0.0, 0.0);
+        var j_omega = vec3<f32>(0.0, 0.0, 0.0);
+        var j_lin = vec3<f32>(0.0, 0.0, 0.0);
         if (jtype == 0u) {
             j_rot = rev_rot(axis, q[q_base + q_off]);
+            j_omega = axis * v[v_base + v_off];
         } else if (jtype == 1u) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
+            j_lin = axis * v[v_base + v_off];
         } else if (jtype == 3u) {
             // Coordinate map is the INVERSE of the integrated rotation
             // (exp(-w)), matching the negated angle in rev_rot and the CPU
             // joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
         } else if (jtype == 4u) {
             // Free: q = [exp-coords(3), pos(3)] — angular first, matching v.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
+            j_lin = vec3<f32>(v[v_base + v_off + 3u], v[v_base + v_off + 4u], v[v_base + v_off + 5u]);
         } else {
             j_rot = identity_rot();
         }
@@ -186,10 +382,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (parent < 0) {
             w_rot[i] = tree_rt; // body-to-world rotation = tree_rotᵀ
             w_pos[i] = tree_pos;
+            w_omega[i] = j_omega;
+            w_lin[i] = j_lin;
         } else {
             let pi = u32(parent);
             w_rot[i] = rot_compose(w_rot[pi], tree_rt);
             w_pos[i] = w_pos[pi] + rot_mul(w_rot[pi], tree_pos);
+            // apply_motion, in the BODY frame: w_c = R*w_p,
+            // v_c = R*v_p - R*(p x w_p). `tree_rot` is the world→body
+            // (parent→child) rotation this needs — the untransposed twin of
+            // the `tree_rt` the pose recursion above uses.
+            let pw = rot_mul(tree_rot, w_omega[pi]);
+            let pv = rot_mul(tree_rot, w_lin[pi])
+                   - rot_mul(tree_rot, cross3(tree_pos, w_omega[pi]));
+            w_omega[i] = pw + j_omega;
+            w_lin[i] = pv + j_lin;
         }
     }
 
@@ -207,114 +414,205 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        let pos = w_pos[i];
+        // World +Z expressed in this body's frame. Support selection, the
+        // contact normal and every force below live in body coordinates,
+        // matching what ext_forces wants (r x f and f, body frame).
+        // Support-point SELECTION uses world "down" even on a heightfield —
+        // the small-slope assumption the CPU detector documents: for the
+        // shallow terrain a walking or skating robot trains on, down and the
+        // local surface normal pick the same feature.
+        let z_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
-        // Lowest point of the shape, and its world x/y for the contact point.
-        var min_z = pos.z;
-        var cx = pos.x;
-        var cy = pos.y;
-        if (gtype == 1u) {
-            // Sphere
-            let radius = geometry[gbase + 1u];
-            min_z = pos.z - radius;
-        } else if (gtype == 2u) {
-            // Box
-            let hz = geometry[gbase + 3u];
-            min_z = pos.z - hz;
-        } else if (gtype == 3u) {
-            // Capsule
-            let radius = geometry[gbase + 1u];
-            let length = geometry[gbase + 2u];
-            min_z = pos.z - length * 0.5 - radius;
-        } else if (gtype == 4u) {
-            // Cylinder
-            let height = geometry[gbase + 2u];
-            min_z = pos.z - height * 0.5;
-        } else if (gtype == 5u) {
-            // Mesh, approximated by its body-frame AABB: the lowest of the
-            // eight corners after rotating into the world frame.
-            let mn = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
-            let mx = vec3<f32>(geometry[gbase + 4u], geometry[gbase + 5u], geometry[gbase + 6u]);
-            min_z = 3.4e38;
-            for (var c = 0u; c < 8u; c++) {
-                var corner = mn;
-                if ((c & 1u) != 0u) { corner.x = mx.x; }
-                if ((c & 2u) != 0u) { corner.y = mx.y; }
-                if ((c & 4u) != 0u) { corner.z = mx.z; }
-                let wc = pos + rot_mul(w_rot[i], corner);
-                if (wc.z < min_z) {
-                    min_z = wc.z;
-                    cx = wc.x;
-                    cy = wc.y;
-                }
+        // Boxes contact through EVERY penetrating corner; other shapes
+        // through the single support point they actually touch at. A box
+        // reduced to one point can rock on that corner with nothing to
+        // resist it, which is what felled the loose-stance rollouts — a
+        // resting box needs a real support polygon. Per-point stiffness is
+        // a quarter of the body's, so a flat-resting face carries the same
+        // total spring as a single-point shape does.
+        var n_pts = 1u;
+        var pt_scale = 1.0;
+        if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+
+        // Accumulated for the readback slot: total force, and the deepest
+        // point, which is the one worth reporting as THE contact.
+        var f_w_total = vec3<f32>(0.0, 0.0, 0.0);
+        var deepest = 0.0;
+        var deepest_w = vec3<f32>(0.0, 0.0, 0.0);
+        var any_touch = false;
+
+        for (var cpt = 0u; cpt < n_pts; cpt++) {
+            var support: vec3<f32>;
+            if (gtype == 2u) { support = box_corner(i, cpt); }
+            else { support = support_point(i, z_body); }
+            let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
+
+            // Terrain under this contact point (the flat plane when no
+            // heightfield is loaded). Penetration is measured along the local
+            // surface normal, and every force below acts along it — on a flat
+            // field this reduces exactly to the old ground test.
+            let terr = terrain(sup_w.xy);
+            let n_w = terr.xyz;
+            let penetration = n_w.z * (terr.w - sup_w.z);
+            if (penetration <= 0.0) { continue; }
+            let n_body = rot_t_mul(w_rot[i], n_w);
+
+            // Velocity of the contact POINT, body frame. This replaces the
+            // finite-differenced penetration rate the single-point model
+            // used: that needed one history slot per contact and there is
+            // only one slot per body, and it cannot produce a tangential
+            // velocity at all, so friction was simply absent.
+            let v_point = w_lin[i] + cross3(w_omega[i], support);
+            let v_normal = dot(v_point, n_body);
+
+            // Penalty normal force with per-body gains, Kelvin-Voigt:
+            // f = k*pen - d*v_n. v_normal is the contact point's velocity
+            // along the OUTWARD normal, so it is negative while the body is
+            // still moving into the ground — hence the minus sign, and hence
+            // a damper that always opposes the approach. max(_, 0) stops it
+            // pulling the body back down as it separates, which is the real
+            // hazard in any penalty contact.
+            let k_body = pt_scale * geometry[gbase + 8u];
+            let d_body = pt_scale * geometry[gbase + 9u];
+            let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
+
+            // Coulomb friction opposing the tangential velocity.
+            let v_tan = v_point - n_body * v_normal;
+            let vt = length(v_tan);
+            var f_body = n_body * f_n;
+            if (vt > 1e-6) {
+                f_body = f_body - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+            }
+
+            // Spatial force in the body frame: [angular = r x f, linear = f].
+            // The torque is not optional decoration — without it contact acts
+            // through the body origin, so no shape can resist tipping and a
+            // resting box has no support polygon at all.
+            let torque = cross3(support, f_body);
+            let ef_base = ef_env_base + i * 6u;
+            ext_forces[ef_base + 0u] += torque.x;
+            ext_forces[ef_base + 1u] += torque.y;
+            ext_forces[ef_base + 2u] += torque.z;
+            ext_forces[ef_base + 3u] += f_body.x;
+            ext_forces[ef_base + 4u] += f_body.y;
+            ext_forces[ef_base + 5u] += f_body.z;
+
+            f_w_total = f_w_total + rot_mul(w_rot[i], f_body);
+            any_touch = true;
+            if (penetration > deepest) {
+                deepest = penetration;
+                // On the surface, not at the shape's lowest vertex — that
+                // vertex is below the terrain, and the depth is already
+                // reported in its own slot.
+                deepest_w = vec3<f32>(sup_w.x, sup_w.y, terr.w);
             }
         }
 
-        let penetration = cparams.ground_height - min_z;
-        // Previous-step penetration, read before this step's value replaces it.
-        let prev_pen = contact_state[cs_base + 1u];
-        if (penetration <= 0.0) {
+        if (!any_touch) {
             for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
             continue;
         }
 
-        // Penalty force with per-body gains: f = k * pen + d * pen_rate,
-        // the standard Kelvin-Voigt contact model. The penetration rate
-        // (finite difference against the previous step) stands in for the
-        // contact point's approach velocity, giving real damping without a
-        // velocity FK.
-        //
-        // ### THE PLUS SIGN IS CORRECT. ###
-        //
-        // pen_rate > 0 means the body is still moving INTO the ground, so the
-        // damper must push back harder — the force opposes the velocity, which
-        // is what damping means. It reads like an amplifier only if you take
-        // pen_rate for a displacement rather than an approach speed. Flipping
-        // to `- d * pen_rate` would make the damper *assist* penetration on
-        // impact and *resist separation* on rebound, i.e. pump energy in on
-        // both halves of the bounce. On first touch prev_pen is 0, so the rate
-        // is the impact velocity — the moment damping matters most.
-        // The max(_, 0) below is what stops the damper pulling the body down
-        // as it separates (pen_rate < 0), which is the real hazard here.
-        let k_body = geometry[gbase + 8u];
-        let d_body = geometry[gbase + 9u];
-        let pen_rate = (penetration - prev_pen) / cparams.dt;
-        // Clamp to positive (no pulling into ground)
-        let f_z = max(k_body * penetration + d_body * pen_rate, 0.0);
-
-        // Write as spatial force in body frame
-        // For ground contact, force is [0,0,f_z] in world frame
-        // Transform to body frame: f_body = w_rot * f_world (since w_rot = body_to_world rot)
-        // Actually need world_to_body rot = w_rot^T
-        let fw = vec3<f32>(0.0, 0.0, f_z);
-        // w_rot is body-to-world, so world-to-body is transpose
-        let fb = vec3<f32>(
-            w_rot[i][0]*fw.x + w_rot[i][3]*fw.y + w_rot[i][6]*fw.z,
-            w_rot[i][1]*fw.x + w_rot[i][4]*fw.y + w_rot[i][7]*fw.z,
-            w_rot[i][2]*fw.x + w_rot[i][5]*fw.y + w_rot[i][8]*fw.z
-        );
-
-        // Write to ext_forces: [angular(3), linear(3)]
-        // Torque from contact point offset (simplified: at body origin)
-        let ef_base = ef_env_base + i * 6u;
-        // Angular part: r × f where r is from body COM to contact point
-        // Simplified: assume contact at body lowest point
-        ext_forces[ef_base + 3u] += fb.x;
-        ext_forces[ef_base + 4u] += fb.y;
-        ext_forces[ef_base + 5u] += fb.z;
-
-        // Contact state for readback (world frame). The contact point sits on
-        // the ground plane, not at the shape's lowest point: min_z is below
-        // the plane by exactly `penetration` whenever there is contact at all,
-        // and the depth is already reported in its own slot.
+        // Contact state for readback (world frame): the deepest point, on
+        // the ground surface, and the body's TOTAL contact force, so a box
+        // resting on four corners reports the load it actually carries
+        // rather than one corner's share.
         contact_state[cs_base]      = 1.0;
-        contact_state[cs_base + 1u] = penetration;
-        contact_state[cs_base + 2u] = cx;
-        contact_state[cs_base + 3u] = cy;
-        contact_state[cs_base + 4u] = cparams.ground_height;
-        contact_state[cs_base + 5u] = 0.0;
-        contact_state[cs_base + 6u] = 0.0;
-        contact_state[cs_base + 7u] = f_z;
+        contact_state[cs_base + 1u] = deepest;
+        contact_state[cs_base + 2u] = deepest_w.x;
+        contact_state[cs_base + 3u] = deepest_w.y;
+        contact_state[cs_base + 4u] = deepest_w.z;
+        contact_state[cs_base + 5u] = f_w_total.x;
+        contact_state[cs_base + 6u] = f_w_total.y;
+        contact_state[cs_base + 7u] = f_w_total.z;
+    }
+
+    // ── Body-attached contact plane (the deck's top face) ──
+    //
+    // Same penalty model as the ground, two differences: the plane moves
+    // with its body, and the reaction lands on that body — a deck that felt
+    // no rider could never be kicked out from under one.
+    //
+    // Deliberately NOT general body-body contact. The plane is the body's
+    // local +Z face at `offset`, infinite in extent; a foot only ever meets
+    // a deck's top face, and an infinite moving plane captures that at a
+    // fraction of a broad phase's cost.
+    //
+    // Contacts here are not written to contact_state: those slots are
+    // per-body and already hold the ground result, and a foot on a deck
+    // would otherwise overwrite the ground reading with a different surface.
+    if (cparams.plane_body >= 0) {
+        let pb = u32(cparams.plane_body);
+        // Plane frame in world. w_rot is body→world, so the body's local +Z
+        // in world coordinates is rot_mul.
+        let n_w = rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, 1.0));
+        let p0_w = w_pos[pb] + rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, cparams.plane_offset));
+
+        for (var i = 0u; i < nb; i++) {
+            if (i == pb) { continue; }
+            let gbase = i * GEOM_STRIDE;
+            let gtype = u32(geometry[gbase]);
+            if (gtype == 0u) { continue; }
+            if (geometry[gbase + 7u] != 0.0) { continue; }
+
+            let n_body = rot_t_mul(w_rot[i], n_w);
+            var n_pts = 1u;
+            var pt_scale = 1.0;
+            if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+
+            for (var cpt = 0u; cpt < n_pts; cpt++) {
+                var support: vec3<f32>;
+                if (gtype == 2u) { support = box_corner(i, cpt); }
+                else { support = support_point(i, n_body); }
+                let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
+                let penetration = -dot(sup_w - p0_w, n_w);
+                // The upper bound guards a body approaching from BELOW an
+                // infinite plane against being captured and catapulted through.
+                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
+
+                // Relative velocity of the two material points at the contact,
+                // world frame. Body-frame spatial velocities rotate out with
+                // rot_mul, matching the FK convention above.
+                let v_i_w = rot_mul(w_rot[i], w_lin[i] + cross3(w_omega[i], support));
+                let r_p = rot_t_mul(w_rot[pb], sup_w - w_pos[pb]);
+                let v_p_w = rot_mul(w_rot[pb], w_lin[pb] + cross3(w_omega[pb], r_p));
+                let v_rel = v_i_w - v_p_w;
+                let v_normal = dot(v_rel, n_w);
+
+                let k_body = pt_scale * geometry[gbase + 8u];
+                let d_body = pt_scale * geometry[gbase + 9u];
+                let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
+
+                let v_tan = v_rel - n_w * v_normal;
+                let vt = length(v_tan);
+                var f_w = n_w * f_n;
+                if (vt > 1e-6) {
+                    f_w = f_w - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+                }
+
+                // Action on the touching body, in its own frame.
+                let f_i = rot_t_mul(w_rot[i], f_w);
+                let torque_i = cross3(support, f_i);
+                let ef_i = ef_env_base + i * 6u;
+                ext_forces[ef_i + 0u] += torque_i.x;
+                ext_forces[ef_i + 1u] += torque_i.y;
+                ext_forces[ef_i + 2u] += torque_i.z;
+                ext_forces[ef_i + 3u] += f_i.x;
+                ext_forces[ef_i + 4u] += f_i.y;
+                ext_forces[ef_i + 5u] += f_i.z;
+
+                // Equal and opposite on the plane's body, at the same point.
+                let f_p = rot_t_mul(w_rot[pb], -f_w);
+                let torque_p = cross3(r_p, f_p);
+                let ef_p = ef_env_base + pb * 6u;
+                ext_forces[ef_p + 0u] += torque_p.x;
+                ext_forces[ef_p + 1u] += torque_p.y;
+                ext_forces[ef_p + 2u] += torque_p.z;
+                ext_forces[ef_p + 3u] += f_p.x;
+                ext_forces[ef_p + 4u] += f_p.y;
+                ext_forces[ef_p + 5u] += f_p.z;
+            }
+        }
     }
 }
 "#;
@@ -361,7 +659,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// One thread per (environment, joint) pair, so joints in the same environment
 /// touch disjoint `q`/`v` ranges and no synchronisation is needed.
 pub const INTEGRATE_SHADER: &str = r#"
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -484,7 +782,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// (4, 6 DOF) joints. One thread per environment, serial tree traversal within.
 /// Bodies must be topologically sorted (parent index < child index).
 ///
-/// Body data layout: 32 f32 values per body (BODY_STRIDE):
+/// Body data layout: 36 f32 values per body (BODY_STRIDE):
 ///   `[0]`  parent (bitcast i32, -1 for root)
 ///   `[1]`  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
 ///   `[2]`  q_offset
@@ -496,10 +794,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ///   [23..26] ptj translation (x,y,z)
 ///   [26..29] axis (x,y,z)
 ///   `[29]` damping
-///   [30..32] padding
+///   `[30]` passive spring stiffness, `[31]` spring reference angle
+///   `[32]` armature (rotor inertia)
+///   [33..36] padding
 pub const ABA_GENERAL_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -1121,6 +1421,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         if (jtype == 2u) {
             // Fixed joint: just propagate to parent
@@ -1128,8 +1430,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_t = transpose6(&x_mot);
-                var ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
-                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                // Local copies, not pointers into the array: naga's SPIR-V
+                // backend never caches `&arr[dynamic_index]` passed to a
+                // function (gfx-rs/wgpu#7315) and panics at write time. The
+                // Metal backend accepted it, which is why this only surfaced
+                // on the first Vulkan machine.
+                var ia_self = i_a[i];
+                var ia_parent = m6_XtAX(&x_mot_t, &ia_self, &x_mot);
+                var ia_pi = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi, &ia_parent);
                 let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_parent);
             }
@@ -1152,6 +1461,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
         }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
+        }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);
             for (var c = 0u; c < ndof; c++) {
@@ -1161,7 +1477,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         // A singular articulated inertia means the joint carries no effective
@@ -1171,8 +1491,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_st = transpose6(&x_mot_s);
-                var ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
-                i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                var ia_self_s = i_a[i];
+                var ia_par_s = m6_XtAX(&x_mot_st, &ia_self_s, &x_mot_s);
+                var ia_pi_s = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi_s, &ia_par_s);
                 let p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_par_s);
             }
@@ -1220,7 +1542,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
             var x_mot_t = transpose6(&x_mot);
             var ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
-            i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+            var ia_pi_w = i_a[pi];
+            i_a[pi] = m6_add(&ia_pi_w, &ia_parent);
 
             let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_new);
             p_a[pi] = sv_add(p_a[pi], p_parent);
@@ -1234,6 +1557,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         var a_parent: array<f32, 6>;
         if (parent < 0) {
@@ -1266,6 +1591,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
         }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
+        }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);
             for (var c = 0u; c < ndof; c++) {
@@ -1275,7 +1607,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         if (!invert_small(&d_mat, ndof)) {
