@@ -310,18 +310,35 @@ impl GpuBatchSimulator {
         damp_ratio: f64,
         friction: f64,
     ) -> Result<(), String> {
-        let pipeline = ContactPipeline::new(
-            &self.device,
-            &self.queue,
-            &self.model,
-            &self.state,
-            &self.bodies_buffer,
+        self.enable_ground_contact_with_plane(
             crate::contact_pipeline::GroundContactParams {
                 ground_height,
                 time_const,
                 damp_ratio,
                 friction,
             },
+            None,
+        )
+    }
+
+    /// [`Self::enable_ground_contact`] plus an optional body-attached contact
+    /// plane (see [`crate::contact_pipeline::BodyPlane`]) — the deck a rider
+    /// stands on. One compute pass handles both: the same FK feeds the ground
+    /// test and the plane test, and forces land on both the touching body and
+    /// the plane's body.
+    pub fn enable_ground_contact_with_plane(
+        &mut self,
+        contact: crate::contact_pipeline::GroundContactParams,
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+    ) -> Result<(), String> {
+        let pipeline = ContactPipeline::new(
+            &self.device,
+            &self.queue,
+            &self.model,
+            &self.state,
+            &self.bodies_buffer,
+            contact,
+            plane,
         )?;
         self.contact_pipeline = Some(pipeline);
         Ok(())

@@ -20,7 +20,10 @@ struct ContactParams {
     time_const: f32,
     damp_ratio: f32,
     friction: f32,
-    _padding: f32,
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
+    _padding: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -104,6 +107,43 @@ fn rot_compose(a: array<f32, 9>, b: array<f32, 9>) -> array<f32, 9> {
         }
     }
     return r;
+}
+
+// Support point of body i's shape in the direction of -n_body (n_body is a
+// unit vector in the body's own frame): the point of the shape that reaches
+// furthest against the normal. A rotated box touches down on a corner, not
+// the centre of a face.
+fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
+    let gtype = u32(geometry[i * GEOM_STRIDE]);
+    var support = vec3<f32>(0.0, 0.0, 0.0);
+    if (gtype == 1u) {
+        let radius = geometry[i * GEOM_STRIDE + 1u];
+        support = -n_body * radius;
+    } else if (gtype == 2u) {
+        let h = vec3<f32>(
+            geometry[i * GEOM_STRIDE + 1u],
+            geometry[i * GEOM_STRIDE + 2u],
+            geometry[i * GEOM_STRIDE + 3u]
+        );
+        support = vec3<f32>(
+            -h.x * sign(n_body.x),
+            -h.y * sign(n_body.y),
+            -h.z * sign(n_body.z)
+        );
+    } else if (gtype == 3u) {
+        let radius = geometry[i * GEOM_STRIDE + 1u];
+        let half_len = geometry[i * GEOM_STRIDE + 2u] * 0.5;
+        support = vec3<f32>(0.0, 0.0, -half_len * sign(n_body.z)) - n_body * radius;
+    } else if (gtype == 4u) {
+        let radius = geometry[i * GEOM_STRIDE + 1u];
+        let half_h = geometry[i * GEOM_STRIDE + 2u] * 0.5;
+        let radial = vec3<f32>(-n_body.x, -n_body.y, 0.0);
+        let rl = length(radial);
+        var rim = vec3<f32>(0.0, 0.0, 0.0);
+        if (rl > 1e-6) { rim = radial / rl * radius; }
+        support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n_body.z));
+    }
+    return support;
 }
 
 @compute @workgroup_size(64)
@@ -216,40 +256,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // CPU contact model (which returns r x f and f in the body frame).
         let n_body = rot_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
-        // Support point of the shape in the -Z world direction, in body
-        // coordinates. A rotated box touches down on a corner, not on the
-        // centre of a face — using pos.z - half_z assumes the body never
-        // tilts, which is false for every foot on a walking robot.
-        var support = vec3<f32>(0.0, 0.0, 0.0);
-        if (gtype == 1u) {
-            let radius = geometry[i * GEOM_STRIDE + 1u];
-            support = -n_body * radius;
-        } else if (gtype == 2u) {
-            let h = vec3<f32>(
-                geometry[i * GEOM_STRIDE + 1u],
-                geometry[i * GEOM_STRIDE + 2u],
-                geometry[i * GEOM_STRIDE + 3u]
-            );
-            support = vec3<f32>(
-                -h.x * sign(n_body.x),
-                -h.y * sign(n_body.y),
-                -h.z * sign(n_body.z)
-            );
-        } else if (gtype == 3u) {
-            let radius = geometry[i * GEOM_STRIDE + 1u];
-            let half_len = geometry[i * GEOM_STRIDE + 2u] * 0.5;
-            // Lower cap centre along the body Z axis, then the sphere.
-            support = vec3<f32>(0.0, 0.0, -half_len * sign(n_body.z)) - n_body * radius;
-        } else if (gtype == 4u) {
-            let radius = geometry[i * GEOM_STRIDE + 1u];
-            let half_h = geometry[i * GEOM_STRIDE + 2u] * 0.5;
-            // Exact cylinder support: the rim, unless the axis is vertical.
-            let radial = vec3<f32>(-n_body.x, -n_body.y, 0.0);
-            let rl = length(radial);
-            var rim = vec3<f32>(0.0, 0.0, 0.0);
-            if (rl > 1e-6) { rim = radial / rl * radius; }
-            support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n_body.z));
-        }
+        let support = support_point(i, n_body);
 
         // World height of that support point.
         let min_z = w_pos[i].z + dot(rot_t_mul(w_rot[i], support), vec3<f32>(0.0, 0.0, 1.0));
@@ -294,6 +301,78 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ext_forces[ef_base + 3u] += f_body.x;
         ext_forces[ef_base + 4u] += f_body.y;
         ext_forces[ef_base + 5u] += f_body.z;
+    }
+
+    // ── Body-attached contact plane (the deck's top face) ──
+    //
+    // Same penalty model as the ground, two differences: the plane moves
+    // with its body, and the reaction lands on that body — a deck that felt
+    // no rider could never be kicked out from under one.
+    if (cparams.plane_body >= 0) {
+        let pb = u32(cparams.plane_body);
+        // Plane frame in world coordinates. w_rot maps world → body, so a
+        // body axis expressed in world is a row of w_rot (rot_mul).
+        let n_w = rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, 1.0));
+        let p0_w = w_pos[pb] + rot_t_mul(w_rot[pb], vec3<f32>(0.0, 0.0, cparams.plane_offset));
+
+        for (var i = 0u; i < nb; i++) {
+            if (i == pb) { continue; }
+            let gtype = u32(geometry[i * GEOM_STRIDE]);
+            if (gtype == 0u) { continue; }
+            if (geometry[i * GEOM_STRIDE + 4u] != 0.0) { continue; }
+
+            // Plane normal in body i's frame; deepest point against it.
+            let n_body = rot_mul(w_rot[i], n_w);
+            let support = support_point(i, n_body);
+            let sup_w = w_pos[i] + rot_t_mul(w_rot[i], support);
+            let penetration = -dot(sup_w - p0_w, n_w);
+            if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
+
+            // Relative velocity of the two material points at the contact,
+            // world frame. Body-frame spatial velocities rotate out with
+            // rot_t_mul, matching the FK convention above.
+            let v_i_w = rot_t_mul(w_rot[i], w_lin[i] + cross3(w_omega[i], support));
+            let r_p = rot_mul(w_rot[pb], sup_w - w_pos[pb]);
+            let v_p_w = rot_t_mul(w_rot[pb], w_lin[pb] + cross3(w_omega[pb], r_p));
+            let v_rel = v_i_w - v_p_w;
+            let v_normal = dot(v_rel, n_w);
+
+            // Mass-derived penalty, same recipe and reasons as the ground.
+            let mass = bf(i, 4u);
+            if (mass <= 0.0) { continue; }
+            let k = mass / (cparams.time_const * cparams.time_const);
+            let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
+            let f_n = max(k * penetration - d * v_normal, 0.0);
+
+            let v_tan = v_rel - n_w * v_normal;
+            let vt = length(v_tan);
+            var f_w = n_w * f_n;
+            if (vt > 1e-6) {
+                f_w = f_w - (v_tan / vt) * min(cparams.friction * f_n, d * vt);
+            }
+
+            // Action on the touching body, in its own frame.
+            let f_i = rot_mul(w_rot[i], f_w);
+            let torque_i = cross3(support, f_i);
+            let ef_i = ef_env_base + i * 6u;
+            ext_forces[ef_i + 0u] += torque_i.x;
+            ext_forces[ef_i + 1u] += torque_i.y;
+            ext_forces[ef_i + 2u] += torque_i.z;
+            ext_forces[ef_i + 3u] += f_i.x;
+            ext_forces[ef_i + 4u] += f_i.y;
+            ext_forces[ef_i + 5u] += f_i.z;
+
+            // Equal and opposite on the plane's body, at the same point.
+            let f_p = rot_mul(w_rot[pb], -f_w);
+            let torque_p = cross3(r_p, f_p);
+            let ef_p = ef_env_base + pb * 6u;
+            ext_forces[ef_p + 0u] += torque_p.x;
+            ext_forces[ef_p + 1u] += torque_p.y;
+            ext_forces[ef_p + 2u] += torque_p.z;
+            ext_forces[ef_p + 3u] += f_p.x;
+            ext_forces[ef_p + 4u] += f_p.y;
+            ext_forces[ef_p + 5u] += f_p.z;
+        }
     }
 }
 "#;

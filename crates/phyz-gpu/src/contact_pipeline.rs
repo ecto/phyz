@@ -20,7 +20,10 @@ struct ContactParams {
     time_const: f32,
     damp_ratio: f32,
     friction: f32,
-    _padding: f32,
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
+    _padding: [f32; 2],
 }
 
 /// Packed geometry data per body (8 f32 values).
@@ -30,7 +33,8 @@ struct ContactParams {
 /// [1]  param0 (radius for sphere/capsule/cylinder, half_x for box)
 /// [2]  param1 (length for capsule, half_y for box, height for cylinder)
 /// [3]  param2 (half_z for box)
-/// [4..8] reserved
+/// [4]  skip-plane flag (1.0 = this body never contacts the attached plane)
+/// [5..8] reserved
 /// ```
 const GEOM_STRIDE: usize = 8;
 
@@ -52,6 +56,30 @@ pub struct ContactPipeline {
 /// while every value at or below 1e3 was too soft to carry the robot (the
 /// torso). Per-body `k = m/tc^2` gives every body the same natural frequency
 /// `1/tc`, so stability depends on `dt/tc` and nothing else.
+/// A contact plane welded to a body: the deck of a skateboard, the bed of a
+/// truck, any flat top surface other bodies stand on.
+///
+/// This is deliberately NOT general body-body contact. The plane is the
+/// body's local `+Z` face at `offset` along local Z, infinite in extent; a
+/// foot only ever meets a deck's top face, and an infinite moving plane
+/// captures that at a fraction of a broad-phase's cost. Forces are applied
+/// to **both** bodies — the board must feel the rider or it cannot be
+/// kicked out from under one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyPlane {
+    /// Body index the plane is attached to.
+    pub body: usize,
+    /// Face offset along the body's local `+Z`, metres (deck half-thickness).
+    pub offset: f64,
+    /// Penetration beyond which the contact is ignored, metres. Guards a
+    /// body approaching from *below* the infinite plane against being
+    /// captured and catapulted through it.
+    pub max_depth: f64,
+    /// Bodies that never contact the plane (the plane body itself is always
+    /// excluded): wheels and hangers under a deck, for instance.
+    pub exclude: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundContactParams {
     /// Height of the ground plane along the gravity axis.
@@ -75,6 +103,7 @@ impl ContactPipeline {
         state: &GpuState,
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
+        plane: Option<&BodyPlane>,
     ) -> Result<Self, String> {
         let GroundContactParams {
             ground_height,
@@ -88,6 +117,11 @@ impl ContactPipeline {
             ));
         }
         let nworld = state.nworld;
+        if let Some(p) = plane {
+            if p.body >= model.nbodies() {
+                return Err(format!("plane body {} out of range", p.body));
+            }
+        }
 
         // Pack contact params
         let params = ContactParams {
@@ -98,7 +132,10 @@ impl ContactPipeline {
             time_const: time_const as f32,
             damp_ratio: damp_ratio as f32,
             friction: friction as f32,
-            _padding: 0.0,
+            plane_body: plane.map_or(-1, |p| p.body as i32),
+            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
+            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
+            _padding: [0.0; 2],
         };
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -110,7 +147,12 @@ impl ContactPipeline {
         queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
         // Pack geometry data
-        let geom_data = pack_geometries(model)?;
+        let mut geom_data = pack_geometries(model)?;
+        if let Some(p) = plane {
+            for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
+                geom_data[b * GEOM_STRIDE + 4] = 1.0;
+            }
+        }
         let geom_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("geometry_buffer"),
             size: (geom_data.len() * std::mem::size_of::<f32>()).max(4) as u64,
