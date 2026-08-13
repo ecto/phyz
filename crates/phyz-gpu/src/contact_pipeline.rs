@@ -201,14 +201,20 @@ pub struct BodyPlane {
     /// Half-extents of the face in the body's own x/y, metres. The plane
     /// only supports what is actually over it.
     ///
-    /// It used to be infinite, which is harmless while the surface is level
-    /// and a lie the moment it pitches: measured on a skateboard pop, a foot
-    /// out past the nose still pressed down through the phantom part of the
-    /// plane and fought the rotation — the GPU produced 14 deg of nose lift
-    /// and 11 mm of rise where the CPU impulse solver produced 22 deg and
-    /// 68 mm. Set these to the deck's half-extents and the phantom support
-    /// disappears.
+    /// A shape's contact points are clamped into the overlap between its own
+    /// footprint and this rectangle, and a shape with no overlap at all gets
+    /// no contact and falls. Clamping rather than discarding is deliberate: a
+    /// deck narrower than a foot still carries that foot, along its edge. The
+    /// K1's foot is 22 cm across a 19.7 cm deck — feet point ACROSS a board,
+    /// so toes and heel overhang, as a real skater's do — and simply dropping
+    /// the overhanging corners deletes the whole roll support. Measured, that
+    /// took standing from 3.00 s to 0.8 s in every stance.
+    ///
+    /// The footprint is an AABB in face coordinates: exact while the shape is
+    /// aligned with the face, a slight over-estimate under yaw.
     pub half_x: f64,
+    /// Half-extent of the face along the body's own `y`, metres. See
+    /// [`Self::half_x`].
     pub half_y: f64,
     /// Bodies that never contact the plane (the plane body itself is always
     /// excluded): wheels and hangers under a deck, for instance.
