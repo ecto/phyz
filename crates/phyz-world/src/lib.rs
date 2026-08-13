@@ -23,7 +23,7 @@ pub mod world;
 
 pub use generator::WorldGenerator;
 pub use scene::{Obstacle, PlacedShape, Scene, ShapeOwner};
-pub use sensor::{RangeHit, Sensor, SensorContext, SensorOutput};
+pub use sensor::{CameraIntrinsics, RangeHit, Sensor, SensorContext, SensorOutput};
 pub use tendon::Tendon;
 pub use trajectory::TrajectoryRecorder;
 pub use world::World;

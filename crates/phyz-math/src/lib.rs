@@ -13,7 +13,7 @@ pub struct ReadmeDocTests;
 
 pub mod spatial;
 
-pub use spatial::{SpatialInertia, SpatialMat, SpatialTransform, SpatialVec};
+pub use spatial::{SpatialInertia, SpatialMat, SpatialTransform, SpatialTransformExt, SpatialVec};
 
 /// Unit quaternion for 3D rotations (scalar `w`, vector `v`).
 pub type Quat = tang::Quat<f64>;

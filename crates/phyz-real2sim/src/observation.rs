@@ -1,5 +1,6 @@
 //! Observation adapters for extracting different types of data from simulation.
 
+use phyz_math::SpatialTransformExt;
 use phyz_model::{Model, State};
 
 /// Trait for adapters that extract observations from simulation state.
@@ -125,9 +126,12 @@ impl ObservationAdapter for CenterOfMassObserver {
         for (i, body) in model.bodies.iter().enumerate() {
             if i < state.body_xform.len() {
                 let mass = body.inertia.mass;
-                // Transform COM from body frame to world frame
+                // Transform COM from body frame to world frame. `rot` is
+                // world→body, so this must be the named body→world method —
+                // `rot * com + pos` applied the rotation the wrong way and made
+                // this observer wrong for any rotated body.
                 let body_xform = &state.body_xform[i];
-                let com_world = body_xform.rot * body.inertia.com + body_xform.pos;
+                let com_world = body_xform.body_to_world_point(body.inertia.com);
 
                 total_mass += mass;
                 com[0] += mass * com_world.x;
@@ -208,6 +212,42 @@ mod tests {
         assert_eq!(observer.output_dim(), 3);
         // Angular velocity should be along Z axis
         assert!((obs[2] - 1.0).abs() < 1e-10);
+    }
+
+    /// A rotated body's CoM must be mapped body→world, not world→body.
+    ///
+    /// The old code used `rot * com + pos`, which applies the world→body
+    /// rotation to a body-frame offset — wrong for any rotated body, and
+    /// invisible in every prior test because they all observe unrotated
+    /// states. A CoM offset of (0, -0.5, 0) under a 90-degree yaw must land at
+    /// (-0.5, 0, 0)-ish in world, and under the old convention it landed
+    /// mirrored at (+0.5, 0, 0).
+    #[test]
+    fn test_center_of_mass_observer_on_a_rotated_body() {
+        use phyz_math::Quat;
+
+        let model = make_pendulum();
+        let mut state = model.default_state();
+
+        // World→body rotation for a body physically yawed +90 degrees.
+        let yaw = std::f64::consts::FRAC_PI_2;
+        state.body_xform[0] = SpatialTransform {
+            rot: Quat::from_axis_angle(Vec3::z(), -yaw).to_matrix(),
+            pos: Vec3::zeros(),
+        };
+
+        let obs = CenterOfMassObserver.extract(&state, &model);
+
+        // Body-frame CoM (0, -0.5, 0) under R_z(+90 deg): (0.5, 0, 0).
+        assert!(
+            (obs[0] - 0.5).abs() < 1e-12 && obs[1].abs() < 1e-12,
+            "rotated CoM observed at ({}, {}, {}) — expected (0.5, 0, 0); a \
+             mirrored sign here means the world\u{2192}body rotation is being \
+             applied to a body-frame offset again",
+            obs[0],
+            obs[1],
+            obs[2]
+        );
     }
 
     #[test]

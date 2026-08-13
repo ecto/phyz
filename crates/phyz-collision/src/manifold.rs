@@ -31,8 +31,8 @@
 //! functions of the configuration. This is the same approximation MuJoCo and
 //! Dojo make; see `docs/design/differentiable-contact.md` §4.4.
 
-use crate::epa::epa_penetration_rot;
 use crate::geometry::Geometry;
+use crate::gjk::GjkOutcome;
 use phyz_math::{Mat3, Vec3};
 
 /// Upper bound on points retained per manifold.
@@ -72,8 +72,79 @@ pub fn contact_manifold(
     geom_b_pos: &Vec3,
     rot_b: &Mat3,
 ) -> Option<Manifold> {
+    contact_manifold_within(geom_a, geom_b, pos_a, rot_a, geom_b_pos, rot_b, 0.0)
+}
+
+/// Build a contact manifold, including for pairs separated by less than
+/// `margin`.
+///
+/// # Why a separated manifold is worth building
+///
+/// Contact here is *soft*: a pair at exactly zero distance still carries
+/// impedance `solimp.dmin` (0.9 by default), so it holds nearly its full share
+/// of the load right up to the instant it stops existing. With a hard cutoff
+/// the contact set jumps underneath the solver. `find_ground_contacts` has had
+/// a margin for exactly this reason, and the measured consequence of *not*
+/// having one on the body-body path was not subtle: a limb pinched between two
+/// bodies chattered instead of settling, which bounded the poses, the drop
+/// heights and the timestep a humanoid simulation could use.
+///
+/// Within the band a point is reported with a **negative** `depth` equal to
+/// minus its gap, and `phyz_contact::ContactMaterial::impedance_at` then
+/// tapers its impedance — and hence its force — smoothly to zero at the band
+/// edge. Separated contacts
+/// get no stabilization bias and cannot pull, so this buys continuity without
+/// buying adhesion.
+///
+/// # How
+///
+/// Both branches need one thing: a separating normal pointing from `a` toward
+/// `b`. Overlapping, EPA supplies it. Separated, it is `−v̂` where `v` is the
+/// closest point of the Minkowski difference to the origin — a quantity GJK
+/// already converges on and used to discard ([`GjkOutcome::Separated::closest`]).
+/// With the normal in hand the *same* face-clipping path serves both, so a
+/// separated box pair gets a real four-point manifold rather than a single
+/// witness point, and the manifold does not change shape as the pair crosses
+/// into contact.
+pub fn contact_manifold_within(
+    geom_a: &Geometry,
+    geom_b: &Geometry,
+    pos_a: &Vec3,
+    rot_a: &Mat3,
+    geom_b_pos: &Vec3,
+    rot_b: &Mat3,
+    margin: f64,
+) -> Option<Manifold> {
     let pos_b = geom_b_pos;
-    let (depth, normal) = epa_penetration_rot(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b)?;
+    let margin = if margin.is_finite() {
+        margin.max(0.0)
+    } else {
+        0.0
+    };
+
+    let (depth, normal) = match crate::gjk::gjk_rot(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b) {
+        GjkOutcome::Penetrating { simplex } => {
+            crate::epa::epa_from_simplex(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, &simplex)?
+        }
+        GjkOutcome::Separated { distance, closest } => {
+            // Strictly inside the band: at exactly `margin` the impedance has
+            // already tapered to zero, so excluding it is a no-op rather than
+            // a step. A non-finite distance is refused rather than admitted —
+            // spelled out because the negated comparison that says the same
+            // thing reads as a typo.
+            if distance.is_nan() || distance >= margin {
+                return None;
+            }
+            let n = closest.norm();
+            if n < 1e-12 {
+                // Touching exactly, with no direction to be had. EPA owns the
+                // overlapping side; refuse rather than guess a normal.
+                return None;
+            }
+            (-distance, -closest / n)
+        }
+        GjkOutcome::Indeterminate => return None,
+    };
     if !depth.is_finite() || !is_finite(&normal) || normal.norm() < 0.5 {
         return None;
     }
@@ -84,7 +155,7 @@ pub fn contact_manifold(
     let face_b = support_face(geom_b, pos_b, rot_b, &(-normal));
 
     let points = match (face_a, face_b) {
-        (Some(ref_face), Some(inc_face)) => clip_faces(&ref_face, &inc_face, &normal)
+        (Some(ref_face), Some(inc_face)) => clip_faces(&ref_face, &inc_face, &normal, margin)
             .unwrap_or_else(|| {
                 vec![single_point(
                     geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
@@ -134,6 +205,12 @@ struct Face {
     verts: Vec<Vec3>,
     /// Outward unit normal.
     normal: Vec3,
+    /// A point known to lie on the face's plane. For a bounded polygon this is
+    /// just `verts[0]`; for an unbounded plane it is the only datum available,
+    /// and without it the clipper had to guess a datum from the *incident*
+    /// polygon, which made every depth relative and therefore always zero at
+    /// the deepest vertex.
+    point: Vec3,
 }
 
 /// The face of `geom` whose outward normal is most aligned with `dir`.
@@ -150,6 +227,7 @@ fn support_face(geom: &Geometry, pos: &Vec3, rot: &Mat3, dir: &Vec3) -> Option<F
             Some(Face {
                 verts: Vec::new(),
                 normal: n,
+                point: *pos,
             })
         }
         // Sphere: no flat face anywhere. Capsule/cylinder: flat only on the
@@ -193,12 +271,22 @@ fn box_support_face(half_extents: &Vec3, pos: &Vec3, rot: &Mat3, dir: &Vec3) -> 
     n_local[axis] = sign;
     let normal = (*rot * Vec3::new(n_local[0], n_local[1], n_local[2])).normalize();
 
-    Face { verts, normal }
+    let point = verts[0];
+    Face {
+        verts,
+        normal,
+        point,
+    }
 }
 
 /// Clip the incident polygon against the reference face's side planes and keep
 /// the vertices that lie inside the reference surface.
-fn clip_faces(reference: &Face, incident: &Face, normal: &Vec3) -> Option<Vec<ManifoldPoint>> {
+fn clip_faces(
+    reference: &Face,
+    incident: &Face,
+    normal: &Vec3,
+    margin: f64,
+) -> Option<Vec<ManifoldPoint>> {
     if incident.verts.is_empty() {
         // Incident is an infinite plane — swap roles is not meaningful here.
         return None;
@@ -238,24 +326,17 @@ fn clip_faces(reference: &Face, incident: &Face, normal: &Vec3) -> Option<Vec<Ma
     }
 
     // Reference plane offset along the shared normal.
-    let ref_point = if reference.verts.is_empty() {
-        // Infinite plane: its own supporting point is unknown here, so use the
-        // deepest incident vertex as the datum and measure relative depth.
-        *poly
-            .iter()
-            .min_by(|p, q| p.dot(normal).total_cmp(&q.dot(normal)))?
-    } else {
-        reference.verts[0]
-    };
+    let ref_point = reference.point;
 
     let out: Vec<ManifoldPoint> = poly
         .iter()
         .filter_map(|p| {
             // Separation of the incident vertex from the reference plane,
             // measured along the contact normal. Negative separation is
-            // penetration.
+            // penetration; a positive separation up to `margin` is a gap
+            // inside the band and is kept, with a negative depth.
             let sep = (p - ref_point).dot(normal);
-            if sep > 1e-9 {
+            if sep > margin.max(1e-9) {
                 return None;
             }
             Some(ManifoldPoint {

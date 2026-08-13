@@ -6,6 +6,20 @@ use phyz_model::{Model, State};
 /// Compute the joint-space mass matrix M(q) using CRBA.
 ///
 /// Returns an nv x nv symmetric positive-definite matrix.
+///
+/// # Armature
+///
+/// [`phyz_model::Joint::armature`] (MuJoCo's rotor inertia) is added to the
+/// diagonal, exactly as [`aba`](fn@crate::aba) adds it to `D = Sᵀ Iᴬ S`. It has
+/// to be:
+/// the contact solver builds its Delassus operator `J M⁻¹ Jᵀ` from *this*
+/// matrix, so if CRBA omitted the armature that ABA applies, contact would be
+/// solved against a lighter system than the dynamics then integrate. It used
+/// to be omitted here.
+///
+/// Note that ABA's *other* diagonal term, `dt · damping`, is deliberately not
+/// added: that is an implicit-integration artifact, not inertia, and belongs
+/// to the integrator rather than to `M(q)`.
 pub fn crba(model: &Model, state: &State) -> DMat {
     let nb = model.nbodies();
     let mut mass_matrix = DMat::zeros(model.nv, model.nv);
@@ -129,6 +143,13 @@ pub fn crba(model: &Model, state: &State) -> DMat {
                 }
             }
         }
+    }
+
+    // Armature: rotor inertia on the diagonal. Keep this in step with the
+    // `armature[..]` term in `aba`/`aba_with_external_forces`.
+    let armature = crate::actuation::armature_diag(model);
+    for i in 0..model.nv {
+        mass_matrix[(i, i)] += armature[i];
     }
 
     mass_matrix

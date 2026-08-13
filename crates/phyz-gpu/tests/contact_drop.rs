@@ -40,12 +40,12 @@ fn gpu_contact_stops_a_dropped_box() {
         sim.step();
         if i % 500 == 499 {
             let s = sim.readback_states();
-            eprintln!("step {i}: z = {:.4}", s[0].q.as_slice()[2]);
+            eprintln!("step {i}: z = {:.4}", s[0].q.as_slice()[5]);
         }
     }
 
     let s = sim.readback_states();
-    let z = s[0].q.as_slice()[2];
+    let z = s[0].q.as_slice()[5];
     assert!(z.is_finite(), "contact produced NaN");
 
     // The box spawns at world z = 1.0 and has a 0.1 m half-extent, so it

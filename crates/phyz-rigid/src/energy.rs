@@ -1,5 +1,6 @@
 //! Energy computation for rigid body systems.
 
+use phyz_math::SpatialTransformExt;
 use phyz_model::{Model, State};
 
 /// Compute kinetic energy: 0.5 * v^T * M(q) * v
@@ -21,7 +22,7 @@ pub fn potential_energy(model: &Model, state: &State) -> f64 {
 
         // Transform CoM to world frame
         let xf = &xforms[i];
-        let com_world = xf.rot.transpose() * com_local + xf.pos;
+        let com_world = xf.body_to_world_point(com_local);
 
         // PE = -m * g · r
         pe -= mass * model.gravity.dot(com_world);

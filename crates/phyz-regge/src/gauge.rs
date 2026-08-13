@@ -358,6 +358,46 @@ fn maxwell_action_grad_lengths_fd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+
+    /// A deterministic generator for the tests that need a perturbed mesh.
+    ///
+    /// These were written against `rand::thread_rng()`, which made them
+    /// unreproducible: every run drew a different mesh, and
+    /// `test_analytical_length_grad_vs_fd` failed roughly one run in eight
+    /// because some draws put an edge's finite-difference gradient near enough
+    /// to zero that a 1e-7 step could not resolve it to 1e-4 relative — while
+    /// still landing above the 1e-10 absolute escape hatch.
+    ///
+    /// A randomized check is the right instinct here; an *unrepeatable* one is
+    /// not. Seeding keeps the symmetry-breaking and makes a failure something
+    /// you can sit down and debug. Change the seed deliberately if you want to
+    /// sweep for new configurations — that is a decision, not an accident.
+    fn seeded(seed: u64) -> StdRng {
+        StdRng::seed_from_u64(seed)
+    }
+
+    /// Step size for the finite-difference reference gradient.
+    ///
+    /// Central differencing subtracts two nearly-equal actions and divides by
+    /// `2·h`, so its error is truncation (`~h²·S'''`) plus roundoff
+    /// (`~machine_eps·|S| / h`). Those balance at `h ≈ machine_eps^(1/3)`,
+    /// about 6e-6 for f64.
+    ///
+    /// This was 1e-7, which is far down the roundoff side of that balance: it
+    /// left the FD reference uncertain at the ~1e-9 level, so components near
+    /// zero could not be resolved to 1e-4 relative no matter how correct the
+    /// analytical gradient was. That is what made the test flaky. Raising the
+    /// step to 1e-5 drops the noise ~100× and lets the absolute escape hatch
+    /// stay tight, rather than widening the hatch to accommodate the noise.
+    const FD_STEP: f64 = 1e-5;
+
+    /// Smallest gradient component the finite difference can resolve at
+    /// [`FD_STEP`] — the absolute escape hatch for components near zero.
+    ///
+    /// Kept deliberately tight so a real regression in a small component still
+    /// fails the relative check.
+    const FD_NOISE_FLOOR: f64 = 1e-10;
     use crate::mesh;
 
     #[test]
@@ -380,8 +420,7 @@ mod tests {
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
         // Random phases → non-zero field strengths → positive action.
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0xA10E);
         let phases: Vec<f64> = (0..complex.n_edges())
             .map(|_| rng.r#gen::<f64>() * 0.1)
             .collect();
@@ -396,8 +435,7 @@ mod tests {
         // the field strength F_t should be invariant.
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = seeded(0x6A06);
         let phases: Vec<f64> = (0..complex.n_edges())
             .map(|_| rng.r#gen::<f64>() * 0.5)
             .collect();
@@ -441,64 +479,69 @@ mod tests {
     fn test_phase_gradient_vs_fd() {
         let (complex, lengths) = mesh::flat_hypercubic(2, 1.0);
 
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let phases: Vec<f64> = (0..complex.n_edges())
-            .map(|_| rng.r#gen::<f64>() * 0.1)
-            .collect();
+        for seed in [0x5EEDu64, 42, 99, 2024, 31337] {
+            let mut rng = seeded(seed);
+            let phases: Vec<f64> = (0..complex.n_edges())
+                .map(|_| rng.r#gen::<f64>() * 0.1)
+                .collect();
 
-        let grad = maxwell_action_grad_phases(&complex, &lengths, &phases);
+            let grad = maxwell_action_grad_phases(&complex, &lengths, &phases);
 
-        // Finite-difference check.
-        let eps = 1e-7;
-        let mut phases_work = phases.clone();
-        for i in 0..complex.n_edges().min(20) {
-            phases_work[i] = phases[i] + eps;
-            let sp = maxwell_action(&complex, &lengths, &phases_work);
-            phases_work[i] = phases[i] - eps;
-            let sm = maxwell_action(&complex, &lengths, &phases_work);
-            phases_work[i] = phases[i];
+            // Finite-difference check.
+            let mut phases_work = phases.clone();
+            for i in 0..complex.n_edges() {
+                phases_work[i] = phases[i] + FD_STEP;
+                let sp = maxwell_action(&complex, &lengths, &phases_work);
+                phases_work[i] = phases[i] - FD_STEP;
+                let sm = maxwell_action(&complex, &lengths, &phases_work);
+                phases_work[i] = phases[i];
 
-            let fd = (sp - sm) / (2.0 * eps);
-            assert!(
-                (grad[i] - fd).abs() < 1e-5,
-                "edge {i}: analytical={}, fd={}",
-                grad[i],
-                fd
-            );
+                let fd = (sp - sm) / (2.0 * FD_STEP);
+                assert!(
+                    (grad[i] - fd).abs() < 1e-5,
+                    "seed {seed:#x}, edge {i}: analytical={}, fd={}",
+                    grad[i],
+                    fd
+                );
+            }
         }
     }
 
     #[test]
     fn test_analytical_length_grad_vs_fd() {
         // Perturbed mesh with random phases — analytical should match FD.
-        let (complex, mut lengths) = mesh::flat_hypercubic(2, 1.0);
+        //
+        // An explicit list of seeds rather than one: a single seed only proves
+        // the gradient is right for a single mesh, and a failure names the seed
+        // that broke so it can be reproduced directly.
+        for seed in [0x1E46u64, 42, 99, 2024, 31337] {
+            let (complex, mut lengths) = mesh::flat_hypercubic(2, 1.0);
 
-        // Perturb lengths slightly to break symmetry.
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        for l in lengths.iter_mut() {
-            *l *= 1.0 + 0.05 * (rng.r#gen::<f64>() - 0.5);
-        }
+            // Perturb lengths slightly to break symmetry.
+            let mut rng = seeded(seed);
+            for l in lengths.iter_mut() {
+                *l *= 1.0 + 0.05 * (rng.r#gen::<f64>() - 0.5);
+            }
 
-        let phases: Vec<f64> = (0..complex.n_edges())
-            .map(|_| rng.r#gen::<f64>() * 0.3)
-            .collect();
+            let phases: Vec<f64> = (0..complex.n_edges())
+                .map(|_| rng.r#gen::<f64>() * 0.3)
+                .collect();
 
-        let grad_analytical = maxwell_action_grad_lengths(&complex, &lengths, &phases);
-        let grad_fd = maxwell_action_grad_lengths_fd(&complex, &lengths, &phases, 1e-7);
+            let grad_analytical = maxwell_action_grad_lengths(&complex, &lengths, &phases);
+            let grad_fd = maxwell_action_grad_lengths_fd(&complex, &lengths, &phases, FD_STEP);
 
-        for i in 0..complex.n_edges() {
-            let abs_err = (grad_analytical[i] - grad_fd[i]).abs();
-            let scale = grad_fd[i].abs().max(1e-12);
-            let rel_err = abs_err / scale;
-            assert!(
-                rel_err < 1e-4 || abs_err < 1e-10,
-                "edge {i}: analytical={}, fd={}, rel_err={}",
-                grad_analytical[i],
-                grad_fd[i],
-                rel_err
-            );
+            for i in 0..complex.n_edges() {
+                let abs_err = (grad_analytical[i] - grad_fd[i]).abs();
+                let scale = grad_fd[i].abs().max(1e-12);
+                let rel_err = abs_err / scale;
+                assert!(
+                    rel_err < 1e-4 || abs_err < FD_NOISE_FLOOR,
+                    "seed {seed:#x}, edge {i}: analytical={}, fd={}, rel_err={}",
+                    grad_analytical[i],
+                    grad_fd[i],
+                    rel_err
+                );
+            }
         }
     }
 }

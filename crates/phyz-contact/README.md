@@ -8,10 +8,18 @@ Penalty-based contact resolution on top of
 | Function | Purpose |
 | --- | --- |
 | `find_contacts` | body-body contacts from model geometry |
-| `find_ground_contacts` | contacts against a horizontal ground plane |
+| `find_ground_contacts` | contacts against a horizontal ground plane (one centred shape per body) |
+| `find_ground_contacts_model` | ground contacts over `Body::collisions` — every shape, offsets and orientations included |
 | `contact_forces` | explicit penalty wrenches |
 | `contact_forces_implicit` | semi-implicit variant, stable at larger `dt` |
 | `compute_contact_force`, `compute_contact_force_implicit` | single-contact kernels |
+
+The convex solve (`assemble` + `solve_contacts`) is what the stepper uses, and
+what supersedes the penalty functions above. It carries MuJoCo-style
+`solref`/`solimp` position stabilization, so penetration is repaid rather than
+frozen in place, combines the two contacting bodies' materials
+(`ContactMaterial::combine`), and warm starts from the previous step's impulses
+via `ContactCache`.
 
 `ContactMaterial` carries stiffness, damping and friction. The implicit form
 solves for the normal impulse that the next step will produce, rather than the
@@ -27,8 +35,12 @@ use phyz_contact::{ContactMaterial, contact_forces, find_ground_contacts};
 // `phyz_rigid::forward_kinematics` first.
 # fn demo(model: &phyz_model::Model, state: &phyz_model::State) {
 let geometries: Vec<_> = model.bodies.iter().map(|b| b.geometry.clone()).collect();
-let contacts = find_ground_contacts(state, &geometries, 0.0);
-let materials = vec![ContactMaterial::default(); contacts.len()];
+let material = ContactMaterial::default();
+// The last argument is the contact margin: candidates within it of the plane
+// are kept with a negative depth, so a support point's normal force ramps to
+// zero instead of being cut off while it is still carrying load.
+let contacts = find_ground_contacts(state, &geometries, 0.0, material.margin);
+let materials = vec![material; contacts.len()];
 let wrenches = contact_forces(&contacts, state, &materials, None);
 // feed `wrenches` to phyz_rigid::aba_with_external_forces
 # }

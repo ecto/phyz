@@ -87,17 +87,17 @@ fn a_rider_settles_on_the_deck() {
     .expect("contact");
 
     let mut s = model.default_state();
-    // Free-joint q on the GPU path: [pos(3), rot(3)] per shader packing.
-    s.q[2] = deck_half.z; // deck resting on the ground
-    s.q[8] = deck_half.z * 2.0 + rider_half.z + 0.02; // rider 2 cm above the deck
+    // Free-joint q is [exp-coords(3), pos(3)] — angular first.
+    s.q[5] = deck_half.z; // deck resting on the ground
+    s.q[11] = deck_half.z * 2.0 + rider_half.z + 0.02; // rider 2 cm above the deck
     sim.load_states(std::slice::from_ref(&s));
     for _ in 0..1500 {
         sim.step();
     }
     let out = &sim.readback_states()[0];
 
-    let deck_z = out.q[2];
-    let rider_z = out.q[8];
+    let deck_z = out.q[5];
+    let rider_z = out.q[11];
     let deck_top = deck_z + deck_half.z;
     assert!(
         (deck_z - deck_half.z).abs() < 0.02,
@@ -137,7 +137,7 @@ fn the_deck_feels_the_rider() {
     let (m_deck, m_rider) = (4.0, 1.0);
     let v0 = -0.5;
     let mut s = model.default_state();
-    s.q[8] = deck_half.z + rider_half.z + 0.005; // just above the face
+    s.q[11] = deck_half.z + rider_half.z + 0.005; // just above the face
     s.v[11] = v0; // rider's linear z DOF: second free joint, [ang(3), lin(3)]
     sim.load_states(std::slice::from_ref(&s));
     for _ in 0..400 {

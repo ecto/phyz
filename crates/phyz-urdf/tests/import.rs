@@ -252,7 +252,8 @@ fn floating_joint_becomes_a_free_joint() {
     // Translating the free joint moves the body, on top of its 2 m origin.
     let mut state = r.model.default_state();
     let off = r.model.q_offsets[r.joint_index("float").unwrap()];
-    state.q[off] = 1.0; // +X
+    // Free joint q = [wx, wy, wz, x, y, z]: translation starts at slot 3.
+    state.q[off + 3] = 1.0; // +X
     let (x, _) = forward_kinematics(&r.model, &state);
     let body = r.body_index("body").unwrap();
     assert_close(x[body].pos, Vec3::new(1.0, 0.0, 2.0), 1e-12, "free joint");

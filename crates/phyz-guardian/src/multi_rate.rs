@@ -4,7 +4,7 @@
 //! - Slow forces (e.g., gravity, soft constraints): large dt_outer
 //! - Fast forces (e.g., stiff springs, high-frequency vibrations): small dt_inner
 
-use phyz_math::DVec;
+use phyz_math::{DVec, SpatialTransformExt};
 use phyz_model::{Model, State};
 
 /// Force splitting function type.
@@ -67,7 +67,12 @@ impl RRespaIntegrator {
 
             state.v += &(&acc_fast * self.dt_inner);
             let v_copy = state.v.clone();
-            state.q += &(&v_copy * self.dt_inner);
+            phyz_rigid::integrate_configuration(
+                model,
+                state.q.as_mut_slice(),
+                v_copy.as_slice(),
+                self.dt_inner,
+            );
         }
 
         // Outer half-step: slow forces
@@ -102,7 +107,7 @@ pub fn split_forces_gravity(model: &Model, state: &State) -> (DVec, DVec) {
         let mass = body.inertia.mass;
         let com_local = body.inertia.com;
         let xf = &xforms[i];
-        let _com_world = xf.rot.transpose() * com_local + xf.pos;
+        let _com_world = xf.body_to_world_point(com_local);
 
         // Gravitational force at CoM
         let f_gravity = model.gravity * mass;

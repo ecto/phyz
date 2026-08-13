@@ -4,7 +4,7 @@ mod quantum;
 pub use quantum::*;
 
 use phyz_diff::semi_implicit_step_jacobians;
-use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
 
@@ -208,8 +208,7 @@ impl WasmSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let endpoint_body = body.inertia.com * 2.0;
-            let rotated = xf.rot.transpose() * endpoint_body;
-            let p = rotated + xf.pos;
+            let p = xf.body_to_world_point(endpoint_body);
             positions.push(p.x);
             positions.push(p.y);
             positions.push(p.z);
@@ -1639,7 +1638,7 @@ impl WasmWorldSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let ep = body.inertia.com * 2.0;
-            let p = xf.rot.transpose() * ep + xf.pos;
+            let p = xf.body_to_world_point(ep);
             out.push(p.x);
             out.push(p.y);
             out.push(p.z);
@@ -5256,8 +5255,7 @@ impl WasmMjcfAntSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let ep = body.inertia.com * 2.0;
-            let rotated = xf.rot.transpose() * ep;
-            let p = rotated + xf.pos;
+            let p = xf.body_to_world_point(ep);
             positions.push(p.x);
             positions.push(p.y);
             positions.push(p.z);

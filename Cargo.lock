@@ -3027,6 +3027,7 @@ dependencies = [
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
+ "phyz-world",
 ]
 
 [[package]]
@@ -3045,6 +3046,22 @@ dependencies = [
  "rapier3d-f64",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "phyz-camera"
+version = "0.3.1"
+dependencies = [
+ "bytemuck",
+ "phyz-collision",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "phyz-urdf",
+ "phyz-world",
+ "pollster",
+ "thiserror 2.0.18",
+ "wgpu 23.0.1",
 ]
 
 [[package]]
@@ -3092,6 +3109,8 @@ name = "phyz-diff"
 version = "0.3.1"
 dependencies = [
  "criterion",
+ "phyz-collision",
+ "phyz-contact",
  "phyz-math",
  "phyz-model",
  "phyz-rigid",

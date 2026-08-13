@@ -11,6 +11,7 @@
 pub struct ReadmeDocTests;
 
 pub mod assemble;
+pub mod cache;
 pub mod cone;
 pub mod convex;
 pub mod gradient;
@@ -18,14 +19,19 @@ pub mod material;
 pub mod solver;
 
 pub use assemble::{ContactAssembly, assemble, contact_wrenches, generalized_impulse};
+pub use cache::{ContactCache, ContactKey};
 pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
 pub use convex::{
-    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, solve_contacts,
+    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig,
+    regularization_depth_derivative, regularization_diag, solve_contacts, solve_contacts_warm,
 };
-pub use material::ContactMaterial;
+pub use material::{ContactMaterial, SolImp, SolRef};
 #[allow(deprecated)]
 pub use solver::{contact_forces, contact_forces_implicit};
-pub use solver::{find_contacts, find_ground_contacts};
+pub use solver::{
+    find_contacts, find_ground_contacts, find_ground_contacts_model,
+    find_ground_contacts_model_with_drop,
+};
 
 use phyz_collision::Collision;
 use phyz_math::{SpatialVec, Vec3};
@@ -47,6 +53,12 @@ pub fn compute_contact_force(
         return SpatialVec::zero();
     }
 
+    // NOTE: this deprecated penalty law keeps its own historical sense —
+    // `contact_normal` read as pointing from `i` toward `j`, and the returned
+    // force as the one on `j`. `contact_forces` adapts the unified
+    // `Collision::contact_normal` convention at the call site rather than
+    // changing the arithmetic here, so the ground path's behaviour (which is
+    // pinned by tests) is bit-identical.
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
     let normal_vel = rel_vel.dot(normal);
@@ -121,6 +133,12 @@ pub fn compute_contact_force_implicit(
         return SpatialVec::zero();
     }
 
+    // NOTE: this deprecated penalty law keeps its own historical sense —
+    // `contact_normal` read as pointing from `i` toward `j`, and the returned
+    // force as the one on `j`. `contact_forces` adapts the unified
+    // `Collision::contact_normal` convention at the call site rather than
+    // changing the arithmetic here, so the ground path's behaviour (which is
+    // pinned by tests) is bit-identical.
     let normal = collision.contact_normal;
     let rel_vel = velocity_j - velocity_i;
     let normal_vel = rel_vel.dot(normal);

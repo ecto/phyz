@@ -16,7 +16,7 @@
 //! Only DOFs on the path from the world to `b` move the point; every other
 //! column is zero.
 
-use phyz_math::{DMat, Mat3, SpatialTransform, Vec3};
+use phyz_math::{DMat, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{JointType, Model};
 
 /// The `3 x nv` world-frame linear-velocity Jacobian of a point fixed in
@@ -42,18 +42,16 @@ pub fn point_jacobian(
         if ndof > 0 {
             let v_idx = model.v_offsets[bodyref.joint_idx];
             let xf = &xforms[b];
-            // world→body rotation; its transpose maps body → world.
-            let e_t: Mat3 = xf.rot.transpose();
             let origin = xf.pos;
-            let axis_world = e_t * joint.axis;
+            let axis_world = xf.body_to_world_dir(joint.axis);
 
             // Unit body-frame axis for multi-DOF joints, rotated to world.
             let body_axis = |k: usize| {
-                e_t * match k {
+                xf.body_to_world_dir(match k {
                     0 => Vec3::x(),
                     1 => Vec3::y(),
                     _ => Vec3::z(),
-                }
+                })
             };
             let arm = point - origin;
 
@@ -109,7 +107,7 @@ pub fn relative_point_jacobian(
 mod tests {
     use super::*;
     use crate::forward_kinematics;
-    use phyz_math::{GRAVITY, SpatialInertia};
+    use phyz_math::{GRAVITY, Mat3, SpatialInertia};
     use phyz_model::ModelBuilder;
 
     fn pendulum() -> Model {
@@ -141,7 +139,7 @@ mod tests {
 
         // A point 1 m down the link, in world coordinates.
         let xf = &xforms[0];
-        let p_world = xf.pos + xf.rot.transpose() * Vec3::new(0.0, -1.0, 0.0);
+        let p_world = xf.body_to_world_point(Vec3::new(0.0, -1.0, 0.0));
 
         let j = point_jacobian(&model, &xforms, 0, p_world);
         let v = Vec3::new(
@@ -172,7 +170,7 @@ mod tests {
             s.q[0] = q;
             let (xf, _) = forward_kinematics(&model, &s);
             // Track the *material* point: fixed in the body frame.
-            xf[0].pos + xf[0].rot.transpose() * Vec3::new(0.2, -0.9, 0.05)
+            xf[0].body_to_world_point(Vec3::new(0.2, -0.9, 0.05))
         };
 
         let (xforms, _) = forward_kinematics(&model, &state);

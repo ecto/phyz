@@ -14,7 +14,7 @@ use phyz::{
     ContactMaterial, Geometry, Mat3, ModelBuilder, SpatialInertia, SpatialTransform, SpatialVec,
     Vec3,
     collision::sweep_and_prune,
-    contact::{contact_forces, find_contacts, find_ground_contacts},
+    contact::{contact_forces, find_contacts, find_ground_contacts_model},
 };
 
 /// Goal 1 — body-pair contact force pushes the free body AWAY from the fixed body.
@@ -22,9 +22,6 @@ use phyz::{
 /// Mirrors `ball_drop_with_contacts` in `integration.rs` but uses two real bodies
 /// (one fixed host below, one free accessory above) instead of a ground plane.
 #[test]
-// BUG: find_contacts returns 0 contacts for an overlapping box/sphere body
-// pair that should report exactly 1. This file did not compile before the
-// documentation pass, so the assertion had never actually run. Needs a
 fn body_drop_on_fixed_body_with_contacts() {
     let mut model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -9.81))
@@ -58,20 +55,17 @@ fn body_drop_on_fixed_body_with_contacts() {
     let mut state = model.default_state();
 
     // Place the accessory just slightly overlapping the host on the +z side.
-    // Free joint q layout = [x, y, z, wx, wy, wz]; we only set z so the
+    // Free joint q layout = [wx, wy, wz, x, y, z]; we only set z so the
     // sphere centre sits at z = 0.05, penetrating the box's top face (z = 0.1).
     let q_offset = model.q_offsets[model.bodies[1].joint_idx];
-    state.q[q_offset + 2] = 0.05;
+    state.q[q_offset + 5] = 0.05;
 
     // Manually populate body transforms instead of going through FK so we have
     // an unambiguous contact geometry independent of joint conventions.
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, 0.0, 0.05));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     assert_eq!(
         contacts.len(),
         1,
@@ -82,11 +76,15 @@ fn body_drop_on_fixed_body_with_contacts() {
     assert_eq!(contact.body_i, 0);
     assert_eq!(contact.body_j, 1);
 
-    // body_j is above body_i, so the normal (pos_j - pos_i).normalize() points +z.
-    assert_relative_eq!(contact.contact_normal.z, 1.0, epsilon = 1e-10);
+    // `contact_normal` is the direction `body_i` must move to separate from
+    // `body_j`. body_j sits above body_i, so body_i separates downward: −z.
+    // (This read `+1.0` while `find_contacts` passed the manifold normal
+    // through unnegated — the sign that made the solver pull overlapping
+    // bodies together.)
+    assert_relative_eq!(contact.contact_normal.z, -1.0, epsilon = 1e-10);
 
     // No ground contacts in this scenario.
-    let ground = find_ground_contacts(&state, &geometries, -10.0);
+    let ground = find_ground_contacts_model(&model, &state, -10.0, 0.0);
     assert!(ground.is_empty());
 
     let materials = vec![ContactMaterial::default()];
@@ -150,11 +148,8 @@ fn nan_body_xform_does_not_panic_broad_phase() {
     state.body_xform[1] =
         SpatialTransform::new(Mat3::identity(), Vec3::new(f64::NAN, f64::NAN, f64::NAN));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
     // Must not panic.
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -194,10 +189,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::identity();
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -226,9 +218,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
 /// the cube's z-axis instead of going through the full ABA pipeline: this
 /// isolates the contact-force change and keeps the test independent of the
 /// free-joint integration conventions and of `find_contacts`'s broad/narrow
-/// phase (GJK returns -1 instead of the true penetration depth for
-/// overlapping boxes today — orthogonal to Goal 3). The geometry / depth
-/// computation is done analytically below.
+/// phase. The geometry / depth computation is done analytically below.
 #[test]
 fn low_mass_cube_settles_on_plate() {
     use phyz::collision::Collision;
@@ -418,7 +408,9 @@ fn contact_force_torque_at_contact_point() {
         body_i: 0,
         body_j: 1,
         contact_point: contact_point_world,
-        contact_normal: Vec3::z(),
+        // `contact_normal` is the direction `body_i` separates along. Body 0
+        // is the support, *below* the rod, so it separates downward.
+        contact_normal: -Vec3::z(),
         penetration_depth: 1e-3,
     };
     let materials = vec![ContactMaterial::default()];
@@ -466,9 +458,6 @@ fn contact_force_torque_at_contact_point() {
 /// We carry our own 2D rotational integrator (no ABA) so the assertion is
 /// about the wrench, not the full multibody machinery.
 #[test]
-// BUG: the far end of an offset-supported rod rises instead of dropping
-// (-18.3mm observed against an expected >+10mm), so the contact wrench
-// torque arm has the wrong sign or origin. Never ran before the
 fn rod_tips_off_support_when_contact_is_offset() {
     use phyz::collision::Collision;
 

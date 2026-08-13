@@ -58,6 +58,22 @@ impl AABB {
         Self { min, max }
     }
 
+    /// Grow the box by `pad` in every direction.
+    ///
+    /// A broad phase that culls on the un-padded boxes decides which pairs the
+    /// narrow phase is even allowed to see, so a margin applied only in the
+    /// narrow phase is silently capped by it: an AABB gap never exceeds the
+    /// true surface gap, so any pair inside the margin has AABBs at most
+    /// `margin` apart, and padding each by half of that is exactly enough to
+    /// keep them. Without it the margin band is unreachable for most pairs.
+    pub fn expanded(&self, pad: f64) -> Self {
+        let p = Vec3::new(pad, pad, pad);
+        Self {
+            min: self.min - p,
+            max: self.max + p,
+        }
+    }
+
     /// Compute AABB for a geometry at given position and rotation.
     pub fn from_geometry(geom: &Geometry, pos: &Vec3, rot: &Mat3) -> Self {
         match geom {
@@ -233,14 +249,41 @@ impl Geometry {
                 best
             }
             Geometry::Plane { normal } => {
-                // Plane support: if dir·normal > 0, project origin onto plane
-                // Otherwise, return point at infinity (clamped to large value)
-                let dot = dir.dot(normal);
-                if dot > 0.0 {
-                    pos + *normal * 1e6
+                // A plane is the half-space {p : n·(p - pos) <= 0}, which is
+                // unbounded both laterally and along -n. GJK needs a bounded
+                // support, so model it as a very large slab: extend to
+                // `PLANE_EXTENT` in the tangent plane, and to `-PLANE_EXTENT`
+                // along the normal, but never *past* the surface along +n.
+                //
+                // The previous version returned `pos ± n * 1e6`, i.e. the
+                // support of a two-point set on the normal axis — a shape with
+                // no lateral extent and no interior. Every plane query it fed
+                // GJK/EPA produced a normal in an arbitrary tangent direction
+                // and a depth unrelated to the actual separation.
+                //
+                // The normal is stored in the *body* frame, so it must be
+                // rotated into the world like every other geometry here (the
+                // old code used it unrotated, so a tilted ground plane behaved
+                // as though it were level).
+                const PLANE_EXTENT: f64 = 1e3;
+                let n = *rot * *normal;
+                let n_norm = n.norm();
+                let n = if n_norm > 1e-12 {
+                    n / n_norm
                 } else {
-                    pos - *normal * 1e6
-                }
+                    Vec3::z()
+                };
+
+                let d_n = dir.dot(n);
+                let tangent = *dir - n * d_n;
+                let t_norm = tangent.norm();
+                let lateral = if t_norm > 1e-12 {
+                    tangent * (PLANE_EXTENT / t_norm)
+                } else {
+                    Vec3::zeros()
+                };
+                let along = if d_n > 0.0 { 0.0 } else { -PLANE_EXTENT };
+                pos + lateral + n * along
             }
         }
     }

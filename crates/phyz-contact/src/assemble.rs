@@ -16,12 +16,17 @@ use phyz_model::{Model, State};
 /// `free_qd` is the generalized velocity the system would have after this step
 /// *without* contact — i.e. after gravity, actuation and every other force.
 /// The solve then finds the impulses that correct it.
+/// `free_qd` is the generalized velocity the system would have after this step
+/// *without* contact; `dt` is the step those impulses will act over, which the
+/// solref position-stabilization bias needs to convert a penetration depth into
+/// a separating velocity.
 pub fn assemble(
     model: &Model,
     state: &State,
     contacts: &[Collision],
     materials: &[ContactMaterial],
     free_qd: &DVec,
+    dt: f64,
     config: &ContactSolverConfig,
 ) -> ContactAssembly {
     let n = contacts.len();
@@ -97,7 +102,7 @@ pub fn assemble(
             free_velocity[3 * ci + r] = acc;
         }
 
-        let material = material_for(materials, c.body_i);
+        let material = material_for(materials, c.body_i, c.body_j);
         let approach = (-free_velocity[3 * ci]).max(0.0);
         let e = ContactProblem::effective_restitution(
             material.restitution,
@@ -107,11 +112,16 @@ pub fn assemble(
         // Target normal velocity is `+e * approach` instead of 0.
         free_velocity[3 * ci] *= 1.0 + e;
 
-        rows.push(ContactRow {
-            mu: material.friction,
-            restitution: e,
-            depth: c.penetration_depth,
-        });
+        // `from_material` applies the margin ramp itself (and records the
+        // impedance's depth derivative alongside it, which the gradient needs),
+        // so a separated-but-detected contact comes out with a tapering
+        // impedance rather than the full `dmin`.
+        rows.push(ContactRow::from_material(
+            &material,
+            c.penetration_depth,
+            dt,
+            e,
+        ));
     }
 
     ContactAssembly {
@@ -209,12 +219,27 @@ pub fn contact_wrenches(
     out
 }
 
-fn material_for(materials: &[ContactMaterial], body: usize) -> ContactMaterial {
+/// The material a contact pair is solved with.
+///
+/// This used to read `body_i`'s material and ignore `body_j`'s entirely, which
+/// made the physics depend on which body the narrow phase listed first: the
+/// same rubber-on-ice contact gripped or slid depending on collision ordering.
+/// Both sides now go through [`ContactMaterial::combine`], whose rules are
+/// commutative, so ordering cannot matter.
+///
+/// `usize::MAX` in `body_j` is the world/ground, which has no entry in
+/// `materials`; the other body's material stands in for the pair, which is the
+/// same convention the ground contact always had.
+fn material_for(materials: &[ContactMaterial], body_i: usize, body_j: usize) -> ContactMaterial {
     if materials.is_empty() {
-        ContactMaterial::default()
-    } else {
-        materials[body.min(materials.len() - 1)].clone()
+        return ContactMaterial::default();
     }
+    let pick = |b: usize| materials[b.min(materials.len() - 1)].clone();
+    let a = pick(body_i);
+    if body_j == usize::MAX {
+        return a;
+    }
+    ContactMaterial::combine(&a, &pick(body_j))
 }
 
 /// Invert a symmetric positive-definite matrix by Gauss-Jordan with partial
@@ -305,8 +330,11 @@ mod tests {
         }
     }
 
-    /// A free sphere resting on the ground: the solve must exactly cancel the
-    /// gravitational approach velocity, and nothing else.
+    /// A free sphere resting on the ground with zero penetration: the solve
+    /// must exactly cancel the gravitational approach velocity, and nothing
+    /// else. Zero depth is deliberate — it isolates the non-penetration part
+    /// from the solref stabilization bias, which
+    /// `penetration_adds_a_recovery_impulse` covers separately.
     #[test]
     fn free_body_on_ground_cancels_gravity() {
         let mass = 2.0;
@@ -329,7 +357,7 @@ mod tests {
             body_j: usize::MAX,
             contact_point: Vec3::new(0.0, 0.0, -0.1),
             contact_normal: Vec3::z(),
-            penetration_depth: 1e-4,
+            penetration_depth: 0.0,
         }];
 
         // Free velocity after one step of gravity.
@@ -343,16 +371,24 @@ mod tests {
             &contacts,
             &[ContactMaterial::default()],
             &free_qd,
+            dt,
             &cfg,
         );
         let sol = crate::solve_contacts(&asm.problem, &cfg);
         assert!(sol.converged);
 
-        // Normal impulse should be m*g*dt.
-        let expected = mass * GRAVITY * dt;
+        // Normal impulse is `d * m*g*dt`, not `m*g*dt`: at zero penetration
+        // the solimp impedance is `dmin`, so the constraint is deliberately
+        // soft and removes only that fraction of the approach velocity. The
+        // remaining 10% is what drives the body to its (small, bounded)
+        // steady-state penetration, where the recovery bias makes up the
+        // difference exactly — see `penetration_adds_a_recovery_impulse` and
+        // the stack test in `tests/stabilization.rs`.
+        let d = ContactMaterial::default().solimp.impedance(0.0);
+        let expected = d * mass * GRAVITY * dt;
         assert!(
             (sol.impulses[0].x - expected).abs() / expected < 1e-3,
-            "normal impulse {} vs m*g*dt {expected}",
+            "normal impulse {} vs d*m*g*dt {expected}",
             sol.impulses[0].x
         );
 
@@ -363,6 +399,78 @@ mod tests {
             "generalized z impulse {}",
             gen_impulse[5]
         );
+    }
+
+    /// The same sphere, but penetrating: the solve must carry *more* than the
+    /// weight, because it is also paying back the penetration. Before position
+    /// stabilization `ContactRow::depth` was stored and never read, so this
+    /// extra impulse did not exist and a resting body kept whatever
+    /// penetration it had accumulated forever.
+    #[test]
+    fn penetration_adds_a_recovery_impulse() {
+        let mass = 2.0;
+        let dt = 1e-3;
+        let depth = 1e-4;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+            .dt(dt)
+            .add_free_body(
+                "ball",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::sphere(mass, 0.1),
+            )
+            .build();
+        let mut state = model.default_state();
+        state.body_xform[0] = SpatialTransform::new(Mat3::identity(), Vec3::zeros());
+
+        let contacts = vec![Collision {
+            body_i: 0,
+            body_j: usize::MAX,
+            contact_point: Vec3::new(0.0, 0.0, -0.1),
+            contact_normal: Vec3::z(),
+            penetration_depth: depth,
+        }];
+        let mut free_qd = DVec::zeros(model.nv);
+        free_qd[5] = -GRAVITY * dt;
+
+        let cfg = ContactSolverConfig::simulation();
+        let material = ContactMaterial::default();
+        let asm = assemble(
+            &model,
+            &state,
+            &contacts,
+            std::slice::from_ref(&material),
+            &free_qd,
+            dt,
+            &cfg,
+        );
+        let sol = crate::solve_contacts(&asm.problem, &cfg);
+        assert!(sol.converged);
+
+        let weight = mass * GRAVITY * dt;
+        assert!(
+            sol.impulses[0].x > weight,
+            "penetrating contact must push harder than the weight: {} vs {weight}",
+            sol.impulses[0].x
+        );
+
+        // The post-solve normal velocity should be the bias, i.e. separating.
+        let row = asm.problem.rows[0];
+        assert!(row.bias > 0.0, "a penetrating row must carry a bias");
+        let dv = asm.velocity_delta(&sol.impulses);
+        let v_after = free_qd[5] + dv[5];
+        // Separating, not merely stopped — and short of the full bias,
+        // because the impedance keeps the constraint soft.
+        assert!(
+            v_after > 0.0 && v_after < row.bias,
+            "normal velocity after solve {v_after} should separate, under the \
+             bias {}",
+            row.bias
+        );
+        // And the recovery is gentle: one step never removes more than the
+        // penetration itself.
+        assert!(row.bias * dt <= depth + 1e-15);
     }
 
     /// Two contacts on one body are coupled through `A`: the off-diagonal
@@ -412,6 +520,7 @@ mod tests {
             &contacts,
             &[ContactMaterial::default()],
             &DVec::zeros(model.nv),
+            1e-3,
             &cfg,
         );
         let _dim = 6;

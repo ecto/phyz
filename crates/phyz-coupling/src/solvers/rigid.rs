@@ -1,7 +1,7 @@
 //! [`Solver`] adapter for the Featherstone rigid-body solver in `phyz-rigid`.
 
-use phyz_math::{SpatialVec, Vec3};
-use phyz_model::{JointType, Model, State};
+use phyz_math::{SpatialTransformExt, SpatialVec, Vec3};
+use phyz_model::{Model, State};
 use phyz_rigid::{aba_with_external_forces, forward_kinematics, total_energy};
 
 use crate::coupling::SolverType;
@@ -63,52 +63,26 @@ impl RigidSolver {
         // `xf` is world→body; its translation is the body origin in world
         // coordinates and `rot` maps world vectors into the body frame.
         let position = xf.pos;
-        let velocity = xf.rot.transpose() * vels[body].linear;
+        let velocity = xf.body_to_world_dir(vels[body].linear);
         (position, velocity)
     }
 
-    /// Semi-implicit Euler step: `v += qdd·dt`, then `q += v·dt`.
+    /// Semi-implicit Euler step: `v += qdd·dt`, then a configuration step.
     ///
-    /// Free and spherical joints store orientation as exponential coordinates,
-    /// whose velocity block is angular-first while the position block is
-    /// translation-first, so those joints are integrated component-wise.
+    /// Delegates the `q` update to [`phyz_rigid::integrate_configuration`],
+    /// which is the one place that knows each joint type's parameterisation
+    /// (ball and free joints store rotation as exponential coordinates, and a
+    /// free joint's linear velocity is body-frame).
     fn integrate(&mut self, dt: f64) {
         let qdd = aba_with_external_forces(&self.model, &self.state, Some(&self.pending));
         self.state.v += &(&qdd * dt);
-
-        let layout: Vec<(JointType, usize, usize, usize)> = self
-            .model
-            .joints
-            .iter()
-            .enumerate()
-            .map(|(ji, j)| {
-                (
-                    j.joint_type,
-                    self.model.q_offsets[ji],
-                    self.model.v_offsets[ji],
-                    j.ndof(),
-                )
-            })
-            .collect();
-
-        for (joint_type, q_off, v_off, ndof) in layout {
-            match joint_type {
-                JointType::Free => {
-                    // q = [x, y, z, wx, wy, wz]; v = [wx, wy, wz, vx, vy, vz]
-                    for k in 0..3 {
-                        self.state.q[q_off + k] += self.state.v[v_off + 3 + k] * dt;
-                        self.state.q[q_off + 3 + k] += self.state.v[v_off + k] * dt;
-                    }
-                }
-                JointType::Fixed => {}
-                _ => {
-                    for k in 0..ndof {
-                        self.state.q[q_off + k] += self.state.v[v_off + k] * dt;
-                    }
-                }
-            }
-        }
-
+        let v = self.state.v.clone();
+        phyz_rigid::integrate_configuration(
+            &self.model,
+            self.state.q.as_mut_slice(),
+            v.as_slice(),
+            dt,
+        );
         self.state.time += dt;
     }
 }
@@ -140,9 +114,8 @@ impl Solver for RigidSolver {
                 let (xforms, _) = forward_kinematics(&self.model, &self.state);
                 // ABA takes external forces as body-frame spatial forces
                 // (torque; force). `xf.rot` maps world → body.
-                let rot = xforms[body].rot;
-                let f_body = rot * force;
-                let t_body = rot * torque;
+                let f_body = xforms[body].world_to_body_dir(force);
+                let t_body = xforms[body].world_to_body_dir(torque);
                 self.pending[body] = self.pending[body] + SpatialVec::new(t_body, f_body);
             }
             // A rigid domain has an explicit momentum integral, so a Reaction
