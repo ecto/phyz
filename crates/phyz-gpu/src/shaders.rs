@@ -158,6 +158,30 @@ fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
     return o_p + rot_t_mul(o_r, support);
 }
 
+// Corner `c` (0..8) of body i's box, in BODY coordinates with the collision
+// instance's origin applied. Boxes contact through all penetrating corners —
+// a single support point lets an angled foot rock on one corner, which is
+// exactly what felled the loose-stance rollouts.
+fn box_corner(i: u32, c: u32) -> vec3<f32> {
+    let h = vec3<f32>(
+        geometry[i * GEOM_STRIDE + 1u],
+        geometry[i * GEOM_STRIDE + 2u],
+        geometry[i * GEOM_STRIDE + 3u]
+    );
+    let sx = select(-1.0, 1.0, (c & 1u) != 0u);
+    let sy = select(-1.0, 1.0, (c & 2u) != 0u);
+    let sz = select(-1.0, 1.0, (c & 4u) != 0u);
+    let corner = vec3<f32>(h.x * sx, h.y * sy, h.z * sz);
+    let o_p = vec3<f32>(
+        geometry[i * GEOM_STRIDE + 5u],
+        geometry[i * GEOM_STRIDE + 6u],
+        geometry[i * GEOM_STRIDE + 7u]
+    );
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[i * GEOM_STRIDE + 8u + k]; }
+    return o_p + rot_t_mul(o_r, corner);
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_idx = gid.x;
@@ -269,9 +293,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // CPU contact model (which returns r x f and f in the body frame).
         let n_body = rot_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
-        let support = support_point(i, n_body);
+        // Boxes contact through every penetrating corner; other shapes
+        // through the deepest support point. Per-point stiffness for boxes
+        // is a quarter of the body's, so a flat-resting face carries the
+        // same total spring as a single-point shape.
+        var n_pts = 1u;
+        var pt_scale = 1.0;
+        if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+        for (var cpt = 0u; cpt < n_pts; cpt++) {
+        var support: vec3<f32>;
+        if (gtype == 2u) { support = box_corner(i, cpt); }
+        else { support = support_point(i, n_body); }
 
-        // World height of that support point.
+        // World height of that contact point.
         let min_z = w_pos[i].z + dot(rot_t_mul(w_rot[i], support), vec3<f32>(0.0, 0.0, 1.0));
         let penetration = cparams.ground_height - min_z;
         if (penetration <= 0.0) { continue; }
@@ -292,8 +326,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let carried = geometry[i * GEOM_STRIDE + 17u];
         if (carried > 0.0) { mass = carried; }
         if (mass <= 0.0) { continue; }
-        let k = mass / (cparams.time_const * cparams.time_const);
-        let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
+        let k = pt_scale * mass / (cparams.time_const * cparams.time_const);
+        let d = pt_scale * 2.0 * cparams.damp_ratio * mass / cparams.time_const;
 
         // Penalty normal force, damped. Clamped non-negative so contact can
         // only push, never pull a body back down onto the plane.
@@ -316,6 +350,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         ext_forces[ef_base + 3u] += f_body.x;
         ext_forces[ef_base + 4u] += f_body.y;
         ext_forces[ef_base + 5u] += f_body.z;
+        }
     }
 
     // ── Body-attached contact plane (the deck's top face) ──
@@ -336,9 +371,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (gtype == 0u) { continue; }
             if (geometry[i * GEOM_STRIDE + 4u] != 0.0) { continue; }
 
-            // Plane normal in body i's frame; deepest point against it.
+            // Plane normal in body i's frame; boxes contact through every
+            // penetrating corner, other shapes through the deepest point.
             let n_body = rot_mul(w_rot[i], n_w);
-            let support = support_point(i, n_body);
+            var n_pts = 1u;
+            var pt_scale = 1.0;
+            if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+            for (var cpt = 0u; cpt < n_pts; cpt++) {
+            var support: vec3<f32>;
+            if (gtype == 2u) { support = box_corner(i, cpt); }
+            else { support = support_point(i, n_body); }
             let sup_w = w_pos[i] + rot_t_mul(w_rot[i], support);
             let penetration = -dot(sup_w - p0_w, n_w);
             if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
@@ -358,8 +400,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let carried = geometry[i * GEOM_STRIDE + 17u];
             if (carried > 0.0) { mass = carried; }
             if (mass <= 0.0) { continue; }
-            let k = mass / (cparams.time_const * cparams.time_const);
-            let d = 2.0 * cparams.damp_ratio * mass / cparams.time_const;
+            let k = pt_scale * mass / (cparams.time_const * cparams.time_const);
+            let d = pt_scale * 2.0 * cparams.damp_ratio * mass / cparams.time_const;
             let f_n = max(k * penetration - d * v_normal, 0.0);
 
             let v_tan = v_rel - n_w * v_normal;
@@ -390,6 +432,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             ext_forces[ef_p + 3u] += f_p.x;
             ext_forces[ef_p + 4u] += f_p.y;
             ext_forces[ef_p + 5u] += f_p.z;
+            }
         }
     }
 }
