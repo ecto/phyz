@@ -1098,6 +1098,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         if (jtype == 2u) {
             // Fixed joint: just propagate to parent
@@ -1128,6 +1130,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             u_vec[k] = ctrl[v_base + v_off + k]
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
+        }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
         }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);
@@ -1211,6 +1220,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         var a_parent: array<f32, 6>;
         if (parent < 0) {
@@ -1242,6 +1253,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             u_vec[k] = ctrl[v_base + v_off + k]
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
+        }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
         }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);

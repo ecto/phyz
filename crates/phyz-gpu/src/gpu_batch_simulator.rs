@@ -40,7 +40,8 @@ struct BatchSimParams {
 /// [23..26] ptj translation (x,y,z)
 /// [26..29] axis (x,y,z)
 /// [29] damping
-/// [30..32] padding
+/// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
+/// [31] spring reference angle
 /// ```
 const BODY_STRIDE: usize = 32;
 
@@ -493,7 +494,11 @@ fn pack_bodies(model: &Model) -> Vec<f32> {
         data[base + 28] = joint.axis.z as f32;
         // [29] damping
         data[base + 29] = joint.damping as f32;
-        // [30..32] padding
+        // [30..31] passive spring, the truck-bushing term. Packed here
+        // because the CPU applies it in passive_force and a GPU rollout
+        // that silently dropped it would train on a different robot.
+        data[base + 30] = joint.stiffness as f32;
+        data[base + 31] = joint.spring_ref as f32;
     }
 
     data
