@@ -25,9 +25,9 @@ struct BatchSimParams {
     _padding: u32,
 }
 
-/// Packed body data for GPU upload (32 f32 values per body).
+/// Packed body data for GPU upload (36 f32 values per body).
 ///
-/// Layout matches the WGSL shader's `BODY_STRIDE` of 32:
+/// Layout matches the WGSL shader's `BODY_STRIDE` of 36:
 /// ```text
 /// [0]  parent (bitcast i32)
 /// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
@@ -40,9 +40,12 @@ struct BatchSimParams {
 /// [23..26] ptj translation (x,y,z)
 /// [26..29] axis (x,y,z)
 /// [29] damping
-/// [30..32] padding
+/// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
+/// [31] spring reference angle
+/// [32] armature (rotor inertia, added to the D diagonal like the CPU's crba/aba)
+/// [33..36] padding
 /// ```
-const BODY_STRIDE: usize = 32;
+const BODY_STRIDE: usize = 36;
 
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
@@ -571,7 +574,13 @@ fn pack_bodies(model: &Model) -> Vec<f32> {
         data[base + 28] = joint.axis.z as f32;
         // [29] damping
         data[base + 29] = joint.damping as f32;
-        // [30..32] padding
+        // [30..31] passive spring, the truck-bushing term. Packed here
+        // because the ABA pass applies it explicitly, exactly as the CPU's
+        // `Joint::passive_force` does — same clause, same sign.
+        data[base + 30] = joint.stiffness as f32;
+        data[base + 31] = joint.spring_ref as f32;
+        data[base + 32] = joint.armature as f32;
+        // [33..36] padding
     }
 
     data

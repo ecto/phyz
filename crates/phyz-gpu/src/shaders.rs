@@ -9,7 +9,7 @@
 /// One thread per environment, serial tree traversal within.
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 const GEOM_STRIDE: u32 = 16u;
 const CS_STRIDE: u32 = 8u;
 
@@ -361,7 +361,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// One thread per (environment, joint) pair, so joints in the same environment
 /// touch disjoint `q`/`v` ranges and no synchronisation is needed.
 pub const INTEGRATE_SHADER: &str = r#"
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -484,7 +484,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// (4, 6 DOF) joints. One thread per environment, serial tree traversal within.
 /// Bodies must be topologically sorted (parent index < child index).
 ///
-/// Body data layout: 32 f32 values per body (BODY_STRIDE):
+/// Body data layout: 36 f32 values per body (BODY_STRIDE):
 ///   `[0]`  parent (bitcast i32, -1 for root)
 ///   `[1]`  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
 ///   `[2]`  q_offset
@@ -496,10 +496,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ///   [23..26] ptj translation (x,y,z)
 ///   [26..29] axis (x,y,z)
 ///   `[29]` damping
-///   [30..32] padding
+///   `[30]` passive spring stiffness, `[31]` spring reference angle
+///   `[32]` armature (rotor inertia)
+///   [33..36] padding
 pub const ABA_GENERAL_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -1121,6 +1123,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         if (jtype == 2u) {
             // Fixed joint: just propagate to parent
@@ -1128,8 +1132,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_t = transpose6(&x_mot);
-                var ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
-                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                // Local copies, not pointers into the array: naga's SPIR-V
+                // backend never caches `&arr[dynamic_index]` passed to a
+                // function (gfx-rs/wgpu#7315) and panics at write time. The
+                // Metal backend accepted it, which is why this only surfaced
+                // on the first Vulkan machine.
+                var ia_self = i_a[i];
+                var ia_parent = m6_XtAX(&x_mot_t, &ia_self, &x_mot);
+                var ia_pi = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi, &ia_parent);
                 let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_parent);
             }
@@ -1152,6 +1163,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
         }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
+        }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);
             for (var c = 0u; c < ndof; c++) {
@@ -1161,7 +1179,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         // A singular articulated inertia means the joint carries no effective
@@ -1171,8 +1193,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_st = transpose6(&x_mot_s);
-                var ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
-                i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                var ia_self_s = i_a[i];
+                var ia_par_s = m6_XtAX(&x_mot_st, &ia_self_s, &x_mot_s);
+                var ia_pi_s = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi_s, &ia_par_s);
                 let p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_par_s);
             }
@@ -1220,7 +1244,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
             var x_mot_t = transpose6(&x_mot);
             var ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
-            i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+            var ia_pi_w = i_a[pi];
+            i_a[pi] = m6_add(&ia_pi_w, &ia_parent);
 
             let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_new);
             p_a[pi] = sv_add(p_a[pi], p_parent);
@@ -1234,6 +1259,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v_off = bu(i, 3u);
         let axis = vec3<f32>(bf(i, 26u), bf(i, 27u), bf(i, 28u));
         let damping_val = bf(i, 29u);
+        let stiffness_val = bf(i, 30u);
+        let spring_ref = bf(i, 31u);
 
         var a_parent: array<f32, 6>;
         if (parent < 0) {
@@ -1266,6 +1293,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 - damping_val * v[v_base + v_off + k]
                 - sv_dot(s_k, p_a[i]);
         }
+        // Passive joint spring, single-DOF joints only — the exact clause
+        // CPU passive_force applies (joint.rs): f += -k * (q - q_ref).
+        // Explicit like the CPU's, so no D-matrix term.
+        if (ndof == 1u && stiffness_val != 0.0) {
+            let q_off_s = bu(i, 2u);
+            u_vec[0] += -stiffness_val * (q[q_base + q_off_s] - spring_ref);
+        }
         for (var r = 0u; r < ndof; r++) {
             let s_r = subspace_col(jtype, axis, r);
             for (var c = 0u; c < ndof; c++) {
@@ -1275,7 +1309,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         if (!invert_small(&d_mat, ndof)) {
