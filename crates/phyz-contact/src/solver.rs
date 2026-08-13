@@ -722,7 +722,7 @@ pub fn find_ground_contacts_model_with_drop(
 /// # Small-slope assumption
 ///
 /// Support candidates are still selected with world `−ẑ` as the "down"
-/// direction ([`ground_candidates`] is shared with the flat path), not the
+/// direction (candidate selection is shared with the flat path), not the
 /// local terrain normal. For the shallow terrain a walking or skating robot
 /// trains on — a few degrees of ramp, centimetre bumps — the two directions
 /// select the same feature; on a steep wall a curved shape's reported
