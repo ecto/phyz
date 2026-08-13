@@ -26,17 +26,26 @@ struct ContactParams {
     _padding: [f32; 2],
 }
 
-/// Packed geometry data per body (8 f32 values).
+/// Packed geometry data per body (20 f32 values).
 ///
 /// ```text
-/// [0]  geom_type (0=none, 1=sphere, 2=box, 3=capsule, 4=cylinder)
-/// [1]  param0 (radius for sphere/capsule/cylinder, half_x for box)
-/// [2]  param1 (length for capsule, half_y for box, height for cylinder)
-/// [3]  param2 (half_z for box)
-/// [4]  skip-plane flag (1.0 = this body never contacts the attached plane)
-/// [5..8] reserved
+/// [0]      geom_type (0=none, 1=sphere, 2=box, 3=capsule, 4=cylinder)
+/// [1]      param0 (radius for sphere/capsule/cylinder, half_x for box)
+/// [2]      param1 (length for capsule, half_y for box, height for cylinder)
+/// [3]      param2 (half_z for box)
+/// [4]      skip-plane flag (1.0 = this body never contacts the attached plane)
+/// [5..8]   instance origin position, body frame
+/// [8..17]  instance origin rotation, row-major (body -> shape coordinates)
+/// [17..20] reserved
 /// ```
-const GEOM_STRIDE: usize = 8;
+///
+/// The shape comes from `Body::collisions[0]` when present — offsets
+/// included, which is where a K1 rig mounts its foot pads (2.6 cm forward of
+/// the ankle) — falling back to the legacy centred `Body::geometry`. Bodies
+/// with more than one collision instance contact through their FIRST
+/// instance only on the GPU; that is a documented fidelity gap, not a
+/// silent one, and the CPU impulse path remains the referee.
+const GEOM_STRIDE: usize = 20;
 
 /// GPU ground contact pipeline.
 pub struct ContactPipeline {
@@ -263,7 +272,26 @@ fn pack_geometries(model: &Model) -> Result<Vec<f32>, String> {
 
     for (i, body) in model.bodies.iter().enumerate() {
         let base = i * GEOM_STRIDE;
-        match &body.geometry {
+        // Identity origin unless an instance carries its own.
+        data[base + 8] = 1.0;
+        data[base + 12] = 1.0;
+        data[base + 16] = 1.0;
+
+        let (geom, origin) = match body.collisions.first() {
+            Some(inst) => (Some(&inst.geometry), Some(&inst.origin)),
+            None => (body.geometry.as_ref(), None),
+        };
+        if let Some(o) = origin {
+            data[base + 5] = o.pos.x as f32;
+            data[base + 6] = o.pos.y as f32;
+            data[base + 7] = o.pos.z as f32;
+            for r in 0..3 {
+                for c in 0..3 {
+                    data[base + 8 + r * 3 + c] = o.rot[(r, c)] as f32;
+                }
+            }
+        }
+        match geom {
             None => {
                 data[base] = 0.0; // type = none
             }
@@ -304,7 +332,6 @@ fn pack_geometries(model: &Model) -> Result<Vec<f32>, String> {
             }
         }
     }
-
     Ok(data)
 }
 

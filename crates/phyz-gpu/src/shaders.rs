@@ -10,7 +10,7 @@
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 36u;
-const GEOM_STRIDE: u32 = 8u;
+const GEOM_STRIDE: u32 = 20u;
 
 struct ContactParams {
     nworld: u32,
@@ -111,14 +111,26 @@ fn rot_compose(a: array<f32, 9>, b: array<f32, 9>) -> array<f32, 9> {
 
 // Support point of body i's shape in the direction of -n_body (n_body is a
 // unit vector in the body's own frame): the point of the shape that reaches
-// furthest against the normal. A rotated box touches down on a corner, not
-// the centre of a face.
+// furthest against the normal, returned in BODY coordinates with the
+// collision instance's own origin (offset + rotation) applied — a K1 foot
+// pad sits 2.6 cm forward of its ankle, and ignoring that offset is how the
+// robot loses its whole sagittal support margin.
 fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
     let gtype = u32(geometry[i * GEOM_STRIDE]);
+    // Instance origin: pos at [5..8], rot (body -> shape, row-major) at [8..17].
+    let o_p = vec3<f32>(
+        geometry[i * GEOM_STRIDE + 5u],
+        geometry[i * GEOM_STRIDE + 6u],
+        geometry[i * GEOM_STRIDE + 7u]
+    );
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[i * GEOM_STRIDE + 8u + k]; }
+    let n = rot_mul(o_r, n_body);
+
     var support = vec3<f32>(0.0, 0.0, 0.0);
     if (gtype == 1u) {
         let radius = geometry[i * GEOM_STRIDE + 1u];
-        support = -n_body * radius;
+        support = -n * radius;
     } else if (gtype == 2u) {
         let h = vec3<f32>(
             geometry[i * GEOM_STRIDE + 1u],
@@ -126,24 +138,24 @@ fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
             geometry[i * GEOM_STRIDE + 3u]
         );
         support = vec3<f32>(
-            -h.x * sign(n_body.x),
-            -h.y * sign(n_body.y),
-            -h.z * sign(n_body.z)
+            -h.x * sign(n.x),
+            -h.y * sign(n.y),
+            -h.z * sign(n.z)
         );
     } else if (gtype == 3u) {
         let radius = geometry[i * GEOM_STRIDE + 1u];
         let half_len = geometry[i * GEOM_STRIDE + 2u] * 0.5;
-        support = vec3<f32>(0.0, 0.0, -half_len * sign(n_body.z)) - n_body * radius;
+        support = vec3<f32>(0.0, 0.0, -half_len * sign(n.z)) - n * radius;
     } else if (gtype == 4u) {
         let radius = geometry[i * GEOM_STRIDE + 1u];
         let half_h = geometry[i * GEOM_STRIDE + 2u] * 0.5;
-        let radial = vec3<f32>(-n_body.x, -n_body.y, 0.0);
+        let radial = vec3<f32>(-n.x, -n.y, 0.0);
         let rl = length(radial);
         var rim = vec3<f32>(0.0, 0.0, 0.0);
         if (rl > 1e-6) { rim = radial / rl * radius; }
-        support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n_body.z));
+        support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n.z));
     }
-    return support;
+    return o_p + rot_t_mul(o_r, support);
 }
 
 @compute @workgroup_size(64)
