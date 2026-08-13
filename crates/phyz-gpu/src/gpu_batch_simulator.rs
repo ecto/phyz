@@ -27,7 +27,7 @@ struct BatchSimParams {
 
 /// Packed body data for GPU upload (32 f32 values per body).
 ///
-/// Layout matches the WGSL shader's `BODY_STRIDE` of 32:
+/// Layout matches the WGSL shader's `BODY_STRIDE` of 36:
 /// ```text
 /// [0]  parent (bitcast i32)
 /// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
@@ -42,8 +42,10 @@ struct BatchSimParams {
 /// [29] damping
 /// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
 /// [31] spring reference angle
+/// [32] armature (rotor inertia, added to the D diagonal like the CPU's crba/aba)
+/// [33..36] padding
 /// ```
-const BODY_STRIDE: usize = 32;
+const BODY_STRIDE: usize = 36;
 
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
@@ -516,6 +518,7 @@ fn pack_bodies(model: &Model) -> Vec<f32> {
         // that silently dropped it would train on a different robot.
         data[base + 30] = joint.stiffness as f32;
         data[base + 31] = joint.spring_ref as f32;
+        data[base + 32] = joint.armature as f32;
     }
 
     data

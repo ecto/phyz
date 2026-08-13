@@ -9,7 +9,7 @@
 /// One thread per environment, serial tree traversal within.
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 const GEOM_STRIDE: u32 = 8u;
 
 struct ContactParams {
@@ -420,7 +420,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// One thread per (environment, joint) pair, so joints in the same environment
 /// touch disjoint `q`/`v` ranges and no synchronisation is needed.
 pub const INTEGRATE_SHADER: &str = r#"
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -558,7 +558,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ///   [30..32] padding
 pub const ABA_GENERAL_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
-const BODY_STRIDE: u32 = 32u;
+const BODY_STRIDE: u32 = 36u;
 
 struct SimParams {
     nworld: u32,
@@ -1229,7 +1229,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         // A singular articulated inertia means the joint carries no effective
@@ -1352,7 +1356,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             // Implicit joint damping — must match phyz_rigid::aba exactly, or
             // the two backends diverge on any damped model.
-            d_mat[r * ndof + r] += params.dt * damping_val;
+            // Armature (rotor inertia) joins it on the diagonal: on the K1
+            // it exceeds the ankle's link inertia ~100x, and without it the
+            // PD gains scaled by the CPU's armature-bearing mass matrix
+            // blow the model over in 0.2 s — measured on the skate rig.
+            d_mat[r * ndof + r] += params.dt * damping_val + bf(i, 32u);
         }
 
         if (!invert_small(&d_mat, ndof)) {
