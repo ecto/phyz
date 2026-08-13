@@ -24,6 +24,8 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
+    plane_half_x: f32,
+    plane_half_y: f32,
     // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
     // the flat plane at ground_height, exactly as before the feature.
     hf_nx: u32,
