@@ -211,7 +211,7 @@ impl GpuState {
             v_tx.send(result).ok();
         });
 
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
 
         q_rx.receive()
             .await

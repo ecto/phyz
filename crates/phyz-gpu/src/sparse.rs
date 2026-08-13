@@ -89,7 +89,7 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok_or("No GPU adapter found")?;
+    .ok().ok_or("No GPU adapter found")?;
 
     let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
 
@@ -107,13 +107,12 @@ pub fn request_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>, GpuPreci
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
+                trace: wgpu::Trace::Off,
             label: Some("phyz-sparse-device"),
             required_features,
             required_limits: limits,
             memory_hints: Default::default(),
-        },
-        None,
-    ))
+        }))
     .map_err(|e| format!("Failed to create device: {e}"))?;
 
     let precision = if has_f64 {
@@ -149,7 +148,7 @@ pub async fn request_device_async()
             force_fallback_adapter: false,
         })
         .await
-        .ok_or("No GPU adapter found")?;
+        .ok().ok_or("No GPU adapter found")?;
 
     let has_f64 = adapter.features().contains(wgpu::Features::SHADER_F64);
 
@@ -167,13 +166,12 @@ pub async fn request_device_async()
     let (device, queue) = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
+                trace: wgpu::Trace::Off,
                 label: Some("phyz-sparse-device-async"),
                 required_features,
                 required_limits: limits,
                 memory_hints: Default::default(),
-            },
-            None,
-        )
+            })
         .await
         .map_err(|e| format!("Failed to create device: {e}"))?;
 
@@ -998,7 +996,7 @@ impl GpuVecOps {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.recv()
             .expect("channel closed")
             .expect("buffer map failed");
@@ -1022,7 +1020,7 @@ impl GpuVecOps {
     /// Submit work without reading back.
     pub fn submit(&self, encoder: wgpu::CommandEncoder) {
         self.queue.submit(Some(encoder.finish()));
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
     }
 
     /// Download a vector from GPU to CPU (f64).
@@ -1049,7 +1047,7 @@ impl GpuVecOps {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.recv()
             .expect("channel closed")
             .expect("buffer map failed");
@@ -1093,7 +1091,7 @@ impl GpuVecOps {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.recv()
             .expect("channel closed")
             .expect("buffer map failed");
@@ -1122,7 +1120,7 @@ impl GpuVecOps {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.receive().await.unwrap()
     }
 
@@ -1165,7 +1163,7 @@ impl GpuVecOps {
     /// Async variant of `submit` — submits and polls.
     pub async fn submit_async(&self, encoder: wgpu::CommandEncoder) {
         self.queue.submit(Some(encoder.finish()));
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
     }
 
     /// Async variant of `download_vec`.

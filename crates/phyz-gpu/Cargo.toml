@@ -15,7 +15,7 @@ readme = "README.md"
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
-wgpu = "24.0"
+wgpu = "25.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"
 futures-intrusive = "0.5"

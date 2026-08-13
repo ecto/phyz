@@ -68,17 +68,16 @@ impl GpuSimulator {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
-        .ok_or("Failed to find GPU adapter")?;
+        .ok().ok_or("Failed to find GPU adapter")?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
+                trace: wgpu::Trace::Off,
                 label: Some("phyz-gpu-device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
-            },
-            None,
-        ))
+            }))
         .map_err(|e| format!("Failed to create device: {}", e))?;
 
         let device = Arc::new(device);
