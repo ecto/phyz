@@ -30,7 +30,8 @@ pub use material::{ContactMaterial, SolImp, SolRef};
 pub use solver::{contact_forces, contact_forces_implicit};
 pub use solver::{
     find_contacts, find_ground_contacts, find_ground_contacts_model,
-    find_ground_contacts_model_with_drop,
+    find_ground_contacts_model_with_drop, find_heightfield_contacts_model,
+    find_heightfield_contacts_model_with_drop,
 };
 
 use phyz_collision::Collision;
