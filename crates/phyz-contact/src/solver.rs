@@ -3,7 +3,7 @@
 use crate::material::ContactMaterial;
 use phyz_collision::{AABB, Collision, sweep_and_prune};
 use phyz_math::{SpatialTransformExt, SpatialVec, Vec3};
-use phyz_model::{Geometry as ModelGeometry, Model, State};
+use phyz_model::{Geometry as ModelGeometry, Heightfield, Model, State};
 
 /// Convert phyz_model::Geometry to phyz_collision::Geometry.
 fn convert_geometry(g: &ModelGeometry) -> phyz_collision::Geometry {
@@ -699,6 +699,114 @@ pub fn find_ground_contacts_model_with_drop(
                     body_j: usize::MAX, // Ground is not a body
                     contact_point: Vec3::new(p.x, p.y, ground_height - depth * 0.5),
                     contact_normal: Vec3::z(),
+                    penetration_depth: depth,
+                },
+                drop,
+            ));
+        }
+    }
+
+    out
+}
+
+/// [`find_ground_contacts_model`] against a [`Heightfield`] instead of a
+/// flat plane.
+///
+/// Each candidate support point `p` is tested against the terrain surface
+/// directly below it: with `h = hf.height(p.x, p.y)` and `n` the surface
+/// normal there, the signed depth along the normal is `n.z · (h − p.z)` —
+/// positive inside the terrain, negative in the margin band above it. The
+/// contact normal is the terrain normal, so a box on a uniform slope feels
+/// exactly the tilted plane it is standing on.
+///
+/// # Small-slope assumption
+///
+/// Support candidates are still selected with world `−ẑ` as the "down"
+/// direction ([`ground_candidates`] is shared with the flat path), not the
+/// local terrain normal. For the shallow terrain a walking or skating robot
+/// trains on — a few degrees of ramp, centimetre bumps — the two directions
+/// select the same feature; on a steep wall a curved shape's reported
+/// support point would be off by the slope angle. Vertical-face terrain is
+/// out of scope for this detector.
+///
+/// On a [`Heightfield::flat`] field this reproduces
+/// [`find_ground_contacts_model`] bit for bit: the normal is `+ẑ`, the
+/// depth reduces to `h − p.z`, and the contact point to the same
+/// midsurface.
+pub fn find_heightfield_contacts_model(
+    model: &Model,
+    state: &State,
+    hf: &Heightfield,
+    margin: f64,
+) -> Vec<Collision> {
+    find_heightfield_contacts_model_with_drop(model, state, hf, margin)
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect()
+}
+
+/// [`find_heightfield_contacts_model`], with each contact's world-axis drop
+/// (see [`find_ground_contacts_model_with_drop`]).
+pub fn find_heightfield_contacts_model_with_drop(
+    model: &Model,
+    state: &State,
+    hf: &Heightfield,
+    margin: f64,
+) -> Vec<(Collision, f64)> {
+    let margin = sanitize_margin(margin);
+    let mut out = Vec::new();
+
+    for (i, body) in model.bodies.iter().enumerate() {
+        let Some(xform) = state.body_xform.get(i) else {
+            continue;
+        };
+        if !pos_is_finite(&xform.pos) || !rot_is_finite(&xform.rot) {
+            continue;
+        }
+
+        // One candidate pool per body, exactly as the flat path: shapes
+        // compete for the same manifold slots. Entries carry the terrain
+        // normal alongside depth, point and drop.
+        let mut pool: Vec<(f64, Vec3, Vec3, f64)> = Vec::new();
+        let mut push_shape = |geom: &ModelGeometry, sx: &phyz_math::SpatialTransform| {
+            let Some((candidates, drop)) = ground_candidates(geom, sx) else {
+                return;
+            };
+            for p in candidates {
+                if !(p.z.is_finite() && p.x.is_finite() && p.y.is_finite()) {
+                    continue;
+                }
+                let n = hf.normal(p.x, p.y);
+                let depth = n.z * (hf.height(p.x, p.y) - p.z);
+                if depth > -margin {
+                    pool.push((depth, p, n, drop));
+                }
+            }
+        };
+
+        if body.collisions.is_empty() {
+            if let Some(geom) = &body.geometry {
+                push_shape(geom, xform);
+            }
+        } else {
+            for inst in &body.collisions {
+                push_shape(&inst.geometry, &shape_world_xform(xform, &inst.origin));
+            }
+        }
+
+        pool.sort_by(|a, b| b.0.total_cmp(&a.0));
+        pool.truncate(phyz_collision::MAX_MANIFOLD_POINTS);
+
+        for (depth, p, n, drop) in pool {
+            out.push((
+                Collision {
+                    body_i: i,
+                    body_j: usize::MAX, // Terrain is not a body
+                    // Midsurface between the support point and the terrain,
+                    // along the normal — the heightfield generalization of
+                    // the flat path's `ground_height - depth/2`.
+                    contact_point: p + n * (depth * 0.5),
+                    contact_normal: n,
                     penetration_depth: depth,
                 },
                 drop,
