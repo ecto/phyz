@@ -10,7 +10,7 @@
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 36u;
-const GEOM_STRIDE: u32 = 16u;
+const GEOM_STRIDE: u32 = 24u;
 const CS_STRIDE: u32 = 8u;
 
 struct ContactParams {
@@ -40,6 +40,7 @@ fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
 fn body_parent(bi: u32) -> i32 { return bitcast<i32>(bodies[bi * BODY_STRIDE]); }
 fn body_jtype(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 1u]); }
 fn body_qoff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 2u]); }
+fn body_voff(bi: u32) -> u32 { return bitcast<u32>(bodies[bi * BODY_STRIDE + 3u]); }
 
 fn cross3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
@@ -103,6 +104,73 @@ fn rot_compose(a: array<f32, 9>, b: array<f32, 9>) -> array<f32, 9> {
     return r;
 }
 
+// R^T * v
+fn rot_t_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        r[0]*vv.x + r[3]*vv.y + r[6]*vv.z,
+        r[1]*vv.x + r[4]*vv.y + r[7]*vv.z,
+        r[2]*vv.x + r[5]*vv.y + r[8]*vv.z
+    );
+}
+
+// Support point of body i's shape in the direction of -n_body (n_body a unit
+// vector in the body's own frame): the point of the shape that reaches
+// furthest against the contact normal, returned in BODY coordinates with the
+// collision instance's own origin (offset + rotation) applied.
+//
+// The offset is not a detail: a K1 foot pad sits 2.6 cm forward of its
+// ankle, and ignoring it costs the robot its whole sagittal support margin.
+// The rotation is not either — an axis-aligned lowest point is only the true
+// support point while the body is upright, which is exactly the case a
+// test fixture starts in and a walking robot never stays in.
+fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
+    let gbase = i * GEOM_STRIDE;
+    let gtype = u32(geometry[gbase]);
+    // Instance origin: pos at [10..13], rot (body -> shape, row-major) at [13..22].
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    let n = rot_mul(o_r, n_body);
+
+    var support = vec3<f32>(0.0, 0.0, 0.0);
+    if (gtype == 1u) {
+        support = -n * geometry[gbase + 1u];
+    } else if (gtype == 2u) {
+        let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+        support = vec3<f32>(-h.x * sign(n.x), -h.y * sign(n.y), -h.z * sign(n.z));
+    } else if (gtype == 3u) {
+        let radius = geometry[gbase + 1u];
+        let half_len = geometry[gbase + 2u] * 0.5;
+        support = vec3<f32>(0.0, 0.0, -half_len * sign(n.z)) - n * radius;
+    } else if (gtype == 4u) {
+        let radius = geometry[gbase + 1u];
+        let half_h = geometry[gbase + 2u] * 0.5;
+        let radial = vec3<f32>(-n.x, -n.y, 0.0);
+        let rl = length(radial);
+        var rim = vec3<f32>(0.0, 0.0, 0.0);
+        if (rl > 1e-6) { rim = radial / rl * radius; }
+        support = rim + vec3<f32>(0.0, 0.0, -half_h * sign(n.z));
+    } else if (gtype == 5u) {
+        // Mesh, via its body-frame AABB — asymmetric (min/max, not
+        // half-extents), so an off-centre hull keeps its true offset.
+        //
+        // Resolved through sign(), like the box above, and that matters:
+        // an AABB's support is DEGENERATE whenever a normal component is
+        // zero (flat on the ground, the whole bottom face ties). sign(0)
+        // is 0, which picks the face centre; a `select` on `n > 0` would
+        // break the tie toward a corner instead, and the r x f torque
+        // about that corner tips a body that should rest flat — measured
+        // as a mesh cube launching to z = 1.27 m from a 0.5 m drop.
+        let mn = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+        let mx = vec3<f32>(geometry[gbase + 4u], geometry[gbase + 5u], geometry[gbase + 6u]);
+        let mc = (mn + mx) * 0.5;
+        let mh = (mx - mn) * 0.5;
+        support = mc - vec3<f32>(mh.x * sign(n.x), mh.y * sign(n.y), mh.z * sign(n.z));
+    }
+    return o_p + rot_t_mul(o_r, support);
+}
+
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_idx = gid.x;
@@ -110,6 +178,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let nb = cparams.nbodies;
     let q_base = world_idx * cparams.nv;
+    let v_base = world_idx * cparams.nv;
 
     // Clear external forces for this env
     let ef_env_base = world_idx * nb * 6u;
@@ -122,11 +191,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Compute FK: world rotation and position for each body
     var w_rot: array<array<f32, 9>, MAX_BODIES>;
     var w_pos: array<vec3<f32>, MAX_BODIES>;
+    // Body-frame spatial velocities (angular, linear), same recursion as the
+    // CPU: v_i = X_tree_i * v_parent + S_i * qd_i. Contact damping and
+    // friction both need the velocity of the contact POINT, which a
+    // finite-differenced penetration cannot supply once a shape reports more
+    // than one contact point — and friction cannot be had from it at all.
+    var w_omega: array<vec3<f32>, MAX_BODIES>;
+    var w_lin: array<vec3<f32>, MAX_BODIES>;
 
     for (var i = 0u; i < nb; i++) {
         let parent = body_parent(i);
         let jtype = body_jtype(i);
         let q_off = body_qoff(i);
+        let v_off = body_voff(i);
 
         // Parent-to-joint transform
         var ptj_rot: array<f32, 9>;
@@ -140,22 +217,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // does nothing.
         var j_rot: array<f32, 9>;
         var j_pos = vec3<f32>(0.0, 0.0, 0.0);
+        var j_omega = vec3<f32>(0.0, 0.0, 0.0);
+        var j_lin = vec3<f32>(0.0, 0.0, 0.0);
         if (jtype == 0u) {
             j_rot = rev_rot(axis, q[q_base + q_off]);
+            j_omega = axis * v[v_base + v_off];
         } else if (jtype == 1u) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
+            j_lin = axis * v[v_base + v_off];
         } else if (jtype == 3u) {
             // Coordinate map is the INVERSE of the integrated rotation
             // (exp(-w)), matching the negated angle in rev_rot and the CPU
             // joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
         } else if (jtype == 4u) {
             // Free: q = [exp-coords(3), pos(3)] — angular first, matching v.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
+            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
+            j_lin = vec3<f32>(v[v_base + v_off + 3u], v[v_base + v_off + 4u], v[v_base + v_off + 5u]);
         } else {
             j_rot = identity_rot();
         }
@@ -186,10 +270,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (parent < 0) {
             w_rot[i] = tree_rt; // body-to-world rotation = tree_rotᵀ
             w_pos[i] = tree_pos;
+            w_omega[i] = j_omega;
+            w_lin[i] = j_lin;
         } else {
             let pi = u32(parent);
             w_rot[i] = rot_compose(w_rot[pi], tree_rt);
             w_pos[i] = w_pos[pi] + rot_mul(w_rot[pi], tree_pos);
+            // apply_motion, in the BODY frame: w_c = R*w_p,
+            // v_c = R*v_p - R*(p x w_p). `tree_rot` is the world→body
+            // (parent→child) rotation this needs — the untransposed twin of
+            // the `tree_rt` the pose recursion above uses.
+            let pw = rot_mul(tree_rot, w_omega[pi]);
+            let pv = rot_mul(tree_rot, w_lin[pi])
+                   - rot_mul(tree_rot, cross3(tree_pos, w_omega[pi]));
+            w_omega[i] = pw + j_omega;
+            w_lin[i] = pv + j_lin;
         }
     }
 
@@ -207,114 +302,64 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        let pos = w_pos[i];
+        // World +Z expressed in this body's frame. Support selection, the
+        // contact normal and every force below live in body coordinates,
+        // matching what ext_forces wants (r x f and f, body frame).
+        let n_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
+        let support = support_point(i, n_body);
+        let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
 
-        // Lowest point of the shape, and its world x/y for the contact point.
-        var min_z = pos.z;
-        var cx = pos.x;
-        var cy = pos.y;
-        if (gtype == 1u) {
-            // Sphere
-            let radius = geometry[gbase + 1u];
-            min_z = pos.z - radius;
-        } else if (gtype == 2u) {
-            // Box
-            let hz = geometry[gbase + 3u];
-            min_z = pos.z - hz;
-        } else if (gtype == 3u) {
-            // Capsule
-            let radius = geometry[gbase + 1u];
-            let length = geometry[gbase + 2u];
-            min_z = pos.z - length * 0.5 - radius;
-        } else if (gtype == 4u) {
-            // Cylinder
-            let height = geometry[gbase + 2u];
-            min_z = pos.z - height * 0.5;
-        } else if (gtype == 5u) {
-            // Mesh, approximated by its body-frame AABB: the lowest of the
-            // eight corners after rotating into the world frame.
-            let mn = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
-            let mx = vec3<f32>(geometry[gbase + 4u], geometry[gbase + 5u], geometry[gbase + 6u]);
-            min_z = 3.4e38;
-            for (var c = 0u; c < 8u; c++) {
-                var corner = mn;
-                if ((c & 1u) != 0u) { corner.x = mx.x; }
-                if ((c & 2u) != 0u) { corner.y = mx.y; }
-                if ((c & 4u) != 0u) { corner.z = mx.z; }
-                let wc = pos + rot_mul(w_rot[i], corner);
-                if (wc.z < min_z) {
-                    min_z = wc.z;
-                    cx = wc.x;
-                    cy = wc.y;
-                }
-            }
-        }
-
-        let penetration = cparams.ground_height - min_z;
-        // Previous-step penetration, read before this step's value replaces it.
-        let prev_pen = contact_state[cs_base + 1u];
+        let penetration = cparams.ground_height - sup_w.z;
         if (penetration <= 0.0) {
             for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
             continue;
         }
 
-        // Penalty force with per-body gains: f = k * pen + d * pen_rate,
-        // the standard Kelvin-Voigt contact model. The penetration rate
-        // (finite difference against the previous step) stands in for the
-        // contact point's approach velocity, giving real damping without a
-        // velocity FK.
-        //
-        // ### THE PLUS SIGN IS CORRECT. ###
-        //
-        // pen_rate > 0 means the body is still moving INTO the ground, so the
-        // damper must push back harder — the force opposes the velocity, which
-        // is what damping means. It reads like an amplifier only if you take
-        // pen_rate for a displacement rather than an approach speed. Flipping
-        // to `- d * pen_rate` would make the damper *assist* penetration on
-        // impact and *resist separation* on rebound, i.e. pump energy in on
-        // both halves of the bounce. On first touch prev_pen is 0, so the rate
-        // is the impact velocity — the moment damping matters most.
-        // The max(_, 0) below is what stops the damper pulling the body down
-        // as it separates (pen_rate < 0), which is the real hazard here.
+        // Velocity of the contact POINT, body frame. This replaces the
+        // finite-differenced penetration rate the single-point model used:
+        // that needed one history slot per contact and there is only one
+        // slot per body, and it cannot produce a tangential velocity at all,
+        // so friction was simply absent.
+        let v_point = w_lin[i] + cross3(w_omega[i], support);
+        let v_normal = dot(v_point, n_body);
+
+        // Penalty force with per-body gains, Kelvin-Voigt: f = k*pen - d*v_n.
+        // v_normal is the contact point's velocity along the OUTWARD normal,
+        // so it is negative while the body is still moving into the ground —
+        // hence the minus sign, and hence a damper that always opposes the
+        // approach. max(_, 0) stops it pulling the body back down as it
+        // separates, which is the real hazard in any penalty contact.
         let k_body = geometry[gbase + 8u];
         let d_body = geometry[gbase + 9u];
-        let pen_rate = (penetration - prev_pen) / cparams.dt;
-        // Clamp to positive (no pulling into ground)
-        let f_z = max(k_body * penetration + d_body * pen_rate, 0.0);
+        let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
+        var f_body = n_body * f_n;
 
-        // Write as spatial force in body frame
-        // For ground contact, force is [0,0,f_z] in world frame
-        // Transform to body frame: f_body = w_rot * f_world (since w_rot = body_to_world rot)
-        // Actually need world_to_body rot = w_rot^T
-        let fw = vec3<f32>(0.0, 0.0, f_z);
-        // w_rot is body-to-world, so world-to-body is transpose
-        let fb = vec3<f32>(
-            w_rot[i][0]*fw.x + w_rot[i][3]*fw.y + w_rot[i][6]*fw.z,
-            w_rot[i][1]*fw.x + w_rot[i][4]*fw.y + w_rot[i][7]*fw.z,
-            w_rot[i][2]*fw.x + w_rot[i][5]*fw.y + w_rot[i][8]*fw.z
-        );
-
-        // Write to ext_forces: [angular(3), linear(3)]
-        // Torque from contact point offset (simplified: at body origin)
+        // Spatial force in the body frame: [angular = r x f, linear = f].
+        // The torque is not optional decoration — without it contact acts
+        // through the body origin, so no shape can resist tipping and a
+        // resting box has no support polygon at all.
+        let torque = cross3(support, f_body);
         let ef_base = ef_env_base + i * 6u;
-        // Angular part: r × f where r is from body COM to contact point
-        // Simplified: assume contact at body lowest point
-        ext_forces[ef_base + 3u] += fb.x;
-        ext_forces[ef_base + 4u] += fb.y;
-        ext_forces[ef_base + 5u] += fb.z;
+        ext_forces[ef_base + 0u] += torque.x;
+        ext_forces[ef_base + 1u] += torque.y;
+        ext_forces[ef_base + 2u] += torque.z;
+        ext_forces[ef_base + 3u] += f_body.x;
+        ext_forces[ef_base + 4u] += f_body.y;
+        ext_forces[ef_base + 5u] += f_body.z;
 
         // Contact state for readback (world frame). The contact point sits on
-        // the ground plane, not at the shape's lowest point: min_z is below
-        // the plane by exactly `penetration` whenever there is contact at all,
-        // and the depth is already reported in its own slot.
+        // the ground plane, not at the shape's lowest point: the support point
+        // is below the plane by exactly `penetration` whenever there is
+        // contact at all, and the depth is already reported in its own slot.
+        let f_w = rot_mul(w_rot[i], f_body);
         contact_state[cs_base]      = 1.0;
         contact_state[cs_base + 1u] = penetration;
-        contact_state[cs_base + 2u] = cx;
-        contact_state[cs_base + 3u] = cy;
+        contact_state[cs_base + 2u] = sup_w.x;
+        contact_state[cs_base + 3u] = sup_w.y;
         contact_state[cs_base + 4u] = cparams.ground_height;
-        contact_state[cs_base + 5u] = 0.0;
-        contact_state[cs_base + 6u] = 0.0;
-        contact_state[cs_base + 7u] = f_z;
+        contact_state[cs_base + 5u] = f_w.x;
+        contact_state[cs_base + 6u] = f_w.y;
+        contact_state[cs_base + 7u] = f_w.z;
     }
 }
 "#;

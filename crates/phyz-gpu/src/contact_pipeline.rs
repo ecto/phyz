@@ -24,7 +24,7 @@ struct ContactParams {
     _pad1: f32,
 }
 
-/// Packed geometry data per body (16 f32 values).
+/// Packed geometry data per body (24 f32 values).
 ///
 /// ```text
 /// [0]  geom_type (0=none, 1=sphere, 2=box, 3=capsule, 4=cylinder, 5=mesh)
@@ -32,12 +32,21 @@ struct ContactParams {
 /// [2]  param1 (length for capsule, half_y for box, height for cylinder, aabb min_y for mesh)
 /// [3]  param2 (half_z for box, aabb min_z for mesh)
 /// [4..7] aabb max (x,y,z) for mesh
-/// [7]  reserved
+/// [7]  skip-plane flag (1.0 = this body never contacts the attached plane)
 /// [8]  contact stiffness (per body)
 /// [9]  contact damping (per body)
-/// [10..16] reserved
+/// [10..13] instance origin position, body frame
+/// [13..22] instance origin rotation, row-major (body -> shape coordinates)
+/// [22..24] reserved
 /// ```
-const GEOM_STRIDE: usize = 16;
+///
+/// There is no separate "carried mass" override here, and deliberately so:
+/// the penalty gains are already per body ([8], [9]), so a foot that holds
+/// up a whole robot is expressed by giving that foot the stiffness it needs
+/// rather than by naming a mass the shader then divides. See
+/// [`BodyContactGains::uniform_frequency`] for the mass-proportional recipe
+/// that makes one setting work across a robot.
+const GEOM_STRIDE: usize = 24;
 
 /// Floats per body in the contact-state buffer.
 ///
@@ -386,7 +395,34 @@ fn pack_geometries(
 
     for (i, body) in model.bodies.iter().enumerate() {
         let base = i * GEOM_STRIDE;
-        match &body.geometry {
+
+        // Identity instance origin unless a collision instance carries one.
+        data[base + 13] = 1.0;
+        data[base + 17] = 1.0;
+        data[base + 21] = 1.0;
+
+        // Prefer `Body::collisions[0]` — offsets included, which is where a
+        // K1 rig mounts its foot pads (2.6 cm forward of the ankle) —
+        // falling back to the legacy centred `Body::geometry`. Bodies with
+        // more than one collision instance contact through their FIRST
+        // instance only on the GPU; that is a documented fidelity gap, not a
+        // silent one, and the CPU impulse path remains the referee.
+        let (geom, origin) = match body.collisions.first() {
+            Some(inst) => (Some(&inst.geometry), Some(&inst.origin)),
+            None => (body.geometry.as_ref(), None),
+        };
+        if let Some(o) = origin {
+            data[base + 10] = o.pos.x as f32;
+            data[base + 11] = o.pos.y as f32;
+            data[base + 12] = o.pos.z as f32;
+            for r in 0..3 {
+                for c in 0..3 {
+                    data[base + 13 + r * 3 + c] = o.rot[(r, c)] as f32;
+                }
+            }
+        }
+
+        match geom {
             Some(Geometry::Sphere { radius }) => {
                 data[base] = 1.0;
                 data[base + 1] = *radius as f32;
