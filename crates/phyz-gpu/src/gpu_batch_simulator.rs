@@ -363,6 +363,26 @@ impl GpuBatchSimulator {
         gains: &[crate::contact_pipeline::BodyContactGains],
         plane: Option<&crate::contact_pipeline::BodyPlane>,
     ) -> Result<usize, String> {
+        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+    }
+
+    /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain
+    /// instead of the flat plane.
+    ///
+    /// `ground_height` is ignored while a heightfield is loaded — the
+    /// surface comes from the field, and a
+    /// [`phyz_model::Heightfield::flat`] field reproduces the plane exactly.
+    /// Swap terrain between training iterations with
+    /// [`Self::set_heightfield`]; the node buffer is sized to this first
+    /// field, so start with the largest grid the run will use.
+    pub fn enable_contact_terrain(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        heightfield: Option<&phyz_model::Heightfield>,
+    ) -> Result<usize, String> {
         let pipeline = ContactPipeline::with_body_gains(
             &self.device,
             &self.queue,
@@ -377,10 +397,22 @@ impl GpuBatchSimulator {
             },
             Some(gains),
             plane,
+            heightfield,
         )?;
         let collidable = pipeline.collidable_bodies();
         self.contact_pipeline = Some(pipeline);
         Ok(collidable)
+    }
+
+    /// Replace the contact terrain in place — a buffer write, no pipeline
+    /// rebuild. Errors if contact is not enabled or the new field outgrows
+    /// the buffer allocated by [`Self::enable_contact_terrain`].
+    pub fn set_heightfield(&mut self, hf: &phyz_model::Heightfield) -> Result<(), String> {
+        let pipeline = self
+            .contact_pipeline
+            .as_mut()
+            .ok_or("contact not enabled — call enable_contact_terrain first")?;
+        pipeline.set_heightfield(&self.queue, hf)
     }
 
     /// Enable PD position servos on the given DOFs.

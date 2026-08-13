@@ -50,7 +50,7 @@ fn a_yawed_box_rests_flat_without_rocking() {
     .unwrap();
 
     let mut s = model.default_state();
-    s.q[2] = 0.5236; // 30° yaw — exp-coords angular block leads
+    s.q[2] = std::f64::consts::FRAC_PI_6; // 30° yaw — exp-coords angular block leads
     s.q[5] = half.z + 0.05; // small drop
     sim.load_states(std::slice::from_ref(&s));
     for _ in 0..2000 {

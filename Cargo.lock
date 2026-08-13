@@ -3244,6 +3244,7 @@ dependencies = [
  "approx",
  "bytemuck",
  "futures-intrusive",
+ "phyz",
  "phyz-math",
  "phyz-mjcf",
  "phyz-model",

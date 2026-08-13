@@ -24,9 +24,14 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
+    // the flat plane at ground_height, exactly as before the feature.
+    hf_nx: u32,
+    hf_ny: u32,
+    hf_ox: f32,
+    hf_oy: f32,
+    hf_oz: f32,
+    hf_cell: f32,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -39,6 +44,9 @@ struct ContactParams {
 // Persists across steps so the previous penetration can supply a damping
 // rate; every collidable body's slot is rewritten each pass.
 @group(0) @binding(6) var<storage, read_write> contact_state: array<f32>;
+// Heightfield nodes, row-major (iy * nx + ix). Bound even when there is no
+// terrain — the binding count is fixed — with hf_nx == 0 routing around it.
+@group(0) @binding(7) var<storage, read> hf_heights: array<f32>;
 
 // Body data access
 fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
@@ -69,6 +77,68 @@ const SLIP_EPS: f32 = 1e-3;
 
 fn coulomb(mu_fn: f32, vt: f32) -> f32 {
     return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
+// ── Heightfield terrain ──
+//
+// Mirrors phyz_model::Heightfield exactly: node (ix, iy) at
+// (hf_ox + ix*cell, hf_oy + iy*cell), height hf_oz + hf_heights[iy*nx + ix],
+// bilinear between nodes, border-clamped outside the grid — with a ZERO
+// slope beyond the border, matching the clamped (flat) surface there rather
+// than the border cell's slope, which describes a surface that no longer
+// exists. The CPU detector samples the same f32 node buffer, so both
+// engines stand on identical terrain rather than terrain that agrees to
+// rounding.
+
+fn hf_node(ix: u32, iy: u32) -> f32 {
+    return cparams.hf_oz + hf_heights[iy * cparams.hf_nx + ix];
+}
+
+// Cell index and intra-cell fraction along one axis, clamped to the grid.
+fn hf_locate(w: f32, o: f32, n: u32) -> vec2<f32> {
+    if (n < 2u) { return vec2<f32>(0.0, 0.0); }
+    let u = clamp((w - o) / cparams.hf_cell, 0.0, f32(n - 1u));
+    // A query exactly on the far border indexes the last cell at t = 1
+    // rather than one past it.
+    let i = min(u32(u), n - 2u);
+    return vec2<f32>(f32(i), u - f32(i));
+}
+
+// Terrain sample at world (x, y): xyz = unit surface normal, w = height.
+// With no heightfield loaded this is the flat plane at ground_height.
+fn terrain(p: vec2<f32>) -> vec4<f32> {
+    let nx = cparams.hf_nx;
+    let ny = cparams.hf_ny;
+    if (nx == 0u) {
+        return vec4<f32>(0.0, 0.0, 1.0, cparams.ground_height);
+    }
+    let lx = hf_locate(p.x, cparams.hf_ox, nx);
+    let ly = hf_locate(p.y, cparams.hf_oy, ny);
+    let ix = u32(lx.x); let tx = lx.y;
+    let iy = u32(ly.x); let ty = ly.y;
+    let ix1 = min(ix + 1u, nx - 1u);
+    let iy1 = min(iy + 1u, ny - 1u);
+
+    let h00 = hf_node(ix, iy);
+    let h10 = hf_node(ix1, iy);
+    let h01 = hf_node(ix, iy1);
+    let h11 = hf_node(ix1, iy1);
+    let h = (h00 * (1.0 - tx) + h10 * tx) * (1.0 - ty)
+          + (h01 * (1.0 - tx) + h11 * tx) * ty;
+
+    // Analytic bilinear-patch gradient, zeroed outside the grid.
+    var dhdx = 0.0;
+    var dhdy = 0.0;
+    let span_x = f32(nx - 1u) * cparams.hf_cell;
+    let span_y = f32(ny - 1u) * cparams.hf_cell;
+    if (nx >= 2u && p.x >= cparams.hf_ox && p.x <= cparams.hf_ox + span_x) {
+        dhdx = ((h10 - h00) * (1.0 - ty) + (h11 - h01) * ty) / cparams.hf_cell;
+    }
+    if (ny >= 2u && p.y >= cparams.hf_oy && p.y <= cparams.hf_oy + span_y) {
+        dhdy = ((h01 - h00) * (1.0 - tx) + (h11 - h10) * tx) / cparams.hf_cell;
+    }
+    let n = normalize(vec3<f32>(-dhdx, -dhdy, 1.0));
+    return vec4<f32>(n, h);
 }
 
 // Revolute rotation (Rodrigues, -angle convention matching ABA)
@@ -347,7 +417,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // World +Z expressed in this body's frame. Support selection, the
         // contact normal and every force below live in body coordinates,
         // matching what ext_forces wants (r x f and f, body frame).
-        let n_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
+        // Support-point SELECTION uses world "down" even on a heightfield —
+        // the small-slope assumption the CPU detector documents: for the
+        // shallow terrain a walking or skating robot trains on, down and the
+        // local surface normal pick the same feature.
+        let z_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
         // Boxes contact through EVERY penetrating corner; other shapes
         // through the single support point they actually touch at. A box
@@ -370,11 +444,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var cpt = 0u; cpt < n_pts; cpt++) {
             var support: vec3<f32>;
             if (gtype == 2u) { support = box_corner(i, cpt); }
-            else { support = support_point(i, n_body); }
+            else { support = support_point(i, z_body); }
             let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
 
-            let penetration = cparams.ground_height - sup_w.z;
+            // Terrain under this contact point (the flat plane when no
+            // heightfield is loaded). Penetration is measured along the local
+            // surface normal, and every force below acts along it — on a flat
+            // field this reduces exactly to the old ground test.
+            let terr = terrain(sup_w.xy);
+            let n_w = terr.xyz;
+            let penetration = n_w.z * (terr.w - sup_w.z);
             if (penetration <= 0.0) { continue; }
+            let n_body = rot_t_mul(w_rot[i], n_w);
 
             // Velocity of the contact POINT, body frame. This replaces the
             // finite-differenced penetration rate the single-point model
@@ -418,7 +499,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
             f_w_total = f_w_total + rot_mul(w_rot[i], f_body);
             any_touch = true;
-            if (penetration > deepest) { deepest = penetration; deepest_w = sup_w; }
+            if (penetration > deepest) {
+                deepest = penetration;
+                // On the surface, not at the shape's lowest vertex — that
+                // vertex is below the terrain, and the depth is already
+                // reported in its own slot.
+                deepest_w = vec3<f32>(sup_w.x, sup_w.y, terr.w);
+            }
         }
 
         if (!any_touch) {
@@ -426,17 +513,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
 
-        // Contact state for readback (world frame): the deepest point and
-        // the body's TOTAL contact force, so a box resting on four corners
-        // reports the load it actually carries rather than one corner's
-        // share. The point sits on the ground plane, not at the shape's
-        // lowest vertex — that vertex is below the plane by exactly
-        // `penetration`, which is already reported in its own slot.
+        // Contact state for readback (world frame): the deepest point, on
+        // the ground surface, and the body's TOTAL contact force, so a box
+        // resting on four corners reports the load it actually carries
+        // rather than one corner's share.
         contact_state[cs_base]      = 1.0;
         contact_state[cs_base + 1u] = deepest;
         contact_state[cs_base + 2u] = deepest_w.x;
         contact_state[cs_base + 3u] = deepest_w.y;
-        contact_state[cs_base + 4u] = cparams.ground_height;
+        contact_state[cs_base + 4u] = deepest_w.z;
         contact_state[cs_base + 5u] = f_w_total.x;
         contact_state[cs_base + 6u] = f_w_total.y;
         contact_state[cs_base + 7u] = f_w_total.z;
