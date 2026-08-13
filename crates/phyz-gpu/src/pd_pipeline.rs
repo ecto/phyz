@@ -256,7 +256,23 @@ impl PdPipeline {
 
     /// Upload per-environment position targets (`targets[env][dof]`, in the
     /// order the pipeline's `PdDof` list was given).
+    /// # Panics
+    /// If any per-env vector is not exactly `n_dofs` long. Targets are
+    /// indexed by *registration order*, not by model DOF, and a caller that
+    /// passes an `nv`-length vector indexed by `v` gets silently wrong
+    /// servos — measured on a K1 whose upright pose hid the mistake (every
+    /// target near zero) while a crouched pose drove it to the floor.
     pub fn set_targets(&self, queue: &wgpu::Queue, targets: &[Vec<f64>]) {
+        for (w, t) in targets.iter().enumerate().take(self.nworld) {
+            assert_eq!(
+                t.len(),
+                self.n_dofs,
+                "world {w}: {} targets for {} registered PD dofs — targets are \
+                 indexed by registration order, not by model DOF",
+                t.len(),
+                self.n_dofs
+            );
+        }
         let mut data = vec![0.0f32; self.nworld * self.n_dofs];
         for (w, t) in targets.iter().enumerate().take(self.nworld) {
             for (d, &val) in t.iter().enumerate().take(self.n_dofs) {
