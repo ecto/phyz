@@ -23,7 +23,14 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
-    _padding: vec2<f32>,
+    // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
+    // the flat plane at ground_height, exactly as before the feature.
+    hf_nx: u32,
+    hf_ny: u32,
+    hf_ox: f32,
+    hf_oy: f32,
+    hf_oz: f32,
+    hf_cell: f32,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -32,6 +39,7 @@ struct ContactParams {
 @group(0) @binding(3) var<storage, read> q: array<f32>;
 @group(0) @binding(4) var<storage, read> v: array<f32>;
 @group(0) @binding(5) var<storage, read_write> ext_forces: array<f32>;
+@group(0) @binding(6) var<storage, read> hf_heights: array<f32>;
 
 fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
 fn body_parent(bi: u32) -> i32 { return bitcast<i32>(bodies[bi * BODY_STRIDE]); }
@@ -127,6 +135,65 @@ const SLIP_EPS: f32 = 1e-3;
 
 fn coulomb(mu_fn: f32, vt: f32) -> f32 {
     return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
+// ── Heightfield terrain ──
+//
+// Mirrors phyz_model::Heightfield exactly: node (ix, iy) at
+// (hf_ox + ix·cell, hf_oy + iy·cell), height hf_oz + hf_heights[iy·nx + ix],
+// bilinear between nodes, border-clamped outside the grid (with a *zero*
+// slope beyond the border, matching the clamped — flat — surface there).
+// The CPU path samples the same f32 buffer, so both engines stand on
+// identical terrain.
+
+fn hf_node(ix: u32, iy: u32) -> f32 {
+    return cparams.hf_oz + hf_heights[iy * cparams.hf_nx + ix];
+}
+
+// Cell index and intra-cell fraction along one axis, clamped to the grid.
+fn hf_locate(w: f32, o: f32, n: u32) -> vec2<f32> {
+    if (n < 2u) { return vec2<f32>(0.0, 0.0); }
+    let u = clamp((w - o) / cparams.hf_cell, 0.0, f32(n - 1u));
+    let i = min(u32(u), n - 2u);
+    return vec2<f32>(f32(i), u - f32(i));
+}
+
+// Terrain sample at world (x, y): xyz = unit surface normal, w = height.
+// With no heightfield loaded this is the flat plane at ground_height.
+fn terrain(p: vec2<f32>) -> vec4<f32> {
+    let nx = cparams.hf_nx;
+    let ny = cparams.hf_ny;
+    if (nx == 0u) {
+        return vec4<f32>(0.0, 0.0, 1.0, cparams.ground_height);
+    }
+    let lx = hf_locate(p.x, cparams.hf_ox, nx);
+    let ly = hf_locate(p.y, cparams.hf_oy, ny);
+    let ix = u32(lx.x); let tx = lx.y;
+    let iy = u32(ly.x); let ty = ly.y;
+    let ix1 = min(ix + 1u, nx - 1u);
+    let iy1 = min(iy + 1u, ny - 1u);
+
+    let h00 = hf_node(ix, iy);
+    let h10 = hf_node(ix1, iy);
+    let h01 = hf_node(ix, iy1);
+    let h11 = hf_node(ix1, iy1);
+    let h = (h00 * (1.0 - tx) + h10 * tx) * (1.0 - ty)
+          + (h01 * (1.0 - tx) + h11 * tx) * ty;
+
+    // Analytic bilinear-patch gradient, zeroed outside the grid where the
+    // clamped surface is flat.
+    var dhdx = 0.0;
+    var dhdy = 0.0;
+    let span_x = f32(nx - 1u) * cparams.hf_cell;
+    let span_y = f32(ny - 1u) * cparams.hf_cell;
+    if (nx >= 2u && p.x >= cparams.hf_ox && p.x <= cparams.hf_ox + span_x) {
+        dhdx = ((h10 - h00) * (1.0 - ty) + (h11 - h01) * ty) / cparams.hf_cell;
+    }
+    if (ny >= 2u && p.y >= cparams.hf_oy && p.y <= cparams.hf_oy + span_y) {
+        dhdy = ((h01 - h00) * (1.0 - tx) + (h11 - h10) * tx) / cparams.hf_cell;
+    }
+    let n = normalize(vec3<f32>(-dhdx, -dhdy, 1.0));
+    return vec4<f32>(n, h);
 }
 
 // Support point of body i's shape in the direction of -n_body (n_body is a
@@ -308,10 +375,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let gtype = u32(geometry[i * GEOM_STRIDE]);
         if (gtype == 0u) { continue; }
 
-        // World +Z expressed in this body's frame. Every support-point and
-        // force computation below happens in body coordinates, matching the
-        // CPU contact model (which returns r x f and f in the body frame).
-        let n_body = rot_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
+        // World +Z expressed in this body's frame. Support-point *selection*
+        // uses world "down" even on a heightfield — the small-slope
+        // assumption shared with the CPU detector: shallow training terrain
+        // selects the same feature either way.
+        let z_body = rot_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
         // Boxes contact through every penetrating corner; other shapes
         // through the deepest support point. Per-point stiffness for boxes
@@ -323,12 +391,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var cpt = 0u; cpt < n_pts; cpt++) {
         var support: vec3<f32>;
         if (gtype == 2u) { support = box_corner(i, cpt); }
-        else { support = support_point(i, n_body); }
+        else { support = support_point(i, z_body); }
 
-        // World height of that contact point.
-        let min_z = w_pos[i].z + dot(rot_t_mul(w_rot[i], support), vec3<f32>(0.0, 0.0, 1.0));
-        let penetration = cparams.ground_height - min_z;
+        // Terrain under that contact point (the flat plane when no
+        // heightfield is loaded). Penetration is measured along the local
+        // surface normal, and every force below acts along that normal —
+        // on a flat field this reduces exactly to the old ground test.
+        let sup_w = w_pos[i] + rot_t_mul(w_rot[i], support);
+        let terr = terrain(sup_w.xy);
+        let n_w = terr.xyz;
+        let penetration = n_w.z * (terr.w - sup_w.z);
         if (penetration <= 0.0) { continue; }
+        let n_body = rot_mul(w_rot[i], n_w);
 
         // Velocity of the contact point, in body coordinates.
         let v_point = w_lin[i] + cross3(w_omega[i], support);

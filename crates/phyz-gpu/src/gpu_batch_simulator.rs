@@ -346,6 +346,23 @@ impl GpuBatchSimulator {
         plane: Option<&crate::contact_pipeline::BodyPlane>,
         carried_mass: &[(usize, f64)],
     ) -> Result<(), String> {
+        self.enable_contact_terrain(contact, plane, carried_mass, None)
+    }
+
+    /// [`Self::enable_contact_full`] over heightfield terrain instead of the
+    /// flat plane. `contact.ground_height` is ignored while a heightfield is
+    /// loaded — the surface comes from the field (a
+    /// [`phyz_model::Heightfield::flat`] field reproduces the plane
+    /// exactly). Swap terrain between training iterations with
+    /// [`Self::set_heightfield`]; the buffer is sized to this first field,
+    /// so start with the largest grid the run will use.
+    pub fn enable_contact_terrain(
+        &mut self,
+        contact: crate::contact_pipeline::GroundContactParams,
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        carried_mass: &[(usize, f64)],
+        heightfield: Option<&phyz_model::Heightfield>,
+    ) -> Result<(), String> {
         let pipeline = ContactPipeline::new(
             &self.device,
             &self.queue,
@@ -355,9 +372,21 @@ impl GpuBatchSimulator {
             contact,
             plane,
             carried_mass,
+            heightfield,
         )?;
         self.contact_pipeline = Some(pipeline);
         Ok(())
+    }
+
+    /// Replace the contact terrain in place — a buffer write, no pipeline
+    /// rebuild. Errors if contact is not enabled or the new field outgrows
+    /// the buffer allocated by [`Self::enable_contact_terrain`].
+    pub fn set_heightfield(&mut self, hf: &phyz_model::Heightfield) -> Result<(), String> {
+        let pipeline = self
+            .contact_pipeline
+            .as_mut()
+            .ok_or("contact not enabled — call enable_contact_terrain first")?;
+        pipeline.set_heightfield(&self.queue, hf)
     }
 
     /// Enable PD position servos on the given DOFs.

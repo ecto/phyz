@@ -6,7 +6,7 @@
 use crate::gpu_state::GpuState;
 use crate::shaders::CONTACT_GROUND_SHADER;
 use bytemuck::{Pod, Zeroable};
-use phyz_model::{Geometry, Model};
+use phyz_model::{Geometry, Heightfield, Model};
 use std::sync::Arc;
 
 /// Contact parameters for the ground plane shader.
@@ -23,7 +23,14 @@ struct ContactParams {
     plane_body: i32,
     plane_offset: f32,
     plane_max_depth: f32,
-    _padding: [f32; 2],
+    // Heightfield terrain header; hf_nx == 0 means "flat plane at
+    // ground_height", the pre-heightfield behaviour.
+    hf_nx: u32,
+    hf_ny: u32,
+    hf_ox: f32,
+    hf_oy: f32,
+    hf_oz: f32,
+    hf_cell: f32,
 }
 
 /// Packed geometry data per body (20 f32 values).
@@ -55,8 +62,14 @@ const GEOM_STRIDE: usize = 20;
 pub struct ContactPipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    _params_buffer: wgpu::Buffer,
+    params: ContactParams,
+    params_buffer: wgpu::Buffer,
     _geom_buffer: wgpu::Buffer,
+    hf_buffer: wgpu::Buffer,
+    /// Node capacity of `hf_buffer`. [`Self::set_heightfield`] can rewrite
+    /// terrain up to this many nodes without rebuilding the pipeline —
+    /// buffers cannot grow under a live bind group.
+    hf_capacity: usize,
     nworld: usize,
 }
 
@@ -118,6 +131,7 @@ impl ContactPipeline {
         contact: GroundContactParams,
         plane: Option<&BodyPlane>,
         carried_mass: &[(usize, f64)],
+        heightfield: Option<&Heightfield>,
     ) -> Result<Self, String> {
         let GroundContactParams {
             ground_height,
@@ -137,6 +151,10 @@ impl ContactPipeline {
             }
         }
 
+        if let Some(hf) = heightfield {
+            validate_heightfield(hf)?;
+        }
+
         // Pack contact params
         let params = ContactParams {
             nworld: nworld as u32,
@@ -149,7 +167,12 @@ impl ContactPipeline {
             plane_body: plane.map_or(-1, |p| p.body as i32),
             plane_offset: plane.map_or(0.0, |p| p.offset as f32),
             plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
-            _padding: [0.0; 2],
+            hf_nx: heightfield.map_or(0, |h| h.nx as u32),
+            hf_ny: heightfield.map_or(0, |h| h.ny as u32),
+            hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),
+            hf_oy: heightfield.map_or(0.0, |h| h.origin.y as f32),
+            hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
+            hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
         };
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -181,6 +204,23 @@ impl ContactPipeline {
         });
         queue.write_buffer(&geom_buffer, 0, bytemuck::cast_slice(&geom_data));
 
+        // Heightfield node buffer. Always bound (the shader's binding count
+        // is fixed); a placeholder node when there is no terrain, since
+        // hf_nx == 0 routes the shader around it anyway. Sized to the
+        // initial field: `set_heightfield` rewrites in place per training
+        // iteration, so draw the largest grid first.
+        let hf_capacity = heightfield.map_or(1, |h| h.heights.len().max(1));
+        let hf_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heightfield_buffer"),
+            size: (hf_capacity * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        match heightfield {
+            Some(h) => queue.write_buffer(&hf_buffer, 0, bytemuck::cast_slice(&h.heights)),
+            None => queue.write_buffer(&hf_buffer, 0, bytemuck::cast_slice(&[0.0f32])),
+        }
+
         // Create shader module
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("contact_ground_shader"),
@@ -197,6 +237,7 @@ impl ContactPipeline {
                 bgl_storage_ro(3), // q
                 bgl_storage_ro(4), // v
                 bgl_storage_rw(5), // ext_forces (output)
+                bgl_storage_ro(6), // heightfield nodes
             ],
         });
 
@@ -243,16 +284,57 @@ impl ContactPipeline {
                     binding: 5,
                     resource: state.ext_forces_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: hf_buffer.as_entire_binding(),
+                },
             ],
         });
 
         Ok(Self {
             pipeline,
             bind_group,
-            _params_buffer: params_buffer,
+            params,
+            params_buffer,
             _geom_buffer: geom_buffer,
+            hf_buffer,
+            hf_capacity,
             nworld,
         })
+    }
+
+    /// Replace the terrain without rebuilding the pipeline.
+    ///
+    /// This is the randomization hook: ipse draws a fresh heightfield per
+    /// training iteration, and a buffer write is all that costs. The new
+    /// field may change shape and origin freely as long as it fits the node
+    /// capacity allocated at construction — wgpu buffers cannot grow under a
+    /// live bind group, so a larger grid needs the contact pipeline rebuilt
+    /// (re-enable contact with the bigger field first).
+    pub fn set_heightfield(
+        &mut self,
+        queue: &wgpu::Queue,
+        hf: &Heightfield,
+    ) -> Result<(), String> {
+        validate_heightfield(hf)?;
+        if hf.heights.len() > self.hf_capacity {
+            return Err(format!(
+                "heightfield has {} nodes but the GPU buffer was sized for {}; \
+                 enable contact with the largest grid first, or rebuild the \
+                 pipeline",
+                hf.heights.len(),
+                self.hf_capacity
+            ));
+        }
+        self.params.hf_nx = hf.nx as u32;
+        self.params.hf_ny = hf.ny as u32;
+        self.params.hf_ox = hf.origin.x as f32;
+        self.params.hf_oy = hf.origin.y as f32;
+        self.params.hf_oz = hf.origin.z as f32;
+        self.params.hf_cell = hf.cell as f32;
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        queue.write_buffer(&self.hf_buffer, 0, bytemuck::cast_slice(&hf.heights));
+        Ok(())
     }
 
     /// Encode the contact compute pass into a command encoder.
@@ -344,6 +426,27 @@ fn pack_geometries(model: &Model) -> Result<Vec<f32>, String> {
         }
     }
     Ok(data)
+}
+
+/// A malformed heightfield fails loudly at upload rather than as an
+/// out-of-bounds read in the shader (which wgpu clamps to garbage data, i.e.
+/// terrain that silently isn't what the caller built).
+fn validate_heightfield(hf: &Heightfield) -> Result<(), String> {
+    if hf.nx == 0 || hf.ny == 0 {
+        return Err("heightfield needs at least one node per axis".into());
+    }
+    if hf.heights.len() != hf.nx * hf.ny {
+        return Err(format!(
+            "heightfield claims {}x{} nodes but carries {} heights",
+            hf.nx,
+            hf.ny,
+            hf.heights.len()
+        ));
+    }
+    if !(hf.cell.is_finite() && hf.cell > 0.0) {
+        return Err(format!("heightfield cell must be positive, got {}", hf.cell));
+    }
+    Ok(())
 }
 
 // Bind group layout helpers

@@ -22,4 +22,5 @@ futures-intrusive = "0.5"
 
 [dev-dependencies]
 approx = "0.5"
+phyz = { workspace = true }
 phyz-mjcf = { workspace = true }
