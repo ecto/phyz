@@ -585,7 +585,7 @@ impl RgbdCamera {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.recv()
             .map_err(|e| CameraError::Readback(e.to_string()))?
             .map_err(|e| CameraError::Readback(e.to_string()))?;
@@ -697,17 +697,16 @@ pub fn default_device() -> Result<(Arc<wgpu::Device>, Arc<wgpu::Queue>)> {
         compatible_surface: None,
         force_fallback_adapter: false,
     }))
-    .ok_or(CameraError::NoAdapter)?;
+    .ok().ok_or(CameraError::NoAdapter)?;
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
+                trace: wgpu::Trace::Off,
             label: Some("phyz_camera_device"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::downlevel_defaults(),
             memory_hints: Default::default(),
-        },
-        None,
-    ))
+        }))
     .map_err(|e| CameraError::DeviceCreation(e.to_string()))?;
 
     Ok((Arc::new(device), Arc::new(queue)))
