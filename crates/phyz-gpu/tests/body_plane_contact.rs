@@ -155,3 +155,51 @@ fn the_deck_feels_the_rider() {
         "momentum leaked: before {p0:.4}, after {p1:.4}"
     );
 }
+
+/// Static friction must hold a standing load, not creep under it.
+///
+/// The regression that motivated the regularized Coulomb law: friction
+/// capped at `d * vt` is ~zero at standing slip speeds, so a box with a
+/// steady sideways push slid indefinitely. Here a box rests on the ground
+/// under gravity with a lateral force well inside the friction cone; it must
+/// stay put.
+#[test]
+fn a_pushed_box_does_not_creep() {
+    let half = Vec3::new(0.15, 0.15, 0.05);
+    let mass = 4.0;
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_body(
+            "box",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(mass, half),
+        )
+        .build();
+    model.bodies[0].geometry = Some(Geometry::Box { half_extents: half });
+
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact(0.0, 0.02, 1.0, 0.8).expect("contact");
+    let mut s = model.default_state();
+    s.q[5] = half.z;
+    sim.load_states(std::slice::from_ref(&s));
+
+    // A steady lateral force at 25% of the friction cone (mu = 0.8).
+    let push = 0.25 * 0.8 * mass * 9.81;
+    let mut ctrl = vec![0.0; model.nv];
+    ctrl[3] = push;
+    sim.set_controls(&[ctrl]);
+    for _ in 0..2000 {
+        sim.step();
+    }
+    let out = &sim.readback_states()[0];
+    let slid = out.q[3].abs();
+    assert!(
+        slid < 0.01,
+        "box crept {slid:.4} m under a force well inside the friction cone"
+    );
+}

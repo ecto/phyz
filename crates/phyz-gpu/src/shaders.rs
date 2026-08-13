@@ -109,6 +109,26 @@ fn rot_compose(a: array<f32, 9>, b: array<f32, 9>) -> array<f32, 9> {
     return r;
 }
 
+// Coulomb friction, regularized by slip SPEED rather than by the normal
+// damping coefficient.
+//
+// The previous law capped friction at `d * vt`, with `d` the contact's
+// normal damping (2 zeta m / tc). At the slip speeds a standing robot
+// actually produces — millimetres per second — that cap is orders of
+// magnitude below `mu * f_n`, so a foot could not hold a static sideways
+// load and crept. Measured on the K1's skate stance: hip-roll spread pushes
+// the feet apart, and the left foot slid 16 cm across the deck in 0.2 s and
+// off the rail, while the CPU impulse solver held it indefinitely. That is
+// not a penalty-vs-impulse difference; it is a missing static friction.
+//
+// `mu * f_n * min(1, vt / SLIP_EPS)` is the standard regularization: full
+// Coulomb above a 1 mm/s slip, linear (and therefore stable) below it.
+const SLIP_EPS: f32 = 1e-3;
+
+fn coulomb(mu_fn: f32, vt: f32) -> f32 {
+    return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
 // Support point of body i's shape in the direction of -n_body (n_body is a
 // unit vector in the body's own frame): the point of the shape that reaches
 // furthest against the normal, returned in BODY coordinates with the
@@ -338,7 +358,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let vt = length(v_tan);
         var f_body = n_body * f_n;
         if (vt > 1e-6) {
-            f_body = f_body - (v_tan / vt) * min(cparams.friction * f_n, d * vt);
+            f_body = f_body - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
         }
 
         // Spatial force in the body frame: [angular = r x f, linear = f].
@@ -408,7 +428,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let vt = length(v_tan);
             var f_w = n_w * f_n;
             if (vt > 1e-6) {
-                f_w = f_w - (v_tan / vt) * min(cparams.friction * f_n, d * vt);
+                f_w = f_w - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
             }
 
             // Action on the touching body, in its own frame.
