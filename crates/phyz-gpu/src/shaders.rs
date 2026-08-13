@@ -46,6 +46,26 @@ fn cross3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x);
 }
 
+// Coulomb friction, regularized by slip SPEED rather than by the normal
+// damping coefficient.
+//
+// Capping friction at `d * vt` (with `d` the contact's normal damping) is
+// the tempting form, and it is wrong: at the slip speeds a standing robot
+// actually produces — millimetres per second — that cap sits orders of
+// magnitude below `mu * f_n`, so a foot cannot hold a static sideways load
+// and creeps. Measured on the K1's skate stance: hip-roll spread pushes the
+// feet apart, and the left foot slid 16 cm across the deck in 0.2 s and off
+// the rail, while the CPU impulse solver held it indefinitely. That is not
+// a penalty-vs-impulse difference; it is a missing static friction.
+//
+// `mu * f_n * min(1, vt / SLIP_EPS)` is the standard regularization: full
+// Coulomb above a 1 mm/s slip, linear (and therefore stable) below it.
+const SLIP_EPS: f32 = 1e-3;
+
+fn coulomb(mu_fn: f32, vt: f32) -> f32 {
+    return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
 // Revolute rotation (Rodrigues, -angle convention matching ABA)
 fn rev_rot(axis: vec3<f32>, angle: f32) -> array<f32, 9> {
     let s = sin(-angle);
@@ -111,6 +131,23 @@ fn rot_t_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
         r[1]*vv.x + r[4]*vv.y + r[7]*vv.z,
         r[2]*vv.x + r[5]*vv.y + r[8]*vv.z
     );
+}
+
+// Corner `c` (0..8) of body i's box, in BODY coordinates with the collision
+// instance's origin applied. Boxes contact through all penetrating corners —
+// a single support point lets an angled foot rock on one corner, which is
+// exactly what felled the loose-stance rollouts.
+fn box_corner(i: u32, c: u32) -> vec3<f32> {
+    let gbase = i * GEOM_STRIDE;
+    let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+    let sx = select(-1.0, 1.0, (c & 1u) != 0u);
+    let sy = select(-1.0, 1.0, (c & 2u) != 0u);
+    let sz = select(-1.0, 1.0, (c & 4u) != 0u);
+    let corner = vec3<f32>(h.x * sx, h.y * sy, h.z * sz);
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    return o_p + rot_t_mul(o_r, corner);
 }
 
 // Support point of body i's shape in the direction of -n_body (n_body a unit
@@ -306,60 +343,98 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // contact normal and every force below live in body coordinates,
         // matching what ext_forces wants (r x f and f, body frame).
         let n_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
-        let support = support_point(i, n_body);
-        let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
 
-        let penetration = cparams.ground_height - sup_w.z;
-        if (penetration <= 0.0) {
+        // Boxes contact through EVERY penetrating corner; other shapes
+        // through the single support point they actually touch at. A box
+        // reduced to one point can rock on that corner with nothing to
+        // resist it, which is what felled the loose-stance rollouts — a
+        // resting box needs a real support polygon. Per-point stiffness is
+        // a quarter of the body's, so a flat-resting face carries the same
+        // total spring as a single-point shape does.
+        var n_pts = 1u;
+        var pt_scale = 1.0;
+        if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+
+        // Accumulated for the readback slot: total force, and the deepest
+        // point, which is the one worth reporting as THE contact.
+        var f_w_total = vec3<f32>(0.0, 0.0, 0.0);
+        var deepest = 0.0;
+        var deepest_w = vec3<f32>(0.0, 0.0, 0.0);
+        var any_touch = false;
+
+        for (var cpt = 0u; cpt < n_pts; cpt++) {
+            var support: vec3<f32>;
+            if (gtype == 2u) { support = box_corner(i, cpt); }
+            else { support = support_point(i, n_body); }
+            let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
+
+            let penetration = cparams.ground_height - sup_w.z;
+            if (penetration <= 0.0) { continue; }
+
+            // Velocity of the contact POINT, body frame. This replaces the
+            // finite-differenced penetration rate the single-point model
+            // used: that needed one history slot per contact and there is
+            // only one slot per body, and it cannot produce a tangential
+            // velocity at all, so friction was simply absent.
+            let v_point = w_lin[i] + cross3(w_omega[i], support);
+            let v_normal = dot(v_point, n_body);
+
+            // Penalty normal force with per-body gains, Kelvin-Voigt:
+            // f = k*pen - d*v_n. v_normal is the contact point's velocity
+            // along the OUTWARD normal, so it is negative while the body is
+            // still moving into the ground — hence the minus sign, and hence
+            // a damper that always opposes the approach. max(_, 0) stops it
+            // pulling the body back down as it separates, which is the real
+            // hazard in any penalty contact.
+            let k_body = pt_scale * geometry[gbase + 8u];
+            let d_body = pt_scale * geometry[gbase + 9u];
+            let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
+
+            // Coulomb friction opposing the tangential velocity.
+            let v_tan = v_point - n_body * v_normal;
+            let vt = length(v_tan);
+            var f_body = n_body * f_n;
+            if (vt > 1e-6) {
+                f_body = f_body - (v_tan / vt) * coulomb(cparams.friction * f_n, vt);
+            }
+
+            // Spatial force in the body frame: [angular = r x f, linear = f].
+            // The torque is not optional decoration — without it contact acts
+            // through the body origin, so no shape can resist tipping and a
+            // resting box has no support polygon at all.
+            let torque = cross3(support, f_body);
+            let ef_base = ef_env_base + i * 6u;
+            ext_forces[ef_base + 0u] += torque.x;
+            ext_forces[ef_base + 1u] += torque.y;
+            ext_forces[ef_base + 2u] += torque.z;
+            ext_forces[ef_base + 3u] += f_body.x;
+            ext_forces[ef_base + 4u] += f_body.y;
+            ext_forces[ef_base + 5u] += f_body.z;
+
+            f_w_total = f_w_total + rot_mul(w_rot[i], f_body);
+            any_touch = true;
+            if (penetration > deepest) { deepest = penetration; deepest_w = sup_w; }
+        }
+
+        if (!any_touch) {
             for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
             continue;
         }
 
-        // Velocity of the contact POINT, body frame. This replaces the
-        // finite-differenced penetration rate the single-point model used:
-        // that needed one history slot per contact and there is only one
-        // slot per body, and it cannot produce a tangential velocity at all,
-        // so friction was simply absent.
-        let v_point = w_lin[i] + cross3(w_omega[i], support);
-        let v_normal = dot(v_point, n_body);
-
-        // Penalty force with per-body gains, Kelvin-Voigt: f = k*pen - d*v_n.
-        // v_normal is the contact point's velocity along the OUTWARD normal,
-        // so it is negative while the body is still moving into the ground —
-        // hence the minus sign, and hence a damper that always opposes the
-        // approach. max(_, 0) stops it pulling the body back down as it
-        // separates, which is the real hazard in any penalty contact.
-        let k_body = geometry[gbase + 8u];
-        let d_body = geometry[gbase + 9u];
-        let f_n = max(k_body * penetration - d_body * v_normal, 0.0);
-        var f_body = n_body * f_n;
-
-        // Spatial force in the body frame: [angular = r x f, linear = f].
-        // The torque is not optional decoration — without it contact acts
-        // through the body origin, so no shape can resist tipping and a
-        // resting box has no support polygon at all.
-        let torque = cross3(support, f_body);
-        let ef_base = ef_env_base + i * 6u;
-        ext_forces[ef_base + 0u] += torque.x;
-        ext_forces[ef_base + 1u] += torque.y;
-        ext_forces[ef_base + 2u] += torque.z;
-        ext_forces[ef_base + 3u] += f_body.x;
-        ext_forces[ef_base + 4u] += f_body.y;
-        ext_forces[ef_base + 5u] += f_body.z;
-
-        // Contact state for readback (world frame). The contact point sits on
-        // the ground plane, not at the shape's lowest point: the support point
-        // is below the plane by exactly `penetration` whenever there is
-        // contact at all, and the depth is already reported in its own slot.
-        let f_w = rot_mul(w_rot[i], f_body);
+        // Contact state for readback (world frame): the deepest point and
+        // the body's TOTAL contact force, so a box resting on four corners
+        // reports the load it actually carries rather than one corner's
+        // share. The point sits on the ground plane, not at the shape's
+        // lowest vertex — that vertex is below the plane by exactly
+        // `penetration`, which is already reported in its own slot.
         contact_state[cs_base]      = 1.0;
-        contact_state[cs_base + 1u] = penetration;
-        contact_state[cs_base + 2u] = sup_w.x;
-        contact_state[cs_base + 3u] = sup_w.y;
+        contact_state[cs_base + 1u] = deepest;
+        contact_state[cs_base + 2u] = deepest_w.x;
+        contact_state[cs_base + 3u] = deepest_w.y;
         contact_state[cs_base + 4u] = cparams.ground_height;
-        contact_state[cs_base + 5u] = f_w.x;
-        contact_state[cs_base + 6u] = f_w.y;
-        contact_state[cs_base + 7u] = f_w.z;
+        contact_state[cs_base + 5u] = f_w_total.x;
+        contact_state[cs_base + 6u] = f_w_total.y;
+        contact_state[cs_base + 7u] = f_w_total.z;
     }
 }
 "#;
