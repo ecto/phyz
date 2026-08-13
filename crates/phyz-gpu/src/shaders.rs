@@ -1206,8 +1206,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_t = transpose6(&x_mot);
-                var ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
-                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                // Local copies, not pointers into the array: naga's SPIR-V
+                // backend never caches `&arr[dynamic_index]` passed to a
+                // function (gfx-rs/wgpu#7315) and panics at write time. The
+                // Metal backend accepted it, which is why this only surfaced
+                // on the first Vulkan machine.
+                var ia_self = i_a[i];
+                var ia_parent = m6_XtAX(&x_mot_t, &ia_self, &x_mot);
+                var ia_pi = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi, &ia_parent);
                 let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_parent);
             }
@@ -1260,8 +1267,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let pi = u32(parent);
                 var x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
                 var x_mot_st = transpose6(&x_mot_s);
-                var ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
-                i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                var ia_self_s = i_a[i];
+                var ia_par_s = m6_XtAX(&x_mot_st, &ia_self_s, &x_mot_s);
+                var ia_pi_s = i_a[pi];
+                i_a[pi] = m6_add(&ia_pi_s, &ia_par_s);
                 let p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_par_s);
             }
@@ -1309,7 +1318,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var x_mot = build_motion_transform(x_rot[i], x_pos[i]);
             var x_mot_t = transpose6(&x_mot);
             var ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
-            i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+            var ia_pi_w = i_a[pi];
+            i_a[pi] = m6_add(&ia_pi_w, &ia_parent);
 
             let p_parent = inv_apply_force(x_rot[i], x_pos[i], p_new);
             p_a[pi] = sv_add(p_a[pi], p_parent);
