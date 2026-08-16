@@ -120,6 +120,7 @@ opt-in.
 | [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians (finite-difference, chain-rule, symbolic) and the exact trajectory adjoint |
 | [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
+| [`phyz-loop`](crates/phyz-loop) | Kinematic loops: closure constraints and Proximal-ADMM constrained forward dynamics |
 | [`phyz-mjcf`](crates/phyz-mjcf) | MuJoCo MJCF model loading |
 | [`phyz-urdf`](crates/phyz-urdf) | URDF (ROS) robot description import |
 | [`phyz-gpu`](crates/phyz-gpu) | wgpu compute: batched simulation of many independent worlds |
@@ -170,6 +171,7 @@ phyz/
 │   ├── phyz-math/        # Spatial algebra, vectors, matrices
 │   ├── phyz-model/       # Articulated body models, joints, inertia
 │   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics, IK
+│   ├── phyz-loop/        # Kinematic loops, Proximal-ADMM constrained dynamics
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
 │   ├── phyz-urdf/        # URDF (ROS) robot description import

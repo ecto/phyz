@@ -3253,6 +3253,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-loop"
+version = "0.3.1"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "tang-la",
+]
+
+[[package]]
 name = "phyz-math"
 version = "0.3.1"
 dependencies = [
