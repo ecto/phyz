@@ -86,15 +86,21 @@
 //!
 //! # Scope
 //!
-//! Ground contacts only. Body-body contacts on the trajectory are reported as
-//! [`ConvexAdjointError::BodyBodyContact`] — the explicit seam for the next
-//! extension, not a silent omission. The per-vertex `∂J/∂(mesh vertex)`
-//! channel of [`crate::rollout`] is not reproduced here; that adjoint remains
-//! the (clearly documented) penalty-model path for the vcad surface-gradient
-//! seam.
+//! Ground **and body-body** contacts. A body-body contact is frozen as a
+//! feature *pair* (`Anchor::Pair`): both surface points in their own body's
+//! frame, the normal in the frame of the body owning the reference face, and
+//! the contact point riding the *other* body's vertex — so a lane sees the
+//! contact rotate and translate with both bodies. That is what carries the
+//! tangential-friction-between-two-moving-bodies channel — a foot on a board's
+//! grip tape, a hand on a lever — which is the case a ground-only adjoint
+//! cannot express at all.
+//!
+//! The per-vertex `∂J/∂(mesh vertex)` channel of [`crate::rollout`] is not
+//! reproduced here; that adjoint remains the (clearly documented) penalty-model
+//! path for the vcad surface-gradient seam.
 
 use phyz_collision::Collision;
-use phyz_contact::gradient::FixedPointSensitivity;
+use phyz_contact::gradient::{FixedPointSensitivity, friction_sensitivity};
 use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
@@ -158,6 +164,27 @@ pub struct ConvexAdjointGradients {
     /// `dJ/dπ` per body, canonical packing `[m, cx, cy, cz, Ixx, Iyy, Izz,
     /// Ixy, Ixz, Iyz]`.
     pub d_inertia: Vec<[f64; N_INERTIA_PARAMS]>,
+    /// `dJ/dμ` — the friction coefficient of [`ConvexContactRollout::material`].
+    ///
+    /// One scalar, not one per contact, because the rollout applies a single
+    /// material to every body; this is the total derivative with respect to
+    /// that shared coefficient.
+    ///
+    /// **Only sliding contacts contribute.** A sticking contact sits strictly
+    /// inside the cone, so moving the cone boundary does not move the solution,
+    /// and a separating one carries no impulse. So a trajectory that never
+    /// slips reports exactly `0` here — a real property of Coulomb friction
+    /// rather than a missing term, and one a finite difference reproduces
+    /// exactly.
+    pub d_friction: f64,
+    /// `dJ/de` — the restitution coefficient of
+    /// [`ConvexContactRollout::material`], likewise a single shared scalar.
+    ///
+    /// Zero for any trajectory whose contacts all approach below
+    /// [`ContactSolverConfig::restitution_threshold`], where the low-speed ramp
+    /// has taken the effective restitution to zero — again a genuine flat
+    /// region of the model, not an omission.
+    pub d_restitution: f64,
 }
 
 /// Why an adjoint pass refused to produce a gradient.
@@ -181,8 +208,17 @@ pub enum ConvexAdjointError {
         /// The offending step index.
         step: usize,
     },
-    /// The trajectory produced a body-body contact, which this adjoint does
-    /// not yet cover (ground contacts only).
+    /// Formerly: the trajectory produced a body-body contact, which this
+    /// adjoint did not cover.
+    ///
+    /// Body-body contacts are differentiated now — see `Anchor::Pair` — and
+    /// nothing constructs this variant any more. It is retained for one release
+    /// so that a downstream `match` on [`ConvexAdjointError`] does not break,
+    /// and because a caller that special-cased this refusal (falling back to a
+    /// sampling optimizer, say) should get a compile-time nudge to delete that
+    /// branch rather than silently keeping dead code that will never fire.
+    #[deprecated(note = "body-body contacts are supported; this variant is never \
+                constructed and will be removed in the next minor release")]
     BodyBodyContact {
         /// The step at which the body-body contact appeared.
         step: usize,
@@ -215,10 +251,11 @@ impl core::fmt::Display for ConvexAdjointError {
                 "KKT matrix at step {step} is singular at the converged \
                  active set; the derivative does not exist there"
             ),
+            #[allow(deprecated)]
             Self::BodyBodyContact { step } => write!(
                 f,
-                "body-body contact at step {step}: the convex-contact adjoint \
-                 currently covers ground contacts only"
+                "body-body contact at step {step}: this refusal is retired — \
+                 body-body contacts are differentiated"
             ),
             Self::UnsupportedGeometry { step, body } => write!(
                 f,
@@ -235,66 +272,230 @@ impl std::error::Error for ConvexAdjointError {}
 // Frozen contact identities
 // ---------------------------------------------------------------------------
 
-/// A ground contact pinned to the feature of the body that produced it, so a
-/// perturbed configuration re-evaluates *the same* contact smoothly instead of
-/// re-running detection.
+/// A contact pinned to the feature pair that produced it, so a perturbed
+/// configuration re-evaluates *the same* contact smoothly instead of re-running
+/// detection.
 ///
-/// The support point decomposes as
-/// `p_world(q) = pos(q) + Rᵀ(q)·material_point + world_offset`:
-/// `material_point` is a body-frame point (a box corner, a mesh vertex, a
-/// capsule hemisphere centre, a sphere centre), and `world_offset` is the
-/// constant world-axis part (`−r·ẑ` for a sphere or capsule dropping onto a
-/// z-plane; zero otherwise). This covers every geometry
-/// `find_ground_contacts` emits.
+/// Freezing the feature pair is what makes the FD lanes legitimate. Narrow-phase
+/// feature selection (which face is the reference face, which clipped vertices
+/// survive, which box corner is deepest) is combinatorial: a lane that re-ran
+/// detection could return a manifold with a different *number* of points, and
+/// differencing two different contact sets is not a derivative of anything. The
+/// design doc sanctions exactly this — §4.4, "feature selection is treated as a
+/// discrete decision held fixed for the step" — and it is what MuJoCo and Dojo
+/// do. The price is stated there and again in this module's header: the gradient
+/// does not see "the manifold would have had a different point if the box had
+/// rotated slightly more".
 #[derive(Debug, Clone, Copy)]
-struct Anchor {
-    body: usize,
-    material_point: Vec3,
-    world_offset: Vec3,
+enum Anchor {
+    /// A contact against the world `z = ground_height` plane.
+    ///
+    /// The support point decomposes as
+    /// `p_world(q) = pos(q) + Rᵀ(q)·material_point + world_offset`:
+    /// `material_point` is a body-frame point (a box corner, a mesh vertex, a
+    /// capsule hemisphere centre, a sphere centre), and `world_offset` is the
+    /// constant world-axis part (`−r·ẑ` for a sphere or capsule dropping onto a
+    /// z-plane; zero otherwise). This covers every geometry
+    /// `find_ground_contacts` emits.
+    Ground {
+        body: usize,
+        material_point: Vec3,
+        world_offset: Vec3,
+    },
+    /// A contact between two moving bodies.
+    ///
+    /// Both surface points are frozen in their own body's frame, and the normal
+    /// is frozen in the frame of whichever body *owns the reference face*
+    /// (`normal_frame`), so that rotating that body rotates the contact normal
+    /// with it. That `dn/dq` channel is the one carrying "the board tilted, so
+    /// the friction direction rotated" — the whole reason a foot-on-grip-tape
+    /// gradient is worth having, and the channel a world-frozen normal drops
+    /// entirely.
+    ///
+    /// Freezing the normal in *a* body frame rather than in the world is what
+    /// generalizes [`Anchor::Ground`] rather than merely extending it: for a
+    /// ground contact the owner is the world, whose frame does not move, so the
+    /// world-fixed `+ẑ` of the ground case is this same rule evaluated on a
+    /// static owner.
+    Pair {
+        body_i: usize,
+        body_j: usize,
+        /// Surface point on `body_i`, in `body_i`'s frame.
+        point_i: Vec3,
+        /// Surface point on `body_j`, in `body_j`'s frame.
+        point_j: Vec3,
+        /// The body whose frame `normal_local` is expressed in — see
+        /// [`Anchor::reference_body`].
+        normal_frame: usize,
+        /// Contact normal in `normal_frame`'s body frame. In world terms it is
+        /// the direction `body_i` must move to separate, matching
+        /// `Collision::contact_normal`.
+        normal_local: Vec3,
+    },
 }
 
 impl Anchor {
     /// Recover the anchor of a detected collision.
     ///
-    /// `drop` is the contact's world-axis drop as reported by
+    /// `drop` is a ground contact's world-axis drop as reported by
     /// `find_ground_contacts_model_with_drop`: the radius by which a sphere or
     /// capsule support point hangs below its centre along world `−ẑ`, zero for
     /// material-point contacts (box corners, cylinder rims, mesh vertices).
     /// Detection reports it per contact because a multi-shape body no longer
-    /// determines the producing shape by itself.
+    /// determines the producing shape by itself. It is unread for a body-body
+    /// contact, whose two surface points are recovered from the manifold
+    /// geometry instead.
     ///
-    /// Ground detection reports the *midsurface* point; the support point
-    /// itself is at `z = ground_height − depth`.
+    /// Detection reports the *midsurface* point in both cases. For the ground
+    /// the support point itself is at `z = ground_height − depth`; for a pair
+    /// the two surface points straddle the midsurface by `depth/2` along the
+    /// normal, `body_i`'s on the far side since `+normal` is the direction `i`
+    /// must move to separate.
     fn of(c: &Collision, drop: f64, state: &State, ground_height: f64) -> Self {
-        let world_offset = Vec3::new(0.0, 0.0, -drop);
-        let xform = &state.body_xform[c.body_i];
-        let support = Vec3::new(
-            c.contact_point.x,
-            c.contact_point.y,
-            ground_height - c.penetration_depth,
-        );
         // `xform.rot` is world→body, so body coordinates of a world point are
-        // `R (p − pos)`.
-        let material_point = xform.rot * (support - xform.pos - world_offset);
-        Self {
-            body: c.body_i,
-            material_point,
-            world_offset,
+        // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
+        if c.body_j == usize::MAX {
+            let world_offset = Vec3::new(0.0, 0.0, -drop);
+            let xform = &state.body_xform[c.body_i];
+            let support = Vec3::new(
+                c.contact_point.x,
+                c.contact_point.y,
+                ground_height - c.penetration_depth,
+            );
+            let material_point = xform.rot * (support - xform.pos - world_offset);
+            return Self::Ground {
+                body: c.body_i,
+                material_point,
+                world_offset,
+            };
+        }
+
+        let n = c.contact_normal;
+        let half = 0.5 * c.penetration_depth;
+        // `i` must move along `+n` to separate, so its surface point is the one
+        // on the `−n` side of the midsurface.
+        let surface_i = c.contact_point - n * half;
+        let surface_j = c.contact_point + n * half;
+        let xi = &state.body_xform[c.body_i];
+        let xj = &state.body_xform[c.body_j];
+        let normal_frame = Self::reference_body(c.body_i, c.body_j, n, state);
+        let owner = &state.body_xform[normal_frame];
+        Self::Pair {
+            body_i: c.body_i,
+            body_j: c.body_j,
+            point_i: xi.rot * (surface_i - xi.pos),
+            point_j: xj.rot * (surface_j - xj.pos),
+            normal_frame,
+            normal_local: owner.rot * n,
+        }
+    }
+
+    /// Which of the two bodies owns the face the contact normal came from.
+    ///
+    /// The narrow phase does not report this: `Manifold::normal` arrives from
+    /// GJK/EPA as a world direction, a function of *both* poses, with no record
+    /// of which shape's feature generated it. But for the face contacts that
+    /// dominate a resting or riding manifold, the normal *is* a face normal of
+    /// exactly one of the two boxes — which means it is exactly a coordinate
+    /// axis of that body's frame, and merely some oblique direction in the
+    /// other's. So the owner is recoverable after the fact: express the normal
+    /// in each body frame and take the one that lands closest to a principal
+    /// axis.
+    ///
+    /// This matters, and picking the wrong body is not a small error. Freezing
+    /// the normal to the rider instead of to the plank it stands on makes
+    /// `dJ/d(plank roll)` come out as zero when it is genuinely nonzero — the
+    /// tilt no longer steers the friction — which is a *silently* missing
+    /// gradient channel, the failure mode this module exists to prevent. It was
+    /// caught by `body_body_adjoint.rs`'s slide case (adjoint `5e-12` against
+    /// an FD of `-9.7e-3`) and is why that test sweeps every DOF of both bodies
+    /// rather than only the ones the scene obviously moves.
+    ///
+    /// For curved pairs (sphere/capsule) the normal follows from the centres
+    /// and belongs to neither face; the alignment score is then near-arbitrary
+    /// and so is the choice. That is an approximation of the same order as
+    /// freezing the feature pair at all (§4.4), not an additional one: either
+    /// body's frame transports a centre-determined normal about equally well.
+    fn reference_body(body_i: usize, body_j: usize, n_world: Vec3, state: &State) -> usize {
+        // How nearly a direction is a coordinate axis of a frame: 1 exactly on
+        // an axis, 1/sqrt(3) at the worst-case body diagonal.
+        let axis_alignment = |body: usize| -> f64 {
+            let local = state.body_xform[body].rot * n_world;
+            local.x.abs().max(local.y.abs()).max(local.z.abs())
+        };
+        if axis_alignment(body_j) > axis_alignment(body_i) {
+            body_j
+        } else {
+            body_i
         }
     }
 
     /// Re-evaluate the collision this anchor stands for at (the FK of) a
     /// perturbed state — same identity, smoothly moved geometry.
     fn collision(&self, state: &State, ground_height: f64) -> Collision {
-        let xform = &state.body_xform[self.body];
-        let support = xform.pos + xform.rot.transpose() * self.material_point + self.world_offset;
-        let depth = ground_height - support.z;
-        Collision {
-            body_i: self.body,
-            body_j: usize::MAX,
-            contact_point: Vec3::new(support.x, support.y, ground_height - depth * 0.5),
-            contact_normal: Vec3::z(),
-            penetration_depth: depth,
+        match *self {
+            Self::Ground {
+                body,
+                material_point,
+                world_offset,
+            } => {
+                let xform = &state.body_xform[body];
+                let support = xform.pos + xform.rot.transpose() * material_point + world_offset;
+                let depth = ground_height - support.z;
+                Collision {
+                    body_i: body,
+                    body_j: usize::MAX,
+                    contact_point: Vec3::new(support.x, support.y, ground_height - depth * 0.5),
+                    contact_normal: Vec3::z(),
+                    penetration_depth: depth,
+                }
+            }
+            Self::Pair {
+                body_i,
+                body_j,
+                point_i,
+                point_j,
+                normal_frame,
+                normal_local,
+            } => {
+                let xi = &state.body_xform[body_i];
+                let xj = &state.body_xform[body_j];
+                let pi = xi.pos + xi.rot.transpose() * point_i;
+                let pj = xj.pos + xj.rot.transpose() * point_j;
+                // The frozen body-frame normal stays unit under a rotation, so
+                // no renormalization is needed and none is done: a `normalize`
+                // here would divide by a quantity that is identically one, and
+                // its derivative would be a spurious zero-magnitude channel.
+                let n = state.body_xform[normal_frame].rot.transpose() * normal_local;
+                // Positive = overlapping, consistent with the ground branch:
+                // the surfaces have swapped sides along `n` by this much.
+                let depth = (pj - pi).dot(n);
+                // The contact point rides the body that owns the *vertex*, not
+                // the midpoint of the two anchors.
+                //
+                // Averaging looks natural and is wrong, in a way that is only
+                // visible in a body-body pair. A face-vertex contact is located
+                // by the vertex; the face body contributes the plane the vertex
+                // is measured against, and sliding the face body *within its own
+                // plane* must not move the contact at all. `(pi + pj)/2` instead
+                // moves it by half of any such slide, which shows up as a
+                // spurious moment arm: the measured symptom was
+                // `dJ/d(plank x) = +9.7e-3` on a block sliding along a plank,
+                // where translation invariance puts the true value at `-8.2e-5`.
+                // The ground branch never had the bug because it already pins
+                // the point to `body_i` and takes only `z` from the plane —
+                // this is that same rule with "the plane" generalized to
+                // whichever body owns the normal.
+                let vertex = if normal_frame == body_i { pj } else { pi };
+                let sign = if normal_frame == body_i { -1.0 } else { 1.0 };
+                Collision {
+                    body_i,
+                    body_j,
+                    contact_point: vertex + n * (sign * 0.5 * depth),
+                    contact_normal: n,
+                    penetration_depth: depth,
+                }
+            }
         }
     }
 }
@@ -413,9 +614,6 @@ fn forward_rollout(
         let (pre_xf, _) = forward_kinematics(model, &pre);
         pre.body_xform = pre_xf;
         for (c, drop) in &contacts {
-            if c.body_j != usize::MAX {
-                return Err(ConvexAdjointError::BodyBodyContact { step: t });
-            }
             anchors.push(Anchor::of(c, *drop, &pre, rollout.ground_height));
         }
 
@@ -608,6 +806,8 @@ pub fn convex_adjoint_gradient(
 
     let mut d_ctrl = vec![DVec::zeros(nv); rollout.steps];
     let mut d_inertia = vec![[0.0f64; N_INERTIA_PARAMS]; nb];
+    let mut d_friction = 0.0f64;
+    let mut d_restitution = 0.0f64;
     let nominal_params: Vec<[f64; N_INERTIA_PARAMS]> = model
         .bodies
         .iter()
@@ -659,11 +859,11 @@ pub fn convex_adjoint_gradient(
             }
         };
 
-        let eval = |m: &Model, q: &DVec, v: &DVec, u: &DVec| -> Pieces {
+        let eval = |m: &Model, mat: &ContactMaterial, q: &DVec, v: &DVec, u: &DVec| -> Pieces {
             eval_pieces(
                 m,
                 rollout.ground_height,
-                &rollout.material,
+                mat,
                 &rollout.config,
                 &rec.anchors,
                 &f_star,
@@ -675,8 +875,17 @@ pub fn convex_adjoint_gradient(
         };
 
         // Central difference of the pieces along one input lane.
+        //
+        // The material is a lane input like the model is: restitution reaches
+        // the impulses through `b`, so perturbing it perturbs the residual and
+        // this machinery prices it with no special case. Friction does *not*
+        // appear in the residual at all — it lives only in the cone
+        // constraint — so it cannot be a lane and is handled separately below.
+        #[allow(clippy::too_many_arguments)]
         let lane = |mp: &Model,
                     mm: &Model,
+                    matp: &ContactMaterial,
+                    matm: &ContactMaterial,
                     qp: &DVec,
                     qm: &DVec,
                     vp: &DVec,
@@ -685,8 +894,8 @@ pub fn convex_adjoint_gradient(
                     um: &DVec,
                     h: f64|
          -> Pieces {
-            let a = eval(mp, qp, vp, up);
-            let b = eval(mm, qm, vm, um);
+            let a = eval(mp, matp, qp, vp, up);
+            let b = eval(mm, matm, qm, vm, um);
             let inv = 1.0 / (2.0 * h);
             Pieces {
                 v_free: &(&a.v_free - &b.v_free) * inv,
@@ -740,7 +949,19 @@ pub fn convex_adjoint_gradient(
             let mut qm = rec.q.clone();
             qp[i] += h;
             qm[i] -= h;
-            let dp = lane(model, model, &qp, &qm, &rec.v, &rec.v, &rec.u, &rec.u, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &qp,
+                &qm,
+                &rec.v,
+                &rec.v,
+                &rec.u,
+                &rec.u,
+                h,
+            );
             let dvn = dv_next(&dp);
             // Direct Φ_q block plus the v'-mediated part.
             let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
@@ -756,7 +977,19 @@ pub fn convex_adjoint_gradient(
             let mut vm = rec.v.clone();
             vp[j] += h;
             vm[j] -= h;
-            let dp = lane(model, model, &rec.q, &rec.q, &vp, &vm, &rec.u, &rec.u, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &rec.q,
+                &rec.q,
+                &vp,
+                &vm,
+                &rec.u,
+                &rec.u,
+                h,
+            );
             let dvn = dv_next(&dp);
             let dqn = dphi_dvnext(&dvn);
             new_lam_v[j] = contract(&dqn, &dvn);
@@ -769,7 +1002,19 @@ pub fn convex_adjoint_gradient(
             let mut um = rec.u.clone();
             up[j] += h;
             um[j] -= h;
-            let dp = lane(model, model, &rec.q, &rec.q, &rec.v, &rec.v, &up, &um, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &rec.q,
+                &rec.q,
+                &rec.v,
+                &rec.v,
+                &up,
+                &um,
+                h,
+            );
             let dvn = dv_next(&dp);
             let dqn = dphi_dvnext(&dvn);
             d_ctrl[t][j] = contract(&dqn, &dvn);
@@ -785,10 +1030,79 @@ pub fn convex_adjoint_gradient(
                 pm[k] -= h;
                 let mp = perturbed_model(model, b, &pp);
                 let mm = perturbed_model(model, b, &pm);
-                let dp = lane(&mp, &mm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h);
+                let dp = lane(
+                    &mp,
+                    &mm,
+                    &rollout.material,
+                    &rollout.material,
+                    &rec.q,
+                    &rec.q,
+                    &rec.v,
+                    &rec.v,
+                    &rec.u,
+                    &rec.u,
+                    h,
+                );
                 let dvn = dv_next(&dp);
                 let dqn = dphi_dvnext(&dvn);
                 d_inertia[b][k] += contract(&dqn, &dvn);
+            }
+        }
+
+        // --- restitution lane ---
+        //
+        // `e` reaches the impulses through `b`: assembly scales the normal row
+        // of the free velocity by `1 + e_eff`. So it is an ordinary lane, and
+        // the machinery above prices it including the low-speed smoothstep
+        // ramp, which is exactly why §4.3 insisted restitution be a term in `b`
+        // rather than a post-solve velocity reset — a reset would be a branch
+        // on the primal, with no derivative in `e` at all at `v_n = 0`.
+        {
+            let h = FD_EPS * rollout.material.restitution.abs().max(1.0);
+            let mut matp = rollout.material.clone();
+            let mut matm = rollout.material.clone();
+            matp.restitution += h;
+            matm.restitution -= h;
+            let dp = lane(
+                model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
+            );
+            let dvn = dv_next(&dp);
+            let dqn = dphi_dvnext(&dvn);
+            d_restitution += contract(&dqn, &dvn);
+        }
+
+        // --- friction channel ---
+        //
+        // Not a lane, because `mu` does not appear in the residual
+        // `(A + R)f* + b − e_n·bias` anywhere: the friction coefficient enters
+        // only through the *cone constraint*. Differencing `eval_pieces` in
+        // `mu` would therefore return an exact, entirely convincing zero.
+        //
+        // `friction_sensitivity` supplies `df*/dmu` directly, already routed
+        // through the coupled system (a change in one sliding contact's
+        // tangential capacity moves every other contact through `A`). Only
+        // sliding contacts have a non-zero column. Summing the columns gives
+        // the derivative with respect to the single shared coefficient, and
+        // from there the contraction is the same as every other lane's, since
+        // `v_free` and the impulse-held-fixed term do not depend on `mu`.
+        if let Some((asm, sol)) = &rec.contact {
+            let n = asm.problem.n;
+            if let Some(dfdmu) = friction_sensitivity(&asm.problem, sol, &rollout.config) {
+                let mut df = vec![Vec3::zeros(); n];
+                for (c, dfc) in df.iter_mut().enumerate() {
+                    let base = 3 * c;
+                    // Sum over columns: every contact shares one `mu`.
+                    let mut acc = [0.0f64; 3];
+                    for (r, a) in acc.iter_mut().enumerate() {
+                        for col in 0..n {
+                            *a += dfdmu[(base + r) * n + col];
+                        }
+                    }
+                    *dfc = Vec3::new(acc[0], acc[1], acc[2]);
+                }
+                let dvn = asm.velocity_delta(&df);
+                let dqn = dphi_dvnext(&dvn);
+                d_friction += contract(&dqn, &dvn);
             }
         }
 
@@ -802,5 +1116,7 @@ pub fn convex_adjoint_gradient(
         d_v0: lam_v,
         d_ctrl,
         d_inertia,
+        d_friction,
+        d_restitution,
     })
 }
