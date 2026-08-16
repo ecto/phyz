@@ -77,6 +77,60 @@ pub fn point_jacobian(
     j
 }
 
+/// The `3 x nv` world-frame **angular**-velocity Jacobian of `body`:
+///
+/// ```text
+/// omega_body_in_world = J_w * qd
+/// ```
+///
+/// The rotational counterpart of [`point_jacobian`], and the other half of a
+/// full 6-D body Jacobian. Prismatic DOFs contribute nothing; a free joint
+/// contributes only through its three rotational DOFs.
+///
+/// `xforms` must come from [`crate::forward_kinematics`] for the same state.
+pub fn body_angular_jacobian(model: &Model, xforms: &[SpatialTransform], body: usize) -> DMat {
+    let mut j = DMat::zeros(3, model.nv);
+
+    // Same ancestor walk as `point_jacobian`; only the per-DOF contribution
+    // differs, because angular velocity does not depend on the moment arm.
+    let mut cur = body as i32;
+    while cur >= 0 {
+        let b = cur as usize;
+        let bodyref = &model.bodies[b];
+        let joint = &model.joints[bodyref.joint_idx];
+        let ndof = joint.ndof();
+        if ndof > 0 {
+            let v_idx = model.v_offsets[bodyref.joint_idx];
+            let xf = &xforms[b];
+            let axis_world = xf.body_to_world_dir(joint.axis);
+            let body_axis = |k: usize| {
+                xf.body_to_world_dir(match k {
+                    0 => Vec3::x(),
+                    1 => Vec3::y(),
+                    _ => Vec3::z(),
+                })
+            };
+
+            for d in 0..ndof {
+                let contribution = match joint.joint_type {
+                    JointType::Revolute | JointType::Hinge => axis_world,
+                    JointType::Prismatic | JointType::Slide => Vec3::zeros(),
+                    JointType::Spherical | JointType::Ball => body_axis(d),
+                    JointType::Free if d < 3 => body_axis(d),
+                    JointType::Free => Vec3::zeros(),
+                    JointType::Fixed => Vec3::zeros(),
+                };
+                j[(0, v_idx + d)] = contribution.x;
+                j[(1, v_idx + d)] = contribution.y;
+                j[(2, v_idx + d)] = contribution.z;
+            }
+        }
+        cur = bodyref.parent;
+    }
+
+    j
+}
+
 /// The `3 x nv` Jacobian of the *relative* velocity of two coincident points,
 /// one on each body: `J_i - J_j`.
 ///
@@ -193,6 +247,46 @@ mod tests {
             prev = err;
         }
         assert!(best < 1e-6, "best relative error {best}");
+    }
+
+    /// A revolute joint's angular Jacobian column is its world-frame axis, and
+    /// unlike the point Jacobian it does not depend on where the point is.
+    #[test]
+    fn angular_jacobian_is_the_joint_axis() {
+        let model = pendulum();
+        let mut state = model.default_state();
+        state.q[0] = 0.6;
+        let (xforms, _) = forward_kinematics(&model, &state);
+
+        let jw = body_angular_jacobian(&model, &xforms, 0);
+        let col = Vec3::new(jw[(0, 0)], jw[(1, 0)], jw[(2, 0)]);
+        assert!((col - Vec3::z()).norm() < 1e-12, "column {col:?}");
+    }
+
+    /// A free body rotates through its three angular DOFs and not at all
+    /// through its three translational ones.
+    #[test]
+    fn free_body_angular_jacobian_ignores_translation() {
+        let model = ModelBuilder::new()
+            .dt(1e-3)
+            .add_free_body(
+                "ball",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::sphere(1.0, 0.1),
+            )
+            .build();
+        let state = model.default_state();
+        let (xforms, _) = forward_kinematics(&model, &state);
+        let jw = body_angular_jacobian(&model, &xforms, 0);
+
+        for (k, axis) in [Vec3::x(), Vec3::y(), Vec3::z()].iter().enumerate() {
+            let col = Vec3::new(jw[(0, k)], jw[(1, k)], jw[(2, k)]);
+            assert!((col - *axis).norm() < 1e-12, "angular column {k}: {col:?}");
+            for r in 0..3 {
+                assert_eq!(jw[(r, 3 + k)], 0.0, "translation moved the orientation");
+            }
+        }
     }
 
     /// Only DOFs on the path to the body may be non-zero.

@@ -121,6 +121,6 @@ pub use model::{
     Actuator, Body, GeomInstance, Geometry, Joint, JointType, Model, ModelBuilder, State,
 };
 pub use rigid::{
-    BodyKinematics, aba, aba_with_external_forces, body_wrenches, crba, forward_kinematics,
-    forward_kinematics_acc, rnea,
+    BodyKinematics, IkConfig, IkGoal, IkGoalKind, IkSolution, aba, aba_with_external_forces,
+    body_wrenches, crba, forward_kinematics, forward_kinematics_acc, rnea, solve_ik,
 };
