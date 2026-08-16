@@ -35,10 +35,23 @@
 //! to the true constraint force multiplier, and the converged deformation is
 //! `α · f` and nothing else — independent of iteration count, and consistent
 //! across timesteps. This crate's tests pin exactly that. Measured: a hanging
-//! mass stretches its constraint by `m g α` to a relative error of 5.3e-12,
-//! and the same scene solved with 1, 2, 4, 8, 16 and 32 iterations agrees to
-//! **zero** relative difference — the converged positions are bit-identical
-//! across a 32× range of iteration count.
+//! mass stretches its constraint by `m g α` to a relative error of 5.3e-12.
+//!
+//! Iteration independence is measured on a **coupled** system, because a
+//! single constraint cannot demonstrate it: one Gauss-Seidel sweep solves a
+//! one-constraint problem exactly, so every iteration count returns
+//! bit-identical numbers whether or not the compliance feedback works at all.
+//! On a 20-link chain, where each sweep propagates the multiplier one link
+//! further, the worst-case deviation from the 32-iteration answer is:
+//!
+//! ```text
+//! iterations   1        2        3        4        8, 16, 32
+//! deviation    2.6e-3   1.4e-5   7.1e-8   3.7e-10  bit-identical
+//! ```
+//!
+//! Each sweep cuts the remaining error by roughly 200×, and beyond eight the
+//! answer stops moving in the last bit. Iterations buy convergence speed; `α`
+//! alone decides where it converges to.
 //!
 //! # Quick start
 //!

@@ -31,8 +31,18 @@ distance constraint — and carries a Lagrange multiplier through each substep:
 
 The `−α̃ λ` term makes the converged deformation `α · f` and nothing else. The
 crate's tests measure it: a hanging mass stretches by `α·m·g` to a relative
-error of 5.3e-12, and the same scene solved with 1, 2, 4, 8, 16 and 32
-iterations gives bit-identical converged positions.
+error of 5.3e-12.
+
+Iteration independence is measured on a **coupled** system, since a single
+constraint cannot show it — one sweep solves a one-constraint problem exactly,
+so any iteration count agrees bit-for-bit whether the compliance feedback works
+or not. On a 20-link chain, deviation from the 32-iteration answer:
+
+| iterations | 1 | 2 | 3 | 4 | 8, 16, 32 |
+|---|---|---|---|---|---|
+| deviation | 2.6e-3 | 1.4e-5 | 7.1e-8 | 3.7e-10 | bit-identical |
+
+Iterations buy convergence speed; `α` alone decides where it converges to.
 
 ## Example
 

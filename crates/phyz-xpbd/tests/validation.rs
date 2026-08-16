@@ -54,22 +54,114 @@ fn distance_constraint_matches_hookes_law() {
 /// PBD fails this outright — each pass removes a fixed fraction of the
 /// remaining error, so more passes mean a stiffer material. XPBD's multiplier
 /// feedback makes the fixed point a property of `α` alone.
+///
+/// # Why this uses a chain and not a single constraint
+///
+/// On a **single** constraint this property is true for a reason that has
+/// nothing to do with XPBD: one Gauss-Seidel sweep already solves a
+/// one-constraint system exactly, so every later iteration is a no-op and any
+/// iteration count returns bit-identical numbers. A PBD implementation with a
+/// bug in exactly the place this test exists to guard would sail through it.
+/// The test would report a perfect `0.0` spread and mean nothing — the same
+/// trivial-agreement trap as comparing two engines on a model that does not
+/// move.
+///
+/// Coupling is what makes iteration count bite: on a 20-link chain each sweep
+/// propagates the multiplier one link further, so the *rate* of convergence
+/// depends on the iteration count even though the *fixed point* must not.
+/// Measured worst-case relative deviation from the 32-iteration answer:
+///
+/// ```text
+/// iterations   1        2        3        4        8, 16, 32
+/// deviation    2.6e-3   1.4e-5   7.1e-8   3.7e-10  bit-identical
+/// ```
+///
+/// Each extra sweep cuts the remaining error by roughly 200×, and from eight
+/// sweeps on the result stops changing in the last bit. That is the shape the
+/// claim predicts: iterations buy convergence speed, `α` alone sets where it
+/// converges to.
 #[test]
 fn converged_result_is_independent_of_iteration_count() {
+    let reference = chain_depths(32);
+
+    // The fixed point: once converged, more sweeps change nothing at all.
+    for &iters in &[8, 16, 32] {
+        let d = chain_depths(iters);
+        for (k, (a, b)) in d.iter().zip(&reference).enumerate() {
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "iterations = {iters}, mass {k}: {a:.17e} vs reference {b:.17e}"
+            );
+        }
+    }
+
+    // The approach to it: monotone, and fast. Anything that fails here is
+    // either not converging or converging to an iteration-dependent answer,
+    // and the printed sequence says which.
+    let mut prev = f64::INFINITY;
+    for &iters in &[1, 2, 3, 4] {
+        let d = chain_depths(iters);
+        let worst = d
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).abs() / b)
+            .fold(0.0f64, f64::max);
+        assert!(
+            worst < prev,
+            "iterations = {iters}: deviation {worst:.3e} did not improve on {prev:.3e}"
+        );
+        prev = worst;
+    }
+    assert!(
+        prev < 1.0e-8,
+        "four sweeps should be within 1e-8 of converged; got {prev:.3e}"
+    );
+}
+
+/// Static depths of every mass in the 20-link hanging chain, at a given
+/// constraint-iteration count. Shared by the iteration-independence test and
+/// the closed-form equilibrium test so both describe the same system.
+fn chain_depths(iterations: usize) -> Vec<f64> {
+    let (n, m, alpha, rest) = (20usize, 0.5, 1.0e-3, 0.1);
+    let mut p = ParticleSystem::new();
+    let pin = p.add_pinned(Vec3::zeros());
+    let mut idx = vec![pin];
+    for k in 1..=n {
+        idx.push(p.add(Vec3::new(0.0, -rest * k as f64, 0.0), m));
+    }
+    let mut cs: Vec<Constraint> = (0..n)
+        .map(|j| Constraint::distance(idx[j], idx[j + 1], rest, alpha))
+        .collect();
+    let solver = XpbdSolver {
+        dt: 1.0 / 60.0,
+        substeps: 10,
+        iterations,
+        gravity: Vec3::new(0.0, -G, 0.0),
+        damping: 40.0,
+    };
+    for _ in 0..4000 {
+        solver.step(&mut p, &mut cs);
+    }
+    idx.iter().skip(1).map(|&i| -p.positions[i].y).collect()
+}
+
+/// The single-constraint case, kept for what it *does* establish: the solver
+/// reaches a stable answer and the stretch is the Hooke's-law one at every
+/// iteration count. It cannot establish iteration independence — see
+/// `converged_result_is_independent_of_iteration_count` for why.
+#[test]
+fn single_constraint_stretch_is_stable_across_iteration_counts() {
     let alpha = 2.0e-3;
-    let reference = hanging_mass_stretch(alpha, 1.0, 10, 1);
-    let mut worst: f64 = 0.0;
+    let expected = alpha * 1.0 * G;
     for &iters in &[1, 2, 4, 8, 16, 32] {
         let s = hanging_mass_stretch(alpha, 1.0, 10, iters);
-        let rel = (s - reference).abs() / reference;
-        worst = worst.max(rel);
+        let rel = (s - expected).abs() / expected;
         assert!(
-            rel < 1.0e-12,
-            "iterations = {iters}: stretch {s:.15e} vs reference {reference:.15e} (rel {rel:.3e})"
+            rel < 1.0e-6,
+            "iterations = {iters}: stretch {s:.15e}, Hooke {expected:.15e} (rel {rel:.3e})"
         );
     }
-    // Worst-case spread across a 32× range of iteration counts.
-    assert!(worst < 1.0e-12, "worst relative spread {worst:.3e}");
 }
 
 /// The same, across substep counts. Substepping changes the integration error,
