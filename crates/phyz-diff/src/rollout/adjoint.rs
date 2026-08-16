@@ -127,6 +127,201 @@ fn inertia_param_derivatives(
     })
 }
 
+/// Which block of state coordinates a lane sweep seeds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Seed {
+    /// Seed `q`, producing `(∂a/∂q_i)ᵀw` for `i` in `0..nq`.
+    Position,
+    /// Seed `v`, producing `(∂a/∂v_j)ᵀw` for `j` in `0..nv`.
+    Velocity,
+}
+
+/// A run of consecutive coordinates, evaluated at lane width `N`.
+///
+/// Everything except the seeded block is a constant, so a single pass through
+/// [`step_generic`] computes the primal once and pushes `N` tangent directions
+/// through it. That is the whole point: the kinematic tree walk, the joint
+/// transcendentals and the memory traffic are paid once per chunk instead of
+/// once per column.
+///
+/// A group owns *all* the chunks that share a width, so the dual-lifted
+/// inertias — `O(nb)` of them, and pure overhead against the lane work on a
+/// model with many bodies and few DOFs — are built once per group rather than
+/// once per chunk.
+struct LaneGroup<'a> {
+    model: &'a Model,
+    layout: &'a super::step::DofLayout,
+    contact: Option<(&'a GroundContact, &'a [CollisionMesh])>,
+    q: &'a [f64],
+    v: &'a [f64],
+    ctrl: &'a [f64],
+    /// The covector every lane's `∂qdd` is contracted against.
+    w: &'a [f64],
+    seed: Seed,
+    /// `(start, count)` per chunk. A tail chunk may not fill the width;
+    /// unseeded lanes stay exactly zero, so they cost arithmetic and nothing
+    /// else.
+    chunks: &'a [(usize, usize)],
+}
+
+impl crate::multidual::LaneOp for LaneGroup<'_> {
+    type Out = Vec<f64>;
+
+    fn call<const N: usize>(self) -> Vec<f64> {
+        type M<const N: usize> = crate::multidual::MultiDual<N>;
+
+        let lift = |xs: &[f64]| -> Vec<M<N>> { xs.iter().map(|&x| M::<N>::constant(x)).collect() };
+        let q_c = lift(self.q);
+        let v_c = lift(self.v);
+        let ctrl_d = lift(self.ctrl);
+        let inertias: Vec<SpatialInertia<M<N>>> = self
+            .model
+            .bodies
+            .iter()
+            .map(|b| lift_inertia(&b.inertia))
+            .collect();
+
+        let mut out = Vec::new();
+        for &(start, count) in self.chunks {
+            let (mut q_d, mut v_d) = (q_c.clone(), v_c.clone());
+            for lane in 0..count {
+                let idx = start + lane;
+                match self.seed {
+                    Seed::Position => q_d[idx] = M::<N>::var(self.q[idx], lane),
+                    Seed::Velocity => v_d[idx] = M::<N>::var(self.v[idx], lane),
+                }
+            }
+
+            let (_, _, qdd) = step_generic(
+                self.model,
+                self.layout,
+                &inertias,
+                self.contact,
+                None,
+                &q_d,
+                &v_d,
+                &ctrl_d,
+            );
+
+            // wᵀ·∂qdd/∂(coordinate) for each lane. Summed in coordinate order,
+            // the same order the scalar path used, so the result is
+            // bit-identical.
+            out.extend((0..count).map(|lane| -> f64 {
+                qdd.iter()
+                    .zip(self.w)
+                    .map(|(a, &wi)| a.dual[lane] * wi)
+                    .sum()
+            }));
+        }
+        out
+    }
+}
+
+/// How `n` coordinates are cut into chunks: `(width, start, count)`, widest
+/// first, each chunk as wide as the remainder justifies and no wider.
+///
+/// Lanes past the coordinate count are wasted arithmetic, so the tail narrows
+/// rather than padding a full-width chunk: 20 coordinates run as 16 + 4, not
+/// 16 + 16.
+fn chunk_plan(n: usize) -> Vec<(usize, usize, usize)> {
+    let mut plan = Vec::new();
+    let mut start = 0;
+    while start < n {
+        let remaining = n - start;
+        let width = crate::multidual::width_for(remaining);
+        let count = remaining.min(width);
+        plan.push((width, start, count));
+        start += count;
+    }
+    plan
+}
+
+/// `(∂a/∂x_k)ᵀw` for every coordinate `k` of the seeded block, in vector mode.
+///
+/// Chunks that share a width are evaluated together in one monomorphisation,
+/// so the per-width setup (dual-lifting every body's inertia) is paid once for
+/// the group instead of once per chunk.
+///
+/// A **single-coordinate block takes the scalar path instead**, using the
+/// caller's `inertias_dual`, which is lifted once for the whole rollout. Vector
+/// mode at width 1 does the same arithmetic but cannot reuse that lift across
+/// timesteps, and on a model with many bodies and one DOF — a welded assembly
+/// on one hinge — the lift is comparable to the lane work it accompanies,
+/// costing ~10%. Since `MultiDual<1>` is bit-identical to `Dual` this is purely
+/// a choice of which code is faster, never which answer comes out.
+#[allow(clippy::too_many_arguments)]
+fn state_lanes(
+    model: &Model,
+    layout: &super::step::DofLayout,
+    contact: Option<(&GroundContact, &[CollisionMesh])>,
+    inertias_dual: &[SpatialInertia<D>],
+    q: &[f64],
+    v: &[f64],
+    ctrl: &[f64],
+    w: &[f64],
+    seed: Seed,
+) -> Vec<f64> {
+    let n = match seed {
+        Seed::Position => layout.nq,
+        Seed::Velocity => layout.nv,
+    };
+
+    if n == 1 {
+        let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
+        let (mut q_d, mut v_d, u_d) = (lift(q), lift(v), lift(ctrl));
+        match seed {
+            Seed::Position => q_d[0] = D::var(q[0]),
+            Seed::Velocity => v_d[0] = D::var(v[0]),
+        }
+        let (_, _, qdd) = step_generic(
+            model,
+            layout,
+            inertias_dual,
+            contact,
+            None,
+            &q_d,
+            &v_d,
+            &u_d,
+        );
+        return vec![qdd.iter().zip(w).map(|(a, &wi)| a.dual * wi).sum()];
+    }
+
+    let plan = chunk_plan(n);
+    let mut out = Vec::with_capacity(n);
+
+    // Widths appear in descending order and each at most once in practice, but
+    // group explicitly rather than relying on that.
+    let mut done = vec![false; plan.len()];
+    for i in 0..plan.len() {
+        if done[i] {
+            continue;
+        }
+        let width = plan[i].0;
+        let mut chunks: Vec<(usize, usize)> = Vec::new();
+        for (j, c) in plan.iter().enumerate() {
+            if c.0 == width && !done[j] {
+                done[j] = true;
+                chunks.push((c.1, c.2));
+            }
+        }
+        out.extend(crate::multidual::for_lanes(
+            width,
+            LaneGroup {
+                model,
+                layout,
+                contact,
+                q,
+                v,
+                ctrl,
+                w,
+                seed,
+                chunks: &chunks,
+            },
+        ));
+    }
+    out
+}
+
 /// Ground contact configuration for an adjoint rollout: the plane and the
 /// collision skins that feel it.
 pub struct ContactSetup<'a> {
@@ -241,13 +436,14 @@ pub fn adjoint_rollout_gradient(
         })
         .unwrap_or_default();
 
-    // Nominal dual-lifted inertias, reused per state lane.
-    let inertias_nominal: Vec<SpatialInertia<D>> = model
+    let inertias_f64: Vec<SpatialInertia<f64>> = model.bodies.iter().map(|b| b.inertia).collect();
+    // Dual-lifted inertias for the single-coordinate lane path, hoisted out of
+    // the time loop the way the all-scalar implementation had them.
+    let inertias_dual: Vec<SpatialInertia<D>> = model
         .bodies
         .iter()
         .map(|b| lift_inertia(&b.inertia))
         .collect();
-    let inertias_f64: Vec<SpatialInertia<f64>> = model.bodies.iter().map(|b| b.inertia).collect();
 
     // Constants of the model, hoisted out of the time loop.
     let d_i_mats: Vec<[SpatialMat<f64>; N_INERTIA_PARAMS]> =
@@ -277,7 +473,7 @@ pub fn adjoint_rollout_gradient(
         let u_t = u_t.as_slice();
 
         let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
-        let (q_c, v_c, u_c) = (lift(q_t), lift(v_t), lift(u_t));
+        let q_c = lift(q_t);
         let vn_c = lift(v_next);
         let dt_d = D::constant(dt);
 
@@ -309,29 +505,36 @@ pub fn adjoint_rollout_gradient(
         // w = Φ_v'ᵀλ_q' + λ_v' — the covector every channel contracts against.
         let w: Vec<f64> = psi.iter().zip(&lam_v).map(|(&p, &lv)| p + lv).collect();
 
-        // One dual lane: returns wᵀ·∂qdd/∂(seeded input).
-        let contract = |q_d: &[D],
-                        v_d: &[D],
-                        inertias: &[SpatialInertia<D>],
-                        ext: Option<&[SpatialVec<D>]>|
-         -> f64 {
-            let (_, _, qdd) = step_generic(model, &layout, inertias, contact, ext, q_d, v_d, &u_c);
-            qdd.iter().zip(&w).map(|(a, &wi)| a.dual * wi).sum()
-        };
-
         // State lanes: aq[i] = (∂a/∂q_i)ᵀw (nq of them), av[j] = (∂a/∂v_j)ᵀw.
-        let mut aq = vec![0.0f64; nq];
-        for i in 0..nq {
-            let mut q_d = q_c.clone();
-            q_d[i] = D::var(q_t[i]);
-            aq[i] = contract(&q_d, &v_c, &inertias_nominal, None);
-        }
-        let mut av = vec![0.0f64; nv];
-        for j in 0..nv {
-            let mut v_d = v_c.clone();
-            v_d[j] = D::var(v_t[j]);
-            av[j] = contract(&q_c, &v_d, &inertias_nominal, None);
-        }
+        //
+        // These are the backward pass's dominant cost — one seeded evaluation
+        // of the step per state coordinate — so they run in vector mode: each
+        // pass carries up to 16 tangent directions through a single primal.
+        // Lane-for-lane the arithmetic is bit-identical to the scalar `Dual`
+        // path (see [`crate::multidual`]), so widening changes the time and
+        // not the answer.
+        let aq = state_lanes(
+            model,
+            &layout,
+            contact,
+            &inertias_dual,
+            q_t,
+            v_t,
+            u_t,
+            &w,
+            Seed::Position,
+        );
+        let av = state_lanes(
+            model,
+            &layout,
+            contact,
+            &inertias_dual,
+            q_t,
+            v_t,
+            u_t,
+            &w,
+            Seed::Velocity,
+        );
 
         // Inertia and wrench channels, analytically (see module docs). Two
         // O(nb) sweeps price *all* 10·nb parameter directions and all 6·nb
@@ -418,5 +621,216 @@ pub fn adjoint_rollout_gradient(
         objective: j0,
         d_inertia,
         d_vertices,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use phyz_math::{Mat3, SpatialInertia as SI64, SpatialTransform};
+    use phyz_model::ModelBuilder;
+
+    /// The scalar-`Dual` lane extraction this module used before vector mode:
+    /// one seeded pass through the step per coordinate. Kept as the reference
+    /// the fast path is checked against.
+    fn state_lanes_scalar(
+        model: &Model,
+        layout: &super::super::step::DofLayout,
+        q: &[f64],
+        v: &[f64],
+        ctrl: &[f64],
+        w: &[f64],
+        seed: Seed,
+    ) -> Vec<f64> {
+        let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
+        let (q_c, v_c, u_c) = (lift(q), lift(v), lift(ctrl));
+        let inertias: Vec<SpatialInertia<D>> = model
+            .bodies
+            .iter()
+            .map(|b| lift_inertia(&b.inertia))
+            .collect();
+
+        let n = match seed {
+            Seed::Position => layout.nq,
+            Seed::Velocity => layout.nv,
+        };
+        (0..n)
+            .map(|k| {
+                let (mut q_d, mut v_d) = (q_c.clone(), v_c.clone());
+                match seed {
+                    Seed::Position => q_d[k] = D::var(q[k]),
+                    Seed::Velocity => v_d[k] = D::var(v[k]),
+                }
+                let (_, _, qdd) =
+                    step_generic(model, layout, &inertias, None, None, &q_d, &v_d, &u_c);
+                qdd.iter().zip(w).map(|(a, &wi)| a.dual * wi).sum()
+            })
+            .collect()
+    }
+
+    fn link(m: f64) -> SI64 {
+        SI64::new(
+            m,
+            Vec3::new(0.0, -0.5, 0.0),
+            Mat3::from_diagonal(&Vec3::new(0.1, 0.13, 0.11)),
+        )
+    }
+
+    fn chain(n: usize) -> Model {
+        let off = SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, -1.0, 0.0));
+        let mut b = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, -9.81, 0.0))
+            .dt(2.0e-3);
+        for i in 0..n {
+            let xf = if i == 0 {
+                SpatialTransform::identity()
+            } else {
+                off
+            };
+            b = b.add_revolute_body(
+                &format!("l{i}"),
+                i as i32 - 1,
+                xf,
+                link(1.0 + 0.1 * i as f64),
+            );
+        }
+        b.build()
+    }
+
+    /// Vector mode must agree with the scalar path **bit for bit**, at every
+    /// DOF count — including the ones where the chunk does not fill its width
+    /// (3, 5, 17) and the ones that need more than one chunk (17, 20).
+    ///
+    /// Approximate agreement would not do: `phyz`'s rollouts are bitwise
+    /// reproducible, and a gradient that shifted in the last ulp because the
+    /// model gained a joint would break that promise silently.
+    #[test]
+    fn vector_mode_matches_scalar_dual_bitwise() {
+        for n in [1usize, 2, 3, 5, 8, 17, 20] {
+            let model = chain(n);
+            let layout = super::super::step::DofLayout::of(&model);
+            let q: Vec<f64> = (0..layout.nq).map(|i| 0.21 + 0.07 * i as f64).collect();
+            let v: Vec<f64> = (0..layout.nv).map(|i| -0.13 + 0.05 * i as f64).collect();
+            let ctrl: Vec<f64> = (0..layout.nv).map(|i| 0.02 * i as f64).collect();
+            let w: Vec<f64> = (0..layout.nv).map(|i| 1.0 - 0.03 * i as f64).collect();
+
+            for seed in [Seed::Position, Seed::Velocity] {
+                let inert: Vec<SpatialInertia<D>> = model
+                    .bodies
+                    .iter()
+                    .map(|b| lift_inertia(&b.inertia))
+                    .collect();
+                let fast = state_lanes(&model, &layout, None, &inert, &q, &v, &ctrl, &w, seed);
+                let slow = state_lanes_scalar(&model, &layout, &q, &v, &ctrl, &w, seed);
+                assert_eq!(fast.len(), slow.len(), "n = {n}, {seed:?}");
+                for (k, (a, b)) in fast.iter().zip(&slow).enumerate() {
+                    assert_eq!(
+                        a.to_bits(),
+                        b.to_bits(),
+                        "n = {n}, {seed:?}, lane {k}: {a} vs {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The same, with contact wrenches in the loop — a separate code path
+    /// inside the step, and one where the penalty law's `max` could in
+    /// principle take a different branch per lane if the comparison ever
+    /// consulted a tangent.
+    #[test]
+    fn vector_mode_matches_scalar_dual_with_contact() {
+        let model = chain(3);
+        let layout = super::super::step::DofLayout::of(&model);
+        let meshes = [CollisionMesh {
+            body: 2,
+            vertices: vec![
+                Vec3::new(0.02, -1.0, 0.0),
+                Vec3::new(-0.02, -1.0, 0.01),
+                Vec3::new(0.0, -0.98, -0.02),
+            ],
+        }];
+        let ground = GroundContact {
+            height: -1.5,
+            stiffness: 4.0e3,
+            damping: 40.0,
+        };
+        let contact = Some((&ground, &meshes[..]));
+
+        let q: Vec<f64> = (0..layout.nq).map(|i| 0.4 + 0.05 * i as f64).collect();
+        let v = vec![0.1, -0.2, 0.05];
+        let ctrl = vec![0.0; layout.nv];
+        let w = vec![0.9, 1.1, -0.7];
+
+        for seed in [Seed::Position, Seed::Velocity] {
+            let inert: Vec<SpatialInertia<D>> = model
+                .bodies
+                .iter()
+                .map(|b| lift_inertia(&b.inertia))
+                .collect();
+            let fast = state_lanes(&model, &layout, contact, &inert, &q, &v, &ctrl, &w, seed);
+            // The scalar reference takes no contact, so run it against a
+            // hand-rolled seeded pass that does.
+            let lift = |xs: &[f64]| -> Vec<D> { xs.iter().map(|&x| D::constant(x)).collect() };
+            let (q_c, v_c, u_c) = (lift(&q), lift(&v), lift(&ctrl));
+            let inertias: Vec<SpatialInertia<D>> = model
+                .bodies
+                .iter()
+                .map(|b| lift_inertia(&b.inertia))
+                .collect();
+            let n = match seed {
+                Seed::Position => layout.nq,
+                Seed::Velocity => layout.nv,
+            };
+            for k in 0..n {
+                let (mut q_d, mut v_d) = (q_c.clone(), v_c.clone());
+                match seed {
+                    Seed::Position => q_d[k] = D::var(q[k]),
+                    Seed::Velocity => v_d[k] = D::var(v[k]),
+                }
+                let (_, _, qdd) =
+                    step_generic(&model, &layout, &inertias, contact, None, &q_d, &v_d, &u_c);
+                let slow: f64 = qdd.iter().zip(&w).map(|(a, &wi)| a.dual * wi).sum();
+                assert_eq!(
+                    fast[k].to_bits(),
+                    slow.to_bits(),
+                    "{seed:?} lane {k}: {} vs {slow}",
+                    fast[k]
+                );
+            }
+        }
+    }
+
+    /// A non-empty check on the reference itself: a pendulum's `∂a/∂q` is not
+    /// zero, so the bitwise comparisons above are comparing real numbers
+    /// rather than two identically empty answers.
+    #[test]
+    fn lanes_are_not_trivially_zero() {
+        let model = chain(2);
+        let layout = super::super::step::DofLayout::of(&model);
+        let q = vec![0.3, 0.5];
+        let v = vec![0.2, -0.1];
+        let ctrl = vec![0.0, 0.0];
+        let w = vec![1.0, 1.0];
+        let inert: Vec<SpatialInertia<D>> = model
+            .bodies
+            .iter()
+            .map(|b| lift_inertia(&b.inertia))
+            .collect();
+        let aq = state_lanes(
+            &model,
+            &layout,
+            None,
+            &inert,
+            &q,
+            &v,
+            &ctrl,
+            &w,
+            Seed::Position,
+        );
+        assert!(
+            aq.iter().any(|x| x.abs() > 1e-9),
+            "every position lane vanished: {aq:?}"
+        );
     }
 }

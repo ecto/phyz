@@ -287,11 +287,11 @@ Two numbers worth knowing before you adopt phyz:
 
 - The GPU path does not break even against a single CPU thread until roughly
   **batch 128**. Below that it is slower, substantially so at batch 1.
-- A gradient rollout costs roughly **6× a forward rollout per degree of
-  freedom** — 9× on a 1-DOF model, 98× on a 16-DOF one. The ratio is flat in
-  parameter count (160 parameters cost the same as 10 at equal DOF), so the
-  adjoint does beat finite differences by a margin that widens as parameters
-  outnumber DOFs: 3.0× at 10 parameters, 18.3× at 80. It is still a long way
+- A gradient rollout costs **4–7× a forward rollout per degree of freedom** —
+  6.5× on a 1-DOF model, 78× on a 16-DOF one. The ratio is very nearly flat in
+  parameter count (160 parameters at one DOF cost 9.1×, against 6.5× for 10),
+  so the adjoint beats finite differences by a margin that widens as parameters
+  outnumber DOFs: 3.0× at 10 parameters, 18.4× at 80. It is still a long way
   from reverse mode's textbook small constant.
 
 ## License

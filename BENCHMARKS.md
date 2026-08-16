@@ -24,7 +24,7 @@ make bench
 | GPU-accelerated batch simulation | **Holds above batch ~128.** 36× a CPU thread at batch 4096. Below batch 128 the GPU path is *slower* than one CPU core — at batch 1 it is 100× slower. |
 | "Thousands of parallel environments" | **Holds.** 16 384 environments run at 7.8 M env-steps/s. Throughput plateaus after ~4096. |
 | Contact / collision performance | **Loses badly.** Rapier is ~26× faster on an 8-box stack. |
-| "Analytical derivatives for free" | **Not free; not the same class as finite differences either.** A gradient rollout costs 6–9× a forward rollout per DOF, and that ratio is flat in parameter count — 160 parameters at one DOF costs 9.2×, the same as 10 parameters. So it beats finite differences by a margin that grows with parameter count (3.0× at 10 parameters, 18.3× at 80, measured) and loses to textbook reverse mode's small constant. "Free" is wrong; "the same scaling as finite differences", which this table said until the `adjoint scaling` suite tested it, was also wrong. |
+| "Analytical derivatives for free" | **Not free; not the same class as finite differences either.** A gradient rollout costs 6–9× a forward rollout per DOF, and that ratio is flat in parameter count — 160 parameters at one DOF costs 9.1×, against 6.5× for 10 parameters. So it beats finite differences by a margin that grows with parameter count (3.0× at 10 parameters, 18.4× at 80, measured) and loses to textbook reverse mode's small constant. "Free" is wrong; "the same scaling as finite differences", which this table said until the `adjoint scaling` suite tested it, was also wrong. |
 | Numerical quality | **Holds.** Energy error falls as O(dt) exactly as a symplectic integrator should, on both a simple and a chaotic scene. |
 
 Detail, settings, and caveats below. **Read the caveats before quoting a
@@ -347,19 +347,20 @@ the generated block.
 
 | family | parameters | nv | adjoint ratio | ratio ÷ parameters | ratio ÷ DOF |
 |---|---|---|---|---|---|
-| `weld_chain_1` | 10 | 1 | 6.9× | 0.685 | 6.9 |
-| `weld_chain_4` | 40 | 1 | 8.1× | 0.203 | 8.1 |
-| `weld_chain_16` | 160 | 1 | **9.2×** | **0.057** | 9.2 |
-| `dof_chain_1` | 10 | 1 | 6.4× | 0.638 | 6.4 |
-| `dof_chain_4` | 40 | 4 | 22.3× | 0.557 | 5.6 |
-| `dof_chain_16` | 160 | 16 | **97.6×** | 0.610 | **6.1** |
+| `weld_chain_1` | 10 | 1 | 6.5× | 0.650 | 6.5 |
+| `weld_chain_4` | 40 | 1 | 7.9× | 0.198 | 7.9 |
+| `weld_chain_16` | 160 | 1 | **9.1×** | **0.057** | 9.1 |
+| `dof_chain_1` | 10 | 1 | 6.5× | 0.650 | 6.5 |
+| `dof_chain_4` | 40 | 4 | 16.7× | 0.418 | 4.2 |
+| `dof_chain_16` | 160 | 16 | **78.4×** | 0.490 | 4.9 |
 
-Sixteen-fold more parameters at fixed DOF costs 33% more time. Sixteen-fold
-more DOFs costs 15× more. The `ratio ÷ DOF` column is flat at 5.6–6.4 across
-the entire sweep — **the adjoint's cost is linear in DOF count and very nearly
-independent of parameter count**, which is what the implementation says it
-should be: the parameter and contact channels ride two `O(nb)` sweeps, while
-the *state* Jacobian costs `nq + nv` dual-ABA lanes per step.
+Sixteen-fold more parameters at fixed DOF costs 40% more time. Sixteen-fold
+more DOFs costs 12× more. The `ratio ÷ parameters` column collapses by an order
+of magnitude down the first family and barely moves down the second —
+**the adjoint's cost tracks DOF count and is very nearly independent of
+parameter count**, which is what the implementation says it should be: the
+parameter and contact channels ride two `O(nb)` sweeps, while the *state*
+Jacobian costs `nq + nv` dual-ABA lanes per step.
 
 That changes the comparison against finite differences, which the earlier
 reading got backwards. At fixed DOF count, FD costs `2·n_params` rollouts and
@@ -368,10 +369,10 @@ the adjoint does not, so the adjoint's advantage grows with the parameter count
 
 | parameters (nv = 1) | adjoint | finite differences | adjoint speedup |
 |---|---|---|---|
-| 10 | 6.9× fwd | 20.5× fwd | **3.0×** |
-| 20 | 7.6× fwd | 39.4× fwd | **5.2×** |
-| 40 | 8.1× fwd | 81.2× fwd | **10.0×** |
-| 80 | 8.7× fwd | 158.9× fwd | **18.3×** |
+| 10 | 6.5× fwd | 19.8× fwd | **3.0×** |
+| 20 | 7.6× fwd | 38.9× fwd | **5.1×** |
+| 40 | 7.9× fwd | 79.9× fwd | **10.1×** |
+| 80 | 7.8× fwd | 143.0× fwd | **18.4×** |
 
 The gradient suite's near-unity `adjoint_speedup_vs_fd` was never evidence of a
 bad asymptotic — it is what you get when a model has ten parameters per DOF and
@@ -379,14 +380,48 @@ only one or two DOFs, so the adjoint's constant factor has nothing to amortise
 against. On a real system-identification problem, where parameters outnumber
 DOFs, the adjoint wins by the margin above and keeps widening.
 
-**What is still true, and what the remaining cost is.** 6–9× the forward pass
-for a single-DOF model is a large constant, and it is *not* the ~2–4× textbook
-reverse mode delivers. The residual is the state Jacobian: `nq + nv` separately
-seeded dual passes through ABA per timestep, each re-walking the kinematic tree
-to extract one column. Vector-mode duals — one pass carrying all `nq + nv`
-directions — would amortise that traversal, and that is the optimisation to
-make next. The parameter channel needs no work; it is already asymptotically
-right.
+**What is still true, and what vector mode bought.** 6–9× the forward pass for
+a single-DOF model is a large constant, and it is *not* the ~2–4× textbook
+reverse mode delivers. The residual is the state Jacobian, and the first
+reduction of it has landed: the `nq + nv` separately seeded dual passes through
+ABA are now chunked into vector-mode passes of up to 16 tangent directions
+each, so the primal — the kinematic tree walk, the joint transcendentals, the
+memory traffic — is paid once per chunk instead of once per column.
+
+Same suite, same host, adjoint ratio before and after:
+
+| model | nv | scalar `Dual` | vector mode | speedup |
+|---|---|---|---|---|
+| `weld_chain_1` | 1 | 6.9× | 6.5× | 1.05× |
+| `weld_chain_8` | 1 | 8.7× | 7.8× | 1.12× |
+| `weld_chain_16` | 1 | 9.2× | 9.1× | 1.00× |
+| `dof_chain_1` | 1 | 6.4× | 6.5× | 0.98× |
+| `dof_chain_2` | 2 | 12.4× | 10.7× | 1.16× |
+| `dof_chain_4` | 4 | 22.3× | 16.7× | 1.34× |
+| `dof_chain_8` | 8 | 47.2× | 32.3× | **1.46×** |
+| `dof_chain_16` | 16 | 97.6× | 78.4× | 1.24× |
+
+**1.2–1.5× where it applies, not the 2–4× the idea promises**, and flat at one
+DOF by construction: a single-coordinate block still takes the scalar path,
+because at width 1 vector mode does identical arithmetic but cannot hoist its
+dual-lifted inertias out of the time loop, which costs ~10% on a many-bodied
+model. The win peaks at 8 DOF and falls away above it: the tangent arithmetic —
+`N` multiply-adds per scalar operation — grows with the width, while the primal
+it amortises does not. Vector mode removes the redundant primal; it cannot
+remove the tangents, and on this workload the tangents are most of the cost.
+
+Getting to a textbook constant needs a different lever — reverse mode within
+the step, or an analytic `∂a/∂(q, v)` in the manner of the inertia channel —
+not a wider forward mode. The parameter channel needs no work at all; it is
+already asymptotically right.
+
+Every gradient is **bit-identical** before and after — verified across chains
+of 1–24 links plus a free-floating body with and without contact: the lane arithmetic is the same
+expression in the same association order as the scalar path, asserted in
+`multidual::tests::lanes_match_scalar_dual_bitwise` and
+`adjoint::tests::vector_mode_matches_scalar_dual_bitwise`. Widening is a speed
+change and never a numerical one, which is what lets it sit under a rollout
+that promises bitwise reproducibility.
 
 And exactness stands on its own: `adjoint_vs_fd_max_rel_err` ≈ 1e-10 with no
 step size to choose and no truncation or cancellation error.

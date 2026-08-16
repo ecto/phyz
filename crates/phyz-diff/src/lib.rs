@@ -52,6 +52,7 @@
 pub struct ReadmeDocTests;
 
 pub mod contact_adjoint;
+pub mod multidual;
 pub mod rollout;
 pub mod symbolic;
 
