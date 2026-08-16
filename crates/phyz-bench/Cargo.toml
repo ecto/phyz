@@ -15,6 +15,13 @@ name = "phyz_bench"
 name = "phyz-bench"
 path = "src/bin/phyz_bench.rs"
 
+# Trajectory dumper for the cross-engine agreement harness. Separate from the
+# benchmark binary because it is driven by a Python script, one invocation per
+# model, and emits a trajectory rather than a timing report.
+[[bin]]
+name = "phyz-traj"
+path = "src/bin/phyz_traj.rs"
+
 [[bench]]
 name = "single_sim"
 harness = false

@@ -116,7 +116,7 @@ opt-in.
 | [`phyz`](crates/phyz) | Umbrella over the rigid-body stack: re-exports math, model, rigid, collision, contact, diff, plus the `sim` time loop |
 | [`phyz-math`](crates/phyz-math) | Spatial algebra: vectors, matrices, quaternions, spatial transforms and inertias |
 | [`phyz-model`](crates/phyz-model) | Articulated body models, joints, actuators, state |
-| [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, energy |
+| [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, inverse kinematics, energy |
 | [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians (finite-difference, chain-rule, symbolic) and the exact trajectory adjoint |
 | [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
@@ -167,7 +167,7 @@ phyz/
 │   ├── phyz/             # Umbrella — re-exports everything
 │   ├── phyz-math/        # Spatial algebra, vectors, matrices
 │   ├── phyz-model/       # Articulated body models, joints, inertia
-│   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics
+│   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics, IK
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
 │   ├── phyz-urdf/        # URDF (ROS) robot description import
@@ -287,9 +287,12 @@ Two numbers worth knowing before you adopt phyz:
 
 - The GPU path does not break even against a single CPU thread until roughly
   **batch 128**. Below that it is slower, substantially so at batch 1.
-- Gradient rollouts cost 18–54× a forward rollout, and that ratio grows with
-  parameter count. The derivatives are *exact*, which is the real benefit —
-  they are not asymptotically cheaper than finite differences today.
+- A gradient rollout costs **4–7× a forward rollout per degree of freedom** —
+  6.5× on a 1-DOF model, 78× on a 16-DOF one. The ratio is very nearly flat in
+  parameter count (160 parameters at one DOF cost 9.1×, against 6.5× for 10),
+  so the adjoint beats finite differences by a margin that widens as parameters
+  outnumber DOFs: 3.0× at 10 parameters, 18.4× at 80. It is still a long way
+  from reverse mode's textbook small constant.
 
 ## License
 

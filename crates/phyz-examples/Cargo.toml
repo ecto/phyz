@@ -112,3 +112,7 @@ path = "../../examples/real2sim_pendulum.rs"
 [[example]]
 name = "world_generation"
 path = "../../examples/world_generation.rs"
+
+[[example]]
+name = "ik_reach"
+path = "../../examples/ik_reach.rs"

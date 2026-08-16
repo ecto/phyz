@@ -1,5 +1,6 @@
 //! The benchmark suites.
 
+pub mod adjoint_scaling;
 pub mod divergence;
 pub mod energy;
 pub mod gpu_batch;

@@ -24,7 +24,7 @@ make bench
 | GPU-accelerated batch simulation | **Holds above batch ~128.** 36× a CPU thread at batch 4096. Below batch 128 the GPU path is *slower* than one CPU core — at batch 1 it is 100× slower. |
 | "Thousands of parallel environments" | **Holds.** 16 384 environments run at 7.8 M env-steps/s. Throughput plateaus after ~4096. |
 | Contact / collision performance | **Loses badly.** Rapier is ~26× faster on an 8-box stack. |
-| "Analytical derivatives for free" | **Does not hold.** A gradient rollout costs 18–45× a forward rollout, and that ratio *grows with parameter count* — roughly the same scaling as finite differences, which it does not reliably beat. The gradients are exact, which is a real benefit, but it is not the benefit the phrase implies. |
+| "Analytical derivatives for free" | **Not free; not the same class as finite differences either.** A gradient rollout costs 6–9× a forward rollout per DOF, and that ratio is flat in parameter count — 160 parameters at one DOF costs 9.1×, against 6.5× for 10 parameters. So it beats finite differences by a margin that grows with parameter count (3.0× at 10 parameters, 18.4× at 80, measured) and loses to textbook reverse mode's small constant. "Free" is wrong; "the same scaling as finite differences", which this table said until the `adjoint scaling` suite tested it, was also wrong. |
 | Numerical quality | **Holds.** Energy error falls as O(dt) exactly as a symplectic integrator should, on both a simple and a chaotic scene. |
 
 Detail, settings, and caveats below. **Read the caveats before quoting a
@@ -196,6 +196,75 @@ seconds per wall-clock second.
 | `ant` | 14 | 0.001 | **229 k/s** | 4.365 | 3% | 229× |
 | `box_stack_8` | 48 | 0.002 | **43.6 k/s** | 22.93 | 21% | 87× |
 
+### Agreement with MuJoCo
+
+Speed comparisons say how fast an engine is. They say nothing about whether it
+computes the right thing. `make agreement` asks the other question: given the
+same model, the same initial state and the same integrator, do phyz and MuJoCo
+trace the same trajectory?
+
+Both engines are stripped to gravity-driven articulated dynamics on a kinematic
+tree first — damping, springs, dry friction and joint limits zeroed, contact and
+constraints disabled, semi-implicit Euler on both sides — because each of those
+is modelled differently by the two and leaving any on would measure the
+difference between two approximations of a *constraint* rather than two
+computations of the *dynamics*. Armature is kept: it is a constant on the
+mass-matrix diagonal, implemented the same way by both, and on light distal
+links it is what keeps the mass matrix conditioned.
+
+MuJoCo 3.11.0, 10 000 steps at dt = 1 ms, tolerance 1×10⁻⁶. **The `step 1`
+column is the one that matters** — one step from an identical state, with no
+room for accumulation, so it isolates whether the two engines compute the same
+accelerations:
+
+| model | nq | step 1 | 0.1 s | 1 s | max over 10 s |
+|---|---|---|---|---|---|
+| `chain_1` | 1 | 2.5×10⁻¹⁵ | 1.4×10⁻¹¹ | 1.1×10⁻¹⁰ | 4.5×10⁻⁹ |
+| `chain_2` | 2 | 1.3×10⁻¹⁴ | 5.3×10⁻¹¹ | 6.9×10⁻¹⁰ | 1.0×10⁻⁸ |
+| `chain_4` | 4 | 2.1×10⁻¹⁴ | 8.8×10⁻¹¹ | 1.2×10⁻⁹ | 2.7×10⁻⁸ |
+| `chain_8` | 8 | 4.1×10⁻¹⁴ | 1.3×10⁻¹⁰ | 3.3×10⁻⁹ | 4.3×10⁻⁸ |
+| `chain_x_axis` | 3 | 1.9×10⁻¹⁴ | 9.1×10⁻¹¹ | 1.0×10⁻⁹ | 1.7×10⁻⁸ |
+| `tree` (branching) | 4 | 1.8×10⁻¹⁵ | 9.8×10⁻¹² | 2.0×10⁻¹⁰ | 1.8×10⁻⁹ |
+| `ant` (free base) | 15 | **0** | 7.9×10⁻¹² | 1.8×10⁻⁶ | 3.1×10⁻¹ |
+| `half_cheetah` (free base) | 13 | **0** | 5.4×10⁻¹³ | 5.7×10⁻⁸ | 1.3×10⁻³ |
+| `humanoid` (free base) | 24 | 6.5×10⁻¹⁵ | 4.2×10⁻¹⁰ | 1.4×10⁻⁴ | 1.5 |
+| `shadow_hand` | 24 | 5.8×10⁻¹⁰ | 9.6×10⁻⁸ | 5.0×10⁻⁹ | 1.2×10⁻⁷ |
+| `slide_chain`, `simple_arm` | 3, 2 | 0 | 0 | ≤2×10⁻¹⁷ | ≤1.8×10⁻¹⁵ |
+
+**phyz's Featherstone ABA computes the same accelerations as MuJoCo to f64
+epsilon** — on serial chains, a branching tree, off-diagonal inertia tensors,
+hinge and slide joints, a 24-DOF hand, and all three free-floating models,
+where the first-step difference is exactly zero on two of them. Free bases,
+which an earlier revision of this harness could not compare at all, are
+included: MuJoCo packs a free joint as position-then-quaternion and phyz as
+exponential-coordinates-then-position, and `phyz-traj --layout mujoco` converts
+between them.
+
+**What the later columns are, and are not.** They are accumulation, not
+disagreement. The seed is machine epsilon at step 1 and grows roughly as `t⁴`
+on the free-base models, reaching order 1 rad by 10 s on the humanoid. That is
+not chaos amplifying round-off — a broadband 1-ulp perturbation of the same
+initial state stays at 8×10⁻¹⁵ over the same window, so the model is not in a
+sensitive regime here — it is two numerically distinct but algebraically
+equivalent factorizations (ABA against MuJoCo's LDL) integrating for ten
+thousand steps from an epsilon-sized difference. **Quote the `step 1` column
+for correctness and the later ones for how long a shared trajectory survives.**
+
+`shadow_hand` is the one model whose first step is not at epsilon, at
+5.8×10⁻¹⁰. Its link inertias span five orders of magnitude and its mass matrix
+is dominated by the armature regularisation, so the two factorizations differ
+at the conditioning level rather than at epsilon. It is also the model that
+goes non-finite in *both* engines within 10 ms if armature is stripped — which
+is why it isn't.
+
+Contact is still not covered, for the same reason the Rapier box-stack row
+carries its caveat: the two contact models are different algorithms, and
+comparing their trajectories would compare modelling choices rather than
+implementations.
+
+Measured on a different host from the generated block above. Reproduce with
+`make agreement` (needs `pip install mujoco`).
+
 ### Numerical quality — energy drift
 
 Conservative scenes, no contact, no damping. Drift is relative to initial total
@@ -322,28 +391,121 @@ number that matters, and it should be in the README next to the word
 "GPU-accelerated". Throughput also plateaus between 4096 and 16 384, so the
 last 4× in batch size buys ~1.1× in throughput.
 
-**Gradients — the claim that does not survive.** "Analytical derivatives for
-free" implies what reverse-mode AD normally delivers: gradient cost bounded by
-a small constant times the forward pass, *regardless of parameter count*.
-phyz's adjoint does not do that. Its cost grows roughly in proportion to
-parameter count — 18× the forward pass at 10 parameters, 45× at 20 — because
-the backward pass is reverse-mode over time but runs one forward dual lane per
-parameter per step: O(steps × n_params), the same asymptotic class as finite
-differences.
+**Gradients — expensive, but not for the reason this document used to give.**
 
-Measured against a fair finite-difference baseline (model cloned once, not per
-probe), it is a wash: **1.12× faster on the pendulum, 0.88× — i.e. slower — on
-the double pendulum.** Those are the measured `adjoint_speedup_vs_fd` values,
-not estimates.
+An earlier revision of this section read the gradient suite's two rows — 18×
+the forward pass at 10 parameters, 45× at 20 — and concluded that the adjoint
+costs a lane per parameter, putting it in finite differences' asymptotic class.
+That conclusion was wrong, and it was wrong because two scenes cannot support
+it. The pendulum has one body, one DOF and ten parameters; the double pendulum
+has two of each. Parameter count and DOF count move together, so those rows are
+equally consistent with either explanation.
 
-What the adjoint *does* buy is exactness: it agrees with finite differences to
-round-off (`adjoint_vs_fd_max_rel_err` ≈ 0) with no step size to choose and no
-truncation or cancellation error. That is a genuine and useful property. It is
-not the property the README's phrasing advertises.
+The `adjoint scaling` suite separates them. `weld_chain_N` hangs `N` rigidly
+welded bodies off a single revolute joint: every welded body carries a full
+ten-parameter spatial inertia and is dynamically live, but a `Fixed` joint adds
+no DOF, so the parameter count grows 16× while `nv` stays at 1. `dof_chain_N`
+is the control, growing both together as the gradient suite's scenes do.
 
-There is also a scope limit worth stating: the differentiable rollout requires
-`nq == nv` and single-DOF joints, so the ant — anything with a free-floating
-base — cannot be differentiated at all today.
+The tables below come from `phyz-bench --suite adjoint-scaling` on a **different
+host** from the generated results above, so do not compare their absolute
+milliseconds against that section. Every column here is a ratio between two
+quantities measured back to back on the same machine, which is what the
+argument rests on; re-run `make bench` on the publishing host to fold them into
+the generated block.
+
+| family | parameters | nv | adjoint ratio | ratio ÷ parameters | ratio ÷ DOF |
+|---|---|---|---|---|---|
+| `weld_chain_1` | 10 | 1 | 6.5× | 0.650 | 6.5 |
+| `weld_chain_4` | 40 | 1 | 7.9× | 0.198 | 7.9 |
+| `weld_chain_16` | 160 | 1 | **9.1×** | **0.057** | 9.1 |
+| `dof_chain_1` | 10 | 1 | 6.5× | 0.650 | 6.5 |
+| `dof_chain_4` | 40 | 4 | 16.7× | 0.418 | 4.2 |
+| `dof_chain_16` | 160 | 16 | **78.4×** | 0.490 | 4.9 |
+
+Sixteen-fold more parameters at fixed DOF costs 40% more time. Sixteen-fold
+more DOFs costs 12× more. The `ratio ÷ parameters` column collapses by an order
+of magnitude down the first family and barely moves down the second —
+**the adjoint's cost tracks DOF count and is very nearly independent of
+parameter count**, which is what the implementation says it should be: the
+parameter and contact channels ride two `O(nb)` sweeps, while the *state*
+Jacobian costs `nq + nv` dual-ABA lanes per step.
+
+That changes the comparison against finite differences, which the earlier
+reading got backwards. At fixed DOF count, FD costs `2·n_params` rollouts and
+the adjoint does not, so the adjoint's advantage grows with the parameter count
+— measured, not projected:
+
+| parameters (nv = 1) | adjoint | finite differences | adjoint speedup |
+|---|---|---|---|
+| 10 | 6.5× fwd | 19.8× fwd | **3.0×** |
+| 20 | 7.6× fwd | 38.9× fwd | **5.1×** |
+| 40 | 7.9× fwd | 79.9× fwd | **10.1×** |
+| 80 | 7.8× fwd | 143.0× fwd | **18.4×** |
+
+The gradient suite's near-unity `adjoint_speedup_vs_fd` was never evidence of a
+bad asymptotic — it is what you get when a model has ten parameters per DOF and
+only one or two DOFs, so the adjoint's constant factor has nothing to amortise
+against. On a real system-identification problem, where parameters outnumber
+DOFs, the adjoint wins by the margin above and keeps widening.
+
+**What is still true, and what vector mode bought.** 6–9× the forward pass for
+a single-DOF model is a large constant, and it is *not* the ~2–4× textbook
+reverse mode delivers. The residual is the state Jacobian, and the first
+reduction of it has landed: the `nq + nv` separately seeded dual passes through
+ABA are now chunked into vector-mode passes of up to 16 tangent directions
+each, so the primal — the kinematic tree walk, the joint transcendentals, the
+memory traffic — is paid once per chunk instead of once per column.
+
+Same suite, same host, adjoint ratio before and after:
+
+| model | nv | scalar `Dual` | vector mode | speedup |
+|---|---|---|---|---|
+| `weld_chain_1` | 1 | 6.9× | 6.5× | 1.05× |
+| `weld_chain_8` | 1 | 8.7× | 7.8× | 1.12× |
+| `weld_chain_16` | 1 | 9.2× | 9.1× | 1.00× |
+| `dof_chain_1` | 1 | 6.4× | 6.5× | 0.98× |
+| `dof_chain_2` | 2 | 12.4× | 10.7× | 1.16× |
+| `dof_chain_4` | 4 | 22.3× | 16.7× | 1.34× |
+| `dof_chain_8` | 8 | 47.2× | 32.3× | **1.46×** |
+| `dof_chain_16` | 16 | 97.6× | 78.4× | 1.24× |
+
+**1.2–1.5× where it applies, not the 2–4× the idea promises**, and flat at one
+DOF by construction: a single-coordinate block still takes the scalar path,
+because at width 1 vector mode does identical arithmetic but cannot hoist its
+dual-lifted inertias out of the time loop, which costs ~10% on a many-bodied
+model. The win peaks at 8 DOF and falls away above it: the tangent arithmetic —
+`N` multiply-adds per scalar operation — grows with the width, while the primal
+it amortises does not. Vector mode removes the redundant primal; it cannot
+remove the tangents, and on this workload the tangents are most of the cost.
+
+Getting to a textbook constant needs a different lever — reverse mode within
+the step, or an analytic `∂a/∂(q, v)` in the manner of the inertia channel —
+not a wider forward mode. The parameter channel needs no work at all; it is
+already asymptotically right.
+
+Every gradient is **bit-identical** before and after — verified across chains
+of 1–24 links plus a free-floating body with and without contact: the lane arithmetic is the same
+expression in the same association order as the scalar path, asserted in
+`multidual::tests::lanes_match_scalar_dual_bitwise` and
+`adjoint::tests::vector_mode_matches_scalar_dual_bitwise`. Widening is a speed
+change and never a numerical one, which is what lets it sit under a rollout
+that promises bitwise reproducibility.
+
+And exactness stands on its own: `adjoint_vs_fd_max_rel_err` ≈ 1e-10 with no
+step size to choose and no truncation or cancellation error.
+
+There is a scope note worth stating precisely, because this document used to
+state it wrongly. The differentiable rollout does **not** require `nq == nv` or
+single-DOF joints: `adjoint_rollout_gradient` handles spherical and free joints
+(see `phyz_diff::rollout::adjoint`'s contract), and a free-floating body with
+and without contact differentiates correctly today — it is one of the models
+the vector-mode work above was verified against. What it requires is that `q0`
+be laid out per `DofLayout`, which packs a free joint as
+position-then-quaternion (`nq = 7`) where `Model` packs it as
+exponential-coordinates-then-position (`nq = 6`). The gradient suite's scenes
+are built as `Model`s, so feeding the ant to the adjoint needs that conversion
+— a layout mismatch inside phyz, not a missing capability.
 
 ### Numerical quality
 

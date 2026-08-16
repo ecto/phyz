@@ -6,6 +6,10 @@
 /bench-results.json
 /bench-results.md
 /mujoco-results.json
+/agreement-results.json
+/agreement-results.md
+# MuJoCo writes this next to the working directory on a solver warning.
+MUJOCO_LOG.TXT
 crates/phyz-bench/python/.venv/
 crates/phyz-bench/python/__pycache__/
 
