@@ -12,6 +12,7 @@ members = [
     "crates/phyz-gpu",
     "crates/phyz-camera",
     "crates/phyz-particle",
+    "crates/phyz-xpbd",
     "crates/phyz-em",
     "crates/phyz-md",
     "crates/phyz-qft",
@@ -74,6 +75,7 @@ phyz-contact = { version = "0.3.1", path = "crates/phyz-contact" }
 phyz-gpu = { version = "0.3.1", path = "crates/phyz-gpu" }
 phyz-camera = { version = "0.3.1", path = "crates/phyz-camera" }
 phyz-particle = { version = "0.3.1", path = "crates/phyz-particle" }
+phyz-xpbd = { version = "0.3.1", path = "crates/phyz-xpbd" }
 phyz-em = { version = "0.3.1", path = "crates/phyz-em" }
 phyz-md = { version = "0.3.1", path = "crates/phyz-md" }
 phyz-qft = { version = "0.3.1", path = "crates/phyz-qft" }
