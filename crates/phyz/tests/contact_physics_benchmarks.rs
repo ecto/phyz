@@ -313,7 +313,7 @@ fn run_stack(masses: &[f64], half: f64) -> StackResult {
     let mut max_penetration: f64 = 0.0;
     for _ in 0..10_000 {
         sim.step_with_contacts(&model, &mut st, 0.0, &material);
-        for k in 0..n {
+        for (k, settled_x) in settled.iter().enumerate().take(n) {
             let base = 6 * k;
             for c in 0..6 {
                 assert!(
@@ -321,7 +321,7 @@ fn run_stack(masses: &[f64], half: f64) -> StackResult {
                     "NaN in the stack trajectory at body {k}, component {c}"
                 );
             }
-            lateral_drift = lateral_drift.max((st.q[base + 3] - settled[k]).abs());
+            lateral_drift = lateral_drift.max((st.q[base + 3] - settled_x).abs());
             let tilt = st.q[base]
                 .abs()
                 .max(st.q[base + 1].abs())

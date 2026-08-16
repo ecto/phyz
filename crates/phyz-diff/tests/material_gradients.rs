@@ -69,12 +69,15 @@ fn sphere_model() -> Model {
 fn q_objective(i: usize) -> FinalStateObjective<'static> {
     let value: &'static dyn Fn(&[f64], &[f64]) -> f64 =
         Box::leak(Box::new(move |q: &[f64], _: &[f64]| q[i]));
-    let gradient: &'static dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>) =
-        Box::leak(Box::new(move |q: &[f64], v: &[f64]| {
-            let mut gq = vec![0.0; q.len()];
-            gq[i] = 1.0;
-            (gq, vec![0.0; v.len()])
-        }));
+    // The objective gradient's signature is what `FinalStateObjective` asks
+    // for; naming it keeps clippy's type-complexity lint honest about the fact
+    // that this is one type used twice, not an accident.
+    type GradFn = dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>);
+    let gradient: &'static GradFn = Box::leak(Box::new(move |q: &[f64], v: &[f64]| {
+        let mut gq = vec![0.0; q.len()];
+        gq[i] = 1.0;
+        (gq, vec![0.0; v.len()])
+    }));
     FinalStateObjective { value, gradient }
 }
 
