@@ -19,7 +19,7 @@ pub mod model;
 pub mod state;
 pub mod validate;
 
-pub use body::{Body, GeomInstance, Geometry};
+pub use body::{Attachment, Body, GeomInstance, Geometry};
 pub use heightfield::Heightfield;
 pub use joint::{Joint, JointType};
 pub use material::{ContactMaterial, SolImp, SolRef};

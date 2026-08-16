@@ -262,7 +262,7 @@ pub fn contact_forces(
             .map(|v| v.linear)
             .unwrap_or(Vec3::zeros());
 
-        let vel_j = if j == usize::MAX {
+        let vel_j = if j == Collision::WORLD {
             // Ground — zero velocity
             Vec3::zeros()
         } else {
@@ -279,7 +279,7 @@ pub fn contact_forces(
         // along. The ground branch already agreed and is untouched; the body
         // pair flips the normal back for the call.
         let adapted;
-        let (query, on_i) = if j == usize::MAX {
+        let (query, on_i) = if j == Collision::WORLD {
             (contact, true)
         } else {
             adapted = Collision {
@@ -319,7 +319,7 @@ pub fn contact_forces(
 ///
 /// `masses[i]` is the effective contact mass of body `i`. Use
 /// `f64::INFINITY` for fixed/world bodies. For ground contacts
-/// (`body_j == usize::MAX`) the ground is treated as having infinite mass.
+/// ([`Collision::WORLD`]) the ground is treated as having infinite mass.
 #[deprecated(
     note = "penalty contact is superseded by the convex solve (`assemble` + \
             `solve_contacts`), which couples contacts through the Delassus \
@@ -351,7 +351,7 @@ pub fn contact_forces_implicit(
             .map(|v| v.linear)
             .unwrap_or(Vec3::zeros());
 
-        let vel_j = if j == usize::MAX {
+        let vel_j = if j == Collision::WORLD {
             Vec3::zeros()
         } else {
             body_velocities
@@ -361,7 +361,7 @@ pub fn contact_forces_implicit(
         };
 
         let mass_i = masses.get(i).copied().unwrap_or(f64::INFINITY);
-        let mass_j = if j == usize::MAX {
+        let mass_j = if j == Collision::WORLD {
             f64::INFINITY
         } else {
             masses.get(j).copied().unwrap_or(f64::INFINITY)
@@ -376,7 +376,7 @@ pub fn contact_forces_implicit(
         // the normal is flipped back for the call and the result applied to
         // `j` with its reaction on `i`.
         let adapted;
-        let (query, on_i) = if j == usize::MAX {
+        let (query, on_i) = if j == Collision::WORLD {
             (contact, true)
         } else {
             adapted = Collision {
@@ -603,7 +603,7 @@ fn emit_ground_hits(
     for (depth, p) in hits {
         contacts.push(Collision {
             body_i: body,
-            body_j: usize::MAX, // Ground is not a body
+            body_j: Collision::WORLD, // Ground is not a body
             // On the midsurface between the vertex and the plane. This
             // stays correct for a negative depth: the midpoint simply sits
             // above the plane rather than below it.
@@ -696,7 +696,7 @@ pub fn find_ground_contacts_model_with_drop(
             out.push((
                 Collision {
                     body_i: i,
-                    body_j: usize::MAX, // Ground is not a body
+                    body_j: Collision::WORLD, // Ground is not a body
                     contact_point: Vec3::new(p.x, p.y, ground_height - depth * 0.5),
                     contact_normal: Vec3::z(),
                     penetration_depth: depth,
@@ -801,7 +801,7 @@ pub fn find_heightfield_contacts_model_with_drop(
             out.push((
                 Collision {
                     body_i: i,
-                    body_j: usize::MAX, // Terrain is not a body
+                    body_j: Collision::WORLD, // Terrain is not a body
                     // Midsurface between the support point and the terrain,
                     // along the normal — the heightfield generalization of
                     // the flat path's `ground_height - depth/2`.

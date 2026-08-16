@@ -67,7 +67,7 @@ fn ring(n: usize) -> Vec<Collision> {
             let t = k as f64 * std::f64::consts::TAU / n as f64;
             Collision {
                 body_i: 0,
-                body_j: usize::MAX,
+                body_j: Collision::WORLD,
                 contact_point: Vec3::new(0.1 * t.cos(), 0.1 * t.sin(), -0.05),
                 contact_normal: Vec3::z(),
                 // Deliberately shallow but non-zero: a resting contact in a
