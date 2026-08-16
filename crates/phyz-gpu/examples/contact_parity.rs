@@ -67,7 +67,7 @@ impl Gap {
     fn report(&self) -> String {
         match self.diverged_at {
             Some(k) => format!("NON-FINITE at step {k}"),
-            None => format!("{:.6}", self.peak),
+            None => format!("{:.3e}", self.peak),
         }
     }
 }
@@ -132,6 +132,30 @@ fn cpu_trace(
     trace
 }
 
+/// Mean position gap over the last quarter of the run.
+///
+/// Peak gap is dominated by the impact transient — the two engines resolve a
+/// collision on slightly different steps, which produces a large
+/// instantaneous difference that says little about whether they agree on the
+/// physics. The settled gap is what a policy actually experiences, because a
+/// policy spends its time in the sustained regime, not in the first
+/// millisecond of touchdown. Reported alongside the peak, never instead of
+/// it: a run that blows up late has a small settled gap and a huge peak.
+fn settled_gap(a: &[(Vec3, Vec3)], b: &[(Vec3, Vec3)]) -> String {
+    let start = a.len() * 3 / 4;
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for ((ap, _), (bp, _)) in a[start..].iter().zip(&b[start..]) {
+        let d = (*bp - *ap).norm();
+        if !d.is_finite() {
+            return "NON-FINITE".to_string();
+        }
+        sum += d;
+        n += 1;
+    }
+    format!("{:.3e}", sum / n.max(1) as f64)
+}
+
 /// Peak position/velocity gap between two traces, NaN-safe.
 fn trace_gap(a: &[(Vec3, Vec3)], b: &[(Vec3, Vec3)]) -> (Gap, Gap) {
     let (mut p, mut v) = (Gap::default(), Gap::default());
@@ -175,6 +199,32 @@ fn compare(name: &str, model: Model, init: impl Fn(&mut State), steps: usize, fr
     );
     let (approx_bd, _) = trace_gap(&cpu_trace_full, &cpu_trace_bd);
 
+    // ── The chaos floor ──
+    //
+    // Roll the CPU against ITSELF from a state perturbed by 1 nm. Contact is
+    // non-smooth, so a tumbling or sliding body is genuinely chaotic: ipse's
+    // ollie work found a 1e-15 parameter change moving a score by hundreds of
+    // points. Any engine-vs-engine gap at or below this number is not a
+    // measurement of disagreement — it is the same trajectory, diverged by
+    // arithmetic. Reporting parity without it invites chasing a "bug" that is
+    // really a Lyapunov exponent.
+    // Perturb whichever channel the scenario actually excites: position for a
+    // straight drop, but SPIN for a tumble, where the outcome is which face
+    // the box settles on. A control that jitters an insensitive coordinate
+    // reports a reassuring zero and proves nothing.
+    let mut jittered = cpu_state.clone();
+    jittered.q.as_mut_slice()[3] += 1e-9;
+    jittered.v.as_mut_slice()[0] *= 1.0 + 1e-9;
+    jittered.v.as_mut_slice()[1] *= 1.0 + 1e-9;
+    let cpu_trace_jit = cpu_trace(
+        &model,
+        jittered,
+        steps,
+        &material,
+        phyz_contact::ContactSolverConfig::simulation(),
+    );
+    let chaos = settled_gap(&cpu_trace_full, &cpu_trace_jit);
+
     // ── CPU, per-body: within-body blocks kept, cross-chain blocks dropped.
     // This is the operator the GPU can actually afford. The gap between this
     // and `Full` is what the GPU pays for being unable to run an articulated
@@ -192,18 +242,51 @@ fn compare(name: &str, model: Model, init: impl Fn(&mut State), steps: usize, fr
         return;
     };
     let gains = BodyContactGains::uniform_frequency(&gpu.model, OMEGA, 1.0);
-    gpu.enable_ground_contact_per_body(0.0, friction, &gains)
-        .expect("gpu contact");
+    if std::env::var("PENALTY").is_ok() {
+        gpu.enable_ground_contact_per_body(0.0, friction, &gains)
+            .expect("gpu contact");
+    } else {
+        gpu.enable_contact_impulse(0.0, friction, &gains, None, None)
+            .expect("gpu contact");
+        if let Ok(n) = std::env::var("SWEEPS") {
+            gpu.contact_sweeps = n.parse().expect("SWEEPS");
+        }
+    }
     gpu.load_states(&[gpu_state]);
 
     let mut pos_gap = Gap::default();
     let mut vel_gap = Gap::default();
+    let mut gpu_tr = Vec::with_capacity(steps);
     for (k, (cpu_p, cpu_v)) in cpu_trace.iter().enumerate() {
         gpu.step();
         let g = gpu.readback_states().remove(0);
         let (gp, gv) = (body_pos(&g), body_linvel(&g));
         pos_gap.accumulate(k, (gp - cpu_p).norm());
         vel_gap.accumulate(k, (gv - cpu_v).norm());
+        gpu_tr.push((gp, gv));
+    }
+    let settled = settled_gap(&cpu_trace, &gpu_tr);
+    // GPU against the CPU running the GPU's OWN restriction. If this is much
+    // smaller than the gap to `Full`, what is left is the documented
+    // approximation rather than an implementation defect — that separation is
+    // the entire reason `gpu_equivalent()` exists.
+    let vs_ref = settled_gap(&cpu_trace_pb, &gpu_tr);
+    if std::env::var("TRACE")
+        .map(|v| name.contains(&v))
+        .unwrap_or(false)
+    {
+        for k in (0..steps).step_by(steps / 40) {
+            let (cp, _) = cpu_trace[k];
+            let (gp, _) = gpu_tr[k];
+            let (jp, _) = cpu_trace_jit[k];
+            println!(
+                "  t={:.3}  gpu-cpu {:.3e}   jitter-cpu {:.3e}   cpu z {:+.4}",
+                k as f64 * DT,
+                (gp - cp).norm(),
+                (jp - cp).norm(),
+                cp.z
+            );
+        }
     }
 
     // Final resting height on each engine, which is the single number that
@@ -213,12 +296,15 @@ fn compare(name: &str, model: Model, init: impl Fn(&mut State), steps: usize, fr
     let gpu_final = body_pos(&gpu.readback_states()[0]).z;
 
     println!(
-        "{name:<24} approx: blockdiag {:>11}  perbody {:>11}   gpu-vs-cpu pos {:>11}  vel {:>11}   final z  cpu {cpu_final:+.5}  gpu {gpu_final:+.5}",
+        "{name:<22} chaos {:>10}  approx bd {:>10} pb {:>10}   gpu peak {:>10} settled {:>10} vs-ref {:>10}   z cpu {cpu_final:+.5} gpu {gpu_final:+.5}",
+        chaos,
         approx_bd.report(),
         approx_pb.report(),
         pos_gap.report(),
-        vel_gap.report(),
+        settled,
+        vs_ref,
     );
+    let _ = vel_gap.report();
 }
 
 fn main() {

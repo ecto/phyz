@@ -33,6 +33,20 @@ struct ContactParams {
     hf_oy: f32,
     hf_oz: f32,
     hf_cell: f32,
+    /// 0 = penalty forces, 1 = velocity-level convex impulse solve.
+    solve_mode: u32,
+    /// Sweep index within the step.
+    sweep: u32,
+    restitution: f32,
+    restitution_threshold: f32,
+    solref_erp: f32,
+    margin: f32,
+    solimp_dmin: f32,
+    solimp_dmax: f32,
+    solimp_width: f32,
+    solimp_mid: f32,
+    solimp_power: f32,
+    _pad0: f32,
 }
 
 /// Packed geometry data per body (24 f32 values).
@@ -59,6 +73,10 @@ struct ContactParams {
 /// that makes one setting work across a robot.
 const GEOM_STRIDE: usize = 24;
 
+/// Contact slots per body, matching `MAX_PTS` in the shader: a box contacts
+/// through all eight corners, every other shape through one.
+pub const MAX_CONTACT_PTS: usize = 8;
+
 /// Floats per body in the contact-state buffer.
 ///
 /// ```text
@@ -67,7 +85,7 @@ const GEOM_STRIDE: usize = 24;
 /// [2..5] contact point, world frame (x, y, z)
 /// [5..8] contact force, world frame (x, y, z)
 /// ```
-pub const CONTACT_STATE_STRIDE: usize = 8;
+pub const CONTACT_STATE_STRIDE: usize = 8 + MAX_CONTACT_PTS * 3;
 
 /// Explicit-integration stability factor: a penalty spring of stiffness `k`
 /// on a body of mass `m` has natural frequency `w = sqrt(k/m)`, and the
@@ -102,9 +120,90 @@ pub struct GroundContactParams {
     pub damping: f64,
     /// Coulomb friction coefficient.
     pub friction: f64,
+    /// Solve the velocity-level convex contact problem instead of applying
+    /// penalty forces.
+    ///
+    /// This is the setting that makes the GPU run the *same contact model* as
+    /// `phyz_contact::solve_contacts` rather than a second one: real Coulomb
+    /// stiction inside a second-order cone, solref position stabilization,
+    /// and no `mg/k` resting sink. `stiffness`/`damping` are unused when it
+    /// is on. See the IMPULSE MODE block in `shaders.rs`.
+    pub impulse_solve: bool,
+    /// Coefficient of restitution, and the approach speed below which it
+    /// ramps smoothly to zero. Impulse mode only.
+    pub restitution: f64,
+    /// Approach speed below which restitution ramps to zero.
+    pub restitution_threshold: f64,
+    /// solref error-reduction fraction: how much of the current penetration
+    /// the reference response removes per step.
+    pub solref_erp: f64,
+    /// Contact margin: the band above the surface in which a contact is still
+    /// detected, its impedance tapering smoothly to zero. Mirrors
+    /// `ContactMaterial::margin`.
+    pub margin: f64,
+    /// SolImp sigmoid, mirroring `phyz_contact::material::SolImp`.
+    pub solimp_dmin: f64,
+    /// SolImp `dmax`.
+    pub solimp_dmax: f64,
+    /// SolImp `width`.
+    pub solimp_width: f64,
+    /// SolImp `midpoint`.
+    pub solimp_midpoint: f64,
+    /// SolImp `power`.
+    pub solimp_power: f64,
+}
+
+impl Default for GroundContactParams {
+    /// Penalty mode with MuJoCo's contact defaults, so adding the impulse
+    /// fields did not change what any existing caller gets.
+    ///
+    /// `solref_erp` is the *evaluated* `SolRef::error_reduction(dt)` rather
+    /// than a time constant, because the shader has no reason to re-derive it
+    /// and every reason not to: two independent evaluations of the same
+    /// formula is exactly how the CPU and GPU contact models drifted apart in
+    /// the first place. Callers that care should set it from their own
+    /// `SolRef` at their own `dt` — `GroundContactParams::solref_erp_from` does
+    /// that arithmetic.
+    fn default() -> Self {
+        Self {
+            ground_height: 0.0,
+            stiffness: 0.0,
+            damping: 0.0,
+            friction: 0.0,
+            impulse_solve: false,
+            restitution: 0.0,
+            restitution_threshold: 0.05,
+            // MuJoCo's SolRef default (timeconst 0.02, dampratio 1.0)
+            // evaluated at dt = 1 ms.
+            solref_erp: 0.001 / (2.0 * 0.02 + 0.001),
+            // MuJoCo's SolImp defaults, and `ContactMaterial`'s margin.
+            margin: 0.001,
+            solimp_dmin: 0.9,
+            solimp_dmax: 0.95,
+            solimp_width: 0.001,
+            solimp_midpoint: 0.5,
+            solimp_power: 2.0,
+        }
+    }
 }
 
 impl GroundContactParams {
+    /// `SolRef::error_reduction` — the fraction of the current penetration the
+    /// reference response removes in one step of length `dt`.
+    ///
+    /// Duplicated from `phyz_contact::material::SolRef` because `phyz-gpu`
+    /// does not depend on `phyz-contact`, and asserted equal to it in
+    /// `tests/contact_impulse_parity.rs` so the duplication cannot rot.
+    pub fn solref_erp_from(timeconst: f64, dampratio: f64, dt: f64) -> f64 {
+        if dt <= 0.0 {
+            return 0.0;
+        }
+        let tau = timeconst.max(0.0);
+        let zeta = dampratio.max(1e-6);
+        let denom = 2.0 * tau * zeta * zeta + dt;
+        if denom <= 0.0 { 1.0 } else { dt / denom }
+    }
+
     /// Check this global stiffness against the explicit-integration bound.
     ///
     /// A single stiffness has to serve every body that can touch the ground,
@@ -331,6 +430,18 @@ impl ContactPipeline {
             hf_oy: heightfield.map_or(0.0, |h| h.origin.y as f32),
             hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
             hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
+            solve_mode: u32::from(contact.impulse_solve),
+            sweep: 0,
+            restitution: contact.restitution as f32,
+            restitution_threshold: contact.restitution_threshold as f32,
+            solref_erp: contact.solref_erp as f32,
+            margin: contact.margin as f32,
+            solimp_dmin: contact.solimp_dmin as f32,
+            solimp_dmax: contact.solimp_dmax as f32,
+            solimp_width: contact.solimp_width as f32,
+            solimp_mid: contact.solimp_midpoint as f32,
+            solimp_power: contact.solimp_power as f32,
+            _pad0: 0.0,
         };
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -405,6 +516,7 @@ impl ContactPipeline {
                 bgl_storage_rw(5), // ext_forces (output)
                 bgl_storage_rw(6), // contact_state (readback)
                 bgl_storage_ro(7), // heightfield nodes
+                bgl_storage_ro(8), // qdd (free acceleration from this sweep's ABA)
             ],
         });
 
@@ -459,6 +571,10 @@ impl ContactPipeline {
                     binding: 7,
                     resource: hf_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: state.qdd_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -510,6 +626,17 @@ impl ContactPipeline {
     }
 
     /// Encode the contact compute pass into a command encoder.
+    /// Is this pipeline running the velocity-level impulse solve?
+    pub fn impulse_solve(&self) -> bool {
+        self.params.solve_mode == 1
+    }
+
+    /// Tell the shader which sweep of the step it is about to run.
+    pub fn set_sweep(&mut self, queue: &wgpu::Queue, sweep: u32) {
+        self.params.sweep = sweep;
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+    }
+
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("contact_pass"),
@@ -755,6 +882,7 @@ mod tests {
             stiffness: 100.0,
             damping: 1.0,
             friction: 0.5,
+            ..Default::default()
         };
         let (data, collidable) = pack_geometries(&model, &params, None);
         assert_eq!(collidable, 1);
@@ -788,6 +916,7 @@ mod tests {
             stiffness: 100.0,
             damping: 1.0,
             friction: 0.5,
+            ..Default::default()
         };
         let gains = [
             BodyContactGains {
@@ -867,6 +996,7 @@ mod tests {
             stiffness: 1.354e4,
             damping: 10.0,
             friction: 0.5,
+            ..Default::default()
         };
         let err = params.check_stability(&model).unwrap_err();
         assert!(err.contains("tiny_link"), "unexpected message: {err}");
