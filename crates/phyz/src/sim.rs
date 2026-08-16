@@ -135,14 +135,37 @@ pub struct Simulator {
     /// change results: the contact problem is strongly convex, so the seed
     /// only moves the iteration count.
     contact_cache: RefCell<ContactCache>,
+    /// Tuning for the convex contact solve.
+    ///
+    /// A field rather than a constant so the *same* simulator code can be run
+    /// under [`ContactSolverConfig::gpu_equivalent`], which is how the GPU
+    /// path's approximation is measured: identical detection, identical
+    /// assembly, identical integration, and only the documented restriction
+    /// on the solve. Anything that differed outside this field would confound
+    /// the comparison.
+    contact_config: ContactSolverConfig,
 }
 
 impl Simulator {
+    /// Replace the contact solver configuration.
+    ///
+    /// See [`ContactSolverConfig::gpu_equivalent`] for the preset that makes
+    /// this simulator a CPU reference for the GPU contact pass.
+    pub fn with_contact_config(mut self, config: ContactSolverConfig) -> Self {
+        self.contact_config = config;
+        self
+    }
+
+    /// The contact solver configuration in force.
+    pub fn contact_config(&self) -> ContactSolverConfig {
+        self.contact_config
+    }
     /// Create a simulator with the default semi-implicit Euler solver.
     pub fn new() -> Self {
         Self {
             solver: Box::new(SemiImplicitEulerSolver),
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
         }
     }
 
@@ -151,6 +174,7 @@ impl Simulator {
         Self {
             solver: Box::new(Rk4Solver),
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
         }
     }
 
@@ -159,6 +183,7 @@ impl Simulator {
         Self {
             solver,
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
         }
     }
 
@@ -275,7 +300,7 @@ impl Simulator {
             // another — and friction is a real Coulomb cone with stiction
             // rather than a viscous damper that vanished at low sliding speed.
             let materials = vec![material.clone(); model.bodies.len().max(1)];
-            let config = ContactSolverConfig::simulation();
+            let config = self.contact_config;
             let asm =
                 phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
             // Seed from the previous step's impulses. A stance foot is solving
@@ -344,7 +369,7 @@ impl Simulator {
 
         let free_qd = &probe.v + &(&qdd * dt);
         let materials = vec![material.clone(); model.bodies.len().max(1)];
-        let config = ContactSolverConfig::simulation();
+        let config = self.contact_config;
         let asm =
             phyz_contact::assemble(model, &probe, &contacts, &materials, &free_qd, dt, &config);
         // Seed from the cache but never `store` back into it, so asking for
