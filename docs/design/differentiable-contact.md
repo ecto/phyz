@@ -918,32 +918,99 @@ convergence), #42 (contact margin), #48 (trajectory adjoint), and this PR
   `contact_forces`), marked `#[deprecated]` rather than deleted. Stage 3 is
   therefore only partly done.
 
-### 8.3 Open
+### 8.3 Measured shortfalls against §6
+
+Implementing §6.1–§6.5 as *trajectories* rather than as single solves turned up
+three places where the shipped engine does not meet the spec this document
+wrote. All three are invisible to `phyz-contact`'s `analytic_benchmarks.rs`,
+which exercises hand-built single-contact `ContactProblem`s. Each is now pinned
+by a regression guard whose doc comment states plainly that it guards a measured
+number rather than checking physics.
+
+| What | Spec | Measured | Issue |
+|---|---|---|---|
+| §6.1 C sliding acceleration, box on a 40° slope | within 1% | **16% excess** (`a = 2.0838` vs `1.7968`; effective `mu` `0.5618` vs `0.600`) | [#63] |
+| §6.2 restitution, dropped sphere | `h1/h0 = e²` within 2% | **81% of nominal `e` from 20 cm, 92% from 80 cm** (8–19% energy shortfall); no measurable rebound at all from 5 cm at any `e` | [#64] |
+| §6.3 stacking at high mass ratio | degraded but bounded | **no bound exists** — tilt after settling is 0.01° / 0.00° / 0.89° / **40.85°** / 0.00° / **180.36°** / **190.40°** at ratios 1 / 2 / 5 / 10 / 20 / 50 / 100 | [#65] |
+
+The friction one is the most surprising, because three natural explanations are
+ruled out by measurement: it is not the solver preset, not the impedance
+regularizer (sweeping `solimp` over `0.9`…`0.9999` changes nothing), and not the
+box rotating (final pitch `4.2e-4 rad`). It is something the multi-point path
+does that the single-contact benchmark cannot see.
+
+The stacking one has a consequence for what this document claims. §7.4's table
+gives phyz *"stacking robustness: good, worse than TGS at high mass ratio"*.
+That reads as graceful degradation. A 20:1 stack standing perfectly while a 10:1
+stack falls flat is not degradation, it is an instability with a non-monotone
+onset, and **that row should not be published in its current form.** The
+equal-mass case genuinely is good — five boxes drift 5.8 µm and tilt 6.8e-5 rad
+over 10 s — and that is what the row should say.
+
+What *does* meet spec, measured the same way: §6.1 A/B/D (stiction, the
+transition angle, isotropy to `1e-9`), §6.2's settling test (a bouncy sphere
+comes to rest inside 10 s and moves 0.000 m over the next 5 s), §6.3's
+equal-mass stack, and §6.4's energy bound (30 s of `e = 1` bouncing never
+exceeds the starting energy).
+
+### 8.4 Gradient validation, as it now stands
+
+Rollout-level FD gates, worst relative error per scenario:
+
+| Scenario | Worst lane |
+|---|---|
+| Block on an incline, sticking (20°, `mu = 0.6`) | `9.7e-9` |
+| Block on an incline, sliding (40°, `mu = 0.6`) | `3.0e-7` |
+| Box tipping on an edge (edge→face manifold change) | `1.5e-6` |
+| Block carried by friction on a driven plank (body-body) | `9.8e-4` |
+| Block sliding on a plank (body-body) | `4.3e-4` |
+| `dJ/dmu`, sliding box | `8.2e-8` |
+| `dJ/de`, bouncing sphere | `1.0e-7` |
+| Flat-ground box: impact / settled / slide / driven slide | `1e-3` gate |
+
+Note the pattern: the material channels and the single-body ground scenarios are
+four to five orders tighter than the body-body ones. That is the FD lanes of
+§8.2 showing up — `dJ/dmu` is analytic end to end, while a body-body lane
+accumulates central-difference error through assembly on both bodies. It is the
+clearest available argument for finishing §3.
+
+Two limits are pinned as tests rather than described:
+
+- The slip↔stick transition on a redundant eight-contact manifold stalls the
+  active-set Newton at `~1e-7` and the adjoint returns `Unconverged` rather than
+  differentiating a non-KKT point.
+- On an *exactly* symmetric manifold, the symmetry-breaking lane reports `0`
+  while the one-sided derivatives are `-5.457e-3` and `-1.391e-2` — so the
+  returned value is not merely the wrong branch, it is outside the Clarke
+  interval. Measure-zero, and 1 mrad off symmetry the lane agrees, but
+  hand-built initial conditions are frequently exactly symmetric.
+
+[#63]: https://github.com/ecto/phyz/issues/63
+[#64]: https://github.com/ecto/phyz/issues/64
+[#65]: https://github.com/ecto/phyz/issues/65
+
+### 8.5 Open
 
 Roughly in descending order of what a caller would actually notice.
 
 - §3 the generic-over-scalar solver, per §8.2.
-- **Material-parameter gradients are not plumbed to the rollout.**
-  `ConvexAdjointGradients` carries `d_q0`, `d_v0`, `d_ctrl`, `d_inertia` and
-  nothing else, even though `gradient::friction_sensitivity` and
-  `depth_sensitivity` already compute the per-solve blocks. So `dJ/dmu`,
-  `dJ/de` and `dJ/dsol_ref` are unavailable at trajectory level. This is the
-  cheapest remaining win and it blocks two §6.5 rows outright.
-- §6.5 missing rollout-level FD scenarios: gradient w.r.t. restitution (needs
-  the channel above), and a box tipping on an edge.
+- The three §6 shortfalls of §8.3 — issues [#63], [#64], [#65]. #63 and #64 are
+  correctness bugs in the shipped forward model, which makes them higher
+  priority than anything else on this list.
+- `dJ/dsol_ref` is still unplumbed. `dJ/dmu` and `dJ/de` now reach the rollout;
+  `depth_sensitivity` exists at solver level and the stabilization parameters do
+  not.
 - §6.5 the contact-making discontinuity negative test exists only at solver
   level (`depth_gradient_has_a_documented_hinge_at_zero_depth`), not as a
   rollout. The body-body analogue now does exist —
   `phyz-diff/tests/body_body_adjoint.rs::exact_symmetry_gives_a_lane_outside_the_clarke_set`.
-- §6.2 the restitution benchmark is single-solve algebra rather than a dropped
-  sphere with a measured apex, and the §6.2 settling test asserts properties of
-  the ramp function instead of running a rollout to rest.
-- §6.3 the stack test covers drift only — no tilt bound, no check that the sink
-  matches the analytic `Σmg/k`, no 100:1 mass-ratio variant, no explicit no-NaN
-  assertion.
-- §6.4 the 100-bounce energy test does not exist.
+- §6.3's analytic-sink check (that the penetration matches `Σmg/k` to 20%) is
+  still not asserted; only the bound is. The measured sink is 342 µm for five
+  unit boxes.
 - §6.6 no recorded MuJoCo trajectory comparison, though `mujoco_compat` and the
-  creep-rate test exist to make one meaningful.
+  creep-rate test exist to make one meaningful. Issues #63 and #65 are both
+  cases where an external oracle would settle the question quickly, so this has
+  become more valuable than it looked.
 - Stage 6 randomized smoothing / bundled gradients: not implemented anywhere.
 - §4.2 position-level friction anchors: not implemented. `convex.rs` argues the
   solref bias removes the creep they were meant to fix, and the eight-box stack
