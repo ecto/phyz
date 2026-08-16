@@ -1,0 +1,15 @@
+[package]
+name = "phyz-vbd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Vertex Block Descent (VBD) deformable-body solver for phyz"
+keywords = ["vbd", "fem", "deformable", "soft-body", "physics"]
+categories = ["simulation", "science", "graphics"]
+readme = "README.md"
+
+[dependencies]
+phyz-math.workspace = true

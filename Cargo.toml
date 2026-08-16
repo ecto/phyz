@@ -13,6 +13,7 @@ members = [
     "crates/phyz-camera",
     "crates/phyz-particle",
     "crates/phyz-xpbd",
+    "crates/phyz-vbd",
     "crates/phyz-em",
     "crates/phyz-md",
     "crates/phyz-qft",
@@ -76,6 +77,7 @@ phyz-gpu = { version = "0.3.1", path = "crates/phyz-gpu" }
 phyz-camera = { version = "0.3.1", path = "crates/phyz-camera" }
 phyz-particle = { version = "0.3.1", path = "crates/phyz-particle" }
 phyz-xpbd = { version = "0.3.1", path = "crates/phyz-xpbd" }
+phyz-vbd = { version = "0.3.1", path = "crates/phyz-vbd" }
 phyz-em = { version = "0.3.1", path = "crates/phyz-em" }
 phyz-md = { version = "0.3.1", path = "crates/phyz-md" }
 phyz-qft = { version = "0.3.1", path = "crates/phyz-qft" }
@@ -117,6 +119,12 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.tang-train]
+opt-level = 2
+
+# phyz-vbd's validation tests settle a cantilever beam to static equilibrium
+# and sweep the timestep for the stability bound; unoptimized that is minutes
+# of Gauss-Seidel sweeps instead of seconds. Same reasoning as phyz-lbm below.
+[profile.dev.package.phyz-vbd]
 opt-level = 2
 
 # The LBM validation benchmarks run flows to steady state on real grids;

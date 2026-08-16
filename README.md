@@ -126,6 +126,7 @@ opt-in.
 | [`phyz-compile`](crates/phyz-compile) | Physics IR → WGSL compute shaders, with kernel fusion |
 | [`phyz-particle`](crates/phyz-particle) | MPM solver, SPH fluids, granular media |
 | [`phyz-xpbd`](crates/phyz-xpbd) | XPBD position-based dynamics: cloth, tetrahedral soft bodies, cables |
+| [`phyz-vbd`](crates/phyz-vbd) | Vertex Block Descent: implicit deformable-body FEM, stable at large timesteps |
 | [`phyz-md`](crates/phyz-md) | Molecular dynamics, Lennard-Jones, field engine |
 | [`phyz-em`](crates/phyz-em) | Maxwell's equations on a Yee lattice |
 | [`phyz-lbm`](crates/phyz-lbm) | Lattice Boltzmann fluids: BGK/TRT/MRT, declarative boundaries, LES |
