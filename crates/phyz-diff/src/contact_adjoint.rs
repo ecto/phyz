@@ -87,7 +87,7 @@
 //! # Scope
 //!
 //! Ground **and body-body** contacts. A body-body contact is frozen as a
-//! feature *pair* ([`Anchor::Pair`]): both surface points in their own body's
+//! feature *pair* (`Anchor::Pair`): both surface points in their own body's
 //! frame, the normal in the frame of the body owning the reference face, and
 //! the contact point riding the *other* body's vertex — so a lane sees the
 //! contact rotate and translate with both bodies. That is what carries the
@@ -211,7 +211,7 @@ pub enum ConvexAdjointError {
     /// Formerly: the trajectory produced a body-body contact, which this
     /// adjoint did not cover.
     ///
-    /// Body-body contacts are differentiated now — see [`Anchor::Pair`] — and
+    /// Body-body contacts are differentiated now — see `Anchor::Pair` — and
     /// nothing constructs this variant any more. It is retained for one release
     /// so that a downstream `match` on [`ConvexAdjointError`] does not break,
     /// and because a caller that special-cased this refusal (falling back to a
