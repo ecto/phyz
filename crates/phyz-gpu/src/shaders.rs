@@ -15,8 +15,12 @@ const GEOM_STRIDE: u32 = 24u;
 // vec3s. The impulses live in this buffer rather than their own because the
 // WebGPU baseline allows 8 storage buffers per stage and the pass already
 // binds 8; a ninth binding validates away on a conforming device.
-const CS_STRIDE: u32 = 32u;
+const CS_STRIDE: u32 = 56u;
 const CS_IMPULSE_OFF: u32 = 8u;
+// The body-attached plane gets its own impulse slots: a body can rest on the
+// deck and the ground in the same step (a wheel does exactly that), so the two
+// contacts must not share a warm-start slot or they overwrite each other.
+const CS_PLANE_OFF: u32 = 32u;
 
 struct ContactParams {
     nworld: u32,
@@ -1006,6 +1010,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let ov_hi = min(hi, face_hi);
             if (ov_lo.x > ov_hi.x || ov_lo.y > ov_hi.y) { continue; }
 
+            // Active-point count on the face, for the same within-body load
+            // sharing the ground branch needs.
+            var n_pts_active = 1u;
+            if (cparams.solve_mode == 1u) {
+                var cnt = 0u;
+                for (var cq = 0u; cq < n_pts; cq++) {
+                    var sq: vec3<f32>;
+                    if (gtype == 2u) { sq = box_corner(i, cq); }
+                    else { sq = support_point(i, n_body); }
+                    let d = -dot(w_pos[i] + rot_mul(w_rot[i], sq) - p0_w, n_w);
+                    if (d > 0.0 && d <= cparams.plane_max_depth) { cnt++; }
+                }
+                n_pts_active = max(cnt, 1u);
+            }
+
             for (var cpt = 0u; cpt < n_pts; cpt++) {
                 var support: vec3<f32>;
                 if (gtype == 2u) { support = box_corner(i, cpt); }
@@ -1017,7 +1036,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let penetration = -dot(sup_w0 - p0_w, n_w);
                 // The upper bound guards a body approaching from BELOW an
                 // infinite plane against being captured and catapulted through.
-                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
+                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) {
+                    if (cparams.solve_mode == 1u) {
+                        let dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                        contact_state[dead] = 0.0;
+                        contact_state[dead + 1u] = 0.0;
+                        contact_state[dead + 2u] = 0.0;
+                    }
+                    continue;
+                }
 
                 // The contact point in the plane body's own frame, pulled into
                 // the overlap: the force lands where the face has material.
@@ -1043,6 +1070,76 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let n_p = rot_t_mul(w_rot[pb], n_w);
                 let m_n = 1.0 / (1.0 / contact_eff_mass(i, support_c, n_i)
                     + 1.0 / contact_eff_mass(pb, r_p, n_p));
+
+                // ── Impulse mode on the body-attached face ──
+                //
+                // Same staged Coulomb update as the ground branch; the only
+                // difference is that both bodies move, so every diagonal is
+                // the SERIES combination `m_n` already computed above, and the
+                // impulse is applied equal-and-opposite at one shared point.
+                if (cparams.solve_mode == 1u) {
+                    let pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                    var pf = vec3<f32>(contact_state[pslot], contact_state[pslot + 1u], contact_state[pslot + 2u]);
+
+                    let ptang = contact_tangents(n_w);
+                    let pu = ptang[0];
+                    let pw = ptang[1];
+                    let bn = v_normal;
+                    let bu = dot(v_rel, pu);
+                    let bw = dot(v_rel, pw);
+
+                    let ann = f32(n_pts_active) / max(m_n, 1e-9);
+                    let d_imp = impedance_at(penetration);
+                    let bias = d_imp * cparams.solref_erp * max(penetration, 0.0) / max(cparams.dt, 1e-9);
+                    let ee = effective_restitution(cparams.restitution, min(bn, 0.0));
+                    var nf = max((bias - (bn * (1.0 + ee) - ann * pf.x)) / ann, 0.0);
+
+                    let u_i = rot_t_mul(w_rot[i], pu);
+                    let u_p = rot_t_mul(w_rot[pb], pu);
+                    let w_i = rot_t_mul(w_rot[i], pw);
+                    let w_p = rot_t_mul(w_rot[pb], pw);
+                    let m_u = 1.0 / (1.0 / contact_eff_mass(i, support_c, u_i)
+                        + 1.0 / contact_eff_mass(pb, r_p, u_p));
+                    let m_w = 1.0 / (1.0 / contact_eff_mass(i, support_c, w_i)
+                        + 1.0 / contact_eff_mass(pb, r_p, w_p));
+                    let auu = f32(n_pts_active) / max(m_u, 1e-9);
+                    let aww = f32(n_pts_active) / max(m_w, 1e-9);
+                    var ptu = -(bu - auu * pf.y) / auu;
+                    var ptw = -(bw - aww * pf.z) / aww;
+                    let plim = cparams.friction * nf;
+                    let ptn = sqrt(ptu * ptu + ptw * ptw);
+                    if (ptn > plim) {
+                        let psc = select(0.0, plim / ptn, ptn > 0.0);
+                        ptu = ptu * psc;
+                        ptw = ptw * psc;
+                    }
+
+                    contact_state[pslot] = nf;
+                    contact_state[pslot + 1u] = ptu;
+                    contact_state[pslot + 2u] = ptw;
+
+                    let fw2 = (n_w * nf + pu * ptu + pw * ptw) / max(cparams.dt, 1e-9);
+                    let fi2 = rot_t_mul(w_rot[i], fw2);
+                    let ti2 = cross3(support_c, fi2);
+                    let e_i = ef_env_base + i * 6u;
+                    ext_forces[e_i + 0u] += ti2.x;
+                    ext_forces[e_i + 1u] += ti2.y;
+                    ext_forces[e_i + 2u] += ti2.z;
+                    ext_forces[e_i + 3u] += fi2.x;
+                    ext_forces[e_i + 4u] += fi2.y;
+                    ext_forces[e_i + 5u] += fi2.z;
+
+                    let fp2 = rot_t_mul(w_rot[pb], -fw2);
+                    let tp2 = cross3(r_p, fp2);
+                    let e_p = ef_env_base + pb * 6u;
+                    ext_forces[e_p + 0u] += tp2.x;
+                    ext_forces[e_p + 1u] += tp2.y;
+                    ext_forces[e_p + 2u] += tp2.z;
+                    ext_forces[e_p + 3u] += fp2.x;
+                    ext_forces[e_p + 4u] += fp2.y;
+                    ext_forces[e_p + 5u] += fp2.z;
+                    continue;
+                }
 
                 let k_body = min(pt_scale * geometry[gbase + 8u], max_stiffness(m_n));
                 var d_body = pt_scale * geometry[gbase + 9u];

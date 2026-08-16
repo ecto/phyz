@@ -85,7 +85,11 @@ pub const MAX_CONTACT_PTS: usize = 8;
 /// [2..5] contact point, world frame (x, y, z)
 /// [5..8] contact force, world frame (x, y, z)
 /// ```
-pub const CONTACT_STATE_STRIDE: usize = 8 + MAX_CONTACT_PTS * 3;
+/// Per-body contact slot, matching `CS_STRIDE` in the shader: 8 floats of
+/// readback state, then TWO impulse blocks of `MAX_CONTACT_PTS` vec3s — one
+/// for ground/terrain contacts and one for the body-attached face, because a
+/// body can touch both in the same step and must not share a warm-start slot.
+pub const CONTACT_STATE_STRIDE: usize = 8 + 2 * MAX_CONTACT_PTS * 3;
 
 /// Explicit-integration stability factor: a penalty spring of stiffness `k`
 /// on a body of mass `m` has natural frequency `w = sqrt(k/m)`, and the
