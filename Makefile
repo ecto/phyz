@@ -8,7 +8,7 @@ CARGO ?= cargo
 BENCH_OUT ?= bench-results.json
 BENCH_MD ?= bench-results.md
 
-.PHONY: help build test fmt clippy bench bench-quick bench-gpu bench-criterion bench-mujoco
+.PHONY: help build test fmt clippy bench bench-quick bench-gpu bench-criterion bench-mujoco agreement
 
 help:
 	@echo "make build           — build the workspace"
@@ -20,6 +20,7 @@ help:
 	@echo "make bench-gpu       — full suite including the GPU batch sweep"
 	@echo "make bench-criterion — criterion regression benches (per-commit comparison)"
 	@echo "make bench-mujoco    — instructions for the optional MuJoCo/MJX harness"
+	@echo "make agreement       — phyz vs MuJoCo trajectory agreement (needs \`pip install mujoco\`)"
 
 build:
 	$(CARGO) build --workspace
@@ -48,6 +49,13 @@ bench-gpu:
 
 bench-criterion:
 	$(CARGO) bench -p phyz-bench
+
+# Cross-engine agreement: does phyz compute the same trajectory as MuJoCo?
+# Separate from the timing comparison, and asking a different question.
+agreement:
+	$(CARGO) build --release -p phyz-bench --bin phyz-traj
+	python3 crates/phyz-bench/python/mujoco_agreement.py \
+	  --json agreement-results.json --markdown agreement-results.md
 
 bench-mujoco:
 	@echo "The MuJoCo / MJX comparison is a separate Python harness, kept out of the"

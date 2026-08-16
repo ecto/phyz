@@ -196,6 +196,57 @@ seconds per wall-clock second.
 | `ant` | 14 | 0.001 | **229 k/s** | 4.365 | 3% | 229× |
 | `box_stack_8` | 48 | 0.002 | **43.6 k/s** | 22.93 | 21% | 87× |
 
+### Agreement with MuJoCo
+
+Speed comparisons say how fast an engine is. They say nothing about whether it
+computes the right thing. `make agreement` asks the other question: given the
+same model, the same initial state and the same integrator, do phyz and MuJoCo
+trace the same trajectory?
+
+Both engines are stripped to gravity-driven articulated dynamics on a kinematic
+tree first — damping, springs, dry friction and joint limits zeroed, contact and
+constraints disabled, semi-implicit Euler on both sides — because each of those
+is modelled differently by the two and leaving any on would measure the
+difference between two approximations of a *constraint* rather than two
+computations of the *dynamics*. Armature is kept: it is a constant on the
+mass-matrix diagonal, implemented the same way by both, and on light distal
+links it is what keeps the mass matrix conditioned.
+
+MuJoCo 3.11.0, 10 000 steps at dt = 1 ms (10 s), tolerance 1×10⁻⁶:
+
+| model | nq | max abs Δq | Δq at 1 s | first divergence |
+|---|---|---|---|---|
+| `chain_1` | 1 | 3.3×10⁻⁹ | 1.7×10⁻¹⁰ | never |
+| `chain_2` | 2 | 7.5×10⁻⁹ | 5.9×10⁻¹⁰ | never |
+| `chain_4` | 4 | 1.9×10⁻⁸ | 1.7×10⁻⁹ | never |
+| `chain_8` | 8 | 2.9×10⁻⁸ | 3.7×10⁻⁹ | never |
+| `chain_x_axis` | 3 | 1.2×10⁻⁸ | 1.1×10⁻⁹ | never |
+| `slide_chain` | 3 | 0 | 0 | never |
+| `tree` (branching) | 4 | 1.2×10⁻⁹ | 1.2×10⁻¹⁰ | never |
+| `shadow_hand` | 24 | 1.2×10⁻⁷ | 1.2×10⁻⁷ | never |
+| `simple_arm` | 2 | 0 | 0 | never |
+| `ant`, `half_cheetah`, `humanoid` | — | — | — | **skipped: free base** |
+
+**phyz's Featherstone ABA agrees with MuJoCo to ~10⁻⁷ or better over 10
+seconds**, on serial chains, a branching tree, off-diagonal inertia tensors,
+both hinge and slide joints, and a 24-DOF hand. Nothing diverges within the
+horizon. The two exactly-zero rows are models whose gravity torque vanishes at
+the tested configuration — they agree trivially, and are marked so rather than
+counted as evidence.
+
+**Free-floating bases are not covered.** MuJoCo packs a free joint's `qpos` as
+position-then-quaternion and phyz's differentiable layout differs from its
+`Model` layout; aligning them is a separate piece of work. `ant`,
+`half_cheetah` and `humanoid` are therefore skipped — reported as skipped by
+the harness, never silently dropped — and that is the largest remaining gap in
+this comparison. Contact is not covered either, and for the same reason the
+Rapier box-stack row carries its caveat: the two contact models are different
+algorithms, and comparing their trajectories would be comparing modelling
+choices, not implementations.
+
+Measured on a different host from the generated block above. Reproduce with
+`make agreement` (needs `pip install mujoco`).
+
 ### Numerical quality — energy drift
 
 Conservative scenes, no contact, no damping. Drift is relative to initial total

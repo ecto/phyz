@@ -1,3 +1,15 @@
+# MuJoCo harnesses
+
+Two separate scripts asking two different questions:
+
+| Script | Question |
+|---|---|
+| `mujoco_bench.py` | How fast is phyz next to MuJoCo? |
+| `mujoco_agreement.py` | Does phyz compute the **same trajectory** as MuJoCo? |
+
+A speed comparison says nothing about correctness, so the second one is the
+more important of the two. It is documented at the bottom of this file.
+
 # MuJoCo / MJX comparison harness
 
 Optional, separately invoked, and **not** wired into CI or `make bench`.
@@ -69,3 +81,71 @@ Every published number must carry its hardware, OS, and library versions. The
 harness collects these automatically into the `meta` block. If you run on a
 laptop, say so — thermal throttling on a sustained benchmark is real, and a
 number from a warm laptop is not a number from a cold one.
+
+
+---
+
+# Trajectory agreement harness
+
+```bash
+pip install mujoco
+make agreement            # from the repository root
+```
+
+or directly:
+
+```bash
+cargo build --release -p phyz-bench --bin phyz-traj
+python3 crates/phyz-bench/python/mujoco_agreement.py \
+  --json agreement-results.json --markdown agreement-results.md
+```
+
+`phyz-traj` rolls an MJCF model forward with phyz and writes the trajectory as
+JSON; the Python side runs the same model through MuJoCo and compares.
+
+## What is held equal, and what is switched off
+
+An agreement test is only meaningful if both engines are solving the same
+problem. These are switched off **on both sides**, because the two engines
+model them differently and leaving them on would measure the difference
+between two approximations of a *constraint* rather than two computations of
+the *dynamics*:
+
+| Feature | Why it is off |
+|---|---|
+| Joint damping | MuJoCo integrates it implicitly inside its Euler integrator; phyz applies it as an explicit passive force |
+| Joint springs, dry friction | Same objection |
+| Joint limits | phyz: soft penalty. MuJoCo: constraint |
+| Contact, equality constraints | Three different algorithms; see the contact caveats above |
+
+**Armature is deliberately kept.** It is a constant added to the mass-matrix
+diagonal, implemented identically by both engines, so it is part of the
+dynamics — and on a model with very light distal links it is what keeps the
+mass matrix well conditioned. Zeroing it makes both engines integrate an
+ill-conditioned system at 1 ms and measures the timestep instead of the
+agreement. (Discovered the hard way: with armature stripped, the hand model
+blows up in phyz within 10 ms.)
+
+Both sides report what they stripped, and the harness refuses to compare two
+models whose stripping lists disagree.
+
+## Scope
+
+Fixed-base kinematic trees. Models with a free or ball joint are **skipped and
+reported as skipped** — MuJoCo packs a free joint's `qpos` as
+position-then-quaternion, phyz's differentiable layout differs from its `Model`
+layout, and aligning the two is a separate piece of work. That covers `ant`,
+`half_cheetah` and `humanoid`; closing it is the obvious next step for this
+harness.
+
+## Reading the result
+
+`max abs Δq` is the largest joint-coordinate difference over the horizon.
+`first divergence` is when it first exceeds the tolerance, or `never`.
+
+On a chaotic model the two engines separate eventually however correct both
+are. That is physics, not a bug, which is why divergence time is reported
+rather than turned into pass/fail. Compare it against phyz's own 1-ulp
+divergence figure (`phyz-bench --suite divergence`): if two engines separate on
+the same timescale that phyz separates from *itself* under a one-ulp
+perturbation, what you are seeing is chaos amplifying round-off.
