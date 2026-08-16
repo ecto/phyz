@@ -12,7 +12,14 @@ use phyz_bench::report::{Report, SCHEMA_VERSION, Suite};
 use phyz_bench::suites;
 use phyz_bench::{Budget, meta::RunMeta};
 
-const SUITE_NAMES: [&str; 5] = ["single-sim", "energy", "gradient", "gpu", "rapier"];
+const SUITE_NAMES: [&str; 6] = [
+    "single-sim",
+    "energy",
+    "divergence",
+    "gradient",
+    "gpu",
+    "rapier",
+];
 
 fn usage() -> ! {
     eprintln!(
@@ -81,6 +88,10 @@ fn main() {
     if wants("energy") {
         eprintln!("running: energy drift...");
         suites.push(suites::energy::run(budget));
+    }
+    if wants("divergence") {
+        eprintln!("running: 1-ulp divergence...");
+        suites.push(suites::divergence::run(budget));
     }
     if wants("gradient") {
         eprintln!("running: gradient throughput...");
