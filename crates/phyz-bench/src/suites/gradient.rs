@@ -48,9 +48,13 @@ pub const FD_PER_SAMPLE: usize = 5;
 
 /// Scenes the adjoint supports.
 ///
-/// `phyz-diff`'s rollout requires `nq == nv` and single-DOF joints, so the ant
-/// (free-floating base) is out of scope. That is a real limitation of the
-/// differentiable path and is reported as such rather than omitted.
+/// The ant is out of scope here, but **not** because the adjoint cannot
+/// differentiate a free-floating base — it can, and does. The obstacle is a
+/// layout mismatch inside phyz: `phyz_diff`'s `DofLayout` packs a free joint as
+/// position-then-quaternion (`nq = 7`) while `Model` packs it as
+/// exponential-coordinates-then-position (`nq = 6`), and these scenes are built
+/// as `Model`s. Converting is mechanical; until it exists the ant is omitted,
+/// and the reason is recorded rather than being restated as a capability gap.
 pub fn supported_scenes() -> Vec<Scene> {
     vec![Scene::Pendulum, Scene::DoublePendulum]
 }
@@ -249,9 +253,11 @@ pub fn run_scene(scene: Scene, budget: Budget) -> Record {
              other, scaled by the gradient norm. A fast gradient that disagrees with \
              finite differences is not a result."
                 .into(),
-            "The differentiable rollout requires nq == nv and single-DOF joints, so the ant \
-             (free-floating base, 6-DOF root) cannot be benchmarked here. This is a genuine \
-             gap in phyz's differentiable path, not an omission from the benchmark."
+            "The ant is absent because of a coordinate-layout mismatch, not a missing \
+             capability: the adjoint differentiates spherical and free joints fine, but \
+             it wants `q0` in `DofLayout` packing (free joint = position + quaternion, \
+             nq = 7) while these scenes are built as `Model`s (free joint = exponential \
+             coordinates + position, nq = 6). Converting is mechanical and unwritten."
                 .into(),
             "The timed gradient covers inertia parameters only; contact-surface vertex \
              adjoints are a separate code path and are not measured here."

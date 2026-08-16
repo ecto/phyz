@@ -212,37 +212,55 @@ computations of the *dynamics*. Armature is kept: it is a constant on the
 mass-matrix diagonal, implemented the same way by both, and on light distal
 links it is what keeps the mass matrix conditioned.
 
-MuJoCo 3.11.0, 10 000 steps at dt = 1 ms (10 s), tolerance 1×10⁻⁶:
+MuJoCo 3.11.0, 10 000 steps at dt = 1 ms, tolerance 1×10⁻⁶. **The `step 1`
+column is the one that matters** — one step from an identical state, with no
+room for accumulation, so it isolates whether the two engines compute the same
+accelerations:
 
-| model | nq | max abs Δq | Δq at 1 s | first divergence |
-|---|---|---|---|---|
-| `chain_1` | 1 | 3.3×10⁻⁹ | 1.7×10⁻¹⁰ | never |
-| `chain_2` | 2 | 7.5×10⁻⁹ | 5.9×10⁻¹⁰ | never |
-| `chain_4` | 4 | 1.9×10⁻⁸ | 1.7×10⁻⁹ | never |
-| `chain_8` | 8 | 2.9×10⁻⁸ | 3.7×10⁻⁹ | never |
-| `chain_x_axis` | 3 | 1.2×10⁻⁸ | 1.1×10⁻⁹ | never |
-| `slide_chain` | 3 | 0 | 0 | never |
-| `tree` (branching) | 4 | 1.2×10⁻⁹ | 1.2×10⁻¹⁰ | never |
-| `shadow_hand` | 24 | 1.2×10⁻⁷ | 1.2×10⁻⁷ | never |
-| `simple_arm` | 2 | 0 | 0 | never |
-| `ant`, `half_cheetah`, `humanoid` | — | — | — | **skipped: free base** |
+| model | nq | step 1 | 0.1 s | 1 s | max over 10 s |
+|---|---|---|---|---|---|
+| `chain_1` | 1 | 2.5×10⁻¹⁵ | 1.4×10⁻¹¹ | 1.1×10⁻¹⁰ | 4.5×10⁻⁹ |
+| `chain_2` | 2 | 1.3×10⁻¹⁴ | 5.3×10⁻¹¹ | 6.9×10⁻¹⁰ | 1.0×10⁻⁸ |
+| `chain_4` | 4 | 2.1×10⁻¹⁴ | 8.8×10⁻¹¹ | 1.2×10⁻⁹ | 2.7×10⁻⁸ |
+| `chain_8` | 8 | 4.1×10⁻¹⁴ | 1.3×10⁻¹⁰ | 3.3×10⁻⁹ | 4.3×10⁻⁸ |
+| `chain_x_axis` | 3 | 1.9×10⁻¹⁴ | 9.1×10⁻¹¹ | 1.0×10⁻⁹ | 1.7×10⁻⁸ |
+| `tree` (branching) | 4 | 1.8×10⁻¹⁵ | 9.8×10⁻¹² | 2.0×10⁻¹⁰ | 1.8×10⁻⁹ |
+| `ant` (free base) | 15 | **0** | 7.9×10⁻¹² | 1.8×10⁻⁶ | 3.1×10⁻¹ |
+| `half_cheetah` (free base) | 13 | **0** | 5.4×10⁻¹³ | 5.7×10⁻⁸ | 1.3×10⁻³ |
+| `humanoid` (free base) | 24 | 6.5×10⁻¹⁵ | 4.2×10⁻¹⁰ | 1.4×10⁻⁴ | 1.5 |
+| `shadow_hand` | 24 | 5.8×10⁻¹⁰ | 9.6×10⁻⁸ | 5.0×10⁻⁹ | 1.2×10⁻⁷ |
+| `slide_chain`, `simple_arm` | 3, 2 | 0 | 0 | ≤2×10⁻¹⁷ | ≤1.8×10⁻¹⁵ |
 
-**phyz's Featherstone ABA agrees with MuJoCo to ~10⁻⁷ or better over 10
-seconds**, on serial chains, a branching tree, off-diagonal inertia tensors,
-both hinge and slide joints, and a 24-DOF hand. Nothing diverges within the
-horizon. The two exactly-zero rows are models whose gravity torque vanishes at
-the tested configuration — they agree trivially, and are marked so rather than
-counted as evidence.
+**phyz's Featherstone ABA computes the same accelerations as MuJoCo to f64
+epsilon** — on serial chains, a branching tree, off-diagonal inertia tensors,
+hinge and slide joints, a 24-DOF hand, and all three free-floating models,
+where the first-step difference is exactly zero on two of them. Free bases,
+which an earlier revision of this harness could not compare at all, are
+included: MuJoCo packs a free joint as position-then-quaternion and phyz as
+exponential-coordinates-then-position, and `phyz-traj --layout mujoco` converts
+between them.
 
-**Free-floating bases are not covered.** MuJoCo packs a free joint's `qpos` as
-position-then-quaternion and phyz's differentiable layout differs from its
-`Model` layout; aligning them is a separate piece of work. `ant`,
-`half_cheetah` and `humanoid` are therefore skipped — reported as skipped by
-the harness, never silently dropped — and that is the largest remaining gap in
-this comparison. Contact is not covered either, and for the same reason the
-Rapier box-stack row carries its caveat: the two contact models are different
-algorithms, and comparing their trajectories would be comparing modelling
-choices, not implementations.
+**What the later columns are, and are not.** They are accumulation, not
+disagreement. The seed is machine epsilon at step 1 and grows roughly as `t⁴`
+on the free-base models, reaching order 1 rad by 10 s on the humanoid. That is
+not chaos amplifying round-off — a broadband 1-ulp perturbation of the same
+initial state stays at 8×10⁻¹⁵ over the same window, so the model is not in a
+sensitive regime here — it is two numerically distinct but algebraically
+equivalent factorizations (ABA against MuJoCo's LDL) integrating for ten
+thousand steps from an epsilon-sized difference. **Quote the `step 1` column
+for correctness and the later ones for how long a shared trajectory survives.**
+
+`shadow_hand` is the one model whose first step is not at epsilon, at
+5.8×10⁻¹⁰. Its link inertias span five orders of magnitude and its mass matrix
+is dominated by the armature regularisation, so the two factorizations differ
+at the conditioning level rather than at epsilon. It is also the model that
+goes non-finite in *both* engines within 10 ms if armature is stripped — which
+is why it isn't.
+
+Contact is still not covered, for the same reason the Rapier box-stack row
+carries its caveat: the two contact models are different algorithms, and
+comparing their trajectories would compare modelling choices rather than
+implementations.
 
 Measured on a different host from the generated block above. Reproduce with
 `make agreement` (needs `pip install mujoco`).
@@ -477,9 +495,17 @@ that promises bitwise reproducibility.
 And exactness stands on its own: `adjoint_vs_fd_max_rel_err` ≈ 1e-10 with no
 step size to choose and no truncation or cancellation error.
 
-There is also a scope limit worth stating: the differentiable rollout requires
-`nq == nv` and single-DOF joints, so the ant — anything with a free-floating
-base — cannot be differentiated at all today.
+There is a scope note worth stating precisely, because this document used to
+state it wrongly. The differentiable rollout does **not** require `nq == nv` or
+single-DOF joints: `adjoint_rollout_gradient` handles spherical and free joints
+(see `phyz_diff::rollout::adjoint`'s contract), and a free-floating body with
+and without contact differentiates correctly today — it is one of the models
+the vector-mode work above was verified against. What it requires is that `q0`
+be laid out per `DofLayout`, which packs a free joint as
+position-then-quaternion (`nq = 7`) where `Model` packs it as
+exponential-coordinates-then-position (`nq = 6`). The gradient suite's scenes
+are built as `Model`s, so feeding the ant to the adjoint needs that conversion
+— a layout mismatch inside phyz, not a missing capability.
 
 ### Numerical quality
 

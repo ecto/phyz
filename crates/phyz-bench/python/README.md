@@ -131,21 +131,49 @@ models whose stripping lists disagree.
 
 ## Scope
 
-Fixed-base kinematic trees. Models with a free or ball joint are **skipped and
-reported as skipped** — MuJoCo packs a free joint's `qpos` as
-position-then-quaternion, phyz's differentiable layout differs from its `Model`
-layout, and aligning the two is a separate piece of work. That covers `ant`,
-`half_cheetah` and `humanoid`; closing it is the obvious next step for this
-harness.
+Fixed-base **and** free-floating kinematic trees. The two engines parameterise
+a free joint differently:
+
+| | phyz `Model` | MuJoCo `qpos` |
+|---|---|---|
+| free joint | `[ωx ωy ωz, x y z]` (6) | `[x y z, qw qx qy qz]` (7) |
+| ball joint | `[ωx ωy ωz]` (3) | `[qw qx qy qz]` (4) |
+
+`ω` is the rotation vector whose exponential is the body's orientation in its
+parent frame — the same rotation MuJoCo stores as a quaternion, so
+`phyz-traj --layout mujoco` converts with `quat_exp` / `quat_log` and nothing
+else. Velocity differs too: MuJoCo orders a free joint linear-first with the
+linear part in the **world** frame, phyz angular-first in the **body** frame,
+so `--v0 --layout mujoco` swaps the halves and rotates the linear one.
+
+Contact is not covered. Comparing two contact models compares modelling
+choices, not implementations.
 
 ## Reading the result
 
-`max abs Δq` is the largest joint-coordinate difference over the horizon.
-`first divergence` is when it first exceeds the tolerance, or `never`.
+**`step 1` is the column that matters.** One step from an identical state has
+no room for accumulation, so it isolates whether the two engines compute the
+same accelerations. At f64 epsilon (~2×10⁻¹⁶) they do.
 
-On a chaotic model the two engines separate eventually however correct both
-are. That is physics, not a bug, which is why divergence time is reported
-rather than turned into pass/fail. Compare it against phyz's own 1-ulp
-divergence figure (`phyz-bench --suite divergence`): if two engines separate on
-the same timescale that phyz separates from *itself* under a one-ulp
-perturbation, what you are seeing is chaos amplifying round-off.
+The later columns are accumulation. Two algebraically equivalent but
+numerically distinct factorizations — ABA against MuJoCo's LDL — integrating
+ten thousand steps from an epsilon-sized seed separate polynomially, reaching
+order 1 rad on a freely tumbling humanoid by 10 s. That is not a correctness
+result in either direction; it is how long a shared trajectory survives.
+
+Do not reach for "chaos" without checking. On these models it is *not* the
+explanation: a broadband 1-ulp perturbation of the same initial state stays at
+8×10⁻¹⁵ over the same window while the two engines reach 10⁻⁴. When a model
+*is* in a sensitive regime the two effects look alike, so compare against
+phyz's own 1-ulp divergence figure (`phyz-bench --suite divergence`) before
+attributing a separation to either.
+
+## A trap worth knowing about
+
+A floating articulated body released **from rest** under uniform gravity does
+not move internally: gravity accelerates the whole system rigidly, so no joint
+sees a differential torque. Compared from rest, the free-base models agree to
+10⁻¹⁵ while every joint coordinate stays frozen and the comparison measures
+nothing at all. The harness gives them an initial joint velocity for exactly
+this reason — the body tumbles, the joints swing, and the Coriolis and
+centrifugal terms that free fall never exercises have to agree too.

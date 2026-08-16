@@ -201,7 +201,7 @@ def neutralise_mujoco(model: mujoco.MjModel) -> list[str]:
     return changed
 
 
-def mujoco_trajectory(path: Path, q0: np.ndarray, steps: int, dt: float):
+def mujoco_trajectory(path: Path, q0: np.ndarray, v0: np.ndarray, steps: int, dt: float):
     model = mujoco.MjModel.from_xml_path(str(path))
     model.opt.timestep = dt
     neutralised = neutralise_mujoco(model)
@@ -210,18 +210,9 @@ def mujoco_trajectory(path: Path, q0: np.ndarray, steps: int, dt: float):
         mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i)
         for i in range(model.njnt)
     ]
-    free = [
-        i
-        for i in range(model.njnt)
-        if model.jnt_type[i]
-        in (mujoco.mjtJoint.mjJNT_FREE, mujoco.mjtJoint.mjJNT_BALL)
-    ]
-    if free:
-        return None, names, neutralised, "model has a free or ball joint"
-
     data = mujoco.MjData(model)
     data.qpos[:] = q0
-    data.qvel[:] = 0.0
+    data.qvel[:] = v0
 
     traj = np.empty((steps + 1, model.nq))
     traj[0] = data.qpos
@@ -231,7 +222,9 @@ def mujoco_trajectory(path: Path, q0: np.ndarray, steps: int, dt: float):
     return traj, names, neutralised, None
 
 
-def phyz_trajectory(binary: Path, path: Path, q0: np.ndarray, steps: int, dt: float):
+def phyz_trajectory(
+    binary: Path, path: Path, q0: np.ndarray, v0: np.ndarray, steps: int, dt: float
+):
     cmd = [
         str(binary),
         "--model",
@@ -242,6 +235,10 @@ def phyz_trajectory(binary: Path, path: Path, q0: np.ndarray, steps: int, dt: fl
         repr(dt),
         "--q0",
         ",".join(repr(float(x)) for x in q0),
+        "--v0",
+        ",".join(repr(float(x)) for x in v0),
+        "--layout",
+        "mujoco",
     ]
     out = subprocess.run(cmd, capture_output=True, text=True)
     if out.returncode != 0:
@@ -262,6 +259,64 @@ def phyz_trajectory(binary: Path, path: Path, q0: np.ndarray, steps: int, dt: fl
 # ---------------------------------------------------------------------------
 
 
+def trajectory_errors(model, a: np.ndarray, b: np.ndarray):
+    """Per-step error between two `qpos` trajectories, by joint kind.
+
+    Returns `(per_step_max, kinds)` where `per_step_max[t]` is the largest
+    physical error at step `t` across every joint, and `kinds` maps a kind name
+    to its own per-step maximum:
+
+    * `scalar` — hinge and slide, in radians or metres
+    * `position` — free-joint translation, in metres
+    * `rotation` — free and ball orientation, in radians (the geodesic angle
+      between the two quaternions, so a sign flip counts as zero)
+    """
+    scalar_err = []
+    pos_err = []
+    rot_err = []
+
+    m = 0
+    for j in range(model.njnt):
+        t = model.jnt_type[j]
+        if t == mujoco.mjtJoint.mjJNT_FREE:
+            pos_err.append(np.linalg.norm(a[:, m : m + 3] - b[:, m : m + 3], axis=1))
+            rot_err.append(quat_angle(a[:, m + 3 : m + 7], b[:, m + 3 : m + 7]))
+            m += 7
+        elif t == mujoco.mjtJoint.mjJNT_BALL:
+            rot_err.append(quat_angle(a[:, m : m + 4], b[:, m : m + 4]))
+            m += 4
+        else:
+            scalar_err.append(np.abs(a[:, m] - b[:, m]))
+            m += 1
+
+    kinds = {}
+    if scalar_err:
+        kinds["scalar"] = np.max(scalar_err, axis=0)
+    if pos_err:
+        kinds["position"] = np.max(pos_err, axis=0)
+    if rot_err:
+        kinds["rotation"] = np.max(rot_err, axis=0)
+    per_step = np.max(list(kinds.values()), axis=0)
+    return per_step, kinds
+
+
+def at_time(per_step: np.ndarray, t: float, dt: float) -> float:
+    """Error at time `t`, or at the end of the horizon if it is shorter."""
+    return per_step[min(len(per_step) - 1, int(round(t / dt)))]
+
+
+def quat_angle(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Geodesic angle in radians between two arrays of `(w, x, y, z)` quaternions.
+
+    `|dot|` rather than `dot`: `q` and `-q` are the same rotation, and which
+    one an engine happens to store is not a disagreement about physics.
+    """
+    a = a / np.linalg.norm(a, axis=1, keepdims=True)
+    b = b / np.linalg.norm(b, axis=1, keepdims=True)
+    dot = np.abs(np.sum(a * b, axis=1)).clip(0.0, 1.0)
+    return 2.0 * np.arccos(dot)
+
+
 def compare(name: str, path: Path, binary: Path, steps: int, dt: float, tol: float):
     model = mujoco.MjModel.from_xml_path(str(path))
     nq = model.nq
@@ -274,11 +329,39 @@ def compare(name: str, path: Path, binary: Path, steps: int, dt: float, tol: flo
     # *both* engines, which measures the timestep rather than the agreement.
     q0 = np.array([0.15 * np.sin(i + 1) for i in range(nq)])
 
-    mj_traj, mj_names, mj_neutralised, skip = mujoco_trajectory(path, q0, steps, dt)
+    # A floating articulated body released from rest under uniform gravity does
+    # not move internally: gravity accelerates the whole system rigidly, so no
+    # joint sees a differential torque. Free-base models compared from rest
+    # therefore agree to 1e-15 while measuring nothing at all — every joint
+    # range is zero and only the free-fall coordinate changes.
+    #
+    # Initial joint velocity is what makes the comparison real: the body
+    # tumbles, the joints swing, and the Coriolis and centrifugal terms — the
+    # part of the dynamics that free fall never exercises — have to agree too.
+    v0 = np.zeros(model.nv)
+    dof = 0
+    for j in range(model.njnt):
+        t = model.jnt_type[j]
+        if t == mujoco.mjtJoint.mjJNT_FREE:
+            # Left at zero: MuJoCo orders a free joint's velocity linear-first
+            # with the linear part in the world frame, phyz orders it
+            # angular-first in the body frame. Zero is zero in either
+            # convention, so a *joint-driven* tumble tests the free joint's
+            # dynamics without the result depending on that conversion. The
+            # conversion itself is exercised by `--v0` on the phyz side and
+            # tested separately.
+            dof += 6
+        elif t == mujoco.mjtJoint.mjJNT_BALL:
+            dof += 3
+        else:
+            v0[dof] = 0.8 * np.cos(dof + 1)
+            dof += 1
+
+    mj_traj, mj_names, mj_neutralised, skip = mujoco_trajectory(path, q0, v0, steps, dt)
     if skip is not None:
         return {"model": name, "skipped": skip}
 
-    phyz_traj, payload = phyz_trajectory(binary, path, q0, steps, dt)
+    phyz_traj, payload = phyz_trajectory(binary, path, q0, v0, steps, dt)
 
     if phyz_traj.shape != mj_traj.shape:
         return {
@@ -332,8 +415,12 @@ def compare(name: str, path: Path, binary: Path, steps: int, dt: float, tol: flo
                 ),
             }
 
-    diff = np.abs(phyz_traj - mj_traj)
-    per_step = diff.max(axis=1)
+    # Type-aware comparison. Raw coordinate differences are the wrong metric
+    # once a joint carries a rotation: a quaternion and its negation are the
+    # same orientation, and the two engines are free to pick either. Compare
+    # orientations by the angle between them and positions in metres, so every
+    # reported number is a physical quantity rather than a coordinate artefact.
+    per_step, kinds = trajectory_errors(model, phyz_traj, mj_traj)
     exceeded = np.nonzero(per_step > tol)[0]
     divergence_time = float(exceeded[0] * dt) if exceeded.size else None
 
@@ -344,9 +431,26 @@ def compare(name: str, path: Path, binary: Path, steps: int, dt: float, tol: flo
         "dt": dt,
         "horizon_s": steps * dt,
         "tol": tol,
+        # The sharp test of whether the two engines compute the *same
+        # dynamics*: one step from an identical state, with no room for
+        # accumulation. At f64 epsilon this says the accelerations agree and
+        # everything afterwards is integration, not disagreement.
+        "first_step_err": float(per_step[1]) if len(per_step) > 1 else 0.0,
+        "err_at_0.1s": float(at_time(per_step, 0.1, dt)),
+        "err_at_1s": float(at_time(per_step, 1.0, dt)),
         "max_abs_dq": float(per_step.max()),
         "max_abs_dq_at_1s": float(per_step[: min(len(per_step), int(1.0 / dt))].max()),
         "final_abs_dq": float(per_step[-1]),
+        "max_scalar_err_rad_or_m": (
+            float(kinds["scalar"].max()) if "scalar" in kinds else None
+        ),
+        "max_position_err_m": (
+            float(kinds["position"].max()) if "position" in kinds else None
+        ),
+        "max_rotation_err_rad": (
+            float(kinds["rotation"].max()) if "rotation" in kinds else None
+        ),
+        "has_free_joint": "position" in kinds,
         "divergence_time": divergence_time,
         "neutralised": sorted(phyz_neutralised | set(mj_neutralised)),
         "joint_names": mj_names,
@@ -411,18 +515,25 @@ def main() -> int:
         "friction and joint limits are zeroed on both sides, contact and "
         "constraints disabled, armature kept, semi-implicit Euler on both.",
         "",
-        "| model | nq | max abs Δq | Δq at 1 s | first divergence | verdict |",
-        "|---|---|---|---|---|---|",
+        "`step 1` is the number that says whether the two engines compute the "
+        "same dynamics: one step from an identical state, no room for "
+        "accumulation. At f64 epsilon (~2×10⁻¹⁶) the accelerations agree and "
+        "every later column is integration, not disagreement.",
+        "",
+        "| model | nq | step 1 | 0.1 s | 1 s | max over horizon | first divergence |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in results:
         if "skipped" in r:
-            lines.append(f"| `{r['model']}` | — | — | — | — | skipped: {r['skipped']} |")
+            lines.append(
+                f"| `{r['model']}` | — | — | — | — | — | skipped: {r['skipped']} |"
+            )
             continue
         div = "never" if r["divergence_time"] is None else f"{r['divergence_time']:.3f} s"
-        verdict = "agrees" if r["divergence_time"] is None else "diverges"
         lines.append(
-            f"| `{r['model']}` | {r['nq']} | {r['max_abs_dq']:.3e} | "
-            f"{r['max_abs_dq_at_1s']:.3e} | {div} | {verdict} |"
+            f"| `{r['model']}` | {r['nq']} | {r['first_step_err']:.1e} | "
+            f"{r['err_at_0.1s']:.1e} | {r['err_at_1s']:.1e} | "
+            f"{r['max_abs_dq']:.1e} | {div} |"
         )
     markdown = "\n".join(lines)
 
