@@ -25,7 +25,7 @@
 //! frame first. [`integrate_configuration`] is the single place that knows the
 //! mapping; every integration site in the workspace must go through it.
 
-use phyz_math::{Quat, Vec3};
+use phyz_math::{Vec3, quat_exp, quat_log};
 use phyz_model::{JointType, Model, State};
 
 /// Advance the configuration `q` by `dt` under the generalized velocity `v`.
@@ -49,9 +49,9 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
             }
             JointType::Spherical | JointType::Ball => {
                 let omega = Vec3::new(v[v_off], v[v_off + 1], v[v_off + 2]);
-                let current = Quat::exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
-                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
-                let log = next.log();
+                let current = quat_exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
+                let next = current.mul(&quat_exp(&(omega * dt))).normalize();
+                let log = quat_log(&next);
                 q[q_off] = log.x;
                 q[q_off + 1] = log.y;
                 q[q_off + 2] = log.z;
@@ -61,15 +61,15 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
                 let omega = Vec3::new(v[v_off], v[v_off + 1], v[v_off + 2]);
                 let lin = Vec3::new(v[v_off + 3], v[v_off + 4], v[v_off + 5]);
 
-                let current = Quat::exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
+                let current = quat_exp(&Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
                 // Body-frame linear velocity → parent-frame displacement.
                 let world_lin = current.rotate(lin);
                 q[q_off + 3] += dt * world_lin.x;
                 q[q_off + 4] += dt * world_lin.y;
                 q[q_off + 5] += dt * world_lin.z;
 
-                let next = current.mul(&Quat::exp(&(omega * dt))).normalize();
-                let log = next.log();
+                let next = current.mul(&quat_exp(&(omega * dt))).normalize();
+                let log = quat_log(&next);
                 q[q_off] = log.x;
                 q[q_off + 1] = log.y;
                 q[q_off + 2] = log.z;

@@ -543,7 +543,7 @@ fn ground_candidates(
             let mut v = Vec::with_capacity(8);
             for k in 0..4 {
                 let t = k as f64 * std::f64::consts::FRAC_PI_2;
-                let r = ex * t.cos() + ey * t.sin();
+                let r = ex * phyz_math::fp::cos(t) + ey * phyz_math::fp::sin(t);
                 v.push(pos + hz + r);
                 v.push(pos - hz + r);
             }

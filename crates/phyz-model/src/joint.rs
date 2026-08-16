@@ -1,6 +1,6 @@
 //! Joint types and definitions.
 
-use phyz_math::{DMat, Mat3, Quat, SpatialTransform, SpatialVec, Vec3};
+use phyz_math::{DMat, Mat3, SpatialTransform, SpatialVec, Vec3, fp, quat_exp};
 
 /// Joint type enumeration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -240,7 +240,7 @@ impl Joint {
                 // A proper implementation is a box constraint on the friction
                 // force, which lands with the constraint solver.
                 const FRICTION_VEL_SCALE: f64 = 1e-3;
-                f += -self.friction_loss * (qd / FRICTION_VEL_SCALE).tanh();
+                f += -self.friction_loss * fp::tanh(qd / FRICTION_VEL_SCALE);
             }
         }
         f
@@ -255,7 +255,7 @@ impl Joint {
             JointType::Revolute | JointType::Hinge => {
                 // Passive rotation: negate angle for coordinate transform
                 let angle = q[0];
-                let (s, c) = (-angle).sin_cos();
+                let (s, c) = fp::sin_cos(-angle);
                 let a = &self.axis;
                 let ax = phyz_math::skew(a);
                 let rot = Mat3::identity() + ax * s + ax * ax * (1.0 - c);
@@ -277,7 +277,7 @@ impl Joint {
                 // the integrator by an inverse, which pumped energy into any
                 // passive spherical joint the moment its axis moved.
                 let w = Vec3::new(q[0], q[1], q[2]);
-                let rot = Quat::exp(&w).to_matrix().transpose();
+                let rot = quat_exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, Vec3::zeros())
             }
             JointType::Free => {
@@ -304,7 +304,7 @@ impl Joint {
                 // `DofLayout` and never shares indices with `State::q`.
                 let w = Vec3::new(q[0], q[1], q[2]);
                 let pos = Vec3::new(q[3], q[4], q[5]);
-                let rot = Quat::exp(&w).to_matrix().transpose();
+                let rot = quat_exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, pos)
             }
             JointType::Fixed => {
