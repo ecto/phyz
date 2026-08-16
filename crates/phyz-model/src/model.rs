@@ -235,6 +235,46 @@ impl Model {
         self.bodies.len()
     }
 
+    /// One [`crate::ContactMaterial`] per body: each body's own material where
+    /// it has one, and `scene` everywhere else.
+    ///
+    /// This is what `phyz_contact::assemble` wants for its `materials`
+    /// argument. Callers used to write `vec![material.clone(); n_bodies]`
+    /// because there was no other way to fill the slice; that expression is
+    /// exactly `model.contact_materials(&material)` on a model whose bodies
+    /// all carry `None`, so switching to this call changes nothing until a
+    /// body is actually given a material.
+    ///
+    /// The result is always at least one element long, since `assemble` treats
+    /// an empty slice as "defaults everywhere".
+    ///
+    /// **Which body carries the material matters.** Friction combines by
+    /// `max` — see `ContactMaterial::combine` — so a grippy body grips
+    /// everything it touches, including surfaces you wanted it to slide on.
+    pub fn contact_materials(&self, scene: &crate::ContactMaterial) -> Vec<crate::ContactMaterial> {
+        if self.bodies.is_empty() {
+            return vec![scene.clone()];
+        }
+        self.bodies
+            .iter()
+            .map(|b| b.material.clone().unwrap_or_else(|| scene.clone()))
+            .collect()
+    }
+
+    /// Attach `material` to the body named `name`, returning whether it
+    /// existed. The ergonomic form of `model.bodies[i].material = Some(..)`
+    /// when you have a name rather than an index — which is the usual case
+    /// after importing a URDF or MJCF.
+    pub fn set_body_material(&mut self, name: &str, material: crate::ContactMaterial) -> bool {
+        match self.body_index(name) {
+            Some(i) => {
+                self.bodies[i].material = Some(material);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Look up a body index by name.
     pub fn body_index(&self, name: &str) -> Option<usize> {
         self.bodies.iter().position(|b| b.name == name)

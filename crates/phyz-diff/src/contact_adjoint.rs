@@ -555,7 +555,7 @@ fn forward_step(
         state.v = free_qd;
         None
     } else {
-        let materials = vec![material.clone(); model.bodies.len().max(1)];
+        let materials = model.contact_materials(material);
         let asm = assemble(model, state, &bare, &materials, &free_qd, dt, config);
         let seed = cache.warm_start(state, &bare);
         let solution = solve_contacts_warm(&asm.problem, config, &seed);
@@ -717,7 +717,7 @@ fn eval_pieces(
         .iter()
         .map(|a| a.collision(&state, ground_height))
         .collect();
-    let materials = vec![material.clone(); model.bodies.len().max(1)];
+    let materials = model.contact_materials(material);
     let asm = assemble(model, &state, &contacts, &materials, &v_free, dt, config);
     let p = &asm.problem;
     let n = p.n;

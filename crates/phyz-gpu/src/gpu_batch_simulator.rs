@@ -303,6 +303,12 @@ impl GpuBatchSimulator {
     /// that count is zero (a contact pass that can see nothing is a model
     /// bug, not a valid configuration).
     ///
+    /// **`friction` is accepted and ignored.** The ground contact shader
+    /// produces a normal force only, so this path is frictionless and per-body
+    /// [`phyz_model::Body::material`] does not reach it. See
+    /// [`crate::contact_pipeline::GroundContactParams`]. Use the CPU
+    /// `Simulator::step_with_contacts` when friction matters.
+    ///
     /// One global stiffness has to be stiff enough to hold the heaviest body
     /// up and soft enough for the lightest to integrate stably — for models
     /// with a wide mass spread no value satisfies both (see
@@ -334,6 +340,9 @@ impl GpuBatchSimulator {
     }
 
     /// Enable ground contact with per-body penalty gains.
+    ///
+    /// **`friction` is accepted and ignored**, as in
+    /// [`Self::enable_ground_contact`].
     ///
     /// `gains` holds one entry per body, in body order — most easily built
     /// with [`crate::BodyContactGains::uniform_frequency`], which gives every

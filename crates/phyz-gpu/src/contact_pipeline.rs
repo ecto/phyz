@@ -11,6 +11,23 @@ use phyz_model::{Geometry, Model};
 use std::sync::Arc;
 
 /// Contact parameters for the ground plane shader.
+///
+/// # `friction` is not implemented
+///
+/// The field is uploaded to the shader and the shader never reads it. The
+/// ground contact pass computes a Kelvin-Voigt *normal* force and writes
+/// `[0, 0, f_z]`; no tangential force is produced, so GPU ground contact is
+/// frictionless regardless of what is passed here. A box given an initial
+/// horizontal velocity slides forever.
+///
+/// This also means per-body [`phyz_model::Body::material`] does not reach the
+/// GPU path — nor could it, since the quantity it would set is the one that is
+/// missing. The CPU stepper (`Simulator::step_with_contacts`) honours both.
+///
+/// Implementing it needs the contact point's tangential velocity, which the
+/// pass deliberately avoids computing (the normal damper uses a finite
+/// difference of penetration precisely so it can skip a velocity FK), so it is
+/// a real piece of work rather than an oversight to patch in passing.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct ContactParams {
@@ -170,6 +187,8 @@ impl ContactPipeline {
     /// Create a contact pipeline for ground plane contacts.
     ///
     /// Every body uses the global `contact.stiffness` / `contact.damping`.
+    /// `contact.friction` is accepted and ignored — see
+    /// [`GroundContactParams`].
     /// Errors when no body carries GPU-collidable geometry — a contact pass
     /// that can see nothing is a model bug, not a valid configuration.
     pub fn new(
