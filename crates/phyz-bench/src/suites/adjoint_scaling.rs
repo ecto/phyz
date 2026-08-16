@@ -228,13 +228,14 @@ fn run_model(name: String, model: Model, family: &str, budget: Budget, with_fd: 
             .sum::<f64>()
             .sqrt()
             .max(1.0e-12);
-        let max_rel_err = grads
-            .d_inertia
-            .iter()
-            .flatten()
-            .zip(fd_grad.iter().flatten())
-            .map(|(a, b)| (a - b).abs() / scale)
-            .fold(0.0f64, f64::max);
+        let max_rel_err = super::gradient::max_or_nan(
+            grads
+                .d_inertia
+                .iter()
+                .flatten()
+                .zip(fd_grad.iter().flatten())
+                .map(|(a, b)| (a - b).abs() / scale),
+        );
         metrics.push(Metric::new(
             "adjoint_vs_fd_max_rel_err",
             max_rel_err,
