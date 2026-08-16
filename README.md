@@ -180,6 +180,8 @@ phyz/
 │   ├── phyz-gpu/         # WGPU compute, batched simulation
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
 │   ├── phyz-particle/    # SPH fluids, granular media
+│   ├── phyz-xpbd/        # XPBD: cloth, soft bodies, cables
+│   ├── phyz-vbd/         # Vertex Block Descent: implicit deformable FEM
 │   ├── phyz-em/          # Maxwell's equations on Yee lattice
 │   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
 │   ├── phyz-qft/         # Lattice QFT, Wilson action
