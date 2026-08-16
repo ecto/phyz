@@ -1,6 +1,6 @@
 # Differentiable Contact: Design
 
-**Status:** design (not implemented)
+**Status:** largely implemented — see [§8](#8-implementation-status) for what landed, what diverged, and what is still open
 **Scope:** replaces `crates/phyz-contact` and the vendored `crates/phyz/src/contact/`
 **Author:** design phase, 2026-07
 **Target integration point:** `crates/phyz-diff/src/rollout/`, `crates/phyz-rigid/src/aba.rs`
@@ -852,3 +852,100 @@ the stacking row, and this design does not try to.
   Vectorizable Contact Manifold Construction," 2026.
   <https://arxiv.org/html/2604.17538>
 - "A Review of Differentiable Simulators," 2024. <https://arxiv.org/pdf/2407.05560>
+
+
+---
+
+## 8. Implementation status
+
+Added 2026-08-16. The header said "design (not implemented)" for months after most
+of this shipped, which is worse than no status line at all: it sent at least one
+reader off to build a solver that already existed. What follows is the state of
+the tree, and it should be updated in the same PR as any change below.
+
+Delivered across #28 (narrow phase, convex solver, IFT gradients), #37
+(stabilization, pair materials, warm starting), #39/#41 (redundant-manifold
+convergence), #42 (contact margin), #48 (trajectory adjoint), and this PR
+(body-body adjoint).
+
+### 8.1 Landed as designed
+
+- §1.1(c) convex soft contact, chosen over LCP/PGS and TGS — `phyz-contact/src/convex.rs`.
+- §2.1–2.2 gradients by the implicit function theorem on the converged solution,
+  not by unrolling — `phyz-contact/src/gradient.rs`, `FixedPointSensitivity`.
+- §2.4 restitution as a term in `b`, never a post-solve velocity reset.
+- §4.1 a real second-order friction cone with genuine stiction. The isotropy
+  test (§6.1 D) holds to `1e-9`, well inside the `0.1%` the plan asked for.
+- §4.3 restitution with the `smoothstep` low-speed ramp.
+- §4.4 multi-point manifolds, EPA normals, surface contact points, persistence.
+- §4.5 MuJoCo `solref`/`solimp` semantics — `phyz-contact/src/material.rs`.
+- §5.2 / stage 0 the vendored `crates/phyz/src/contact/` is gone; `phyz`
+  re-exports `phyz-contact`.
+- §6.1 the full block-on-incline battery A–D.
+
+### 8.2 Landed differently, on purpose
+
+- **§1.2 the solver is not a primal-dual interior-point SOCP.** It is an
+  alternating PGS / active-set Newton. Consequence: there is no central-path
+  parameter κ, and `ContactSolverConfig::regularization` plays the smoothing
+  role instead. The `simulation()` / `gradients()` presets of §2.5 exist and
+  mean what §2.5 says they mean; `cone: FrictionCone` and `anchors: bool` do not
+  exist, the cone being elliptic always.
+- **§3 generic-over-scalar did not happen, and the goal it served was met
+  another way.** `phyz-contact` is entirely `f64`; there is no `ContactScalar`,
+  no `tang` dependency. §0.1 wanted one thing from genericity — that the
+  simulated and differentiated contact models cannot drift apart — and
+  `phyz-diff/src/contact_adjoint.rs` secures it directly instead: its forward
+  pass *is* `Simulator::step_with_contacts`, operation for operation, asserted
+  bit-identical by `phyz/tests/diff_convex_contact.rs`. The derivative is then
+  analytic (IFT) through the solve and central-difference per lane through the
+  smooth blocks around it (ABA, FK, assembly, Φ).
+
+  This is a real trade, not a free substitution. It costs exactness in the
+  smooth blocks (`~1e-9` relative, against machine precision for a dual number)
+  and it costs speed — the measured gradient is `33.7x` one forward rollout on a
+  200-step box drop. Making the solver generic remains the right end state and
+  is the largest single open item; it is not, however, load-bearing for
+  correctness the way §3 implies, because the drift it was meant to prevent is
+  already prevented.
+- **§5.1 `GroundContact` / `vertex_wrench` were not removed.** The per-vertex
+  penalty model survives in `phyz-diff/src/rollout/` as the `d_vertices`
+  surface-gradient channel vcad integrates against, which the convex path does
+  not reproduce. So two contact models do still coexist — but their roles are
+  now disjoint and documented, rather than being two answers to the same
+  question. State/control/inertia gradients all route through the convex path.
+- **§5.1 the deprecated penalty API is still shipped** (`compute_contact_force`,
+  `contact_forces`), marked `#[deprecated]` rather than deleted. Stage 3 is
+  therefore only partly done.
+
+### 8.3 Open
+
+Roughly in descending order of what a caller would actually notice.
+
+- §3 the generic-over-scalar solver, per §8.2.
+- **Material-parameter gradients are not plumbed to the rollout.**
+  `ConvexAdjointGradients` carries `d_q0`, `d_v0`, `d_ctrl`, `d_inertia` and
+  nothing else, even though `gradient::friction_sensitivity` and
+  `depth_sensitivity` already compute the per-solve blocks. So `dJ/dmu`,
+  `dJ/de` and `dJ/dsol_ref` are unavailable at trajectory level. This is the
+  cheapest remaining win and it blocks two §6.5 rows outright.
+- §6.5 missing rollout-level FD scenarios: gradient w.r.t. restitution (needs
+  the channel above), and a box tipping on an edge.
+- §6.5 the contact-making discontinuity negative test exists only at solver
+  level (`depth_gradient_has_a_documented_hinge_at_zero_depth`), not as a
+  rollout. The body-body analogue now does exist —
+  `phyz-diff/tests/body_body_adjoint.rs::exact_symmetry_gives_a_lane_outside_the_clarke_set`.
+- §6.2 the restitution benchmark is single-solve algebra rather than a dropped
+  sphere with a measured apex, and the §6.2 settling test asserts properties of
+  the ramp function instead of running a rollout to rest.
+- §6.3 the stack test covers drift only — no tilt bound, no check that the sink
+  matches the analytic `Σmg/k`, no 100:1 mass-ratio variant, no explicit no-NaN
+  assertion.
+- §6.4 the 100-bounce energy test does not exist.
+- §6.6 no recorded MuJoCo trajectory comparison, though `mujoco_compat` and the
+  creep-rate test exist to make one meaningful.
+- Stage 6 randomized smoothing / bundled gradients: not implemented anywhere.
+- §4.2 position-level friction anchors: not implemented. `convex.rs` argues the
+  solref bias removes the creep they were meant to fix, and the eight-box stack
+  holds to `1e-9` m over 3 s, so this may be a design item to retire rather than
+  build.
