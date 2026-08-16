@@ -11,9 +11,21 @@ keywords = ["physics", "spatial-algebra", "linear-algebra", "robotics", "math"]
 categories = ["mathematics", "science", "simulation"]
 readme = "README.md"
 
+[features]
+default = ["portable-fp"]
+## Route the rollout path's transcendental functions through the pure-Rust
+## `libm` crate instead of the platform's, so `sin`/`cos`/`pow`/`atan2` return
+## identical bits on every target. See `phyz_math::fp` and
+## `docs/determinism.md`. Turning it off is faster and gives up cross-platform
+## reproducibility.
+portable-fp = ["dep:libm"]
+
 [dependencies]
 tang.workspace = true
 tang-la.workspace = true
+# Pure-Rust musl libm port: the same source compiled everywhere, so the same
+# inputs give the same bits on x86-64 and aarch64. No dependencies, no_std.
+libm = { version = "0.2", optional = true }
 
 [dev-dependencies]
 proptest = "1"
