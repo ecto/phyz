@@ -100,7 +100,7 @@
 //! path for the vcad surface-gradient seam.
 
 use phyz_collision::Collision;
-use phyz_contact::gradient::FixedPointSensitivity;
+use phyz_contact::gradient::{FixedPointSensitivity, friction_sensitivity};
 use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
@@ -164,6 +164,27 @@ pub struct ConvexAdjointGradients {
     /// `dJ/dπ` per body, canonical packing `[m, cx, cy, cz, Ixx, Iyy, Izz,
     /// Ixy, Ixz, Iyz]`.
     pub d_inertia: Vec<[f64; N_INERTIA_PARAMS]>,
+    /// `dJ/dμ` — the friction coefficient of [`ConvexContactRollout::material`].
+    ///
+    /// One scalar, not one per contact, because the rollout applies a single
+    /// material to every body; this is the total derivative with respect to
+    /// that shared coefficient.
+    ///
+    /// **Only sliding contacts contribute.** A sticking contact sits strictly
+    /// inside the cone, so moving the cone boundary does not move the solution,
+    /// and a separating one carries no impulse. So a trajectory that never
+    /// slips reports exactly `0` here — a real property of Coulomb friction
+    /// rather than a missing term, and one a finite difference reproduces
+    /// exactly.
+    pub d_friction: f64,
+    /// `dJ/de` — the restitution coefficient of
+    /// [`ConvexContactRollout::material`], likewise a single shared scalar.
+    ///
+    /// Zero for any trajectory whose contacts all approach below
+    /// [`ContactSolverConfig::restitution_threshold`], where the low-speed ramp
+    /// has taken the effective restitution to zero — again a genuine flat
+    /// region of the model, not an omission.
+    pub d_restitution: f64,
 }
 
 /// Why an adjoint pass refused to produce a gradient.
@@ -785,6 +806,8 @@ pub fn convex_adjoint_gradient(
 
     let mut d_ctrl = vec![DVec::zeros(nv); rollout.steps];
     let mut d_inertia = vec![[0.0f64; N_INERTIA_PARAMS]; nb];
+    let mut d_friction = 0.0f64;
+    let mut d_restitution = 0.0f64;
     let nominal_params: Vec<[f64; N_INERTIA_PARAMS]> = model
         .bodies
         .iter()
@@ -836,11 +859,11 @@ pub fn convex_adjoint_gradient(
             }
         };
 
-        let eval = |m: &Model, q: &DVec, v: &DVec, u: &DVec| -> Pieces {
+        let eval = |m: &Model, mat: &ContactMaterial, q: &DVec, v: &DVec, u: &DVec| -> Pieces {
             eval_pieces(
                 m,
                 rollout.ground_height,
-                &rollout.material,
+                mat,
                 &rollout.config,
                 &rec.anchors,
                 &f_star,
@@ -852,8 +875,17 @@ pub fn convex_adjoint_gradient(
         };
 
         // Central difference of the pieces along one input lane.
+        //
+        // The material is a lane input like the model is: restitution reaches
+        // the impulses through `b`, so perturbing it perturbs the residual and
+        // this machinery prices it with no special case. Friction does *not*
+        // appear in the residual at all — it lives only in the cone
+        // constraint — so it cannot be a lane and is handled separately below.
+        #[allow(clippy::too_many_arguments)]
         let lane = |mp: &Model,
                     mm: &Model,
+                    matp: &ContactMaterial,
+                    matm: &ContactMaterial,
                     qp: &DVec,
                     qm: &DVec,
                     vp: &DVec,
@@ -862,8 +894,8 @@ pub fn convex_adjoint_gradient(
                     um: &DVec,
                     h: f64|
          -> Pieces {
-            let a = eval(mp, qp, vp, up);
-            let b = eval(mm, qm, vm, um);
+            let a = eval(mp, matp, qp, vp, up);
+            let b = eval(mm, matm, qm, vm, um);
             let inv = 1.0 / (2.0 * h);
             Pieces {
                 v_free: &(&a.v_free - &b.v_free) * inv,
@@ -917,7 +949,19 @@ pub fn convex_adjoint_gradient(
             let mut qm = rec.q.clone();
             qp[i] += h;
             qm[i] -= h;
-            let dp = lane(model, model, &qp, &qm, &rec.v, &rec.v, &rec.u, &rec.u, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &qp,
+                &qm,
+                &rec.v,
+                &rec.v,
+                &rec.u,
+                &rec.u,
+                h,
+            );
             let dvn = dv_next(&dp);
             // Direct Φ_q block plus the v'-mediated part.
             let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
@@ -933,7 +977,19 @@ pub fn convex_adjoint_gradient(
             let mut vm = rec.v.clone();
             vp[j] += h;
             vm[j] -= h;
-            let dp = lane(model, model, &rec.q, &rec.q, &vp, &vm, &rec.u, &rec.u, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &rec.q,
+                &rec.q,
+                &vp,
+                &vm,
+                &rec.u,
+                &rec.u,
+                h,
+            );
             let dvn = dv_next(&dp);
             let dqn = dphi_dvnext(&dvn);
             new_lam_v[j] = contract(&dqn, &dvn);
@@ -946,7 +1002,19 @@ pub fn convex_adjoint_gradient(
             let mut um = rec.u.clone();
             up[j] += h;
             um[j] -= h;
-            let dp = lane(model, model, &rec.q, &rec.q, &rec.v, &rec.v, &up, &um, h);
+            let dp = lane(
+                model,
+                model,
+                &rollout.material,
+                &rollout.material,
+                &rec.q,
+                &rec.q,
+                &rec.v,
+                &rec.v,
+                &up,
+                &um,
+                h,
+            );
             let dvn = dv_next(&dp);
             let dqn = dphi_dvnext(&dvn);
             d_ctrl[t][j] = contract(&dqn, &dvn);
@@ -962,10 +1030,79 @@ pub fn convex_adjoint_gradient(
                 pm[k] -= h;
                 let mp = perturbed_model(model, b, &pp);
                 let mm = perturbed_model(model, b, &pm);
-                let dp = lane(&mp, &mm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h);
+                let dp = lane(
+                    &mp,
+                    &mm,
+                    &rollout.material,
+                    &rollout.material,
+                    &rec.q,
+                    &rec.q,
+                    &rec.v,
+                    &rec.v,
+                    &rec.u,
+                    &rec.u,
+                    h,
+                );
                 let dvn = dv_next(&dp);
                 let dqn = dphi_dvnext(&dvn);
                 d_inertia[b][k] += contract(&dqn, &dvn);
+            }
+        }
+
+        // --- restitution lane ---
+        //
+        // `e` reaches the impulses through `b`: assembly scales the normal row
+        // of the free velocity by `1 + e_eff`. So it is an ordinary lane, and
+        // the machinery above prices it including the low-speed smoothstep
+        // ramp, which is exactly why §4.3 insisted restitution be a term in `b`
+        // rather than a post-solve velocity reset — a reset would be a branch
+        // on the primal, with no derivative in `e` at all at `v_n = 0`.
+        {
+            let h = FD_EPS * rollout.material.restitution.abs().max(1.0);
+            let mut matp = rollout.material.clone();
+            let mut matm = rollout.material.clone();
+            matp.restitution += h;
+            matm.restitution -= h;
+            let dp = lane(
+                model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
+            );
+            let dvn = dv_next(&dp);
+            let dqn = dphi_dvnext(&dvn);
+            d_restitution += contract(&dqn, &dvn);
+        }
+
+        // --- friction channel ---
+        //
+        // Not a lane, because `mu` does not appear in the residual
+        // `(A + R)f* + b − e_n·bias` anywhere: the friction coefficient enters
+        // only through the *cone constraint*. Differencing `eval_pieces` in
+        // `mu` would therefore return an exact, entirely convincing zero.
+        //
+        // `friction_sensitivity` supplies `df*/dmu` directly, already routed
+        // through the coupled system (a change in one sliding contact's
+        // tangential capacity moves every other contact through `A`). Only
+        // sliding contacts have a non-zero column. Summing the columns gives
+        // the derivative with respect to the single shared coefficient, and
+        // from there the contraction is the same as every other lane's, since
+        // `v_free` and the impulse-held-fixed term do not depend on `mu`.
+        if let Some((asm, sol)) = &rec.contact {
+            let n = asm.problem.n;
+            if let Some(dfdmu) = friction_sensitivity(&asm.problem, sol, &rollout.config) {
+                let mut df = vec![Vec3::zeros(); n];
+                for (c, dfc) in df.iter_mut().enumerate() {
+                    let base = 3 * c;
+                    // Sum over columns: every contact shares one `mu`.
+                    let mut acc = [0.0f64; 3];
+                    for (r, a) in acc.iter_mut().enumerate() {
+                        for col in 0..n {
+                            *a += dfdmu[(base + r) * n + col];
+                        }
+                    }
+                    *dfc = Vec3::new(acc[0], acc[1], acc[2]);
+                }
+                let dvn = asm.velocity_delta(&df);
+                let dqn = dphi_dvnext(&dvn);
+                d_friction += contract(&dqn, &dvn);
             }
         }
 
@@ -979,5 +1116,7 @@ pub fn convex_adjoint_gradient(
         d_v0: lam_v,
         d_ctrl,
         d_inertia,
+        d_friction,
+        d_restitution,
     })
 }
