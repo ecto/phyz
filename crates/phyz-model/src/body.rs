@@ -44,6 +44,20 @@ pub struct Body {
     /// *shoes* raises only the foot-on-deck contacts and leaves the deck-on-
     /// ground contact at wood's 0.6. See the crate docs on
     /// [`ContactMaterial::combine`].
+    ///
+    /// # The ground has no material of its own
+    ///
+    /// A contact against the ground plane or a heightfield uses the touching
+    /// body's material **verbatim** — there is no second material to combine
+    /// with, so nothing is combined. That is easy to miss now that bodies
+    /// differ from one another: setting a deck to wood's `0.6` and passing
+    /// asphalt's `0.8` as the scene material gives a deck-on-ground friction
+    /// of `0.6`, not `max(0.6, 0.8)`. The scene material is a *default filler*
+    /// for bodies that carry none, not a property of the ground.
+    ///
+    /// So the friction a body has against the ground is exactly the friction
+    /// you wrote on that body, and a "road surface" is expressed by leaving
+    /// the bodies that touch it on the scene material.
     pub material: Option<ContactMaterial>,
 }
 

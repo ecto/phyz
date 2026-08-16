@@ -362,3 +362,41 @@ fn per_body_restitution_reaches_the_solve() {
          {bouncy:.4} m vs {inelastic:.4} m"
     );
 }
+
+/// The ground has no material, so a ground contact uses the touching body's
+/// material verbatim — it is **not** combined with the scene material.
+///
+/// Easy to miss, and newly visible now that bodies differ: a body set to
+/// `0.2` slides on a scene whose material is `1.2`, because the scene material
+/// is a default filler for bodies that carry none, not a property of the
+/// ground. If this ever starts combining, the "attach wood to the deck and it
+/// slides on asphalt" advice in the docs stops being true.
+#[test]
+fn a_ground_contact_does_not_combine_with_the_scene_material() {
+    let grippy_scene = ContactMaterial {
+        friction: GRIPPY,
+        ..Default::default()
+    };
+
+    // A bare body takes the scene material and holds.
+    let bare = block_on_ground();
+    let held = slide_distance(&bare, &grippy_scene);
+    assert!(
+        held.abs() < 1e-3,
+        "bare block on a grippy scene: {held:.4} m"
+    );
+
+    // The same body with a slippery material of its own slides anyway. Under a
+    // `max` combine against the scene it would have held at 1.2.
+    let mut slippery = block_on_ground();
+    slippery.bodies[0].material = Some(ContactMaterial {
+        friction: SLIPPERY,
+        ..Default::default()
+    });
+    let slid = slide_distance(&slippery, &grippy_scene);
+    assert!(
+        slid > 0.05,
+        "the body's own mu = {SLIPPERY} must win against the ground, not \
+         max() with the scene's {GRIPPY}; went {slid:.4} m"
+    );
+}

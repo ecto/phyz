@@ -77,6 +77,16 @@ The worked example, from a skateboarding robot where it was measured:
 - Putting it on the **shoes** raises only foot-on-deck and leaves
   deck-on-ground at wood's `0.6`, which is the physics.
 
+### The ground has no material of its own
+
+A contact against the ground plane or a heightfield uses the touching body's
+material **verbatim** — there is no second material, so nothing is combined.
+Setting the deck to wood's `0.6` and passing asphalt's `0.8` as the scene
+material gives a deck-on-ground friction of `0.6`, not `max(0.6, 0.8)`. The
+scene material is a *default filler* for bodies that carry none, not a property
+of the ground. Express a road surface by leaving the bodies that touch it on
+the scene material.
+
 The rule of thumb: attach the material to the part whose *surface* it
 describes, then check what else that part touches. Two bodies that must grip
 each other but slide on everything else cannot be expressed by per-body
