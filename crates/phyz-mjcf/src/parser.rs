@@ -7,7 +7,9 @@ use crate::inertia::{self, MassProps, Shape};
 use crate::orientation::{AngleConfig, parse_orientation, rotation_z_to};
 use crate::{MjcfError, Result};
 use phyz_math::{GRAVITY, Mat3, Quat, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
+use phyz_model::{
+    Actuator, ContactMaterial, Geometry, Joint, JointType, Model, ModelBuilder, SolImp, SolRef,
+};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
@@ -74,6 +76,16 @@ struct GeomElement {
     collides: bool,
     /// Name of the `<mesh>` asset this geom draws its shape from.
     mesh: Option<String>,
+    /// Contact material read off this geom, or `None` when the geom — and the
+    /// `<default>` class it resolves through — named none of `friction`,
+    /// `solref`, `solimp` or `margin`.
+    ///
+    /// `None` rather than "MuJoCo's defaults" deliberately: MJCF's default
+    /// sliding friction is 1.0 and phyz's is 0.5, so materializing the
+    /// defaults here would silently double the friction of every model that
+    /// never mentioned it. A geom that says nothing leaves its body on the
+    /// scene material, exactly as before this existed.
+    material: Option<ContactMaterial>,
 }
 
 impl GeomElement {
@@ -618,6 +630,7 @@ impl MjcfLoader {
             mass: a.f64("mass"),
             collides,
             mesh,
+            material: geom_material(&a),
         });
         Ok(())
     }
@@ -812,6 +825,22 @@ impl MjcfLoader {
                     b.visuals.push(instance);
                 }
             }
+            // Fold the body's collision geoms into one body material. phyz's
+            // material is per body, MJCF's is per geom, so several geoms on
+            // one body have to agree on a single answer; they are combined by
+            // the same `ContactMaterial::combine` rule a contacting pair uses
+            // (max friction, geometric mean for the stiffness-like terms),
+            // which is the rule already documented as the way two materials
+            // become one. Geoms that named nothing are skipped rather than
+            // contributing MuJoCo's defaults, so one explicit geom does not
+            // get averaged away by its silent neighbours.
+            b.material = body
+                .geoms
+                .iter()
+                .filter(|g| g.collides)
+                .filter_map(|g| g.material.clone())
+                .reduce(|a, m| ContactMaterial::combine(&a, &m));
+
             // `geometry` mirrors the first centred collision shape so existing
             // single-shape consumers keep working.
             b.geometry = b
@@ -867,6 +896,59 @@ impl MjcfLoader {
             .map(|j| j.name.clone())
             .collect()
     }
+}
+
+/// The contact material a geom's attributes describe, or `None` if it names
+/// none of them.
+///
+/// What is read, and what MuJoCo means by it:
+///
+/// - **`friction`** — MuJoCo gives three numbers, `slide spin roll`. phyz's
+///   friction cone is the sliding one only, so the first component is taken
+///   and the spin/roll torsional terms are dropped. For a foot or a wheel
+///   the sliding term is the one that decides whether it grips.
+/// - **`solref`** — `(timeconst, dampratio)`, straight across.
+/// - **`solimp`** — `(dmin, dmax, width[, midpoint, power])`; the trailing two
+///   keep [`SolImp::default`]'s values when the file gives only three, which
+///   is how MuJoCo's own shorthand reads.
+/// - **`margin`** — straight across.
+///
+/// Every field the geom does not name keeps [`ContactMaterial::default`]'s
+/// value, *not* MuJoCo's — notably `stiffness`, `damping` and `restitution`,
+/// which MJCF has no geom-level attribute for at all. MuJoCo expresses
+/// bounce through `solref` rather than a restitution coefficient, so an
+/// imported model's restitution is phyz's default (0, fully inelastic)
+/// unless set in code.
+///
+/// Also not read: `condim` (phyz's cone is always `condim=3` sliding
+/// friction), `priority` and `solmix` (the combine rule is fixed), and
+/// `gap`.
+fn geom_material(a: &Attrs) -> Option<ContactMaterial> {
+    let friction = a.floats("friction").and_then(|f| f.first().copied());
+    let solref = a.floats("solref").filter(|v| v.len() >= 2);
+    let solimp = a.floats("solimp").filter(|v| v.len() >= 3);
+    let margin = a.f64("margin");
+    if friction.is_none() && solref.is_none() && solimp.is_none() && margin.is_none() {
+        return None;
+    }
+
+    let d = ContactMaterial::default();
+    Some(ContactMaterial {
+        friction: friction.unwrap_or(d.friction),
+        margin: margin.unwrap_or(d.margin),
+        solref: solref.map_or(d.solref, |v| SolRef {
+            timeconst: v[0],
+            dampratio: v[1],
+        }),
+        solimp: solimp.map_or(d.solimp, |v| SolImp {
+            dmin: v[0],
+            dmax: v[1],
+            width: v[2],
+            midpoint: v.get(3).copied().unwrap_or(d.solimp.midpoint),
+            power: v.get(4).copied().unwrap_or(d.solimp.power),
+        }),
+        ..d
+    })
 }
 
 /// Convert a parsed GeomElement to a phyz_model Geometry.

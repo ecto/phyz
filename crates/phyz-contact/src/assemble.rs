@@ -20,6 +20,25 @@ use phyz_model::{Model, State};
 /// *without* contact; `dt` is the step those impulses will act over, which the
 /// solref position-stabilization bias needs to convert a penetration depth into
 /// a separating velocity.
+///
+/// `materials` is indexed **by body**, and the way to build it is
+/// [`Model::contact_materials`]:
+///
+/// ```ignore
+/// let materials = model.contact_materials(&scene_material);
+/// let asm = assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
+/// ```
+///
+/// That returns each body's own [`phyz_model::Body::material`] where it has
+/// one and `scene_material` everywhere else, which is the same slice as the
+/// old `vec![scene_material; n_bodies]` until a body is actually given a
+/// material. A short slice is clamped to its last element and an empty one
+/// means defaults everywhere, both for backwards compatibility rather than as
+/// a recommended call.
+///
+/// The pair is resolved by [`ContactMaterial::combine`], whose friction rule
+/// is `max`. That is what makes *which body* carries a material a physical
+/// decision — see the crate README's "which body to put one on".
 pub fn assemble(
     model: &Model,
     state: &State,

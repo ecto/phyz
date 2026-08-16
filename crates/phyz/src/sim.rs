@@ -274,7 +274,7 @@ impl Simulator {
             // operator, so pressing on one corner of a box correctly unloads
             // another — and friction is a real Coulomb cone with stiction
             // rather than a viscous damper that vanished at low sliding speed.
-            let materials = vec![material.clone(); model.bodies.len().max(1)];
+            let materials = model.contact_materials(material);
             let config = ContactSolverConfig::simulation();
             let asm =
                 phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
@@ -343,7 +343,7 @@ impl Simulator {
         }
 
         let free_qd = &probe.v + &(&qdd * dt);
-        let materials = vec![material.clone(); model.bodies.len().max(1)];
+        let materials = model.contact_materials(material);
         let config = ContactSolverConfig::simulation();
         let asm =
             phyz_contact::assemble(model, &probe, &contacts, &materials, &free_qd, dt, &config);
