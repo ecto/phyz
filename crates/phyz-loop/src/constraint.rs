@@ -42,18 +42,19 @@ use phyz_math::{DMat, DVec, Mat3, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{body_angular_jacobian, forward_kinematics_acc, point_jacobian};
 
-/// The body a constraint endpoint is attached to.
-///
-/// `World` is the static inertial frame: it contributes no Jacobian columns
-/// and no bias, and its anchor point is read directly in world coordinates.
-/// A grounded mechanism (every four-bar is one) needs it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Attachment {
-    /// A body of the tree, by index into `Model::bodies`.
-    Body(usize),
-    /// The static world.
-    World,
-}
+// The body a constraint endpoint is attached to.
+//
+// This crate originally defined its own `Attachment` enum, structurally
+// identical to `phyz_model::Attachment` — two places arriving at the same
+// answer to "a body index, or the world" without knowing about each other.
+// Two identical-but-incompatible types would be worse than either, so the
+// shared one wins and this is a re-export: `phyz_loop::Attachment` still
+// resolves, and it is now the same type the Jacobian and contact APIs take.
+//
+// `World` is the static inertial frame: it contributes no Jacobian columns and
+// no bias, and its anchor point is read directly in world coordinates. A
+// grounded mechanism (every four-bar is one) needs it.
+pub use phyz_model::Attachment;
 
 /// One endpoint of a loop-closure constraint.
 #[derive(Debug, Clone, Copy)]
