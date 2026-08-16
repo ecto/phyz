@@ -641,6 +641,11 @@ impl ContactPipeline {
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
     }
 
+    /// Record the contact pass into `encoder`.
+    ///
+    /// One dispatch is one sweep: the host is expected to interleave this with
+    /// the ABA pass, so that the next sweep reads a `qdd` already carrying the
+    /// impulses this one wrote.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("contact_pass"),

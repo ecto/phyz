@@ -911,7 +911,7 @@ fn sweep(
         for (row, r_row) in r.iter_mut().enumerate() {
             let mut acc = problem.free_velocity[base + row];
             if config.coupling != ContactCoupling::BlockDiagonal {
-                for k in 0..n {
+                for (k, f_k) in f.iter().enumerate().take(n) {
                     if k == c {
                         continue;
                     }
@@ -925,9 +925,9 @@ fn sweep(
                         continue;
                     }
                     let kb = 3 * k;
-                    acc += at(base + row, kb) * f[k].x
-                        + at(base + row, kb + 1) * f[k].y
-                        + at(base + row, kb + 2) * f[k].z;
+                    acc += at(base + row, kb) * f_k.x
+                        + at(base + row, kb + 1) * f_k.y
+                        + at(base + row, kb + 2) * f_k.z;
                 }
             }
             *r_row = acc;

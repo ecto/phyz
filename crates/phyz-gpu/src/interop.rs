@@ -126,7 +126,7 @@ mod tests {
             )
             .build();
 
-        let Ok(mut sim) = GpuBatchSimulator::new(model, 128) else {
+        let Ok(sim) = GpuBatchSimulator::new(model, 128) else {
             eprintln!("skipping: no GPU adapter");
             return;
         };

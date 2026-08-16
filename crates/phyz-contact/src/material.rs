@@ -1,5 +1,10 @@
 //! Contact material properties.
 
+// `pow` comes from `phyz_math::fp` rather than `f64::powf`: the impedance
+// sigmoid is evaluated once per contact per step, and the platform libms
+// disagree with each other in the last ulp. See `docs/determinism.md`.
+use phyz_math::fp;
+
 /// MuJoCo-style `solref`: the reference response of a violated constraint.
 ///
 /// The pair `(timeconst, dampratio)` describes the mass-normalized damped
@@ -109,9 +114,9 @@ impl SolImp {
         let mid = self.midpoint.clamp(1e-6, 1.0 - 1e-6);
         let p = self.power.max(1.0);
         let y = if x <= mid {
-            x.powf(p) / mid.powf(p - 1.0)
+            fp::pow(x, p) / fp::pow(mid, p - 1.0)
         } else {
-            1.0 - (1.0 - x).powf(p) / (1.0 - mid).powf(p - 1.0)
+            1.0 - fp::pow(1.0 - x, p) / fp::pow(1.0 - mid, p - 1.0)
         };
         dmin + y * (dmax - dmin)
     }
@@ -140,9 +145,9 @@ impl SolImp {
         let mid = self.midpoint.clamp(1e-6, 1.0 - 1e-6);
         let p = self.power.max(1.0);
         let dy_dx = if x <= mid {
-            p * x.powf(p - 1.0) / mid.powf(p - 1.0)
+            p * fp::pow(x, p - 1.0) / fp::pow(mid, p - 1.0)
         } else {
-            p * (1.0 - x).powf(p - 1.0) / (1.0 - mid).powf(p - 1.0)
+            p * fp::pow(1.0 - x, p - 1.0) / fp::pow(1.0 - mid, p - 1.0)
         };
         dy_dx * (dmax - dmin) / self.width
     }

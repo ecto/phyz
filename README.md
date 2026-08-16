@@ -208,6 +208,26 @@ That writes `target/validation/validation.md` and `validation.json`. See
 [VALIDATION.md](VALIDATION.md) for the current results, including the benchmarks
 that fail.
 
+## Reproducibility
+
+A rollout is a **pure function of `(model, initial state, dt)`** and produces
+identical bits on x86-64 and aarch64, in debug and release, on one thread or
+eight. That is gated in CI by golden fingerprints of three contact-rich
+rollouts (`crates/phyz/tests/determinism.rs`) run across the whole matrix.
+
+Reproducibility is not stability. Perturb one input by a single representable
+step and a stack of eight boxes turns `7e-18` into `8.5e-5` in five seconds —
+so before concluding that an unexplained discrepancy is a bug, calibrate:
+
+```bash
+cargo run --release -p phyz-bench -- --suite divergence
+```
+
+[docs/determinism.md](docs/determinism.md) is the document to cite when
+publishing numbers: what is guaranteed, what is not, and how to tell chaos from
+a bug. The same measurement is available as a library call —
+`phyz::determinism::{divergence, hash_rollout, state_distance}`.
+
 ## Development
 
 Minimum supported Rust version: **1.89**. Edition 2024 sets the floor at 1.85,

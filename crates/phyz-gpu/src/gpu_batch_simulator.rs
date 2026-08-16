@@ -47,11 +47,11 @@ struct BatchSimParams {
 /// ```
 const BODY_STRIDE: usize = 36;
 
-/// GPU-accelerated batch simulator for general articulated bodies.
 /// Contact sweeps per step in impulse mode; mirrors
 /// `phyz_contact::GPU_SWEEPS`.
 pub const DEFAULT_CONTACT_SWEEPS: usize = 16;
 
+/// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
     /// The wgpu device.
     pub device: Arc<wgpu::Device>,
