@@ -24,7 +24,7 @@ make bench
 | GPU-accelerated batch simulation | **Holds above batch ~128.** 36× a CPU thread at batch 4096. Below batch 128 the GPU path is *slower* than one CPU core — at batch 1 it is 100× slower. |
 | "Thousands of parallel environments" | **Holds.** 16 384 environments run at 7.8 M env-steps/s. Throughput plateaus after ~4096. |
 | Contact / collision performance | **Loses badly.** Rapier is ~26× faster on an 8-box stack. |
-| "Analytical derivatives for free" | **Does not hold.** A gradient rollout costs 18–45× a forward rollout, and that ratio *grows with parameter count* — roughly the same scaling as finite differences, which it does not reliably beat. The gradients are exact, which is a real benefit, but it is not the benefit the phrase implies. |
+| "Analytical derivatives for free" | **Not free; not the same class as finite differences either.** A gradient rollout costs 6–9× a forward rollout per DOF, and that ratio is flat in parameter count — 160 parameters at one DOF costs 9.2×, the same as 10 parameters. So it beats finite differences by a margin that grows with parameter count (3.0× at 10 parameters, 18.3× at 80, measured) and loses to textbook reverse mode's small constant. "Free" is wrong; "the same scaling as finite differences", which this table said until the `adjoint scaling` suite tested it, was also wrong. |
 | Numerical quality | **Holds.** Energy error falls as O(dt) exactly as a symplectic integrator should, on both a simple and a chaotic scene. |
 
 Detail, settings, and caveats below. **Read the caveats before quoting a
@@ -322,24 +322,74 @@ number that matters, and it should be in the README next to the word
 "GPU-accelerated". Throughput also plateaus between 4096 and 16 384, so the
 last 4× in batch size buys ~1.1× in throughput.
 
-**Gradients — the claim that does not survive.** "Analytical derivatives for
-free" implies what reverse-mode AD normally delivers: gradient cost bounded by
-a small constant times the forward pass, *regardless of parameter count*.
-phyz's adjoint does not do that. Its cost grows roughly in proportion to
-parameter count — 18× the forward pass at 10 parameters, 45× at 20 — because
-the backward pass is reverse-mode over time but runs one forward dual lane per
-parameter per step: O(steps × n_params), the same asymptotic class as finite
-differences.
+**Gradients — expensive, but not for the reason this document used to give.**
 
-Measured against a fair finite-difference baseline (model cloned once, not per
-probe), it is a wash: **1.12× faster on the pendulum, 0.88× — i.e. slower — on
-the double pendulum.** Those are the measured `adjoint_speedup_vs_fd` values,
-not estimates.
+An earlier revision of this section read the gradient suite's two rows — 18×
+the forward pass at 10 parameters, 45× at 20 — and concluded that the adjoint
+costs a lane per parameter, putting it in finite differences' asymptotic class.
+That conclusion was wrong, and it was wrong because two scenes cannot support
+it. The pendulum has one body, one DOF and ten parameters; the double pendulum
+has two of each. Parameter count and DOF count move together, so those rows are
+equally consistent with either explanation.
 
-What the adjoint *does* buy is exactness: it agrees with finite differences to
-round-off (`adjoint_vs_fd_max_rel_err` ≈ 0) with no step size to choose and no
-truncation or cancellation error. That is a genuine and useful property. It is
-not the property the README's phrasing advertises.
+The `adjoint scaling` suite separates them. `weld_chain_N` hangs `N` rigidly
+welded bodies off a single revolute joint: every welded body carries a full
+ten-parameter spatial inertia and is dynamically live, but a `Fixed` joint adds
+no DOF, so the parameter count grows 16× while `nv` stays at 1. `dof_chain_N`
+is the control, growing both together as the gradient suite's scenes do.
+
+The tables below come from `phyz-bench --suite adjoint-scaling` on a **different
+host** from the generated results above, so do not compare their absolute
+milliseconds against that section. Every column here is a ratio between two
+quantities measured back to back on the same machine, which is what the
+argument rests on; re-run `make bench` on the publishing host to fold them into
+the generated block.
+
+| family | parameters | nv | adjoint ratio | ratio ÷ parameters | ratio ÷ DOF |
+|---|---|---|---|---|---|
+| `weld_chain_1` | 10 | 1 | 6.9× | 0.685 | 6.9 |
+| `weld_chain_4` | 40 | 1 | 8.1× | 0.203 | 8.1 |
+| `weld_chain_16` | 160 | 1 | **9.2×** | **0.057** | 9.2 |
+| `dof_chain_1` | 10 | 1 | 6.4× | 0.638 | 6.4 |
+| `dof_chain_4` | 40 | 4 | 22.3× | 0.557 | 5.6 |
+| `dof_chain_16` | 160 | 16 | **97.6×** | 0.610 | **6.1** |
+
+Sixteen-fold more parameters at fixed DOF costs 33% more time. Sixteen-fold
+more DOFs costs 15× more. The `ratio ÷ DOF` column is flat at 5.6–6.4 across
+the entire sweep — **the adjoint's cost is linear in DOF count and very nearly
+independent of parameter count**, which is what the implementation says it
+should be: the parameter and contact channels ride two `O(nb)` sweeps, while
+the *state* Jacobian costs `nq + nv` dual-ABA lanes per step.
+
+That changes the comparison against finite differences, which the earlier
+reading got backwards. At fixed DOF count, FD costs `2·n_params` rollouts and
+the adjoint does not, so the adjoint's advantage grows with the parameter count
+— measured, not projected:
+
+| parameters (nv = 1) | adjoint | finite differences | adjoint speedup |
+|---|---|---|---|
+| 10 | 6.9× fwd | 20.5× fwd | **3.0×** |
+| 20 | 7.6× fwd | 39.4× fwd | **5.2×** |
+| 40 | 8.1× fwd | 81.2× fwd | **10.0×** |
+| 80 | 8.7× fwd | 158.9× fwd | **18.3×** |
+
+The gradient suite's near-unity `adjoint_speedup_vs_fd` was never evidence of a
+bad asymptotic — it is what you get when a model has ten parameters per DOF and
+only one or two DOFs, so the adjoint's constant factor has nothing to amortise
+against. On a real system-identification problem, where parameters outnumber
+DOFs, the adjoint wins by the margin above and keeps widening.
+
+**What is still true, and what the remaining cost is.** 6–9× the forward pass
+for a single-DOF model is a large constant, and it is *not* the ~2–4× textbook
+reverse mode delivers. The residual is the state Jacobian: `nq + nv` separately
+seeded dual passes through ABA per timestep, each re-walking the kinematic tree
+to extract one column. Vector-mode duals — one pass carrying all `nq + nv`
+directions — would amortise that traversal, and that is the optimisation to
+make next. The parameter channel needs no work; it is already asymptotically
+right.
+
+And exactness stands on its own: `adjoint_vs_fd_max_rel_err` ≈ 1e-10 with no
+step size to choose and no truncation or cancellation error.
 
 There is also a scope limit worth stating: the differentiable rollout requires
 `nq == nv` and single-DOF joints, so the ant — anything with a free-floating

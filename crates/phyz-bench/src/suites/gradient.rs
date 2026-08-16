@@ -225,19 +225,25 @@ pub fn run_scene(scene: Scene, budget: Budget) -> Record {
              quantity for a full central-difference gradient over the same parameters — \
              measured here, not projected."
                 .into(),
-            "READ THIS BEFORE QUOTING A SPEEDUP. Textbook reverse mode gives an \
-             `adjoint_ratio` bounded by a small constant no matter how many parameters \
-             there are. phyz's does not: it grows roughly in proportion to parameter \
-             count, because the backward pass is reverse-mode over *time* but runs one \
-             forward dual lane per *parameter* per step — cost O(steps × n_params), the \
-             same asymptotic class as finite differences. The measured \
-             `adjoint_speedup_vs_fd` is accordingly close to 1."
+            "READ THIS BEFORE QUOTING A SPEEDUP, IN EITHER DIRECTION. The two scenes here \
+             cannot tell you what the adjoint's cost scales with: the pendulum has one \
+             body, one DOF and ten parameters, the double pendulum has two of each, so \
+             parameter count and DOF count move together and the rising `adjoint_ratio` \
+             is consistent with either driver. The `adjoint scaling` suite separates \
+             them, and the answer is DOF count: at fixed nv the ratio is flat in \
+             parameter count (6.9× at 10 parameters, 9.2× at 160), while at fixed \
+             parameter count it is linear in nv. Quote that suite for scaling claims, \
+             not these two rows."
                 .into(),
-            "What the adjoint does buy is exactness: `adjoint_vs_fd_max_rel_err` shows the \
-             two agree, and the adjoint gets there with no step-size to choose and no \
-             truncation or cancellation error. That is a real advantage, and it is a \
-             different advantage from the asymptotic speedup the phrase 'analytical \
-             derivatives for free' would lead a reader to expect."
+            "`adjoint_speedup_vs_fd` near 1 on these scenes is therefore not evidence of \
+             a bad asymptotic — it is what a model with ten parameters per DOF and only \
+             one or two DOFs produces, because the adjoint's constant factor has nothing \
+             to amortise against. At fixed nv the same measurement gives 3.0× at 10 \
+             parameters and 18.3× at 80."
+                .into(),
+            "The adjoint also buys exactness: `adjoint_vs_fd_max_rel_err` shows the two \
+             agree, and the adjoint gets there with no step-size to choose and no \
+             truncation or cancellation error."
                 .into(),
             "`adjoint_vs_fd_max_rel_err` cross-checks the two gradients against each \
              other, scaled by the gradient norm. A fast gradient that disagrees with \

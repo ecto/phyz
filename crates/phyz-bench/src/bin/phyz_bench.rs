@@ -12,11 +12,12 @@ use phyz_bench::report::{Report, SCHEMA_VERSION, Suite};
 use phyz_bench::suites;
 use phyz_bench::{Budget, meta::RunMeta};
 
-const SUITE_NAMES: [&str; 6] = [
+const SUITE_NAMES: [&str; 7] = [
     "single-sim",
     "energy",
     "divergence",
     "gradient",
+    "adjoint-scaling",
     "gpu",
     "rapier",
 ];
@@ -96,6 +97,10 @@ fn main() {
     if wants("gradient") {
         eprintln!("running: gradient throughput...");
         suites.push(suites::gradient::run(budget));
+    }
+    if wants("adjoint-scaling") {
+        eprintln!("running: adjoint scaling...");
+        suites.push(suites::adjoint_scaling::run(budget));
     }
     if wants("gpu") {
         eprintln!("running: GPU batch sweep...");
