@@ -18,8 +18,10 @@
 //! computation is therefore **bit-identical** to a scalar `Dual` computation
 //! seeded in direction `k` — not merely close. That is what makes this a safe
 //! substitution inside a rollout that promises bitwise reproducibility, and it
-//! is asserted directly by [`tests::lanes_match_scalar_dual_bitwise`] over the
-//! full arithmetic and transcendental surface.
+//! is asserted directly by `tests::lanes_match_scalar_dual_bitwise` over the
+//! full arithmetic and transcendental surface. (Not an intra-doc link: a
+//! `#[cfg(test)]` item does not exist in a docs build, so linking to one is an
+//! error under `-D warnings`.)
 //!
 //! Widening is therefore never a numerical change, only a speed one. If a
 //! gradient moves when `N` changes, that is a bug in this file.
