@@ -48,9 +48,12 @@ struct ContactParams {
     // the same problem `phyz_contact::solve_contacts` states. See the
     // IMPULSE MODE block below.
     solve_mode: u32,
-    // Which sweep of the step this dispatch is. Sweep 0 seeds the impulses;
-    // later sweeps refine them against a fresh `qdd`.
-    sweep: u32,
+    // Reserved (was a sweep index). Never read: all sweeps run the same
+    // shader with the same parameters, and since they share one command
+    // buffer, a uniform rewritten between encodes would take its last value
+    // for every dispatch anyway. The impulses in `contact_state` carry all the
+    // state a sweep depends on.
+    _reserved_sweep: u32,
     // Restitution, and the approach speed below which it ramps to zero.
     restitution: f32,
     restitution_threshold: f32,

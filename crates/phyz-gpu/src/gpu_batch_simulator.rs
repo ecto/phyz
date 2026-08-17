@@ -578,9 +578,16 @@ impl GpuBatchSimulator {
 
         if sweeps > 0 {
             self.encode_aba(&mut encoder);
-            for k in 0..sweeps {
-                if let Some(contact) = &mut self.contact_pipeline {
-                    contact.set_sweep(&self.queue, k as u32);
+            // No per-sweep uniform: every sweep runs the same shader with the
+            // same parameters, and it could not be otherwise here. All sweeps
+            // are encoded into ONE command buffer, and `queue.write_buffer`
+            // writes are ordered at submission — so a uniform rewritten between
+            // encodes would take its LAST value for every dispatch, silently.
+            // Per-sweep state would need separate submits or a dynamic offset;
+            // nothing needs it, because the impulses in `contact_state` carry
+            // all the state a sweep depends on.
+            for _ in 0..sweeps {
+                if let Some(contact) = &self.contact_pipeline {
                     contact.encode(&mut encoder);
                 }
                 self.encode_aba(&mut encoder);

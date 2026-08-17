@@ -35,8 +35,12 @@ struct ContactParams {
     hf_cell: f32,
     /// 0 = penalty forces, 1 = velocity-level convex impulse solve.
     solve_mode: u32,
-    /// Sweep index within the step.
-    sweep: u32,
+    /// Reserved. Was a sweep index; the shader never read it, and it could not
+    /// have worked — all sweeps share one command buffer, and queue writes are
+    /// ordered at submission, so the uniform would hold its last value for
+    /// every dispatch. Kept as explicit padding rather than removed so the
+    /// struct layout the shader expects does not shift.
+    _reserved_sweep: u32,
     restitution: f32,
     restitution_threshold: f32,
     solref_erp: f32,
@@ -435,7 +439,7 @@ impl ContactPipeline {
             hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
             hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
             solve_mode: u32::from(contact.impulse_solve),
-            sweep: 0,
+            _reserved_sweep: 0,
             restitution: contact.restitution as f32,
             restitution_threshold: contact.restitution_threshold as f32,
             solref_erp: contact.solref_erp as f32,
@@ -633,12 +637,6 @@ impl ContactPipeline {
     /// Is this pipeline running the velocity-level impulse solve?
     pub fn impulse_solve(&self) -> bool {
         self.params.solve_mode == 1
-    }
-
-    /// Tell the shader which sweep of the step it is about to run.
-    pub fn set_sweep(&mut self, queue: &wgpu::Queue, sweep: u32) {
-        self.params.sweep = sweep;
-        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
     }
 
     /// Record the contact pass into `encoder`.
