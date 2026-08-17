@@ -815,6 +815,107 @@ the stacking row, and this design does not try to.
 
 ---
 
+## 8. The GPU as a third instantiation
+
+The design above states one contact model to be instantiated at `f64` for
+simulation and at a dual type for gradients. `phyz-gpu` is a **third
+instantiation**, and it was previously a second *model*: penalty forces with
+slip-speed-regularized friction, which is the very law §0.1 rejects.
+
+That mattered practically. Policies trained on the GPU did not transfer to the
+CPU path — the one that matches the deployed controller — so the GPU speedup
+was buying invalid answers.
+
+### 8.1 What makes it the same model
+
+The GPU solves the same convex problem, with the same friction cone, the same
+staged Coulomb update, the same solref bias, solimp impedance and margin taper.
+The enabling observation is that **projected Gauss-Seidel never needs `A` as a
+matrix**. It needs two things: the residual `A f + b`, and a diagonal to divide
+by.
+
+The residual is obtained by *pass structure* rather than by assembly. The host
+interleaves `[contact, ABA]` once per sweep, so each contact pass reads a `qdd`
+that already carries the previous sweep's impulses through the full articulated
+chain. Reading `v + dt·qdd` at a contact point **is** evaluating `(A f + b)_c`
+— exactly, with the true `M⁻¹`, including every cross-contact and cross-chain
+coupling term. No Delassus operator is ever formed, and nothing is dropped.
+
+This is why the GPU is an instantiation rather than an approximation: the fixed
+point of the iteration is set by the residual alone.
+
+### 8.2 The deliberate approximations, and what they cost
+
+Two, both documented and measured.
+
+**1. The diagonal is a preconditioner.** The GPU divides by the isolated-body
+effective mass (scaled by the number of active points on the body — the
+within-body load sharing), not by the true `A_cc`. Because the residual is
+exact, this affects only the *rate* of convergence, not the answer. It also
+errs safe: an isolated body presents less mass than one backed by its chain, so
+the diagonal over-estimates `A_cc` and the update under-relaxes. Under-relaxing
+converges slowly; over-relaxing diverges.
+
+**2. The sweep budget is finite, with no early exit.** A workgroup cannot
+cheaply agree that every contact has converged, so the shader runs a fixed
+count. The iterate is therefore *not* a converged KKT point and must not anchor
+an IFT gradient — the same caveat §2 places on any truncated solve.
+
+`ContactSolverConfig::gpu_equivalent()` reproduces exactly that restriction on
+the CPU, in `f64`. This is what makes the comparison interpretable:
+
+- `simulation()` vs `gpu_equivalent()` is the **approximation**;
+- `gpu_equivalent()` vs the GPU is an **implementation bug**.
+
+Confounding those two is why the earlier GPU-vs-CPU numbers were unusable.
+`ContactCoupling` exists for the same reason and is measured the same way: on a
+box landing on its face, restricting to `BlockDiagonal` costs up to 78 mm,
+while `PerBody` — which keeps the blocks expressible from a single body's own
+spatial inertia — is within 0.1 mm. On a contact manifold nearly all the
+coupling is within-body, and within-body coupling is the cheap half.
+
+### 8.3 Measured agreement
+
+`crates/phyz-gpu/examples/contact_parity.rs`, settled gap against the CPU:
+
+| case | gap |
+|---|---|
+| box dropped flat | 2.7e-4 m |
+| box tumbling onto a corner | 1.4e-3 m |
+| box sliding, mu 0.8 | 6.6e-3 m |
+| box sliding, mu 0.05 | 4.7e-2 m (~1.5% of a 3 m slide) |
+
+In free flight the engines agree to 1e-13 despite f32-vs-f64, which is what
+localizes every gap above to the contact phase. The resting height is
+-0.39978 against the CPU's -0.40005; penalty contact sat at -0.40392, the
+`mg/k` sink that an impulse solve does not have.
+
+Two controls make those numbers mean something, and both are load-bearing:
+
+- a **chaos floor** — the CPU rolled against itself from a 1e-9 perturbation of
+  whichever channel each scenario actually excites. It sits at 1e-9, eight
+  orders below the gaps, so these are real disagreements rather than Lyapunov
+  noise. (Perturbing an *insensitive* coordinate reports a reassuring zero and
+  proves nothing; the tumble case needs its spin perturbed, not its position.)
+- a **vs-reference** column — the GPU against `gpu_equivalent()`. It tracks the
+  full-Delassus gap almost exactly, so what remains is implementation rather
+  than the coupling approximation.
+
+`crates/phyz-gpu/tests/contact_impulse_parity.rs` pins all of this. WGSL cannot
+share Rust code, so "one model" is not enforceable by the compiler across that
+boundary; that test is what enforces it, along with assertions on the two
+constants duplicated on purpose (the sweep budget and the solref formula).
+
+### 8.4 Still a separate model: `phyz-diff/src/rollout/step.rs`
+
+The differentiable rollout retains its own per-vertex penalty contact with **no
+friction at all**, described in its own module docs. It is untouched by this
+work and remains the last of the three models. Folding it in means running the
+convex solve at a dual scalar type through `phyz-contact::gradient`, which is
+what §2 of this document specifies and what the crate is already shaped for —
+but it is a separate piece of work, and until it lands, gradients and
+simulation still disagree about what contact is.
+
 ## References
 
 - [todorov2011]: E. Todorov, "A convex, smooth and invertible contact model for

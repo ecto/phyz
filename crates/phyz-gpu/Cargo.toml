@@ -25,4 +25,5 @@ approx = "0.5"
 # For the CPU-vs-GPU contact parity tests: the CPU impulse solver is the
 # referee the GPU penalty path is measured against.
 phyz = { workspace = true }
+phyz-contact = { workspace = true }
 phyz-mjcf = { workspace = true }

@@ -89,6 +89,12 @@ pub mod diff {
     };
 }
 
+// Reproducibility: trajectory fingerprints, ulp perturbation, and the
+// chaos-vs-bug measurement. Documented on the module itself — an outer doc
+// comment here would be resolved in *this* module's scope, so its intra-doc
+// links to `RolloutHasher` and friends would not resolve.
+pub mod determinism;
+
 /// Integrated time stepping: the [`Simulator`] driver and its solvers.
 ///
 /// The only module here that isn't a re-export — it composes forward

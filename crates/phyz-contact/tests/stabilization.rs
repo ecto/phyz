@@ -119,6 +119,8 @@ impl Stack {
             .map(|c| ContactRow::from_material(&self.material, self.depth(c), dt, 0.0))
             .collect();
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n,
             delassus,
             free_velocity,
@@ -349,6 +351,8 @@ fn incline_slide_matches_the_analytic_acceleration_with_stabilization() {
                 delassus[i * 3 + i] = inv_m;
             }
             let problem = ContactProblem {
+                // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+                bodies: Vec::new(),
                 n: 1,
                 delassus,
                 free_velocity: vec![free.x, free.y, free.z],
@@ -415,6 +419,8 @@ fn stiction_holds_while_penetration_recovers() {
             delassus[i * 3 + i] = inv_m;
         }
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             free_velocity: vec![free.x, free.y, free.z],
@@ -495,6 +501,8 @@ fn mujoco_creep_matches_the_analytic_rate() {
                 delassus[i * 3 + i] = inv_m;
             }
             let problem = ContactProblem {
+                // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+                bodies: Vec::new(),
                 n: 1,
                 delassus,
                 free_velocity: vec![free.x, free.y, free.z],
@@ -604,6 +612,8 @@ fn compat_flag_off_is_the_unmodified_solve() {
             delassus[i * 3 + i] = 1.0;
         }
         ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             free_velocity: vec![-1.0, 0.3, 0.1],
@@ -685,6 +695,8 @@ fn pair_combination_is_independent_of_contact_ordering() {
             delassus[i * 3 + i] = 1.0;
         }
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             // Pressed in, drifting sideways: friction decides whether it

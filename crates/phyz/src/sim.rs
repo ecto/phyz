@@ -131,18 +131,67 @@ pub struct Simulator {
     ///
     /// Behind a `RefCell` because stepping takes `&self` — the cache is a
     /// solver-internal accelerator, not simulation state, and making the whole
-    /// API `&mut self` for it would ripple through every caller. It cannot
-    /// change results: the contact problem is strongly convex, so the seed
-    /// only moves the iteration count.
+    /// API `&mut self` for it would ripple through every caller.
+    ///
+    /// # It *does* change results, in the last bits
+    ///
+    /// This used to be documented as unable to change results, on the grounds
+    /// that the contact problem is strongly convex so the seed only moves the
+    /// iteration count. The convexity argument is sound about the *minimizer*
+    /// and wrong about what the solver returns: `solve_contacts_warm` stops at
+    /// `config.tolerance`, or at `max_iterations` if it never gets there, and
+    /// the PGS warm-up is also what hands the Newton stage its active set. Two
+    /// different seeds therefore stop at two different points inside the same
+    /// tolerance ball — and on a redundant manifold that has not converged,
+    /// they can stop at genuinely different active sets.
+    ///
+    /// So `step_with_contacts` is a pure function of `(model, state)` only for
+    /// a `Simulator` whose cache is in a known state. That is what
+    /// [`Simulator::reset_contact_cache`] is for, and what
+    /// [`Simulator::with_warm_start`]`(false)` removes the need for. See
+    /// `docs/determinism.md`.
     contact_cache: RefCell<ContactCache>,
+    /// Tuning for the convex contact solve.
+    ///
+    /// A field rather than a constant so the *same* simulator code can be run
+    /// under [`ContactSolverConfig::gpu_equivalent`], which is how the GPU
+    /// path's approximation is measured: identical detection, identical
+    /// assembly, identical integration, and only the documented restriction
+    /// on the solve. Anything that differed outside this field would confound
+    /// the comparison.
+    contact_config: ContactSolverConfig,
+    /// Whether to seed the contact solve from [`Self::contact_cache`].
+    ///
+    /// `true` by default: warm starting is worth several times its cost on a
+    /// standing or walking model. Set `false` when you need `step_with_contacts`
+    /// to be a pure function of `(model, state)` with no dependence on the
+    /// history of this `Simulator` — a parameter search comparing candidates on
+    /// one shared `Simulator`, for instance, where otherwise the order you
+    /// evaluate candidates in perturbs their scores.
+    warm_start: bool,
 }
 
 impl Simulator {
+    /// Replace the contact solver configuration.
+    ///
+    /// See [`ContactSolverConfig::gpu_equivalent`] for the preset that makes
+    /// this simulator a CPU reference for the GPU contact pass.
+    pub fn with_contact_config(mut self, config: ContactSolverConfig) -> Self {
+        self.contact_config = config;
+        self
+    }
+
+    /// The contact solver configuration in force.
+    pub fn contact_config(&self) -> ContactSolverConfig {
+        self.contact_config
+    }
     /// Create a simulator with the default semi-implicit Euler solver.
     pub fn new() -> Self {
         Self {
             solver: Box::new(SemiImplicitEulerSolver),
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
         }
     }
 
@@ -151,6 +200,8 @@ impl Simulator {
         Self {
             solver: Box::new(Rk4Solver),
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
         }
     }
 
@@ -159,7 +210,32 @@ impl Simulator {
         Self {
             solver,
             contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
         }
+    }
+
+    /// Enable or disable warm starting of the contact solve.
+    ///
+    /// On by default. Turning it off makes [`Simulator::step_with_contacts`]
+    /// and its heightfield sibling **pure functions of `(model, state)`**: the
+    /// same state stepped by two different `Simulator`s, or by the same one at
+    /// two different points in its history, gives bit-identical results. The
+    /// price is iteration count — a resting stack can take several times as
+    /// many PGS sweeps from cold.
+    ///
+    /// Reach for this when a `Simulator` is shared across trials that must not
+    /// contaminate each other. If instead each trial gets its own simulator,
+    /// or you call [`Simulator::reset_contact_cache`] between them, leave warm
+    /// starting on: both give the same guarantee for less.
+    pub fn with_warm_start(mut self, on: bool) -> Self {
+        self.warm_start = on;
+        self
+    }
+
+    /// Whether warm starting is enabled. See [`Simulator::with_warm_start`].
+    pub fn warm_start(&self) -> bool {
+        self.warm_start
     }
 
     /// Forget the warm-start contact cache.
@@ -275,16 +351,22 @@ impl Simulator {
             // another — and friction is a real Coulomb cone with stiction
             // rather than a viscous damper that vanished at low sliding speed.
             let materials = vec![material.clone(); model.bodies.len().max(1)];
-            let config = ContactSolverConfig::simulation();
+            let config = self.contact_config;
             let asm =
                 phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
             // Seed from the previous step's impulses. A stance foot is solving
             // nearly the same problem every step, and from a cold start PGS
             // spends its whole iteration budget rediscovering `m g dt`.
             let mut cache = self.contact_cache.borrow_mut();
-            let seed = cache.warm_start(state, &contacts);
+            let seed = if self.warm_start {
+                cache.warm_start(state, &contacts)
+            } else {
+                vec![phyz_math::Vec3::zeros(); contacts.len()]
+            };
             let solution = solve_contacts_warm(&asm.problem, &config, &seed);
-            cache.store(state, &contacts, &solution.impulses);
+            if self.warm_start {
+                cache.store(state, &contacts, &solution.impulses);
+            }
             // v' = v_free + M^-1 J^T f.
             state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }
@@ -344,16 +426,19 @@ impl Simulator {
 
         let free_qd = &probe.v + &(&qdd * dt);
         let materials = vec![material.clone(); model.bodies.len().max(1)];
-        let config = ContactSolverConfig::simulation();
+        let config = self.contact_config;
         let asm =
             phyz_contact::assemble(model, &probe, &contacts, &materials, &free_qd, dt, &config);
         // Seed from the cache but never `store` back into it, so asking for
         // sensor data cannot perturb the stepping trajectory. The solve is
         // strongly convex, so the seed only moves the iteration count anyway.
-        let seed = self
-            .contact_cache
-            .borrow_mut()
-            .warm_start(&probe, &contacts);
+        let seed = if self.warm_start {
+            self.contact_cache
+                .borrow_mut()
+                .warm_start(&probe, &contacts)
+        } else {
+            vec![phyz_math::Vec3::zeros(); contacts.len()]
+        };
         let solution = solve_contacts_warm(&asm.problem, &config, &seed);
         let v_next = &free_qd + &asm.velocity_delta(&solution.impulses);
         &(&v_next - &probe.v) * (1.0 / dt)

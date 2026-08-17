@@ -77,6 +77,28 @@ pub struct Record {
     pub notes: Vec<String>,
 }
 
+/// Render a metric value at a fixed width without lying about its magnitude.
+///
+/// Fixed-point at four decimals is right for the ratios and percentages most
+/// suites report, and catastrophically wrong for the reproducibility suite,
+/// where a separation of `1.4e-17` and one of `0.0` both print as `0.0000` —
+/// which is exactly the distinction that suite exists to make. Anything
+/// outside the range where fixed-point carries four significant digits is
+/// printed in scientific notation instead.
+fn format_metric(x: f64) -> String {
+    if !x.is_finite() {
+        // NaN is a real outcome here (an unfittable curve, an amplification
+        // with no perturbation to divide by) and must not be hidden.
+        return format!("{x}");
+    }
+    let mag = x.abs();
+    if mag != 0.0 && !(1.0e-3..1.0e6).contains(&mag) {
+        format!("{x:.4e}")
+    } else {
+        format!("{x:.4}")
+    }
+}
+
 /// A named scalar with units.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
@@ -190,7 +212,7 @@ impl Report {
                 let metrics = r
                     .metrics
                     .iter()
-                    .map(|m| format!("{}={:.4} {}", m.name, m.value, m.unit))
+                    .map(|m| format!("{}={} {}", m.name, format_metric(m.value), m.unit))
                     .collect::<Vec<_>>()
                     .join("<br>");
                 s.push_str(&format!(

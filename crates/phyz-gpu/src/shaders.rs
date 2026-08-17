@@ -11,7 +11,16 @@ pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 36u;
 const GEOM_STRIDE: u32 = 24u;
-const CS_STRIDE: u32 = 8u;
+// Per-body contact slot: 8 floats of readback state, then MAX_PTS impulse
+// vec3s. The impulses live in this buffer rather than their own because the
+// WebGPU baseline allows 8 storage buffers per stage and the pass already
+// binds 8; a ninth binding validates away on a conforming device.
+const CS_STRIDE: u32 = 56u;
+const CS_IMPULSE_OFF: u32 = 8u;
+// The body-attached plane gets its own impulse slots: a body can rest on the
+// deck and the ground in the same step (a wheel does exactly that), so the two
+// contacts must not share a warm-start slot or they overwrite each other.
+const CS_PLANE_OFF: u32 = 32u;
 
 struct ContactParams {
     nworld: u32,
@@ -34,6 +43,26 @@ struct ContactParams {
     hf_oy: f32,
     hf_oz: f32,
     hf_cell: f32,
+    // ── Impulse solve ──
+    // 0 = legacy penalty forces. 1 = velocity-level convex impulse solve,
+    // the same problem `phyz_contact::solve_contacts` states. See the
+    // IMPULSE MODE block below.
+    solve_mode: u32,
+    // Which sweep of the step this dispatch is. Sweep 0 seeds the impulses;
+    // later sweeps refine them against a fresh `qdd`.
+    sweep: u32,
+    // Restitution, and the approach speed below which it ramps to zero.
+    restitution: f32,
+    restitution_threshold: f32,
+    // solref/solimp, matching `phyz_contact::material`.
+    solref_erp: f32,
+    margin: f32,
+    solimp_dmin: f32,
+    solimp_dmax: f32,
+    solimp_width: f32,
+    solimp_mid: f32,
+    solimp_power: f32,
+    _pad0: f32,
 }
 
 @group(0) @binding(0) var<uniform> cparams: ContactParams;
@@ -49,6 +78,31 @@ struct ContactParams {
 // Heightfield nodes, row-major (iy * nx + ix). Bound even when there is no
 // terrain — the binding count is fixed — with hf_nx == 0 routing around it.
 @group(0) @binding(7) var<storage, read> hf_heights: array<f32>;
+// Free acceleration from the ABA pass of this sweep. In impulse mode the
+// contact solve reads it to form the free velocity `v + dt*qdd`; the whole
+// scheme is built on this being the response to the impulses the PREVIOUS
+// sweep wrote, which is what makes the iteration matrix-free.
+@group(0) @binding(8) var<storage, read> qdd: array<f32>;
+// Contact impulses share `contact_state`, at CS_IMPULSE_OFF: one vec3 per
+// (body, contact point) slot, in that contact's own frame
+// [normal, tangent u, tangent w].
+//
+// Slot identity is (body, corner index), which is stable across sweeps AND
+// across steps for as long as the geometry is, so the previous step's
+// impulses warm-start this one — matching what `Simulator` does on the CPU
+// with its `ContactCache`.
+
+// Generalized velocity this pass should do kinematics with.
+//
+// Penalty mode wants the CURRENT velocity. Impulse mode wants the FREE
+// velocity `v + dt*qdd` — the velocity the body would end the step with given
+// everything already applied, including the contact impulses the previous
+// sweep wrote. That substitution is the entire reason this pass can evaluate
+// the Delassus residual without ever forming the Delassus operator.
+fn vel(idx: u32) -> f32 {
+    if (cparams.solve_mode == 0u) { return v[idx]; }
+    return v[idx] + cparams.dt * qdd[idx];
+}
 
 // Body data access
 fn bf(bi: u32, off: u32) -> f32 { return bodies[bi * BODY_STRIDE + off]; }
@@ -76,6 +130,10 @@ fn cross3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
 // `mu * f_n * min(1, vt / SLIP_EPS)` is the standard regularization: full
 // Coulomb above a 1 mm/s slip, linear (and therefore stable) below it.
 const SLIP_EPS: f32 = 1e-3;
+// Contact slots per body: a box contacts through all eight corners, every
+// other shape through one. Sizing the impulse buffer by this keeps slot
+// identity (body, corner) stable across sweeps and across steps.
+const MAX_PTS: u32 = 8u;
 
 fn coulomb(mu_fn: f32, vt: f32) -> f32 {
     return mu_fn * min(1.0, vt / SLIP_EPS);
@@ -176,6 +234,109 @@ fn max_stiffness(m_eff: f32) -> f32 {
     return 4.0 * m_eff / (dt * dt);
 }
 
+
+
+// ── IMPULSE MODE ──
+//
+// The same convex problem `phyz_contact::convex` states:
+//
+//     minimize_f  1/2 f^T (A + R) f + f^T b     s.t.  f_c in K_mu(c)
+//
+// solved by the same staged Coulomb update — normal impulse first, then the
+// tangential impulse clamped into the friction disc that normal admits, so
+// stiction is the interior of a genuine second-order cone rather than a
+// viscous damper that vanishes as the slip does.
+//
+// # Why this is matrix-free, and why that matters
+//
+// A GPU cannot afford to ASSEMBLE the Delassus operator `A = J M^-1 J^T`:
+// each of the `3n` rows needs its own articulated-body solve. But projected
+// Gauss-Seidel never needs `A` as a matrix — it needs two things: the
+// residual `A f + b`, and a diagonal to divide by.
+//
+// The residual comes for free from the pass structure. The host runs
+// [contact, ABA] in a loop, so by the time this shader runs again the ABA
+// pass has already propagated the impulses this shader last wrote through
+// the FULL articulated chain. Reading `v + dt*qdd` at a contact point IS
+// evaluating `(A f + b)_c` — exactly, with the true `M^-1`, including every
+// cross-contact and cross-chain coupling term. Nothing is dropped.
+//
+// The diagonal is the only approximation, and it is a PRECONDITIONER, not
+// physics: it sets the step size, and the fixed point of the iteration is
+// determined entirely by the residual. So using the cheap isolated-body
+// effective mass here does not bias the answer the sweeps converge to; it
+// only affects how fast they get there. That is the whole reason this design
+// beats assembling an approximate `A`, which would move the fixed point and
+// therefore the physics.
+//
+// The step-size direction is the safe one by construction. An isolated body
+// always presents LESS mass than the same body backed by its chain (a foot
+// alone is lighter than foot-plus-robot), so `a_nn = 1/m_isolated` is an
+// OVER-estimate of the true diagonal, and dividing by it under-relaxes.
+// Under-relaxation converges slowly; over-relaxation diverges. The cheap
+// number errs toward the stable side every time.
+//
+// What remains approximate, and is documented as such: the sweep budget is
+// finite and has no early exit, so the iterate is not a converged KKT point.
+// `ContactSolverConfig::gpu_equivalent()` reproduces that budget exactly on
+// the CPU so the two can be compared without confounding it with a bug.
+
+// An orthonormal contact frame around `n`. Must match
+// `phyz_contact::cone::contact_frame`, or the two engines' tangential
+// impulses live in different bases and comparing them is meaningless.
+fn contact_tangents(n: vec3<f32>) -> mat2x3<f32> {
+    var a = vec3<f32>(1.0, 0.0, 0.0);
+    if (abs(n.x) > 0.9) { a = vec3<f32>(0.0, 1.0, 0.0); }
+    let u = normalize(cross(n, a));
+    let w = cross(n, u);
+    return mat2x3<f32>(u, w);
+}
+
+// SolImp impedance, mirroring `phyz_contact::material::SolImp::impedance`
+// branch for branch. Gets its own function so the two can be diffed by eye.
+fn solimp_impedance(r: f32) -> f32 {
+    let dmin = clamp(cparams.solimp_dmin, 1e-4, 1.0 - 1e-9);
+    let dmax = clamp(cparams.solimp_dmax, 1e-4, 1.0 - 1e-9);
+    if (cparams.solimp_width <= 0.0) { return dmax; }
+    let x = clamp(abs(r) / cparams.solimp_width, 0.0, 1.0);
+    let mid = clamp(cparams.solimp_mid, 1e-6, 1.0 - 1e-6);
+    let pw = max(cparams.solimp_power, 1.0);
+    var y: f32;
+    if (x <= mid) { y = pow(x, pw) / pow(mid, pw - 1.0); }
+    else { y = 1.0 - pow(1.0 - x, pw) / pow(1.0 - mid, pw - 1.0); }
+    return dmin + y * (dmax - dmin);
+}
+
+// `ContactMaterial::impedance_at`: solimp on the penetrating side, and a
+// smoothstep ramp to zero across the margin on the separated side.
+//
+// The margin is not a detection tolerance, it is part of the model. A contact
+// that is detected but not yet penetrating still carries force, tapering to
+// zero over the band, which is what keeps a lightly-loaded support point from
+// being cut off while it is still holding something up. The GPU had no margin
+// at all, so its contact set switched discontinuously where the CPU's faded —
+// measured as a 0.24 m divergence on a tumbling box, which more sweeps made
+// WORSE because the solver was converging accurately to a different problem.
+fn impedance_at(depth: f32) -> f32 {
+    if (depth >= 0.0) { return solimp_impedance(depth); }
+    let gap = -depth;
+    if (cparams.margin <= 0.0 || gap >= cparams.margin) { return 0.0; }
+    let sc = 1.0 - gap / cparams.margin;
+    return sc * sc * (3.0 - 2.0 * sc) * solimp_impedance(0.0);
+}
+
+// Effective restitution after the smooth low-speed ramp. Mirrors
+// `ContactProblem::effective_restitution`: smoothstep between v_rest and
+// 2*v_rest, so it stays C^1 in the approach speed rather than switching.
+fn effective_restitution(e: f32, approach: f32) -> f32 {
+    let vr = cparams.restitution_threshold;
+    if (vr <= 0.0) { return e; }
+    let sp = abs(approach);
+    if (sp <= vr) { return 0.0; }
+    if (sp >= 2.0 * vr) { return e; }
+    let t = (sp - vr) / vr;
+    return e * t * t * (3.0 - 2.0 * t);
+}
 
 // ── Heightfield terrain ──
 //
@@ -431,25 +592,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var j_lin = vec3<f32>(0.0, 0.0, 0.0);
         if (jtype == 0u) {
             j_rot = rev_rot(axis, q[q_base + q_off]);
-            j_omega = axis * v[v_base + v_off];
+            j_omega = axis * vel(v_base + v_off);
         } else if (jtype == 1u) {
             j_rot = identity_rot();
             j_pos = axis * q[q_base + q_off];
-            j_lin = axis * v[v_base + v_off];
+            j_lin = axis * vel(v_base + v_off);
         } else if (jtype == 3u) {
             // Coordinate map is the INVERSE of the integrated rotation
             // (exp(-w)), matching the negated angle in rev_rot and the CPU
             // joint_transform_slice.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
-            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
+            j_omega = vec3<f32>(vel(v_base + v_off), vel(v_base + v_off + 1u), vel(v_base + v_off + 2u));
         } else if (jtype == 4u) {
             // Free: q = [exp-coords(3), pos(3)] — angular first, matching v.
             let w = vec3<f32>(q[q_base + q_off], q[q_base + q_off + 1u], q[q_base + q_off + 2u]);
             j_rot = cq_to_rot(cquat_exp(-w));
             j_pos = vec3<f32>(q[q_base + q_off + 3u], q[q_base + q_off + 4u], q[q_base + q_off + 5u]);
-            j_omega = vec3<f32>(v[v_base + v_off], v[v_base + v_off + 1u], v[v_base + v_off + 2u]);
-            j_lin = vec3<f32>(v[v_base + v_off + 3u], v[v_base + v_off + 4u], v[v_base + v_off + 5u]);
+            j_omega = vec3<f32>(vel(v_base + v_off), vel(v_base + v_off + 1u), vel(v_base + v_off + 2u));
+            j_lin = vec3<f32>(vel(v_base + v_off + 3u), vel(v_base + v_off + 4u), vel(v_base + v_off + 5u));
         } else {
             j_rot = identity_rot();
         }
@@ -539,6 +700,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var deepest_w = vec3<f32>(0.0, 0.0, 0.0);
         var any_touch = false;
 
+        // How many of this body's points are actually in contact.
+        //
+        // This is the within-body load sharing, and in impulse mode it is not
+        // optional. Every point of a rigid body's manifold pushes the SAME
+        // mass, but each one only sees the body's total effective mass when
+        // it sizes its own impulse. Left uncorrected, k coplanar corners each
+        // apply the full correction and the body gets k times the impulse it
+        // needed: measured on a box landing on its face, the eight corners
+        // overshot by 8x and the state was 5e6 metres away within two seconds.
+        //
+        // Dividing the effective mass by the active count is the diagonal of
+        // the within-body coupling block — the same term that, on the CPU,
+        // is the difference between `ContactCoupling::BlockDiagonal` (up to
+        // 78 mm of error) and `PerBody` (0.1 mm). It is the cheap half of the
+        // Delassus operator, and this is where the GPU pays for it.
+        var n_active = 0u;
+        if (cparams.solve_mode == 1u) {
+            for (var cq = 0u; cq < n_pts; cq++) {
+                var sq: vec3<f32>;
+                if (gtype == 2u) { sq = box_corner(i, cq); }
+                else { sq = support_point(i, z_body); }
+                let sq_w = w_pos[i] + rot_mul(w_rot[i], sq);
+                let tq = terrain(sq_w.xy);
+                if (tq.z * (tq.w - sq_w.z) > -cparams.margin) { n_active++; }
+            }
+            n_active = max(n_active, 1u);
+        }
+
         for (var cpt = 0u; cpt < n_pts; cpt++) {
             var support: vec3<f32>;
             if (gtype == 2u) { support = box_corner(i, cpt); }
@@ -552,7 +741,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let terr = terrain(sup_w.xy);
             let n_w = terr.xyz;
             let penetration = n_w.z * (terr.w - sup_w.z);
-            if (penetration <= 0.0) { continue; }
+            let in_contact = select(penetration > 0.0, penetration > -cparams.margin, cparams.solve_mode == 1u);
+            if (!in_contact) {
+                // Separated: drop any impulse this slot carried. Without this
+                // the cross-step warm start would keep re-applying force at a
+                // contact that has already left the ground.
+                if (cparams.solve_mode == 1u) {
+                    let dead = cs_base + CS_IMPULSE_OFF + cpt * 3u;
+                    contact_state[dead] = 0.0;
+                    contact_state[dead + 1u] = 0.0;
+                    contact_state[dead + 2u] = 0.0;
+                }
+                continue;
+            }
             let n_body = rot_t_mul(w_rot[i], n_w);
 
             // Velocity of the contact POINT, body frame. This replaces the
@@ -562,6 +763,108 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // velocity at all, so friction was simply absent.
             let v_point = w_lin[i] + cross3(w_omega[i], support);
             let v_normal = dot(v_point, n_body);
+
+            // ── Impulse mode: one staged Coulomb update for this slot ──
+            if (cparams.solve_mode == 1u) {
+                let slot = cs_base + CS_IMPULSE_OFF + cpt * 3u;
+                // Sweep 0 of the very first step has nothing to warm-start
+                // from; the buffer is zeroed at construction, so the seed is
+                // simply whatever the previous step converged to.
+                var f_c = vec3<f32>(contact_state[slot], contact_state[slot + 1u], contact_state[slot + 2u]);
+
+                let tang = contact_tangents(n_body);
+                let t_u = tang[0];
+                let t_w = tang[1];
+
+                // Free contact-space velocity. `v_point` is already built
+                // from `v + dt*qdd`, so this IS (A f + b)_c with the true
+                // articulated M^-1 — see the IMPULSE MODE block.
+                let b_n = dot(v_point, n_body);
+                let b_u = dot(v_point, t_u);
+                let b_w = dot(v_point, t_w);
+
+                // Diagonal preconditioner: the isolated-body effective mass.
+                // An over-estimate of A_nn, hence under-relaxing, hence safe.
+                let m_n = contact_eff_mass(i, support, n_body) / f32(n_active);
+                let a_nn = 1.0 / max(m_n, 1e-9);
+
+                // solref/solimp position stabilization, as
+                // `ContactRow::from_material`: drive the post-step normal
+                // velocity to a SEPARATING `bias` proportional to depth
+                // rather than to zero, or accumulated penetration is frozen
+                // in and a stack creeps down forever.
+                let d_imp = impedance_at(penetration);
+                let bias = d_imp * cparams.solref_erp * max(penetration, 0.0) / max(cparams.dt, 1e-9);
+
+                // Restitution enters as a target normal velocity, folded into
+                // b, rather than a post-solve velocity reset — the same
+                // choice `point_mass_problem` makes, and what keeps it from
+                // fighting the solver.
+                let e = effective_restitution(cparams.restitution, min(b_n, 0.0));
+                let b_n_eff = b_n * (1.0 + e);
+
+                // The residual excludes this contact's own contribution,
+                // which `v_point` already contains, so add it back: the
+                // update is coordinate descent on the contact's own block.
+                let r_n = b_n_eff - a_nn * f_c.x;
+                var fn_new = max((bias - r_n) / a_nn, 0.0);
+
+                // Tangential, at the normal just chosen, then clamped into
+                // the disc of radius mu*f_n. Isotropic, so a contact sliding
+                // at any heading loses speed identically — the property a
+                // pyramidal cone gives up.
+                // Tangential diagonals get their OWN effective masses. Reusing
+                // the normal's is tempting and wrong: `contact_eff_mass`
+                // depends on the lever arm `r x u`, which for a corner contact
+                // points somewhere else entirely along a tangent than along
+                // the normal. Measured on a tumbling box, sharing the normal's
+                // mass left a 0.23 m slide error that more sweeps only
+                // sharpened, because the solve was converging accurately to
+                // the wrong tangential step size.
+                let a_uu = f32(n_active) / max(contact_eff_mass(i, support, t_u), 1e-9);
+                let a_ww = f32(n_active) / max(contact_eff_mass(i, support, t_w), 1e-9);
+                let r_u = b_u - a_uu * f_c.y;
+                let r_w = b_w - a_ww * f_c.z;
+                var tu = -r_u / a_uu;
+                var tw = -r_w / a_ww;
+                // Clamp into the friction disc of radius mu*f_n, isotropically
+                // — a contact sliding at any heading loses speed identically,
+                // the property a pyramidal cone gives up.
+                //
+                // Re-aiming the clamped impulse along the slip direction was
+                // tried and is WRONG here: `b_u`/`b_w` already contain this
+                // contact's own current impulse, so using them as the slip
+                // axis moves the fixed point rather than correcting it, and it
+                // cost 4x on the high-friction slides while helping nothing.
+                let limit = cparams.friction * fn_new;
+                let tn = sqrt(tu * tu + tw * tw);
+                if (tn > limit) {
+                    let sc = select(0.0, limit / tn, tn > 0.0);
+                    tu = tu * sc;
+                    tw = tw * sc;
+                }
+
+                contact_state[slot] = fn_new;
+                contact_state[slot + 1u] = tu;
+                contact_state[slot + 2u] = tw;
+
+                // Emit as a FORCE (impulse/dt) so the ABA pass, which speaks
+                // in forces, propagates it through the chain unchanged.
+                let f_body = (n_body * fn_new + t_u * tu + t_w * tw) / max(cparams.dt, 1e-9);
+                let torque_i = cross3(support, f_body);
+                let ef_b = ef_env_base + i * 6u;
+                ext_forces[ef_b + 0u] += torque_i.x;
+                ext_forces[ef_b + 1u] += torque_i.y;
+                ext_forces[ef_b + 2u] += torque_i.z;
+                ext_forces[ef_b + 3u] += f_body.x;
+                ext_forces[ef_b + 4u] += f_body.y;
+                ext_forces[ef_b + 5u] += f_body.z;
+
+                f_w_total = f_w_total + rot_mul(w_rot[i], f_body);
+                any_touch = true;
+                if (penetration > deepest) { deepest = penetration; deepest_w = sup_w; }
+                continue;
+            }
 
             // Penalty normal force with per-body gains, Kelvin-Voigt:
             // f = k*pen - d*v_n. v_normal is the contact point's velocity
@@ -707,6 +1010,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let ov_hi = min(hi, face_hi);
             if (ov_lo.x > ov_hi.x || ov_lo.y > ov_hi.y) { continue; }
 
+            // Active-point count on the face, for the same within-body load
+            // sharing the ground branch needs.
+            var n_pts_active = 1u;
+            if (cparams.solve_mode == 1u) {
+                var cnt = 0u;
+                for (var cq = 0u; cq < n_pts; cq++) {
+                    var sq: vec3<f32>;
+                    if (gtype == 2u) { sq = box_corner(i, cq); }
+                    else { sq = support_point(i, n_body); }
+                    let d = -dot(w_pos[i] + rot_mul(w_rot[i], sq) - p0_w, n_w);
+                    if (d > 0.0 && d <= cparams.plane_max_depth) { cnt++; }
+                }
+                n_pts_active = max(cnt, 1u);
+            }
+
             for (var cpt = 0u; cpt < n_pts; cpt++) {
                 var support: vec3<f32>;
                 if (gtype == 2u) { support = box_corner(i, cpt); }
@@ -718,7 +1036,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let penetration = -dot(sup_w0 - p0_w, n_w);
                 // The upper bound guards a body approaching from BELOW an
                 // infinite plane against being captured and catapulted through.
-                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) { continue; }
+                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) {
+                    if (cparams.solve_mode == 1u) {
+                        let dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                        contact_state[dead] = 0.0;
+                        contact_state[dead + 1u] = 0.0;
+                        contact_state[dead + 2u] = 0.0;
+                    }
+                    continue;
+                }
 
                 // The contact point in the plane body's own frame, pulled into
                 // the overlap: the force lands where the face has material.
@@ -744,6 +1070,76 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let n_p = rot_t_mul(w_rot[pb], n_w);
                 let m_n = 1.0 / (1.0 / contact_eff_mass(i, support_c, n_i)
                     + 1.0 / contact_eff_mass(pb, r_p, n_p));
+
+                // ── Impulse mode on the body-attached face ──
+                //
+                // Same staged Coulomb update as the ground branch; the only
+                // difference is that both bodies move, so every diagonal is
+                // the SERIES combination `m_n` already computed above, and the
+                // impulse is applied equal-and-opposite at one shared point.
+                if (cparams.solve_mode == 1u) {
+                    let pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                    var pf = vec3<f32>(contact_state[pslot], contact_state[pslot + 1u], contact_state[pslot + 2u]);
+
+                    let ptang = contact_tangents(n_w);
+                    let pu = ptang[0];
+                    let pw = ptang[1];
+                    let bn = v_normal;
+                    let bu = dot(v_rel, pu);
+                    let bw = dot(v_rel, pw);
+
+                    let ann = f32(n_pts_active) / max(m_n, 1e-9);
+                    let d_imp = impedance_at(penetration);
+                    let bias = d_imp * cparams.solref_erp * max(penetration, 0.0) / max(cparams.dt, 1e-9);
+                    let ee = effective_restitution(cparams.restitution, min(bn, 0.0));
+                    var nf = max((bias - (bn * (1.0 + ee) - ann * pf.x)) / ann, 0.0);
+
+                    let u_i = rot_t_mul(w_rot[i], pu);
+                    let u_p = rot_t_mul(w_rot[pb], pu);
+                    let w_i = rot_t_mul(w_rot[i], pw);
+                    let w_p = rot_t_mul(w_rot[pb], pw);
+                    let m_u = 1.0 / (1.0 / contact_eff_mass(i, support_c, u_i)
+                        + 1.0 / contact_eff_mass(pb, r_p, u_p));
+                    let m_w = 1.0 / (1.0 / contact_eff_mass(i, support_c, w_i)
+                        + 1.0 / contact_eff_mass(pb, r_p, w_p));
+                    let auu = f32(n_pts_active) / max(m_u, 1e-9);
+                    let aww = f32(n_pts_active) / max(m_w, 1e-9);
+                    var ptu = -(bu - auu * pf.y) / auu;
+                    var ptw = -(bw - aww * pf.z) / aww;
+                    let plim = cparams.friction * nf;
+                    let ptn = sqrt(ptu * ptu + ptw * ptw);
+                    if (ptn > plim) {
+                        let psc = select(0.0, plim / ptn, ptn > 0.0);
+                        ptu = ptu * psc;
+                        ptw = ptw * psc;
+                    }
+
+                    contact_state[pslot] = nf;
+                    contact_state[pslot + 1u] = ptu;
+                    contact_state[pslot + 2u] = ptw;
+
+                    let fw2 = (n_w * nf + pu * ptu + pw * ptw) / max(cparams.dt, 1e-9);
+                    let fi2 = rot_t_mul(w_rot[i], fw2);
+                    let ti2 = cross3(support_c, fi2);
+                    let e_i = ef_env_base + i * 6u;
+                    ext_forces[e_i + 0u] += ti2.x;
+                    ext_forces[e_i + 1u] += ti2.y;
+                    ext_forces[e_i + 2u] += ti2.z;
+                    ext_forces[e_i + 3u] += fi2.x;
+                    ext_forces[e_i + 4u] += fi2.y;
+                    ext_forces[e_i + 5u] += fi2.z;
+
+                    let fp2 = rot_t_mul(w_rot[pb], -fw2);
+                    let tp2 = cross3(r_p, fp2);
+                    let e_p = ef_env_base + pb * 6u;
+                    ext_forces[e_p + 0u] += tp2.x;
+                    ext_forces[e_p + 1u] += tp2.y;
+                    ext_forces[e_p + 2u] += tp2.z;
+                    ext_forces[e_p + 3u] += fp2.x;
+                    ext_forces[e_p + 4u] += fp2.y;
+                    ext_forces[e_p + 5u] += fp2.z;
+                    continue;
+                }
 
                 let k_body = min(pt_scale * geometry[gbase + 8u], max_stiffness(m_n));
                 var d_body = pt_scale * geometry[gbase + 9u];

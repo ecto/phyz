@@ -35,6 +35,9 @@ phyz-diff.workspace = true
 phyz-mjcf.workspace = true
 phyz-collision.workspace = true
 phyz-contact.workspace = true
+# The umbrella crate, for `phyz::determinism` — the reproducibility suite's
+# hasher, ulp arithmetic and divergence fit.
+phyz.workspace = true
 phyz-gpu = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

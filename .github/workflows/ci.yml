@@ -56,6 +56,44 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --no-fail-fast
 
+  # The cross-platform half of the reproducibility contract.
+  #
+  # `crates/phyz/tests/determinism.rs` carries golden hashes of three
+  # contact-rich rollouts. The `test` job above already runs them, but only on
+  # one target at one optimization level, which proves nothing about the claim
+  # that matters: that a rollout gives *the same bits* on x86-64 and aarch64,
+  # under debug and release. Those are the two axes that have actually bitten —
+  # a Mac and a Linux box disagreeing on the same candidate, and a champion
+  # that stopped reproducing after an unrelated recompile.
+  #
+  # If this matrix ever goes red on some cells and green on others, the
+  # difference is *not* chaos: the inputs are identical, so a divergence is the
+  # engine computing different numbers. Start at `docs/determinism.md`.
+  determinism:
+    name: determinism (${{ matrix.os }}, ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        profile: [debug, release]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: determinism-${{ matrix.profile }}
+      - name: Golden rollout hashes
+        run: |
+          cargo test -p phyz --test determinism \
+            ${{ matrix.profile == 'release' && '--release' || '' }} \
+            -- --nocapture
+      # The reproducibility control inside the benchmark suite, which steps
+      # through `PhyzSim` rather than `Simulator` and so covers the other
+      # composition of the same primitives.
+      - name: Divergence suite control
+        run: cargo test -p phyz-bench --lib divergence
+
   docs:
     name: docs
     runs-on: ubuntu-latest

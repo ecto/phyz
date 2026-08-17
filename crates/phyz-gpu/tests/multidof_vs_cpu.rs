@@ -75,7 +75,7 @@ fn ball_joint_model() -> Model {
 /// The tolerance is loose because the GPU runs f32 against the CPU's f64 —
 /// that gap is the documented precision policy, not a bug.
 fn compare(model: &Model, state: &State, tol: f64, label: &str) {
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping {label}: no GPU adapter");
         return;
     };
@@ -127,7 +127,7 @@ fn free_body_actually_falls_on_gpu() {
     let mut s = model.default_state();
     s.q[5] = 5.0;
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -174,7 +174,7 @@ fn floating_base_with_limb_matches_cpu() {
 fn floating_base_batch_stays_independent() {
     let model = free_base_with_limb();
     let n = 8;
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), n) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), n) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -217,7 +217,7 @@ fn ant_runs_on_gpu() {
     };
     let model = loader.build_model();
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 64) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 64) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };

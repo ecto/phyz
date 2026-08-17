@@ -3072,6 +3072,7 @@ name = "phyz-bench"
 version = "0.3.1"
 dependencies = [
  "criterion",
+ "phyz",
  "phyz-collision",
  "phyz-contact",
  "phyz-diff",
@@ -3245,6 +3246,7 @@ dependencies = [
  "bytemuck",
  "futures-intrusive",
  "phyz",
+ "phyz-contact",
  "phyz-math",
  "phyz-mjcf",
  "phyz-model",
@@ -3293,6 +3295,7 @@ dependencies = [
 name = "phyz-math"
 version = "0.3.1"
 dependencies = [
+ "libm",
  "proptest",
  "tang",
  "tang-la",

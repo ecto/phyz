@@ -58,7 +58,7 @@ fn a_sprung_pendulum_tracks_the_cpu() {
     let mut s = model.default_state();
     s.q[0] = -0.9;
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -88,7 +88,7 @@ fn the_spring_holds_the_arm_off_gravity_minimum() {
     let mut s = model.default_state();
     s.q[0] = spring_ref; // start at the sprung rest to isolate holding
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
