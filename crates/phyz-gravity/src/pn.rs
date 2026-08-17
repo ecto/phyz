@@ -73,19 +73,46 @@ impl PostNewtonianSolver {
         G * mj / r2 * (r / r_mag)
     }
 
-    /// Compute 1PN acceleration correction.
+    /// Compute the 1PN acceleration correction: the EIH equations of motion.
     ///
-    /// From Blanchet (2014), eq. 6.22:
+    /// Einstein–Infeld–Hoffmann, as given by Will, *Theory and Experiment in
+    /// Gravitational Physics* (1993) eq. 6.80, equivalently Blanchet,
+    /// *Living Rev. Rel.* 17 (2014) eq. 203. In the source's convention, with
+    /// `n̂` pointing from `j` **to** `i`:
     ///
     /// ```text
-    /// a_1PN = G*mj/r² * [
-    ///   (4*G*(mi+mj)/r - vi²) * n
-    ///   + 4*(vi·vj) * n
-    ///   - (vi·n) * vj
-    /// ] / c²
+    /// a_1PN = −(G·mj / r²c²) · {
+    ///     n̂ · [ 4G·mi/r + 5G·mj/r − vi² − 2vj² + 4(vi·vj) + (3/2)(n̂·vj)² ]
+    ///   + (vi − vj) · (4 n̂·vi − 3 n̂·vj)
+    /// }
     /// ```
     ///
-    /// where n = r̂ is the unit vector from i to j.
+    /// This function uses `n = (xj − xi)/r`, pointing from `i` **to** `j` — the
+    /// opposite of `n̂`. Substituting `n̂ = −n` flips the sign of the `n̂[…]`
+    /// term *and* of the `(4 n̂·vi − 3 n̂·vj)` factor, while `(n̂·vj)²` is
+    /// unchanged because it is squared. Two flips inside the braces cancel
+    /// against the leading minus, so **in this convention the whole expression
+    /// is positive**, which is what the code below computes. That the sign
+    /// looks inverted against a textbook written in `n̂` is exactly the trap
+    /// this paragraph exists to defuse.
+    ///
+    /// # What this used to be, and what it cost
+    ///
+    /// Two coefficients were wrong, and together they made the integrated
+    /// Mercury perihelion advance come out at **exactly one third** of the
+    /// general-relativistic value (14.33″/century against 42.98″):
+    ///
+    /// * the mass term read `4G(mi + mj)/r` instead of `4G·mi/r + 5G·mj/r` —
+    ///   for a test particle around the Sun that is `4G·M/r` where it should be
+    ///   `5G·M/r`;
+    /// * the velocity term multiplied `vj` instead of `(vi − vj)`. For a planet
+    ///   orbiting a nearly stationary star `vj ≈ 0`, so that term very nearly
+    ///   **vanished** rather than contributing — the larger of the two errors,
+    ///   and invisible in any two-body test where both bodies move comparably.
+    ///
+    /// The closed-form check that existed alongside it asserted
+    /// `6πGM/(c²a(1−e²))` against itself and never called the solver, so it
+    /// passed throughout.
     fn pn1_acceleration(&self, xi: Vec3, vi: Vec3, mi: f64, xj: Vec3, vj: Vec3, mj: f64) -> Vec3 {
         let r = xj - xi;
         let r2 = r.norm_squared() + self.softening * self.softening;
@@ -100,17 +127,21 @@ impl PostNewtonianSolver {
 
         let c2 = C * C;
 
-        // Schwarzschild-like term: 4*G*(mi+mj)/r
-        let schwarzschild = 4.0 * G * (mi + mj) / r_mag;
+        // The two masses enter with *different* coefficients — 4 on the body
+        // being accelerated, 5 on its companion. Collapsing them to
+        // `4(mi + mj)` is the natural-looking simplification and is wrong;
+        // for a test particle it understates the term by a factor 4/5.
+        let mass_term = 5.0 * G * mi / r_mag + 4.0 * G * mj / r_mag;
 
-        // 1PN acceleration components
         let coeff = G * mj / r2 / c2;
 
-        let term1 =
-            (schwarzschild - v2_i - 2.0 * v2_j + 4.0 * vi_dot_vj + 1.5 * vj_dot_n.powi(2)) * n;
-        let term2 = (4.0 * vi_dot_n - 3.0 * vj_dot_n) * vj;
+        let term1 = (mass_term - v2_i - 2.0 * v2_j + 4.0 * vi_dot_vj + 1.5 * vj_dot_n.powi(2)) * n;
+        // The vector factor is the *relative* velocity. Using `vj` alone makes
+        // this term vanish for a planet around a stationary star, which is the
+        // regime the Mercury benchmark measures.
+        let term2 = (4.0 * vi_dot_n - 3.0 * vj_dot_n) * (vi - vj);
 
-        coeff * (term1 + term2)
+        -coeff * (term1 + term2)
     }
 
     /// Compute 2.5PN gravitational radiation damping.
@@ -343,6 +374,55 @@ mod tests {
             rel < 0.01,
             "closed-form precession = {precession} arcsec/century (expected 42.98, rel err {rel:.3e})"
         );
+    }
+
+    /// The test-particle limit must reduce to the Schwarzschild geodesic.
+    ///
+    /// For `m_i → 0` around a stationary source of mass `M`, the 1PN
+    /// acceleration is the textbook harmonic-gauge form
+    ///
+    /// ```text
+    /// a = (GM / r²c²) · [ (4GM/r − v²) n̂_out + 4 (n̂_out·v) v ]
+    /// ```
+    ///
+    /// with `n̂_out` pointing from the source to the particle. This identity is
+    /// what pins the two mass coefficients: the bracket must contain `4GM/r`,
+    /// which `5G·m_i/r + 4G·m_j/r` gives as `m_i → 0` and the transposed
+    /// `4G·m_i/r + 5G·m_j/r` does not. It pins the sign and the relative-velocity
+    /// factor too, so it guards every coefficient that was wrong before.
+    ///
+    /// Checked against the solver rather than against a rearrangement of
+    /// itself — the failure mode of the closed-form test above, which passed
+    /// throughout the years the force law was wrong.
+    #[test]
+    fn test_particle_limit_is_the_schwarzschild_geodesic() {
+        let solver = PostNewtonianSolver::new(1.0);
+        let m_sun = 1.989e30;
+
+        // A few points around an eccentric orbit, so the radial and tangential
+        // parts of `v` are both exercised rather than a single symmetric case.
+        for &(rx, ry, vx, vy) in &[
+            (57.9e9, 0.0, 0.0, 47.4e3),
+            (46.0e9, 12.0e9, -8.0e3, 52.0e3),
+            (69.8e9, -20.0e9, 11.0e3, -38.0e3),
+        ] {
+            let x_i = Vec3::new(rx, ry, 0.0);
+            let v_i = Vec3::new(vx, vy, 0.0);
+            // Source at the origin, at rest, and the particle is massless.
+            let got = solver.pn1_acceleration(x_i, v_i, 0.0, Vec3::zeros(), Vec3::zeros(), m_sun);
+
+            let r = x_i.norm();
+            let n_out = x_i / r;
+            let v2 = v_i.norm_squared();
+            let want = G * m_sun / (r * r * C * C)
+                * ((4.0 * G * m_sun / r - v2) * n_out + 4.0 * n_out.dot(v_i) * v_i);
+
+            let err = (got - want).norm() / want.norm();
+            assert!(
+                err < 1e-12,
+                "at r = ({rx:e}, {ry:e}): got {got:?}, Schwarzschild {want:?}, rel err {err:e}"
+            );
+        }
     }
 
     /// Two-body invariants of the Newtonian limit: the eccentricity

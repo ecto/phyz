@@ -347,24 +347,29 @@ pub fn run() -> Suite {
              (crates/phyz-gravity/src/pn.rs:321-334) asserted, without ever calling the solver."
         ))
         .note(
-            "The docstring at pn.rs:78-86 states \
-             a_1PN = Gm_j/r² [(4G(m_i+m_j)/r − v_i²)n + 4(v_i·v_j)n − (v_i·n)v_j]/c², \
-             which is not the standard EIH 1PN acceleration. The EIH form \
-             (Will 1993 eq. 6.80; Blanchet 2014 eq. 203) is \
-             a_1PN = −(Gm_j/r²c²){ n̂[4Gm_i/r + 5Gm_j/r − v_i² − 2v_j² + 4v_i·v_j + (3/2)(n̂·v_j)²] \
-             + (v_i − v_j)(4n̂·v_i − 3n̂·v_j) }, with n̂ pointing from j to i. \
-             The code at pn.rs:89-114 differs from EIH in three places: the mass coefficient is \
-             4(m_i+m_j) rather than 4m_i + 5m_j; the velocity term multiplies v_j rather than \
-             (v_i − v_j); and the overall sign is positive in the code's n = (x_j − x_i)/r \
-             convention where EIH requires negative. Any one of those changes the precession.",
+            "This benchmark measured 14.33″/century — exactly one third of the GR value — \
+             until the 1PN force law was corrected to the EIH form. Two coefficients were \
+             wrong: the mass term read 4G(m_i+m_j)/r instead of 5G·m_i/r + 4G·m_j/r, and the \
+             velocity term multiplied v_j rather than (v_i − v_j), which made it vanish for a \
+             planet around a nearly stationary star. The sign is negative in phyz's \
+             n = (x_j − x_i)/r convention. The test-particle limit is what pins the mass \
+             coefficients: with m_i → 0 the bracket must reduce to 4GM/r, the Schwarzschild \
+             geodesic in harmonic gauge, which the other ordering cannot do.",
         ),
     );
 
     // Convergence of the measured precession under Δt refinement.
     let mut samples = Vec::new();
+    // Same 400-orbit window as the headline benchmark, deliberately. Over 60
+    // orbits the residual is dominated by the finite measurement window rather
+    // than by Δt — at Δt = T/4000 it is 2.7e-4 over 60 orbits against 1.9e-6
+    // over 400 — and a Δt-order fitted through a window-dominated residual
+    // measures nothing. Convergence in Δt can only be seen once Δt is the
+    // largest remaining error.
+    let conv_orbits = 400.0_f64;
     for &spo in &[1000.0_f64, 2000.0, 4000.0] {
         let dt = t_mercury / spo;
-        let steps = (60.0 * spo) as usize;
+        let steps = (conv_orbits * spo) as usize;
         let n = integrate(
             newtonian_solver(),
             two_body(M_SUN, M_MERCURY, A_MERCURY, E_MERCURY),
@@ -388,16 +393,31 @@ pub fn run() -> Suite {
             CRATE,
             "Δϖ = 6πGM/(c²a(1−e²)); a correct 1PN force law makes the residual a pure \
              integrator error that vanishes as Δt²",
-            "|Δϖ_measured − Δϖ_GR| / Δϖ_GR at 4000 steps/orbit (60 orbits)",
+            "|Δϖ_measured − Δϖ_GR| / Δϖ_GR at 4000 steps/orbit (400 orbits)",
             finest,
             0.0,
             ErrorKind::Absolute,
             0.02,
         )
-        .with_convergence(Convergence::fit("Δt/T", samples, 2.0, 0.5))
+        .with_convergence(Convergence::fit("Δt/T", samples, 4.0, 1.5))
         .note(
             "If the residual does not shrink under refinement, the discrepancy is in the \
-             force law, not the integrator.",
+             force law, not the integrator. That is what this row is for, and it is the \
+             check that stayed red while the force law was wrong.",
+        )
+        .note(
+            "The expected order is 4, not the velocity-Verlet integrator's own 2, because \
+             the Newtonian control run is subtracted at the same Δt: the leading O(Δt²) \
+             apsidal drift is common to both runs and cancels in the difference, leaving a \
+             residual that falls faster than the integrator does. The measured exponent is \
+             indicative rather than asymptotic — the successive error ratios over this range \
+             are 9.0 and 35.1, not a single clean power — so the band is wide on purpose.",
+        )
+        .note(
+            "The sweep uses the same 400-orbit window as the headline row. Over 60 orbits \
+             the residual is dominated by the finite measurement window rather than by Δt \
+             (2.7e-4 against 1.9e-6 at the same Δt = T/4000), and an order fitted through a \
+             window-dominated residual measures nothing — it read p = −0.24.",
         ),
     );
 
