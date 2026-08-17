@@ -3253,6 +3253,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-loop"
+version = "0.3.1"
+dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "tang-la",
+]
+
+[[package]]
 name = "phyz-math"
 version = "0.3.1"
 dependencies = [
@@ -3395,6 +3405,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-vbd"
+version = "0.3.1"
+dependencies = [
+ "phyz-math",
+]
+
+[[package]]
 name = "phyz-wasm"
 version = "0.3.1"
 dependencies = [
@@ -3424,6 +3441,13 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "phyz-xpbd"
+version = "0.3.1"
+dependencies = [
+ "phyz-math",
 ]
 
 [[package]]

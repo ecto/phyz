@@ -113,6 +113,27 @@ fn fd_inertia_gradient(
     out
 }
 
+/// Largest value in the iterator, **propagating non-finite values**.
+///
+/// `f64::max` returns the other operand when one side is NaN, so the natural
+/// `fold(0.0, f64::max)` over a diverged computation reports `0.0` — the
+/// smallest possible number for the worst possible state. For a
+/// disagreement metric that is precisely backwards: a gradient full of NaN
+/// would be published as *perfect agreement* with finite differences, and
+/// this suite's whole claim is that a fast gradient which disagrees with FD
+/// is not a result. A non-finite input therefore yields NaN, which
+/// `format_metric` already renders as the real outcome it is.
+pub(crate) fn max_or_nan(xs: impl Iterator<Item = f64>) -> f64 {
+    let mut acc = 0.0f64;
+    for x in xs {
+        if !x.is_finite() {
+            return f64::NAN;
+        }
+        acc = acc.max(x);
+    }
+    acc
+}
+
 /// Measure the adjoint ratio for one scene.
 pub fn run_scene(scene: Scene, budget: Budget) -> Record {
     let settings = Settings::articulated(DT_ARTICULATED);
@@ -191,13 +212,14 @@ pub fn run_scene(scene: Scene, budget: Budget) -> Record {
     // not a result. Compared on the largest component, scale-relative.
     let fd_grad = fd_inertia_gradient(model, &rollout, &objective, FD_EPS);
     let scale = grad_norm.max(1.0e-12);
-    let max_rel_err = grads
-        .d_inertia
-        .iter()
-        .flatten()
-        .zip(fd_grad.iter().flatten())
-        .map(|(a, b)| (a - b).abs() / scale)
-        .fold(0.0f64, f64::max);
+    let max_rel_err = max_or_nan(
+        grads
+            .d_inertia
+            .iter()
+            .flatten()
+            .zip(fd_grad.iter().flatten())
+            .map(|(a, b)| (a - b).abs() / scale),
+    );
 
     Record {
         engine: "phyz".into(),
@@ -278,4 +300,32 @@ pub fn run(budget: Budget) -> Suite {
          differentiates. Rapier has no equivalent, so there is no comparison row here.",
         results,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_or_nan;
+
+    /// The reduction must not launder a diverged computation into a small
+    /// number. `fold(0.0, f64::max)` does exactly that, because `f64::max`
+    /// returns the other operand when one side is NaN — so an all-NaN
+    /// disagreement would be published as `0.0`, i.e. perfect agreement,
+    /// which is the opposite of the truth and defeats the cross-check this
+    /// suite exists to provide.
+    #[test]
+    fn a_non_finite_input_is_not_reported_as_zero() {
+        assert!(max_or_nan([1.0, f64::NAN, 2.0].into_iter()).is_nan());
+        assert!(max_or_nan([f64::INFINITY].into_iter()).is_nan());
+        // The idiom this replaces would return 2.0 and 0.0 respectively.
+        assert_eq!(
+            [1.0f64, f64::NAN, 2.0]
+                .iter()
+                .fold(0.0f64, |m, x| m.max(*x)),
+            2.0
+        );
+
+        // Finite inputs behave exactly as the plain fold does.
+        assert_eq!(max_or_nan([0.5, 3.0, 1.0].into_iter()), 3.0);
+        assert_eq!(max_or_nan(std::iter::empty()), 0.0);
+    }
 }

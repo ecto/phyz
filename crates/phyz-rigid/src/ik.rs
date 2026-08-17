@@ -404,7 +404,22 @@ fn solve_spd(a: &DMat, b: &DVec) -> Option<DVec> {
         .filter(|x: &DVec| x.as_slice().iter().all(|v: &f64| v.is_finite()))
 }
 
+/// Largest absolute component, **propagating non-finite values** instead of
+/// swallowing them.
+///
+/// `f64::max` returns the other operand when one side is NaN, so the natural
+/// `fold(0.0, f64::max)` over a diverged vector reports `0.0` — the smallest
+/// possible answer for the worst possible state. Here that would set
+/// `residual = 0.0` and `converged = true` on a solution full of NaN, which is
+/// the single worst thing this function could do: it is what decides whether
+/// the caller trusts the result.
+///
+/// A non-finite residual is not a small residual, so it reports NaN, and every
+/// `residual <= tolerance` comparison downstream is then false.
 fn max_abs(v: &DVec) -> f64 {
+    if v.as_slice().iter().any(|x| !x.is_finite()) {
+        return f64::NAN;
+    }
     v.as_slice().iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
@@ -651,6 +666,28 @@ mod tests {
         let a = solve_ik(&model, &[0.1, 0.2], &goals, &IkConfig::default());
         let b = solve_ik(&model, &[0.1, 0.2], &goals, &IkConfig::default());
         assert_eq!(a, b);
+    }
+
+    /// A non-finite seed must not be reported as a converged solution.
+    ///
+    /// `f64::max` ignores NaN, so a max-abs reduction written the obvious way
+    /// returns `0.0` for an all-NaN residual — the smallest possible number
+    /// for the worst possible state — and `converged` would be `true` on
+    /// garbage. This is the guard against that.
+    #[test]
+    fn a_non_finite_seed_is_never_reported_as_converged() {
+        let model = two_link();
+        let goals = [IkGoal::position(
+            1,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        )];
+        let sol = solve_ik(&model, &[f64::NAN, 0.1], &goals, &IkConfig::default());
+        assert!(
+            !sol.converged,
+            "reported convergence with residual {} on a NaN seed",
+            sol.residual
+        );
     }
 
     #[test]

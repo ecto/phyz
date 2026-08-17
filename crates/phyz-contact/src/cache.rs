@@ -45,9 +45,9 @@ use std::collections::HashMap;
 /// quantized point is read in the frame named by `reference`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ContactKey {
-    /// The lower-numbered body of the pair (`usize::MAX` = world).
+    /// The lower-numbered body of the pair ([`Collision::WORLD`] = world).
     pub body_i: usize,
-    /// The higher-numbered body of the pair (`usize::MAX` = world).
+    /// The higher-numbered body of the pair ([`Collision::WORLD`] = world).
     pub body_j: usize,
     /// Contact point in `body_i`'s local frame, quantized to the cache's grid.
     pub cell: [i64; 3],
@@ -201,7 +201,7 @@ mod tests {
     fn ground_contact(p: Vec3) -> Collision {
         Collision {
             body_i: 0,
-            body_j: usize::MAX,
+            body_j: Collision::WORLD,
             contact_point: p,
             contact_normal: Vec3::z(),
             penetration_depth: 1e-4,
@@ -304,7 +304,7 @@ mod rotation_tests {
         s0.body_xform[0] = SpatialTransform::identity();
         let c0 = Collision {
             body_i: 0,
-            body_j: usize::MAX,
+            body_j: Collision::WORLD,
             contact_point: feature_local,
             contact_normal: Vec3::z(),
             penetration_depth: 1e-4,

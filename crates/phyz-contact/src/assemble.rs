@@ -63,7 +63,7 @@ pub fn assemble(
             model,
             &xforms,
             c.body_i,
-            c.body_j,
+            c.attachment_j(),
             c.contact_point,
         );
         let (nrm, u, w) = crate::cone::contact_frame(&c.contact_normal);
@@ -229,7 +229,7 @@ pub fn contact_wrenches(
         let r_i = c.contact_point - state.body_xform[i].pos;
         out[i] = out[i] + SpatialVec::new(r_i.cross(force), force);
 
-        if c.body_j != usize::MAX {
+        if !c.is_world_j() {
             let j = c.body_j;
             let r_j = c.contact_point - state.body_xform[j].pos;
             out[j] = out[j] + SpatialVec::new(r_j.cross(-force), -force);
@@ -246,16 +246,16 @@ pub fn contact_wrenches(
 /// Both sides now go through [`ContactMaterial::combine`], whose rules are
 /// commutative, so ordering cannot matter.
 ///
-/// `usize::MAX` in `body_j` is the world/ground, which has no entry in
-/// `materials`; the other body's material stands in for the pair, which is the
-/// same convention the ground contact always had.
+/// A world/ground `body_j` has no entry in `materials`; the other body's
+/// material stands in for the pair, which is the same convention the ground
+/// contact always had.
 fn material_for(materials: &[ContactMaterial], body_i: usize, body_j: usize) -> ContactMaterial {
     if materials.is_empty() {
         return ContactMaterial::default();
     }
     let pick = |b: usize| materials[b.min(materials.len() - 1)].clone();
     let a = pick(body_i);
-    if body_j == usize::MAX {
+    if body_j == Collision::WORLD {
         return a;
     }
     ContactMaterial::combine(&a, &pick(body_j))
@@ -373,7 +373,7 @@ mod tests {
 
         let contacts = vec![Collision {
             body_i: 0,
-            body_j: usize::MAX,
+            body_j: Collision::WORLD,
             contact_point: Vec3::new(0.0, 0.0, -0.1),
             contact_normal: Vec3::z(),
             penetration_depth: 0.0,
@@ -445,7 +445,7 @@ mod tests {
 
         let contacts = vec![Collision {
             body_i: 0,
-            body_j: usize::MAX,
+            body_j: Collision::WORLD,
             contact_point: Vec3::new(0.0, 0.0, -0.1),
             contact_normal: Vec3::z(),
             penetration_depth: depth,
@@ -518,14 +518,14 @@ mod tests {
         let contacts = vec![
             Collision {
                 body_i: 0,
-                body_j: usize::MAX,
+                body_j: Collision::WORLD,
                 contact_point: Vec3::new(0.5, 0.0, -0.5),
                 contact_normal: Vec3::z(),
                 penetration_depth: 1e-4,
             },
             Collision {
                 body_i: 0,
-                body_j: usize::MAX,
+                body_j: Collision::WORLD,
                 contact_point: Vec3::new(-0.5, 0.0, -0.5),
                 contact_normal: Vec3::z(),
                 penetration_depth: 1e-4,

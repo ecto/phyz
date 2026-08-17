@@ -354,7 +354,7 @@ impl Anchor {
     fn of(c: &Collision, drop: f64, state: &State, ground_height: f64) -> Self {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
-        if c.body_j == usize::MAX {
+        if c.is_world_j() {
             let world_offset = Vec3::new(0.0, 0.0, -drop);
             let xform = &state.body_xform[c.body_i];
             let support = Vec3::new(
@@ -444,7 +444,7 @@ impl Anchor {
                 let depth = ground_height - support.z;
                 Collision {
                     body_i: body,
-                    body_j: usize::MAX,
+                    body_j: Collision::WORLD,
                     contact_point: Vec3::new(support.x, support.y, ground_height - depth * 0.5),
                     contact_normal: Vec3::z(),
                     penetration_depth: depth,

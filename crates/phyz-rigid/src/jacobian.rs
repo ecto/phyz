@@ -17,7 +17,7 @@
 //! column is zero.
 
 use phyz_math::{DMat, SpatialTransform, SpatialTransformExt, Vec3};
-use phyz_model::{JointType, Model};
+use phyz_model::{Attachment, JointType, Model};
 
 /// The `3 x nv` world-frame linear-velocity Jacobian of a point fixed in
 /// `body`, evaluated at the configuration in `state`.
@@ -132,21 +132,44 @@ pub fn body_angular_jacobian(model: &Model, xforms: &[SpatialTransform], body: u
 }
 
 /// The `3 x nv` Jacobian of the *relative* velocity of two coincident points,
-/// one on each body: `J_i - J_j`.
+/// one on each side: `J_i - J_j`.
 ///
-/// `body_j == usize::MAX` denotes the static world, in which case this is just
-/// the Jacobian of the point on `body_i`.
+/// `other` is an [`Attachment`], so "the static world" is a distinct variant
+/// rather than a reserved index. When it is [`Attachment::World`] the result is
+/// just the point Jacobian on `body_i`, because the world contributes no
+/// columns.
+///
+/// This used to take a bare `usize` with `usize::MAX` meaning the world. That
+/// is an in-band sentinel on a public API: `usize::MAX` looks like an ordinary
+/// index, so a stale one silently became "the world" and the contact it fed
+/// stopped pushing back on one side — a wrong answer, not a panic. An
+/// out-of-range [`Attachment::Body`] now panics with the index and the body
+/// count instead.
+///
+/// # Panics
+///
+/// If `body_i`, or `other`'s index, is not a body of `model`.
 pub fn relative_point_jacobian(
     model: &Model,
     xforms: &[SpatialTransform],
     body_i: usize,
-    body_j: usize,
+    other: Attachment,
     point: Vec3,
 ) -> DMat {
+    let nb = model.nbodies();
+    assert!(
+        body_i < nb,
+        "body_i = {body_i} is not a body of this model ({nb} bodies)"
+    );
     let ji = point_jacobian(model, xforms, body_i, point);
-    if body_j == usize::MAX {
+    let Some(body_j) = other.body() else {
         return ji;
-    }
+    };
+    assert!(
+        body_j < nb,
+        "Attachment::Body({body_j}) is not a body of this model ({nb} bodies); \
+         use Attachment::World for the static world"
+    );
     let jj = point_jacobian(model, xforms, body_j, point);
     let mut out = DMat::zeros(3, model.nv);
     for r in 0..3 {
@@ -287,6 +310,63 @@ mod tests {
                 assert_eq!(jw[(r, 3 + k)], 0.0, "translation moved the orientation");
             }
         }
+    }
+
+    /// `Attachment::World` must give exactly the single-body Jacobian: the
+    /// world contributes no columns, so `J_i - J_world == J_i`.
+    #[test]
+    fn world_attachment_is_the_single_body_jacobian() {
+        let model = pendulum();
+        let mut state = model.default_state();
+        state.q[0] = 0.42;
+        let (xforms, _) = forward_kinematics(&model, &state);
+        let p = Vec3::new(0.1, -0.8, 0.0);
+
+        let single = point_jacobian(&model, &xforms, 0, p);
+        let relative = relative_point_jacobian(&model, &xforms, 0, Attachment::World, p);
+        for r in 0..3 {
+            for c in 0..model.nv {
+                assert_eq!(single[(r, c)].to_bits(), relative[(r, c)].to_bits());
+            }
+        }
+    }
+
+    /// A body against itself has identically zero relative motion — the
+    /// sharpest check that the subtraction is the right way round.
+    #[test]
+    fn a_body_against_itself_has_no_relative_motion() {
+        let model = pendulum();
+        let mut state = model.default_state();
+        state.q[0] = -0.3;
+        let (xforms, _) = forward_kinematics(&model, &state);
+        let p = Vec3::new(0.0, -1.0, 0.2);
+
+        let j = relative_point_jacobian(&model, &xforms, 0, Attachment::Body(0), p);
+        for r in 0..3 {
+            for c in 0..model.nv {
+                assert_eq!(j[(r, c)], 0.0, "row {r} col {c}");
+            }
+        }
+    }
+
+    /// The regression this API change exists to prevent. `usize::MAX` used to
+    /// *mean* the world, so a stale index landing on it was silently accepted
+    /// and the contact it fed stopped pushing back on one side — a wrong
+    /// answer with no diagnostic. As an ordinary `Attachment::Body` index it is
+    /// simply out of range, and out-of-range panics.
+    #[test]
+    #[should_panic(expected = "is not a body of this model")]
+    fn an_out_of_range_body_panics_instead_of_meaning_the_world() {
+        let model = pendulum();
+        let state = model.default_state();
+        let (xforms, _) = forward_kinematics(&model, &state);
+        let _ = relative_point_jacobian(
+            &model,
+            &xforms,
+            0,
+            Attachment::Body(usize::MAX),
+            Vec3::zeros(),
+        );
     }
 
     /// Only DOFs on the path to the body may be non-zero.

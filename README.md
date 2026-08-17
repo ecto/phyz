@@ -120,11 +120,14 @@ opt-in.
 | [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians (finite-difference, chain-rule, symbolic) and the exact trajectory adjoint |
 | [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
+| [`phyz-loop`](crates/phyz-loop) | Kinematic loops: closure constraints and Proximal-ADMM constrained forward dynamics |
 | [`phyz-mjcf`](crates/phyz-mjcf) | MuJoCo MJCF model loading |
 | [`phyz-urdf`](crates/phyz-urdf) | URDF (ROS) robot description import |
 | [`phyz-gpu`](crates/phyz-gpu) | wgpu compute: batched simulation of many independent worlds |
 | [`phyz-compile`](crates/phyz-compile) | Physics IR → WGSL compute shaders, with kernel fusion |
 | [`phyz-particle`](crates/phyz-particle) | MPM solver, SPH fluids, granular media |
+| [`phyz-xpbd`](crates/phyz-xpbd) | XPBD position-based dynamics: cloth, tetrahedral soft bodies, cables |
+| [`phyz-vbd`](crates/phyz-vbd) | Vertex Block Descent: implicit deformable-body FEM, stable at large timesteps |
 | [`phyz-md`](crates/phyz-md) | Molecular dynamics, Lennard-Jones, field engine |
 | [`phyz-em`](crates/phyz-em) | Maxwell's equations on a Yee lattice |
 | [`phyz-lbm`](crates/phyz-lbm) | Lattice Boltzmann fluids: BGK/TRT/MRT, declarative boundaries, LES |
@@ -168,6 +171,7 @@ phyz/
 │   ├── phyz-math/        # Spatial algebra, vectors, matrices
 │   ├── phyz-model/       # Articulated body models, joints, inertia
 │   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics, IK
+│   ├── phyz-loop/        # Kinematic loops, Proximal-ADMM constrained dynamics
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
 │   ├── phyz-urdf/        # URDF (ROS) robot description import
@@ -176,6 +180,8 @@ phyz/
 │   ├── phyz-gpu/         # WGPU compute, batched simulation
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
 │   ├── phyz-particle/    # SPH fluids, granular media
+│   ├── phyz-xpbd/        # XPBD: cloth, soft bodies, cables
+│   ├── phyz-vbd/         # Vertex Block Descent: implicit deformable FEM
 │   ├── phyz-em/          # Maxwell's equations on Yee lattice
 │   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
 │   ├── phyz-qft/         # Lattice QFT, Wilson action
