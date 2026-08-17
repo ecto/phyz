@@ -190,6 +190,14 @@ impl RgbdCamera {
                     offset: 12,
                     shader_location: 1,
                 },
+                // Vertex tint. Location 6 rather than 2 because 2..5 are the
+                // instance buffer's transform rows and albedo; locations are
+                // per-pipeline, not per-buffer, so they must not collide.
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 24,
+                    shader_location: 6,
+                },
             ],
         };
         let instance_layout = wgpu::VertexBufferLayout {
