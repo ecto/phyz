@@ -68,13 +68,7 @@ impl TriMesh {
     /// Same winding rule and same degenerate-drop as [`Self::push_triangle`];
     /// the colours are interpolated across the face by the rasterizer, so a
     /// scanned surface reads as a gradient rather than as facets.
-    pub fn push_triangle_painted(
-        &mut self,
-        a: Vec3,
-        b: Vec3,
-        c: Vec3,
-        colors: [[f32; 3]; 3],
-    ) {
+    pub fn push_triangle_painted(&mut self, a: Vec3, b: Vec3, c: Vec3, colors: [[f32; 3]; 3]) {
         let Some(n) = (b - a).cross(c - a).try_normalize() else {
             return;
         };
