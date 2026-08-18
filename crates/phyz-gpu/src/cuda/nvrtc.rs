@@ -165,28 +165,29 @@ impl KernelBackend for CudaBackend {
     fn launch_contact(
         &self,
         a: ContactArgs,
+        cparams: &Self::Buffer,
         bodies: &Self::Buffer,
         geometry: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         ext_forces: &mut Self::Buffer,
         contact_state: &mut Self::Buffer,
+        hf_heights: &Self::Buffer,
+        qdd: &Self::Buffer,
     ) -> Result<(), String> {
         // SAFETY: as in launch_pd, against `phyz_contact`.
         let r = unsafe {
             self.stream
                 .launch_builder(&self.contact)
-                .arg(&a.nworld)
-                .arg(&a.nbodies)
-                .arg(&a.nv)
-                .arg(&a.ground_height)
-                .arg(&a.dt)
+                .arg(cparams)
                 .arg(bodies)
                 .arg(geometry)
                 .arg(q)
                 .arg(v)
                 .arg(ext_forces)
                 .arg(contact_state)
+                .arg(hf_heights)
+                .arg(qdd)
                 .launch(cfg(a.nworld))
         };
         r.map(|_| ()).map_err(err("launch phyz_contact"))

@@ -16,10 +16,13 @@
 
 #![cfg(any(feature = "cuda", feature = "cuda-host"))]
 
+use phyz_gpu::contact_pipeline::BodyPlane;
 use phyz_gpu::cuda::{BatchSim, KernelBackend};
 use phyz_gpu::{BodyContactGains, GpuBatchSimulator, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Geometry, Joint, Model, ModelBuilder, State};
+use phyz_model::{
+    GeomInstance, Geometry, Heightfield, Joint, JointType, Model, ModelBuilder, State,
+};
 use phyz_rigid::{aba, semi_implicit_euler};
 
 // ── Models (shared with the wgpu tests' shapes) ────────────────────────────
@@ -458,6 +461,368 @@ fn suite_vs_wgpu<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     );
 }
 
+// ── Unified contact, kernel vs kernel ─────────────────────────────────────
+//
+// The wgpu tests (body_plane_contact, heightfield, contact_impulse_parity,
+// joint_spring_vs_cpu, box_manifold) hold the WGSL to the CPU referee. Here
+// the CUDA C is held to the WGSL on the same scenarios, tightly: both are
+// f32 doing the same arithmetic, so anything past ~1e-4 is a port bug.
+
+fn box_inertia(mass: f64, h: Vec3) -> SpatialInertia {
+    let (lx, ly, lz) = (2.0 * h.x, 2.0 * h.y, 2.0 * h.z);
+    SpatialInertia::new(
+        mass,
+        Vec3::zeros(),
+        Mat3::from_diagonal(&Vec3::new(
+            mass / 12.0 * (ly * ly + lz * lz),
+            mass / 12.0 * (lx * lx + lz * lz),
+            mass / 12.0 * (lx * lx + ly * ly),
+        )),
+    )
+}
+
+fn free_box(half: Vec3, mass: f64) -> Model {
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(0.001)
+        .add_body(
+            "box",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(mass, half),
+        )
+        .build();
+    model.bodies[0].geometry = Some(Geometry::Box { half_extents: half });
+    model
+}
+
+/// Two free boxes: a deck (with an off-centre collision instance) and a
+/// rider, as in the wgpu body-plane tests.
+fn deck_and_rider() -> (Model, BodyPlane) {
+    let deck_half = Vec3::new(0.4, 0.2, 0.05);
+    let rider_half = Vec3::new(0.1, 0.1, 0.1);
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(0.001)
+        .add_body(
+            "deck",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(4.0, deck_half),
+        )
+        .add_body(
+            "rider",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(1.0, rider_half),
+        )
+        .build();
+    model.bodies[0].collisions = vec![GeomInstance::centered(Geometry::Box {
+        half_extents: deck_half,
+    })];
+    model.bodies[0].geometry = Some(Geometry::Box {
+        half_extents: deck_half,
+    });
+    model.bodies[1].geometry = Some(Geometry::Box {
+        half_extents: rider_half,
+    });
+    let plane = BodyPlane {
+        body: 0,
+        offset: deck_half.z,
+        max_depth: 0.05,
+        half_x: deck_half.x,
+        half_y: deck_half.y,
+        exclude: vec![],
+    };
+    (model, plane)
+}
+
+fn sprung_pendulum() -> Model {
+    ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(0.001)
+        .add_body(
+            "arm",
+            -1,
+            Joint {
+                joint_type: JointType::Revolute,
+                parent_to_joint: SpatialTransform::identity(),
+                axis: Vec3::new(0.0, 1.0, 0.0),
+                stiffness: 3.0,
+                spring_ref: 0.4,
+                damping: 0.4,
+                armature: 0.02,
+                name: "hinge".into(),
+                ..Joint::default()
+            },
+            SpatialInertia::new(
+                1.0,
+                Vec3::new(0.0, 0.0, -0.3),
+                Mat3::from_diagonal(&Vec3::new(0.05, 0.05, 0.02)),
+            ),
+        )
+        .build()
+}
+
+fn bumpy_field() -> Heightfield {
+    let n = 41;
+    let mut hf = Heightfield::new(Vec3::new(-2.0, -2.0, 0.0), 0.1, n, n);
+    for iy in 0..n {
+        for ix in 0..n {
+            let x = -2.0 + 0.1 * ix as f64;
+            let y = -2.0 + 0.1 * iy as f64;
+            hf.heights[iy * n + ix] = (0.03 * (3.0 * x).sin() * (2.0 * y).cos()) as f32;
+        }
+    }
+    hf
+}
+
+/// Run `steps` on both kernels from `states` after `setup` configures each,
+/// and compare states (and contact readback when enabled) tightly.
+#[allow(clippy::too_many_arguments)]
+fn kernel_vs_kernel<B: KernelBackend>(
+    label: &str,
+    model: &Model,
+    states: &[State],
+    steps: usize,
+    (tol_q, tol_v): (f64, f64),
+    mk: &impl Fn(Model, usize) -> BatchSim<B>,
+    setup_wg: impl FnOnce(&mut GpuBatchSimulator),
+    setup_cu: impl FnOnce(&mut BatchSim<B>),
+) -> bool {
+    let Ok(mut wg) = GpuBatchSimulator::new(model.clone(), states.len()) else {
+        eprintln!("skipping {label}: no wgpu adapter");
+        return false;
+    };
+    let mut cu = mk(model.clone(), states.len());
+    setup_wg(&mut wg);
+    setup_cu(&mut cu);
+    wg.load_states(states);
+    cu.load_states(states);
+    for _ in 0..steps {
+        wg.step();
+        cu.step();
+    }
+    let a = wg.readback_states();
+    let b = cu.readback_states();
+    for (w, (x, y)) in a.iter().zip(&b).enumerate() {
+        for k in 0..model.nq {
+            let d = (x.q[k] - y.q[k]).abs();
+            assert!(
+                d < tol_q,
+                "{label}: cuda-c vs wgsl world {w}: q[{k}] got={} want={} diff={d:.2e}",
+                y.q[k],
+                x.q[k]
+            );
+        }
+        for k in 0..model.nv {
+            let d = (x.v[k] - y.v[k]).abs();
+            assert!(
+                d < tol_v,
+                "{label}: cuda-c vs wgsl world {w}: v[{k}] got={} want={} diff={d:.2e}",
+                y.v[k],
+                x.v[k]
+            );
+        }
+    }
+    if let (Ok(ca), Ok(cb)) = (wg.readback_contacts(), cu.readback_contacts()) {
+        for (w, (ra, rb)) in ca.iter().zip(&cb).enumerate() {
+            for (bi, (p, q)) in ra.iter().zip(rb).enumerate() {
+                assert_eq!(
+                    p.touching, q.touching,
+                    "{label}: touching, world {w} body {bi}"
+                );
+                assert!(
+                    (p.penetration - q.penetration).abs() < 1e-4
+                        && (p.force - q.force).norm() < 1e-2 * (1.0 + p.force.norm()),
+                    "{label}: contact readback world {w} body {bi}: {p:?} vs {q:?}"
+                );
+            }
+        }
+    }
+    true
+}
+
+fn tumbling_boxes(model: &Model) -> Vec<State> {
+    (0..3)
+        .map(|i| {
+            let mut s = model.default_state();
+            // Tilted, off the ground, moving sideways and spinning.
+            s.q[0] = 0.4;
+            s.q[1] = -0.3 + 0.1 * i as f64;
+            s.q[5] = 0.35;
+            s.v[3] = 1.5;
+            s.v[4] = -0.5 * i as f64;
+            s.v[1] = 2.0;
+            s
+        })
+        .collect()
+}
+
+fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    // 1. Penalty mode with per-body gains, Coulomb friction and the box
+    //    manifold: a tumbling box thrown onto the ground.
+    let model = free_box(Vec3::new(0.1, 0.15, 0.08), 2.0);
+    let g = BodyContactGains::uniform_frequency(&model, 60.0, 1.0);
+    let states = tumbling_boxes(&model);
+    if !kernel_vs_kernel(
+        "penalty tumbling box",
+        &model,
+        &states,
+        1500,
+        (5e-4, 5e-4),
+        &mk,
+        |wg| {
+            wg.enable_ground_contact_per_body(0.0, 0.7, &g).unwrap();
+        },
+        |cu| {
+            cu.enable_ground_contact_per_body(0.0, 0.7, &g).unwrap();
+        },
+    ) {
+        return;
+    }
+
+    // 2. The same throw, velocity-level impulse solve with sweeps.
+    kernel_vs_kernel(
+        "impulse tumbling box",
+        &model,
+        &states,
+        1500,
+        (5e-4, 5e-4),
+        &mk,
+        |wg| {
+            wg.enable_contact_impulse(0.0, 0.7, &g, None, None).unwrap();
+        },
+        |cu| {
+            cu.enable_contact_impulse(0.0, 0.7, &g, None, None).unwrap();
+        },
+    );
+
+    // 3. Heightfield terrain, penalty and impulse, plus a mid-run terrain swap.
+    let hf = bumpy_field();
+    let mut hf2 = hf.clone();
+    for v in &mut hf2.heights {
+        *v = -*v;
+    }
+    let states: Vec<State> = (0..2)
+        .map(|i| {
+            let mut s = model.default_state();
+            s.q[3] = 0.15 + 0.3 * i as f64;
+            s.q[4] = 0.1;
+            s.q[5] = 0.4;
+            s.v[3] = 0.8;
+            s
+        })
+        .collect();
+    kernel_vs_kernel(
+        "penalty heightfield",
+        &model,
+        &states,
+        1200,
+        (5e-4, 5e-4),
+        &mk,
+        |wg| {
+            wg.enable_contact_terrain(0.0, 0.8, &g, None, Some(&hf))
+                .unwrap();
+            wg.set_heightfield(&hf2).unwrap();
+        },
+        |cu| {
+            cu.enable_contact_terrain(0.0, 0.8, &g, None, Some(&hf))
+                .unwrap();
+            cu.set_heightfield(&hf2).unwrap();
+        },
+    );
+    kernel_vs_kernel(
+        "impulse heightfield",
+        &model,
+        &states,
+        1200,
+        (5e-4, 5e-4),
+        &mk,
+        |wg| {
+            wg.enable_contact_impulse(0.0, 0.8, &g, None, Some(&hf))
+                .unwrap();
+        },
+        |cu| {
+            cu.enable_contact_impulse(0.0, 0.8, &g, None, Some(&hf))
+                .unwrap();
+        },
+    );
+
+    // 4. Body-attached finite face: a rider dropped onto a deck, partly over
+    //    the edge and pushed sideways, deck resting on the ground.
+    let (model, plane) = deck_and_rider();
+    let g = BodyContactGains::uniform_frequency(&model, 50.0, 1.0);
+    let states: Vec<State> = (0..2)
+        .map(|i| {
+            let mut s = model.default_state();
+            s.q[5] = 0.05; // deck resting on the ground
+            s.q[6 + 3] = 0.3 + 0.1 * i as f64; // rider over the nose
+            s.q[6 + 4] = 0.05;
+            s.q[6 + 5] = 0.25;
+            s.v[6 + 3] = 0.6;
+            s
+        })
+        .collect();
+    kernel_vs_kernel(
+        "penalty body plane",
+        &model,
+        &states,
+        1500,
+        (5e-4, 5e-4),
+        &mk,
+        |wg| {
+            wg.enable_ground_contact_with_plane(0.0, 0.8, &g, Some(&plane))
+                .unwrap();
+        },
+        |cu| {
+            cu.enable_ground_contact_with_plane(0.0, 0.8, &g, Some(&plane))
+                .unwrap();
+        },
+    );
+    // Once the rider is at rest on the deck (~0.9 s in), a resting contact's
+    // impulse update sits on a branch edge and the two f32 compilers flip it
+    // on different steps: `v` shows one-step transients of a few 1e-3 that
+    // the next step removes, while `q` never leaves rounding level (~1e-6,
+    // probed). So `q` is held tight and `v` is allowed the transient.
+    kernel_vs_kernel(
+        "impulse body plane",
+        &model,
+        &states,
+        1500,
+        (5e-4, 1e-2),
+        &mk,
+        |wg| {
+            wg.enable_contact_impulse(0.0, 0.8, &g, Some(&plane), None)
+                .unwrap();
+        },
+        |cu| {
+            cu.enable_contact_impulse(0.0, 0.8, &g, Some(&plane), None)
+                .unwrap();
+        },
+    );
+
+    // 5. Passive joint spring and armature in the ABA pass, against the CPU
+    //    directly (no contact involved).
+    let model = sprung_pendulum();
+    let mut s = model.default_state();
+    s.q[0] = 1.2;
+    let mut cu = mk(model.clone(), 1);
+    cu.load_states(std::slice::from_ref(&s));
+    let mut cpu = s.clone();
+    for _ in 0..2000 {
+        cu.step();
+        cpu_step(&model, &mut cpu);
+    }
+    assert_state_close(
+        "sprung pendulum vs cpu",
+        &cu.readback_states()[0],
+        &cpu,
+        2e-3,
+    );
+}
+
+#[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
     suite_trajectory(mk);
@@ -465,6 +830,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_contact(mk);
     suite_ant(mk);
     suite_vs_wgpu(mk);
+    suite_unified_contact(mk);
 }
 
 // ── Host harness ──────────────────────────────────────────────────────────
@@ -501,6 +867,10 @@ mod host {
     #[test]
     fn matches_wgsl_kernels() {
         suite_vs_wgpu(mk);
+    }
+    #[test]
+    fn unified_contact_matches_wgsl_kernels() {
+        suite_unified_contact(mk);
     }
     #[test]
     fn rejects_oversized_models() {

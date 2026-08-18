@@ -10,47 +10,107 @@ use phyz_math::Vec3;
 use phyz_model::{Heightfield, Model};
 use std::sync::Arc;
 
-/// Contact parameters for the ground plane shader.
+/// Contact parameters for the contact kernels — the WGSL uniform, and the
+/// same 32 floats the CUDA pass reads from a buffer. Packed in one place by
+/// [`ContactParams::pack`] so the two backends cannot disagree on a slot.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-struct ContactParams {
-    nworld: u32,
-    nbodies: u32,
-    nv: u32,
-    ground_height: f32,
-    dt: f32,
-    friction: f32,
-    plane_body: i32,
-    plane_offset: f32,
-    plane_max_depth: f32,
-    plane_half_x: f32,
-    plane_half_y: f32,
+pub(crate) struct ContactParams {
+    pub(crate) nworld: u32,
+    pub(crate) nbodies: u32,
+    pub(crate) nv: u32,
+    pub(crate) ground_height: f32,
+    pub(crate) dt: f32,
+    pub(crate) friction: f32,
+    pub(crate) plane_body: i32,
+    pub(crate) plane_offset: f32,
+    pub(crate) plane_max_depth: f32,
+    pub(crate) plane_half_x: f32,
+    pub(crate) plane_half_y: f32,
     // Heightfield terrain header; hf_nx == 0 means "flat plane at
     // ground_height", the pre-heightfield behaviour.
-    hf_nx: u32,
-    hf_ny: u32,
-    hf_ox: f32,
-    hf_oy: f32,
-    hf_oz: f32,
-    hf_cell: f32,
+    pub(crate) hf_nx: u32,
+    pub(crate) hf_ny: u32,
+    pub(crate) hf_ox: f32,
+    pub(crate) hf_oy: f32,
+    pub(crate) hf_oz: f32,
+    pub(crate) hf_cell: f32,
     /// 0 = penalty forces, 1 = velocity-level convex impulse solve.
-    solve_mode: u32,
+    pub(crate) solve_mode: u32,
     /// Reserved. Was a sweep index; the shader never read it, and it could not
     /// have worked — all sweeps share one command buffer, and queue writes are
     /// ordered at submission, so the uniform would hold its last value for
     /// every dispatch. Kept as explicit padding rather than removed so the
     /// struct layout the shader expects does not shift.
-    _reserved_sweep: u32,
-    restitution: f32,
-    restitution_threshold: f32,
-    solref_erp: f32,
-    margin: f32,
-    solimp_dmin: f32,
-    solimp_dmax: f32,
-    solimp_width: f32,
-    solimp_mid: f32,
-    solimp_power: f32,
-    _pad0: f32,
+    pub(crate) _reserved_sweep: u32,
+    pub(crate) restitution: f32,
+    pub(crate) restitution_threshold: f32,
+    pub(crate) solref_erp: f32,
+    pub(crate) margin: f32,
+    pub(crate) solimp_dmin: f32,
+    pub(crate) solimp_dmax: f32,
+    pub(crate) solimp_width: f32,
+    pub(crate) solimp_mid: f32,
+    pub(crate) solimp_power: f32,
+    pub(crate) _pad0: f32,
+}
+
+impl ContactParams {
+    /// Pack the contact parameters for `nworld` worlds of `model`.
+    pub(crate) fn pack(
+        model: &Model,
+        nworld: usize,
+        contact: &GroundContactParams,
+        plane: Option<&BodyPlane>,
+        heightfield: Option<&Heightfield>,
+    ) -> Self {
+        Self {
+            nworld: nworld as u32,
+            nbodies: model.nbodies() as u32,
+            nv: model.nv as u32,
+            ground_height: contact.ground_height as f32,
+            dt: model.dt as f32,
+            friction: contact.friction as f32,
+            plane_body: plane.map_or(-1, |p| p.body as i32),
+            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
+            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
+            plane_half_x: plane.map_or(0.0, |p| p.half_x as f32),
+            plane_half_y: plane.map_or(0.0, |p| p.half_y as f32),
+            hf_nx: heightfield.map_or(0, |h| h.nx as u32),
+            hf_ny: heightfield.map_or(0, |h| h.ny as u32),
+            hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),
+            hf_oy: heightfield.map_or(0.0, |h| h.origin.y as f32),
+            hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
+            hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
+            solve_mode: u32::from(contact.impulse_solve),
+            _reserved_sweep: 0,
+            restitution: contact.restitution as f32,
+            restitution_threshold: contact.restitution_threshold as f32,
+            solref_erp: contact.solref_erp as f32,
+            margin: contact.margin as f32,
+            solimp_dmin: contact.solimp_dmin as f32,
+            solimp_dmax: contact.solimp_dmax as f32,
+            solimp_width: contact.solimp_width as f32,
+            solimp_mid: contact.solimp_midpoint as f32,
+            solimp_power: contact.solimp_power as f32,
+            _pad0: 0.0,
+        }
+    }
+
+    /// Point the heightfield header at `hf` (the node buffer is separate).
+    pub(crate) fn set_heightfield(&mut self, hf: &Heightfield) {
+        self.hf_nx = hf.nx as u32;
+        self.hf_ny = hf.ny as u32;
+        self.hf_ox = hf.origin.x as f32;
+        self.hf_oy = hf.origin.y as f32;
+        self.hf_oz = hf.origin.z as f32;
+        self.hf_cell = hf.cell as f32;
+    }
+
+    /// The parameters as the flat f32 buffer the CUDA pass reads.
+    pub(crate) fn as_f32s(&self) -> &[f32] {
+        bytemuck::cast_slice(std::slice::from_ref(self))
+    }
 }
 
 pub use crate::layout::{CONTACT_STATE_STRIDE, MAX_CONTACT_PTS};
@@ -352,68 +412,10 @@ impl ContactPipeline {
         plane: Option<&BodyPlane>,
         heightfield: Option<&Heightfield>,
     ) -> Result<Self, String> {
-        if let Some(hf) = heightfield {
-            validate_heightfield(hf)?;
-        }
         let nworld = state.nworld;
-
-        if let Some(p) = plane {
-            if p.body >= model.nbodies() {
-                return Err(format!(
-                    "plane body {} out of range for a model with {} bodies",
-                    p.body,
-                    model.nbodies()
-                ));
-            }
-            for &b in &p.exclude {
-                if b >= model.nbodies() {
-                    return Err(format!("plane exclude body {b} out of range"));
-                }
-            }
-        }
-
-        if let Some(gains) = body_gains
-            && gains.len() != model.nbodies()
-        {
-            return Err(format!(
-                "body_gains has {} entries but the model has {} bodies",
-                gains.len(),
-                model.nbodies()
-            ));
-        }
-
-        // Pack contact params
-        let params = ContactParams {
-            nworld: nworld as u32,
-            nbodies: model.nbodies() as u32,
-            nv: model.nv as u32,
-            ground_height: contact.ground_height as f32,
-            dt: model.dt as f32,
-            friction: contact.friction as f32,
-            plane_body: plane.map_or(-1, |p| p.body as i32),
-            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
-            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
-            plane_half_x: plane.map_or(0.0, |p| p.half_x as f32),
-            plane_half_y: plane.map_or(0.0, |p| p.half_y as f32),
-            hf_nx: heightfield.map_or(0, |h| h.nx as u32),
-            hf_ny: heightfield.map_or(0, |h| h.ny as u32),
-            hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),
-            hf_oy: heightfield.map_or(0.0, |h| h.origin.y as f32),
-            hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
-            hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
-            solve_mode: u32::from(contact.impulse_solve),
-            _reserved_sweep: 0,
-            restitution: contact.restitution as f32,
-            restitution_threshold: contact.restitution_threshold as f32,
-            solref_erp: contact.solref_erp as f32,
-            margin: contact.margin as f32,
-            solimp_dmin: contact.solimp_dmin as f32,
-            solimp_dmax: contact.solimp_dmax as f32,
-            solimp_width: contact.solimp_width as f32,
-            solimp_mid: contact.solimp_midpoint as f32,
-            solimp_power: contact.solimp_power as f32,
-            _pad0: 0.0,
-        };
+        let (geom_data, collidable_bodies) =
+            pack_contact_geometry(model, &contact, body_gains, plane, heightfield)?;
+        let params = ContactParams::pack(model, nworld, &contact, plane, heightfield);
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("contact_params"),
@@ -440,16 +442,6 @@ impl ContactPipeline {
             None => queue.write_buffer(&hf_buffer, 0, bytemuck::cast_slice(&[0.0f32])),
         }
 
-        // Pack geometry data
-        let (mut geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
-        if let Some(p) = plane {
-            for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
-                geom_data[b * GEOM_STRIDE + 7] = 1.0;
-            }
-        }
-        if collidable_bodies == 0 {
-            return Err(no_collidable_geometry_error(model));
-        }
         let geom_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("geometry_buffer"),
             size: (geom_data.len() * std::mem::size_of::<f32>()).max(4) as u64,
@@ -569,12 +561,7 @@ impl ContactPipeline {
                 self.hf_capacity
             ));
         }
-        self.params.hf_nx = hf.nx as u32;
-        self.params.hf_ny = hf.ny as u32;
-        self.params.hf_ox = hf.origin.x as f32;
-        self.params.hf_oy = hf.origin.y as f32;
-        self.params.hf_oz = hf.origin.z as f32;
-        self.params.hf_cell = hf.cell as f32;
+        self.params.set_heightfield(hf);
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
         queue.write_buffer(&self.hf_buffer, 0, bytemuck::cast_slice(&hf.heights));
         Ok(())
@@ -608,10 +595,60 @@ impl ContactPipeline {
     }
 }
 
+/// Validate a contact configuration and pack its geometry table: per-body
+/// shapes and gains, plus the skip-plane flag on the plane's own body and
+/// its `exclude` list. Shared by the wgpu and CUDA paths so both reject the
+/// same inputs and pack the same bytes. Returns the table and the
+/// collidable-body count; errors when that count is zero.
+pub(crate) fn pack_contact_geometry(
+    model: &Model,
+    contact: &GroundContactParams,
+    body_gains: Option<&[BodyContactGains]>,
+    plane: Option<&BodyPlane>,
+    heightfield: Option<&Heightfield>,
+) -> Result<(Vec<f32>, usize), String> {
+    if let Some(hf) = heightfield {
+        validate_heightfield(hf)?;
+    }
+    if let Some(p) = plane {
+        if p.body >= model.nbodies() {
+            return Err(format!(
+                "plane body {} out of range for a model with {} bodies",
+                p.body,
+                model.nbodies()
+            ));
+        }
+        for &b in &p.exclude {
+            if b >= model.nbodies() {
+                return Err(format!("plane exclude body {b} out of range"));
+            }
+        }
+    }
+    if let Some(gains) = body_gains
+        && gains.len() != model.nbodies()
+    {
+        return Err(format!(
+            "body_gains has {} entries but the model has {} bodies",
+            gains.len(),
+            model.nbodies()
+        ));
+    }
+    let (mut geom_data, collidable) = pack_geometries(model, contact, body_gains);
+    if let Some(p) = plane {
+        for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
+            geom_data[b * GEOM_STRIDE + 7] = 1.0;
+        }
+    }
+    if collidable == 0 {
+        return Err(no_collidable_geometry_error(model));
+    }
+    Ok((geom_data, collidable))
+}
+
 /// A malformed heightfield fails loudly at upload rather than as an
 /// out-of-bounds read in the shader, which wgpu clamps to whatever is in
 /// range — i.e. terrain that silently is not what the caller built.
-fn validate_heightfield(hf: &Heightfield) -> Result<(), String> {
+pub(crate) fn validate_heightfield(hf: &Heightfield) -> Result<(), String> {
     if hf.nx == 0 || hf.ny == 0 {
         return Err("heightfield needs at least one node per axis".into());
     }
@@ -675,8 +712,8 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phyz_model::Geometry;
     use phyz_math::{Mat3, SpatialInertia, SpatialTransform};
+    use phyz_model::Geometry;
     use phyz_model::ModelBuilder;
 
     fn ball_inertia(mass: f64, radius: f64) -> SpatialInertia {
