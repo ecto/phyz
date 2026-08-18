@@ -408,6 +408,59 @@ fn vertex_colour_paints_the_surface_and_interpolates_across_it() {
 }
 
 #[test]
+fn repainting_a_mesh_needs_the_camera_told_and_then_shows() {
+    let k = intrinsics();
+    let Some(mut cam) = camera(k) else { return };
+
+    // Same geometry, same instance count, different vertex colours: the only
+    // thing that changed is data the cheap path does not look at.
+    let scene = one(
+        painted_wall(0.0, 4.0),
+        Mat3::identity(),
+        Vec3::new(0.0, 0.0, 2.0),
+    );
+    let red_edge = cam
+        .render(&scene, &CameraPose::identity())
+        .unwrap()
+        .color_at(k.width / 8, k.height / 2)
+        .unwrap();
+    assert!(
+        red_edge[0] > red_edge[2],
+        "left edge starts red: {red_edge:?}"
+    );
+
+    let mut repainted = mesh::TriMesh::empty();
+    let green = [0.0, 1.0, 0.0];
+    let (a, b) = (Vec3::new(-4.0, -4.0, 0.0), Vec3::new(4.0, -4.0, 0.0));
+    let (c, d) = (Vec3::new(4.0, 4.0, 0.0), Vec3::new(-4.0, 4.0, 0.0));
+    repainted.push_triangle_painted(a, b, c, [green; 3]);
+    repainted.push_triangle_painted(a, c, d, [green; 3]);
+    let scene2 = one(repainted, Mat3::identity(), Vec3::new(0.0, 0.0, 2.0));
+
+    let stale = cam
+        .render(&scene2, &CameraPose::identity())
+        .unwrap()
+        .color_at(k.width / 8, k.height / 2)
+        .unwrap();
+    assert!(
+        stale[0] > stale[1],
+        "documents the cheap path: without invalidate_scene the old vertices \
+         are still drawn, so this is still red: {stale:?}"
+    );
+
+    cam.invalidate_scene();
+    let fresh = cam
+        .render(&scene2, &CameraPose::identity())
+        .unwrap()
+        .color_at(k.width / 8, k.height / 2)
+        .unwrap();
+    assert!(
+        fresh[1] > fresh[0] && fresh[1] > fresh[2],
+        "after invalidate_scene the repaint must show green: {fresh:?}"
+    );
+}
+
+#[test]
 fn invalid_intrinsics_are_rejected_not_rendered() {
     let mut k = intrinsics();
     k.far = k.near; // degenerate frustum

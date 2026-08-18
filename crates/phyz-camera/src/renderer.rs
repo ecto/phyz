@@ -94,6 +94,9 @@ pub struct RgbdCamera {
     depth_row_bytes: u32,
 
     vertex_buffer: Option<wgpu::Buffer>,
+    /// Set by [`Self::invalidate_scene`]; forces the next render to re-upload
+    /// vertices instead of trusting the instance-count heuristic.
+    scene_dirty: bool,
     instance_buffer: Option<wgpu::Buffer>,
     draws: Vec<DrawRange>,
 }
@@ -335,6 +338,7 @@ impl RgbdCamera {
             vertex_buffer: None,
             instance_buffer: None,
             draws: Vec::new(),
+            scene_dirty: false,
         })
     }
 
@@ -361,6 +365,18 @@ impl RgbdCamera {
     /// Replace the lighting. Affects RGB only; depth is untouched.
     pub fn set_lighting(&mut self, lighting: Lighting) {
         self.lighting = lighting;
+    }
+
+    /// Declare that mesh *vertices* changed under a live camera.
+    ///
+    /// The next render re-uploads them. Needed because the cheap path only
+    /// notices a change in the number of drawn instances: repaint a mesh, or
+    /// hand the same camera a different scene of the same shape, and without
+    /// this the old vertices are drawn with no error anywhere. Adding or
+    /// removing an instance already forces the upload, so this is only for the
+    /// same-shape case.
+    pub fn invalidate_scene(&mut self) {
+        self.scene_dirty = true;
     }
 
     /// Upload a scene's geometry. Call once per topology change; per-step pose
@@ -445,11 +461,21 @@ impl RgbdCamera {
             .iter()
             .filter(|i| !scene.meshes[i.mesh].is_empty())
             .count();
-        if self.vertex_buffer.is_none() || drawable != self.draws.len() {
+        // Vertex data is re-uploaded when the shape of the scene changes or
+        // when the caller says it has; otherwise only the instance rows are
+        // rewritten, which is what makes a per-step render cheap. The rule
+        // matters because it is not conservative: a scene with the same number
+        // of drawable instances but *different vertices* — a mesh repainted, a
+        // room swapped for another of equal size — keeps drawing the old
+        // buffer. That was invisible while meshes were static geometry and
+        // became a real way to render a stale room once vertices carried
+        // colour, so [`Self::invalidate_scene`] exists to say so explicitly.
+        if self.vertex_buffer.is_none() || self.scene_dirty || drawable != self.draws.len() {
             self.upload_scene(scene);
         } else {
             self.update_instances(scene);
         }
+        self.scene_dirty = false;
 
         let light = self
             .lighting
