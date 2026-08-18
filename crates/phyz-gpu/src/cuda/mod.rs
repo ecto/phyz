@@ -314,6 +314,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 stiffness,
                 damping,
                 friction,
+                ..Default::default()
             },
             None,
         )
@@ -342,6 +343,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 stiffness: 0.0,
                 damping: 0.0,
                 friction,
+                ..Default::default()
             },
             Some(gains),
         )

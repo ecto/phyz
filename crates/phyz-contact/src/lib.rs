@@ -22,7 +22,7 @@ pub use assemble::{ContactAssembly, assemble, contact_wrenches, generalized_impu
 pub use cache::{ContactCache, ContactKey};
 pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
 pub use convex::{
-    ContactProblem, ContactRow, ContactSolution, ContactSolverConfig,
+    ContactCoupling, ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, GPU_SWEEPS,
     regularization_depth_derivative, regularization_diag, solve_contacts, solve_contacts_warm,
 };
 pub use material::{ContactMaterial, SolImp, SolRef};

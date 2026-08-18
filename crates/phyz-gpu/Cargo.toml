@@ -26,7 +26,7 @@ cuda-host = ["dep:cc"]
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
-wgpu = "23.0"
+wgpu = "25.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"
 futures-intrusive = "0.5"
@@ -46,6 +46,10 @@ cc = { version = "1.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+# For the CPU-vs-GPU contact parity tests: the CPU impulse solver is the
+# referee the GPU penalty path is measured against.
+phyz = { workspace = true }
+phyz-contact = { workspace = true }
 phyz-mjcf = { workspace = true }
 
 [[example]]

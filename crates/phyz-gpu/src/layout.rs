@@ -30,9 +30,12 @@ use crate::pd_pipeline::PdDof;
 /// [23..26] ptj translation (x,y,z)
 /// [26..29] axis (x,y,z)
 /// [29] damping
-/// [30..32] padding
+/// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
+/// [31] spring reference angle
+/// [32] armature (rotor inertia, added to the D diagonal like the CPU's crba/aba)
+/// [33..36] padding
 /// ```
-pub const BODY_STRIDE: usize = 32;
+pub const BODY_STRIDE: usize = 36;
 
 /// Floats per body in the packed geometry table.
 ///
@@ -42,12 +45,25 @@ pub const BODY_STRIDE: usize = 32;
 /// [2]  param1 (length for capsule, half_y for box, height for cylinder, aabb min_y for mesh)
 /// [3]  param2 (half_z for box, aabb min_z for mesh)
 /// [4..7] aabb max (x,y,z) for mesh
-/// [7]  reserved
+/// [7]  skip-plane flag (1.0 = this body never contacts the attached plane)
 /// [8]  contact stiffness (per body)
 /// [9]  contact damping (per body)
-/// [10..16] reserved
+/// [10..13] instance origin position, body frame
+/// [13..22] instance origin rotation, row-major (body -> shape coordinates)
+/// [22..24] reserved
 /// ```
-pub const GEOM_STRIDE: usize = 16;
+///
+/// There is no separate "carried mass" override here, and deliberately so:
+/// the penalty gains are already per body ([8], [9]), so a foot that holds
+/// up a whole robot is expressed by giving that foot the stiffness it needs
+/// rather than by naming a mass the kernel then divides. See
+/// [`BodyContactGains::uniform_frequency`] for the mass-proportional recipe
+/// that makes one setting work across a robot.
+pub const GEOM_STRIDE: usize = 24;
+
+/// Contact slots per body, matching `MAX_PTS` in the kernels: a box contacts
+/// through all eight corners, every other shape through one.
+pub const MAX_CONTACT_PTS: usize = 8;
 
 /// Floats per body in the contact-state buffer.
 ///
@@ -56,8 +72,13 @@ pub const GEOM_STRIDE: usize = 16;
 /// [1]  penetration depth, metres
 /// [2..5] contact point, world frame (x, y, z)
 /// [5..8] contact force, world frame (x, y, z)
+/// [8..32]  warm-start impulses, ground/terrain contacts (MAX_CONTACT_PTS vec3s)
+/// [32..56] warm-start impulses, body-attached face
 /// ```
-pub const CONTACT_STATE_STRIDE: usize = 8;
+/// Two impulse blocks because a body can touch both the ground and the face
+/// in the same step and must not share a warm-start slot. Matches `CS_STRIDE`
+/// in the kernels.
+pub const CONTACT_STATE_STRIDE: usize = 8 + 2 * MAX_CONTACT_PTS * 3;
 
 /// Floats per servoed DOF in the PD table.
 ///
@@ -121,6 +142,13 @@ pub fn pack_bodies(model: &Model) -> Vec<f32> {
         data[base + 27] = joint.axis.y as f32;
         data[base + 28] = joint.axis.z as f32;
         data[base + 29] = joint.damping as f32;
+        // [30..31] passive spring, the truck-bushing term. Packed here
+        // because the ABA pass applies it explicitly, exactly as the CPU's
+        // `Joint::passive_force` does — same clause, same sign.
+        data[base + 30] = joint.stiffness as f32;
+        data[base + 31] = joint.spring_ref as f32;
+        data[base + 32] = joint.armature as f32;
+        // [33..36] padding
     }
 
     data
@@ -162,7 +190,34 @@ pub fn pack_geometries(
 
     for (i, body) in model.bodies.iter().enumerate() {
         let base = i * GEOM_STRIDE;
-        match &body.geometry {
+
+        // Identity instance origin unless a collision instance carries one.
+        data[base + 13] = 1.0;
+        data[base + 17] = 1.0;
+        data[base + 21] = 1.0;
+
+        // Prefer `Body::collisions[0]` — offsets included, which is where a
+        // K1 rig mounts its foot pads (2.6 cm forward of the ankle) —
+        // falling back to the legacy centred `Body::geometry`. Bodies with
+        // more than one collision instance contact through their FIRST
+        // instance only on the GPU; that is a documented fidelity gap, not a
+        // silent one, and the CPU impulse path remains the referee.
+        let (geom, origin) = match body.collisions.first() {
+            Some(inst) => (Some(&inst.geometry), Some(&inst.origin)),
+            None => (body.geometry.as_ref(), None),
+        };
+        if let Some(o) = origin {
+            data[base + 10] = o.pos.x as f32;
+            data[base + 11] = o.pos.y as f32;
+            data[base + 12] = o.pos.z as f32;
+            for r in 0..3 {
+                for c in 0..3 {
+                    data[base + 13 + r * 3 + c] = o.rot[(r, c)] as f32;
+                }
+            }
+        }
+
+        match geom {
             Some(Geometry::Sphere { radius }) => {
                 data[base] = 1.0;
                 data[base + 1] = *radius as f32;

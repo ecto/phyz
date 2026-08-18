@@ -53,6 +53,8 @@ impl Block {
             delassus[i * 3 + i] = inv_m;
         }
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             free_velocity: vec![free.x, free.y, free.z],
@@ -171,6 +173,8 @@ fn friction_is_isotropic_in_the_tangent_plane() {
             delassus[i * 3 + i] = 1.0 / mass;
         }
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             free_velocity: vec![free.x, free.y, free.z],
@@ -214,6 +218,8 @@ fn restitution_matches_drop_height_ratio() {
         let eff = ContactProblem::effective_restitution(e, v_impact, cfg.restitution_threshold);
         // Approaching at -v_impact along the normal; target is +e*v_impact.
         let problem = ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             n: 1,
             delassus,
             free_velocity: vec![-v_impact * (1.0 + eff), 0.0, 0.0],
@@ -284,6 +290,8 @@ fn resting_manifold_shares_load_and_holds() {
         free_velocity[3 * c] = -(weight / mass) * dt;
     }
     let problem = ContactProblem {
+        // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+        bodies: Vec::new(),
         n,
         delassus,
         free_velocity,
@@ -336,6 +344,8 @@ fn coupled_contacts_differ_from_independent_ones() {
     delassus[3 * dim] = 0.6;
 
     let problem = ContactProblem {
+        // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+        bodies: Vec::new(),
         n,
         delassus,
         free_velocity: vec![-1.0, 0.0, 0.0, -1.0, 0.0, 0.0],
@@ -359,6 +369,8 @@ fn coupled_contacts_differ_from_independent_ones() {
     }
     let indep = solve_contacts(
         &ContactProblem {
+            // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+            bodies: Vec::new(),
             delassus: indep_delassus,
             ..problem.clone()
         },
@@ -389,6 +401,8 @@ fn solution_satisfies_kkt_conditions() {
     }
     // Pressing in hard with a modest tangential drift: should stick.
     let problem = ContactProblem {
+        // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+        bodies: Vec::new(),
         n: 1,
         delassus,
         free_velocity: vec![-1.0, 0.05, 0.0],

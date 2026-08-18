@@ -394,7 +394,7 @@ fn suite_ant<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
 /// agree far more tightly than either agrees with the f64 CPU.
 fn suite_vs_wgpu<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     let model = free_base_with_limb();
-    let Ok(wg) = GpuBatchSimulator::new(model.clone(), 4) else {
+    let Ok(mut wg) = GpuBatchSimulator::new(model.clone(), 4) else {
         eprintln!("skipping kernel-vs-kernel: no wgpu adapter");
         return;
     };

@@ -149,6 +149,7 @@ pub fn assemble(
             delassus,
             free_velocity,
             rows,
+            bodies: contacts.iter().map(|c| (c.body_i, c.body_j)).collect(),
         },
         jacobians,
         inv_mass,

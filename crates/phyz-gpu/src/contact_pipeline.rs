@@ -7,27 +7,10 @@ use crate::gpu_state::GpuState;
 use crate::shaders::CONTACT_GROUND_SHADER;
 use bytemuck::{Pod, Zeroable};
 use phyz_math::Vec3;
-use phyz_model::Model;
+use phyz_model::{Heightfield, Model};
 use std::sync::Arc;
 
 /// Contact parameters for the ground plane shader.
-///
-/// # `friction` is not implemented
-///
-/// The field is uploaded to the shader and the shader never reads it. The
-/// ground contact pass computes a Kelvin-Voigt *normal* force and writes
-/// `[0, 0, f_z]`; no tangential force is produced, so GPU ground contact is
-/// frictionless regardless of what is passed here. A box given an initial
-/// horizontal velocity slides forever.
-///
-/// This also means per-body [`phyz_model::Body::material`] does not reach the
-/// GPU path — nor could it, since the quantity it would set is the one that is
-/// missing. The CPU stepper (`Simulator::step_with_contacts`) honours both.
-///
-/// Implementing it needs the contact point's tangential velocity, which the
-/// pass deliberately avoids computing (the normal damper uses a finite
-/// difference of penetration precisely so it can skip a velocity FK), so it is
-/// a real piece of work rather than an oversight to patch in passing.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct ContactParams {
@@ -37,12 +20,43 @@ struct ContactParams {
     ground_height: f32,
     dt: f32,
     friction: f32,
+    plane_body: i32,
+    plane_offset: f32,
+    plane_max_depth: f32,
+    plane_half_x: f32,
+    plane_half_y: f32,
+    // Heightfield terrain header; hf_nx == 0 means "flat plane at
+    // ground_height", the pre-heightfield behaviour.
+    hf_nx: u32,
+    hf_ny: u32,
+    hf_ox: f32,
+    hf_oy: f32,
+    hf_oz: f32,
+    hf_cell: f32,
+    /// 0 = penalty forces, 1 = velocity-level convex impulse solve.
+    solve_mode: u32,
+    /// Reserved. Was a sweep index; the shader never read it, and it could not
+    /// have worked — all sweeps share one command buffer, and queue writes are
+    /// ordered at submission, so the uniform would hold its last value for
+    /// every dispatch. Kept as explicit padding rather than removed so the
+    /// struct layout the shader expects does not shift.
+    _reserved_sweep: u32,
+    restitution: f32,
+    restitution_threshold: f32,
+    solref_erp: f32,
+    margin: f32,
+    solimp_dmin: f32,
+    solimp_dmax: f32,
+    solimp_width: f32,
+    solimp_mid: f32,
+    solimp_power: f32,
     _pad0: f32,
-    _pad1: f32,
 }
 
-pub use crate::layout::CONTACT_STATE_STRIDE;
-use crate::layout::{lightest_collidable_body, no_collidable_geometry_error, pack_geometries};
+pub use crate::layout::{CONTACT_STATE_STRIDE, MAX_CONTACT_PTS};
+use crate::layout::{
+    GEOM_STRIDE, lightest_collidable_body, no_collidable_geometry_error, pack_geometries,
+};
 
 /// Explicit-integration stability factor: a penalty spring of stiffness `k`
 /// on a body of mass `m` has natural frequency `w = sqrt(k/m)`, and the
@@ -54,8 +68,14 @@ const OMEGA_DT_LIMIT: f64 = 0.3;
 pub struct ContactPipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
-    _params_buffer: wgpu::Buffer,
+    params: ContactParams,
+    params_buffer: wgpu::Buffer,
     _geom_buffer: wgpu::Buffer,
+    hf_buffer: wgpu::Buffer,
+    /// Node capacity of `hf_buffer`. [`Self::set_heightfield`] can rewrite
+    /// terrain up to this many nodes without rebuilding the pipeline —
+    /// wgpu buffers cannot grow under a live bind group.
+    hf_capacity: usize,
     nworld: usize,
     collidable_bodies: usize,
 }
@@ -71,9 +91,90 @@ pub struct GroundContactParams {
     pub damping: f64,
     /// Coulomb friction coefficient.
     pub friction: f64,
+    /// Solve the velocity-level convex contact problem instead of applying
+    /// penalty forces.
+    ///
+    /// This is the setting that makes the GPU run the *same contact model* as
+    /// `phyz_contact::solve_contacts` rather than a second one: real Coulomb
+    /// stiction inside a second-order cone, solref position stabilization,
+    /// and no `mg/k` resting sink. `stiffness`/`damping` are unused when it
+    /// is on. See the IMPULSE MODE block in `shaders.rs`.
+    pub impulse_solve: bool,
+    /// Coefficient of restitution, and the approach speed below which it
+    /// ramps smoothly to zero. Impulse mode only.
+    pub restitution: f64,
+    /// Approach speed below which restitution ramps to zero.
+    pub restitution_threshold: f64,
+    /// solref error-reduction fraction: how much of the current penetration
+    /// the reference response removes per step.
+    pub solref_erp: f64,
+    /// Contact margin: the band above the surface in which a contact is still
+    /// detected, its impedance tapering smoothly to zero. Mirrors
+    /// `ContactMaterial::margin`.
+    pub margin: f64,
+    /// SolImp sigmoid, mirroring `phyz_contact::material::SolImp`.
+    pub solimp_dmin: f64,
+    /// SolImp `dmax`.
+    pub solimp_dmax: f64,
+    /// SolImp `width`.
+    pub solimp_width: f64,
+    /// SolImp `midpoint`.
+    pub solimp_midpoint: f64,
+    /// SolImp `power`.
+    pub solimp_power: f64,
+}
+
+impl Default for GroundContactParams {
+    /// Penalty mode with MuJoCo's contact defaults, so adding the impulse
+    /// fields did not change what any existing caller gets.
+    ///
+    /// `solref_erp` is the *evaluated* `SolRef::error_reduction(dt)` rather
+    /// than a time constant, because the shader has no reason to re-derive it
+    /// and every reason not to: two independent evaluations of the same
+    /// formula is exactly how the CPU and GPU contact models drifted apart in
+    /// the first place. Callers that care should set it from their own
+    /// `SolRef` at their own `dt` — `GroundContactParams::solref_erp_from` does
+    /// that arithmetic.
+    fn default() -> Self {
+        Self {
+            ground_height: 0.0,
+            stiffness: 0.0,
+            damping: 0.0,
+            friction: 0.0,
+            impulse_solve: false,
+            restitution: 0.0,
+            restitution_threshold: 0.05,
+            // MuJoCo's SolRef default (timeconst 0.02, dampratio 1.0)
+            // evaluated at dt = 1 ms.
+            solref_erp: 0.001 / (2.0 * 0.02 + 0.001),
+            // MuJoCo's SolImp defaults, and `ContactMaterial`'s margin.
+            margin: 0.001,
+            solimp_dmin: 0.9,
+            solimp_dmax: 0.95,
+            solimp_width: 0.001,
+            solimp_midpoint: 0.5,
+            solimp_power: 2.0,
+        }
+    }
 }
 
 impl GroundContactParams {
+    /// `SolRef::error_reduction` — the fraction of the current penetration the
+    /// reference response removes in one step of length `dt`.
+    ///
+    /// Duplicated from `phyz_contact::material::SolRef` because `phyz-gpu`
+    /// does not depend on `phyz-contact`, and asserted equal to it in
+    /// `tests/contact_impulse_parity.rs` so the duplication cannot rot.
+    pub fn solref_erp_from(timeconst: f64, dampratio: f64, dt: f64) -> f64 {
+        if dt <= 0.0 {
+            return 0.0;
+        }
+        let tau = timeconst.max(0.0);
+        let zeta = dampratio.max(1e-6);
+        let denom = 2.0 * tau * zeta * zeta + dt;
+        if denom <= 0.0 { 1.0 } else { dt / denom }
+    }
+
     /// Check this global stiffness against the explicit-integration bound.
     ///
     /// A single stiffness has to serve every body that can touch the ground,
@@ -143,6 +244,53 @@ impl BodyContactGains {
     }
 }
 
+/// A contact plane welded to a body: the deck of a skateboard, the bed of a
+/// truck, any flat top surface other bodies stand on.
+///
+/// This is deliberately NOT general body-body contact. The plane is the
+/// body's local `+Z` face at `offset` along local Z, infinite in extent; a
+/// foot only ever meets a deck's top face, and an infinite moving plane
+/// captures that at a fraction of a broad phase's cost. Forces are applied
+/// to **both** bodies — the board must feel the rider or it cannot be
+/// kicked out from under one.
+///
+/// Plane contacts do not appear in [`BodyContactState`] readback: those
+/// slots are per body and already carry the ground result, and a foot
+/// standing on a deck would otherwise overwrite its ground reading with a
+/// different surface entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BodyPlane {
+    /// Body index the plane is attached to.
+    pub body: usize,
+    /// Face offset along the body's local `+Z`, metres (deck half-thickness).
+    pub offset: f64,
+    /// Penetration beyond which the contact is ignored, metres. Guards a
+    /// body approaching from *below* the plane against being captured and
+    /// catapulted through it.
+    pub max_depth: f64,
+    /// Half-extents of the face in the body's own x/y, metres. The plane
+    /// only supports what is actually over it.
+    ///
+    /// A shape's contact points are clamped into the overlap between its own
+    /// footprint and this rectangle, and a shape with no overlap at all gets
+    /// no contact and falls. Clamping rather than discarding is deliberate: a
+    /// deck narrower than a foot still carries that foot, along its edge. The
+    /// K1's foot is 22 cm across a 19.7 cm deck — feet point ACROSS a board,
+    /// so toes and heel overhang, as a real skater's do — and simply dropping
+    /// the overhanging corners deletes the whole roll support. Measured, that
+    /// took standing from 3.00 s to 0.8 s in every stance.
+    ///
+    /// The footprint is an AABB in face coordinates: exact while the shape is
+    /// aligned with the face, a slight over-estimate under yaw.
+    pub half_x: f64,
+    /// Half-extent of the face along the body's own `y`, metres. See
+    /// [`Self::half_x`].
+    pub half_y: f64,
+    /// Bodies that never contact the plane (the plane body itself is always
+    /// excluded): wheels and hangers under a deck, for instance.
+    pub exclude: Vec<usize>,
+}
+
 /// Per-body ground-contact state read back from the GPU.
 ///
 /// Reported by [`crate::GpuBatchSimulator::readback_contacts`]; everything is
@@ -165,8 +313,6 @@ impl ContactPipeline {
     /// Create a contact pipeline for ground plane contacts.
     ///
     /// Every body uses the global `contact.stiffness` / `contact.damping`.
-    /// `contact.friction` is accepted and ignored — see
-    /// [`GroundContactParams`].
     /// Errors when no body carries GPU-collidable geometry — a contact pass
     /// that can see nothing is a model bug, not a valid configuration.
     pub fn new(
@@ -177,13 +323,24 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
     ) -> Result<Self, String> {
-        Self::with_body_gains(device, queue, model, state, bodies_buffer, contact, None)
+        Self::with_body_gains(
+            device,
+            queue,
+            model,
+            state,
+            bodies_buffer,
+            contact,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Create a contact pipeline with optional per-body gains.
     ///
     /// When `body_gains` is `Some`, it must hold one entry per body (in body
     /// order) and overrides the global stiffness/damping for every body.
+    #[allow(clippy::too_many_arguments)] // each argument is a distinct GPU resource or contact feature
     pub fn with_body_gains(
         device: &Arc<wgpu::Device>,
         queue: &Arc<wgpu::Queue>,
@@ -192,8 +349,28 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
         body_gains: Option<&[BodyContactGains]>,
+        plane: Option<&BodyPlane>,
+        heightfield: Option<&Heightfield>,
     ) -> Result<Self, String> {
+        if let Some(hf) = heightfield {
+            validate_heightfield(hf)?;
+        }
         let nworld = state.nworld;
+
+        if let Some(p) = plane {
+            if p.body >= model.nbodies() {
+                return Err(format!(
+                    "plane body {} out of range for a model with {} bodies",
+                    p.body,
+                    model.nbodies()
+                ));
+            }
+            for &b in &p.exclude {
+                if b >= model.nbodies() {
+                    return Err(format!("plane exclude body {b} out of range"));
+                }
+            }
+        }
 
         if let Some(gains) = body_gains
             && gains.len() != model.nbodies()
@@ -213,8 +390,29 @@ impl ContactPipeline {
             ground_height: contact.ground_height as f32,
             dt: model.dt as f32,
             friction: contact.friction as f32,
+            plane_body: plane.map_or(-1, |p| p.body as i32),
+            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
+            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
+            plane_half_x: plane.map_or(0.0, |p| p.half_x as f32),
+            plane_half_y: plane.map_or(0.0, |p| p.half_y as f32),
+            hf_nx: heightfield.map_or(0, |h| h.nx as u32),
+            hf_ny: heightfield.map_or(0, |h| h.ny as u32),
+            hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),
+            hf_oy: heightfield.map_or(0.0, |h| h.origin.y as f32),
+            hf_oz: heightfield.map_or(0.0, |h| h.origin.z as f32),
+            hf_cell: heightfield.map_or(1.0, |h| h.cell as f32),
+            solve_mode: u32::from(contact.impulse_solve),
+            _reserved_sweep: 0,
+            restitution: contact.restitution as f32,
+            restitution_threshold: contact.restitution_threshold as f32,
+            solref_erp: contact.solref_erp as f32,
+            margin: contact.margin as f32,
+            solimp_dmin: contact.solimp_dmin as f32,
+            solimp_dmax: contact.solimp_dmax as f32,
+            solimp_width: contact.solimp_width as f32,
+            solimp_mid: contact.solimp_midpoint as f32,
+            solimp_power: contact.solimp_power as f32,
             _pad0: 0.0,
-            _pad1: 0.0,
         };
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -225,8 +423,30 @@ impl ContactPipeline {
         });
         queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
+        // Heightfield node buffer. Always bound (the shader's binding count
+        // is fixed); a single placeholder node when there is no terrain,
+        // since hf_nx == 0 routes the shader around it anyway. Sized to this
+        // first field: `set_heightfield` rewrites in place per training
+        // iteration, so enable with the largest grid the run will use.
+        let hf_capacity = heightfield.map_or(1, |h| h.heights.len().max(1));
+        let hf_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("heightfield_buffer"),
+            size: (hf_capacity * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        match heightfield {
+            Some(h) => queue.write_buffer(&hf_buffer, 0, bytemuck::cast_slice(&h.heights)),
+            None => queue.write_buffer(&hf_buffer, 0, bytemuck::cast_slice(&[0.0f32])),
+        }
+
         // Pack geometry data
-        let (geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
+        let (mut geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
+        if let Some(p) = plane {
+            for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
+                geom_data[b * GEOM_STRIDE + 7] = 1.0;
+            }
+        }
         if collidable_bodies == 0 {
             return Err(no_collidable_geometry_error(model));
         }
@@ -254,7 +474,9 @@ impl ContactPipeline {
                 bgl_storage_ro(3), // q
                 bgl_storage_ro(4), // v
                 bgl_storage_rw(5), // ext_forces (output)
-                bgl_storage_rw(6), // contact_state (output + previous-step penetration)
+                bgl_storage_rw(6), // contact_state (readback)
+                bgl_storage_ro(7), // heightfield nodes
+                bgl_storage_ro(8), // qdd (free acceleration from this sweep's ABA)
             ],
         });
 
@@ -305,17 +527,57 @@ impl ContactPipeline {
                     binding: 6,
                     resource: state.contact_state_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: hf_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: state.qdd_buffer.as_entire_binding(),
+                },
             ],
         });
 
         Ok(Self {
             pipeline,
             bind_group,
-            _params_buffer: params_buffer,
+            params,
+            params_buffer,
             _geom_buffer: geom_buffer,
+            hf_buffer,
+            hf_capacity,
             nworld,
             collidable_bodies,
         })
+    }
+
+    /// Replace the terrain without rebuilding the pipeline.
+    ///
+    /// This is the randomization hook: a training run draws a fresh
+    /// heightfield per iteration, and a params write plus a buffer write is
+    /// all that costs. The new field may change shape and origin freely as
+    /// long as it fits the node capacity allocated at construction — wgpu
+    /// buffers cannot grow under a live bind group, so a larger grid needs
+    /// the pipeline rebuilt (enable contact with the bigger field first).
+    pub fn set_heightfield(&mut self, queue: &wgpu::Queue, hf: &Heightfield) -> Result<(), String> {
+        validate_heightfield(hf)?;
+        if hf.heights.len() > self.hf_capacity {
+            return Err(format!(
+                "heightfield has {} nodes but the GPU buffer was sized for {}; \
+                 enable contact with the largest grid first, or rebuild the pipeline",
+                hf.heights.len(),
+                self.hf_capacity
+            ));
+        }
+        self.params.hf_nx = hf.nx as u32;
+        self.params.hf_ny = hf.ny as u32;
+        self.params.hf_ox = hf.origin.x as f32;
+        self.params.hf_oy = hf.origin.y as f32;
+        self.params.hf_oz = hf.origin.z as f32;
+        self.params.hf_cell = hf.cell as f32;
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        queue.write_buffer(&self.hf_buffer, 0, bytemuck::cast_slice(&hf.heights));
+        Ok(())
     }
 
     /// Number of bodies whose geometry the contact pass can collide.
@@ -324,6 +586,16 @@ impl ContactPipeline {
     }
 
     /// Encode the contact compute pass into a command encoder.
+    /// Is this pipeline running the velocity-level impulse solve?
+    pub fn impulse_solve(&self) -> bool {
+        self.params.solve_mode == 1
+    }
+
+    /// Record the contact pass into `encoder`.
+    ///
+    /// One dispatch is one sweep: the host is expected to interleave this with
+    /// the ABA pass, so that the next sweep reads a `qdd` already carrying the
+    /// impulses this one wrote.
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("contact_pass"),
@@ -334,6 +606,30 @@ impl ContactPipeline {
         let workgroups = (self.nworld as u32).div_ceil(64);
         pass.dispatch_workgroups(workgroups, 1, 1);
     }
+}
+
+/// A malformed heightfield fails loudly at upload rather than as an
+/// out-of-bounds read in the shader, which wgpu clamps to whatever is in
+/// range — i.e. terrain that silently is not what the caller built.
+fn validate_heightfield(hf: &Heightfield) -> Result<(), String> {
+    if hf.nx == 0 || hf.ny == 0 {
+        return Err("heightfield needs at least one node per axis".into());
+    }
+    if hf.heights.len() != hf.nx * hf.ny {
+        return Err(format!(
+            "heightfield claims {}x{} nodes but carries {} heights",
+            hf.nx,
+            hf.ny,
+            hf.heights.len()
+        ));
+    }
+    if !(hf.cell.is_finite() && hf.cell > 0.0) {
+        return Err(format!(
+            "heightfield cell must be positive, got {}",
+            hf.cell
+        ));
+    }
+    Ok(())
 }
 
 // Bind group layout helpers
@@ -379,9 +675,8 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::GEOM_STRIDE;
-    use phyz_math::{Mat3, SpatialInertia, SpatialTransform};
     use phyz_model::Geometry;
+    use phyz_math::{Mat3, SpatialInertia, SpatialTransform};
     use phyz_model::ModelBuilder;
 
     fn ball_inertia(mass: f64, radius: f64) -> SpatialInertia {
@@ -423,6 +718,7 @@ mod tests {
             stiffness: 100.0,
             damping: 1.0,
             friction: 0.5,
+            ..Default::default()
         };
         let (data, collidable) = pack_geometries(&model, &params, None);
         assert_eq!(collidable, 1);
@@ -456,6 +752,7 @@ mod tests {
             stiffness: 100.0,
             damping: 1.0,
             friction: 0.5,
+            ..Default::default()
         };
         let gains = [
             BodyContactGains {
@@ -535,6 +832,7 @@ mod tests {
             stiffness: 1.354e4,
             damping: 10.0,
             friction: 0.5,
+            ..Default::default()
         };
         let err = params.check_stability(&model).unwrap_err();
         assert!(err.contains("tiny_link"), "unexpected message: {err}");

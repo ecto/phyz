@@ -26,6 +26,8 @@ fn problem(n: usize, mu: f64, b: &[f64], coupling: f64) -> ContactProblem {
         delassus[3 * dim] = coupling;
     }
     ContactProblem {
+        // Synthetic: no body structure, so `PerBody` behaves as `Full`.
+        bodies: Vec::new(),
         n,
         delassus,
         free_velocity: b.to_vec(),

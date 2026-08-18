@@ -26,6 +26,10 @@ struct BatchSimParams {
     _padding: u32,
 }
 
+/// Contact sweeps per step in impulse mode; mirrors
+/// `phyz_contact::GPU_SWEEPS`.
+pub const DEFAULT_CONTACT_SWEEPS: usize = 16;
+
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
     /// The wgpu device.
@@ -36,6 +40,15 @@ pub struct GpuBatchSimulator {
     pub state: GpuState,
     /// The physics model.
     pub model: Model,
+
+    /// Contact sweeps per step in impulse mode.
+    ///
+    /// Each sweep costs one extra ABA dispatch, because the interleaving is
+    /// what applies the Delassus operator. Defaults to
+    /// `phyz_contact::GPU_SWEEPS`, duplicated here rather than depended on —
+    /// `phyz-gpu` does not depend on `phyz-contact` — and asserted equal in
+    /// `tests/contact_impulse_parity.rs`.
+    pub contact_sweeps: usize,
 
     // Compute pipelines
     aba_pipeline: wgpu::ComputePipeline,
@@ -61,7 +74,7 @@ impl GpuBatchSimulator {
     ///
     /// `nworld` is the number of parallel environments to simulate.
     pub fn new(model: Model, nworld: usize) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
@@ -71,17 +84,16 @@ impl GpuBatchSimulator {
             compatible_surface: None,
             force_fallback_adapter: false,
         }))
+        .ok()
         .ok_or("Failed to find GPU adapter")?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("phyz-gpu-batch-device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: Default::default(),
-            },
-            None,
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            trace: wgpu::Trace::Off,
+            label: Some("phyz-gpu-batch-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: Default::default(),
+        }))
         .map_err(|e| format!("Failed to create device: {e}"))?;
 
         let device = Arc::new(device);
@@ -263,6 +275,7 @@ impl GpuBatchSimulator {
         });
 
         Ok(Self {
+            contact_sweeps: DEFAULT_CONTACT_SWEEPS,
             device,
             queue,
             state,
@@ -314,6 +327,7 @@ impl GpuBatchSimulator {
                 stiffness,
                 damping,
                 friction,
+                ..Default::default()
             },
         )?;
         let collidable = pipeline.collidable_bodies();
@@ -337,6 +351,41 @@ impl GpuBatchSimulator {
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
     ) -> Result<usize, String> {
+        self.enable_ground_contact_with_plane(ground_height, friction, gains, None)
+    }
+
+    /// [`Self::enable_ground_contact_per_body`] plus an optional
+    /// body-attached contact plane (see [`crate::contact_pipeline::BodyPlane`])
+    /// — the deck a rider stands on. One compute pass handles both: the same
+    /// FK feeds the ground test and the plane test, and forces land on both
+    /// the touching body and the plane's body.
+    pub fn enable_ground_contact_with_plane(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+    ) -> Result<usize, String> {
+        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+    }
+
+    /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain
+    /// instead of the flat plane.
+    ///
+    /// `ground_height` is ignored while a heightfield is loaded — the
+    /// surface comes from the field, and a
+    /// [`phyz_model::Heightfield::flat`] field reproduces the plane exactly.
+    /// Swap terrain between training iterations with
+    /// [`Self::set_heightfield`]; the node buffer is sized to this first
+    /// field, so start with the largest grid the run will use.
+    pub fn enable_contact_terrain(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        heightfield: Option<&phyz_model::Heightfield>,
+    ) -> Result<usize, String> {
         let pipeline = ContactPipeline::with_body_gains(
             &self.device,
             &self.queue,
@@ -348,12 +397,79 @@ impl GpuBatchSimulator {
                 stiffness: 0.0,
                 damping: 0.0,
                 friction,
+                ..Default::default()
             },
             Some(gains),
+            plane,
+            heightfield,
         )?;
         let collidable = pipeline.collidable_bodies();
         self.contact_pipeline = Some(pipeline);
         Ok(collidable)
+    }
+
+    /// Enable contact as a **velocity-level convex impulse solve** — the same
+    /// contact problem `phyz_contact::solve_contacts` states, rather than the
+    /// penalty approximation of it.
+    ///
+    /// This is the entry point that makes GPU results transferable to the CPU
+    /// path. The penalty model differs from the CPU's in ways that are not
+    /// tuning: it sinks by `mg/k` at rest, its friction is a slip-speed
+    /// regularization that creeps instead of sticking, and its dampers are
+    /// explicit and need caps to stay stable. The impulse solve has none of
+    /// those properties because it is not an approximation of the CPU model —
+    /// it is the same model, solved with a documented sweep budget.
+    ///
+    /// Cost: one extra ABA dispatch per sweep (see
+    /// [`Self::contact_sweeps`]), because interleaving `[contact, ABA]` is how
+    /// the Delassus operator gets applied without being assembled.
+    ///
+    /// `gains` is still required — it carries per-body geometry packing — but
+    /// the stiffness and damping in it are unused in this mode.
+    pub fn enable_contact_impulse(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[crate::contact_pipeline::BodyContactGains],
+        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        heightfield: Option<&phyz_model::Heightfield>,
+    ) -> Result<usize, String> {
+        let dt = self.model.dt;
+        let pipeline = ContactPipeline::with_body_gains(
+            &self.device,
+            &self.queue,
+            &self.model,
+            &self.state,
+            &self.bodies_buffer,
+            crate::contact_pipeline::GroundContactParams {
+                ground_height,
+                friction,
+                impulse_solve: true,
+                // MuJoCo's SolRef default, evaluated at this model's dt so the
+                // shader never re-derives it.
+                solref_erp: crate::contact_pipeline::GroundContactParams::solref_erp_from(
+                    0.02, 1.0, dt,
+                ),
+                ..Default::default()
+            },
+            Some(gains),
+            plane,
+            heightfield,
+        )?;
+        let collidable = pipeline.collidable_bodies();
+        self.contact_pipeline = Some(pipeline);
+        Ok(collidable)
+    }
+
+    /// Replace the contact terrain in place — a buffer write, no pipeline
+    /// rebuild. Errors if contact is not enabled or the new field outgrows
+    /// the buffer allocated by [`Self::enable_contact_terrain`].
+    pub fn set_heightfield(&mut self, hf: &phyz_model::Heightfield) -> Result<(), String> {
+        let pipeline = self
+            .contact_pipeline
+            .as_mut()
+            .ok_or("contact not enabled — call enable_contact_terrain first")?;
+        pipeline.set_heightfield(&self.queue, hf)
     }
 
     /// Enable PD position servos on the given DOFs.
@@ -396,8 +512,21 @@ impl GpuBatchSimulator {
             .write_buffer(&self.state.ctrl_buffer, 0, bytemuck::cast_slice(&ctrl_data));
     }
 
+    /// Encode one ABA dispatch: accelerations from the current state and
+    /// whatever `ext_forces` currently holds.
+    fn encode_aba(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("aba_general_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.aba_pipeline);
+        pass.set_bind_group(0, &self.aba_bind_group, &[]);
+        let workgroups = (self.state.nworld as u32).div_ceil(64);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+    }
+
     /// Run one simulation step on GPU (contact + ABA + integration).
-    pub fn step(&self) {
+    pub fn step(&mut self) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -409,13 +538,48 @@ impl GpuBatchSimulator {
             pd.encode(&mut encoder);
         }
 
-        // Pass 0: Contact detection (writes external forces)
-        if let Some(contact) = &self.contact_pipeline {
+        // ── Contact ──
+        //
+        // Penalty mode is one pass: forces in, ABA once, done.
+        //
+        // Impulse mode interleaves [contact, ABA] so that each contact sweep
+        // reads a `qdd` that already carries the previous sweep's impulses
+        // through the full articulated chain. That interleaving IS the
+        // Delassus operator application — the residual `A f + b` is evaluated
+        // exactly, with the true `M^-1`, without ever assembling `A`. See the
+        // IMPULSE MODE block in `shaders.rs`.
+        //
+        // The leading ABA (before any contact pass) is what gives sweep 0 a
+        // free acceleration to measure against; without it the first sweep
+        // would size its impulses against a stale `qdd` from the previous
+        // step and the solve would lag the state by one frame.
+        let sweeps = match &self.contact_pipeline {
+            Some(c) if c.impulse_solve() => self.contact_sweeps,
+            _ => 0,
+        };
+
+        if sweeps > 0 {
+            self.encode_aba(&mut encoder);
+            // No per-sweep uniform: every sweep runs the same shader with the
+            // same parameters, and it could not be otherwise here. All sweeps
+            // are encoded into ONE command buffer, and `queue.write_buffer`
+            // writes are ordered at submission — so a uniform rewritten between
+            // encodes would take its LAST value for every dispatch, silently.
+            // Per-sweep state would need separate submits or a dynamic offset;
+            // nothing needs it, because the impulses in `contact_state` carry
+            // all the state a sweep depends on.
+            for _ in 0..sweeps {
+                if let Some(contact) = &self.contact_pipeline {
+                    contact.encode(&mut encoder);
+                }
+                self.encode_aba(&mut encoder);
+            }
+        } else if let Some(contact) = &self.contact_pipeline {
             contact.encode(&mut encoder);
         }
 
         // Pass 1: ABA (compute accelerations, reads external forces)
-        {
+        if sweeps == 0 {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("aba_general_pass"),
                 timestamp_writes: None,
@@ -645,7 +809,7 @@ mod tests {
         let cpu_qdd = aba(model, state);
 
         // GPU
-        let sim = match GpuBatchSimulator::new(model.clone(), 1) {
+        let mut sim = match GpuBatchSimulator::new(model.clone(), 1) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Skipping GPU test (no adapter): {e}");
@@ -718,7 +882,7 @@ mod tests {
     #[test]
     fn test_batch_simulation() {
         let model = make_double_pendulum();
-        let sim = match GpuBatchSimulator::new(model.clone(), 4) {
+        let mut sim = match GpuBatchSimulator::new(model.clone(), 4) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Skipping GPU test (no adapter): {e}");
