@@ -395,7 +395,41 @@ fn suite_ant<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
 
 /// CUDA C against WGSL: same f32 arithmetic on both sides, so the two must
 /// agree far more tightly than either agrees with the f64 CPU.
+
+/// A wgpu adapter worth comparing kernels against: a real GPU (or Metal /
+/// Vulkan on a real device). A software rasterizer (llvmpipe over EGL, which
+/// is what a headless CUDA pod hands wgpu when it cannot open /dev/dri) is
+/// not one — it runs the WGSL, but its LLVM float pipeline is not the CPU's
+/// and not the GPU's, and it is the CPU that is the reference here.
+fn wgpu_hardware_adapter() -> bool {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all(),
+        ..Default::default()
+    });
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: None,
+        force_fallback_adapter: false,
+    })) else {
+        return false;
+    };
+    let info = adapter.get_info();
+    let software = matches!(info.device_type, wgpu::DeviceType::Cpu)
+        || info.name.to_lowercase().contains("llvmpipe")
+        || info.name.to_lowercase().contains("swiftshader");
+    if software {
+        eprintln!(
+            "wgpu adapter is software ({}); kernel-vs-kernel skipped",
+            info.name
+        );
+    }
+    !software
+}
+
 fn suite_vs_wgpu<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    if !wgpu_hardware_adapter() {
+        return;
+    }
     let model = free_base_with_limb();
     let Ok(mut wg) = GpuBatchSimulator::new(model.clone(), 4) else {
         eprintln!("skipping kernel-vs-kernel: no wgpu adapter");
@@ -590,6 +624,9 @@ fn kernel_vs_kernel<B: KernelBackend>(
     setup_wg: impl FnOnce(&mut GpuBatchSimulator),
     setup_cu: impl FnOnce(&mut BatchSim<B>),
 ) -> bool {
+    if !wgpu_hardware_adapter() {
+        return false;
+    }
     let Ok(mut wg) = GpuBatchSimulator::new(model.clone(), states.len()) else {
         eprintln!("skipping {label}: no wgpu adapter");
         return false;
