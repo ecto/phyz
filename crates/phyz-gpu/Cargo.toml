@@ -11,6 +11,17 @@ keywords = ["gpu", "wgpu", "physics", "simulation", "compute"]
 categories = ["simulation", "science", "graphics"]
 readme = "README.md"
 
+[features]
+# CUDA execution path (`phyz_gpu::cuda::CudaBatchSimulator`). Kernels are
+# compiled at runtime with NVRTC and the driver is dlopened, so this builds on
+# any machine; only *running* needs an NVIDIA driver >= the pinned CUDA
+# version. See docs/design/cuda-backend.md.
+cuda = ["dep:cudarc"]
+# Compile the CUDA C kernels as host C++ and run them on the CPU — the parity
+# harness for the CUDA port on machines without an NVIDIA GPU. Needs a C++
+# compiler at build time, nothing else.
+cuda-host = ["dep:cc"]
+
 [dependencies]
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
@@ -19,6 +30,19 @@ wgpu = "23.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"
 futures-intrusive = "0.5"
+# `cuda-12080` pins the driver API surface to CUDA 12.8 (the R570 driver a
+# Blackwell pod ships). Newer drivers are backwards compatible; an older one
+# fails at `CudaBatchSimulator::new` with a clear error rather than at link.
+cudarc = { version = "0.19", optional = true, default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-12080",
+] }
+
+[build-dependencies]
+cc = { version = "1.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
