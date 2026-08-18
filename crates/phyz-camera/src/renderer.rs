@@ -367,9 +367,6 @@ impl RgbdCamera {
         self.lighting = lighting;
     }
 
-    /// Upload a scene's geometry. Call once per topology change; per-step pose
-    /// updates go through [`Self::render`], which re-uploads only the small
-    /// instance buffer.
     /// Declare that mesh *vertices* changed under a live camera.
     ///
     /// The next render re-uploads them. Needed because the cheap path only
@@ -382,6 +379,9 @@ impl RgbdCamera {
         self.scene_dirty = true;
     }
 
+    /// Upload a scene's geometry. Call once per topology change; per-step pose
+    /// updates go through [`Self::render`], which re-uploads only the small
+    /// instance buffer.
     pub fn upload_scene(&mut self, scene: &RenderScene) {
         let mut vertices: Vec<crate::mesh::Vertex> = Vec::new();
         let mut draws = Vec::new();
