@@ -393,9 +393,6 @@ fn suite_ant<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     assert_state_close("ant 100 steps", &out[0], &cpu, 5e-3);
 }
 
-/// CUDA C against WGSL: same f32 arithmetic on both sides, so the two must
-/// agree far more tightly than either agrees with the f64 CPU.
-
 /// A wgpu adapter worth comparing kernels against: a real GPU (or Metal /
 /// Vulkan on a real device). A software rasterizer (llvmpipe over EGL, which
 /// is what a headless CUDA pod hands wgpu when it cannot open /dev/dri) is
@@ -426,6 +423,8 @@ fn wgpu_hardware_adapter() -> bool {
     !software
 }
 
+/// CUDA C against WGSL: same f32 arithmetic on both sides, so the two must
+/// agree far more tightly than either agrees with the f64 CPU.
 fn suite_vs_wgpu<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     if !wgpu_hardware_adapter() {
         return;
