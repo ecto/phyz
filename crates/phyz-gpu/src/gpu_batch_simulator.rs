@@ -6,6 +6,7 @@
 
 use crate::contact_pipeline::ContactPipeline;
 use crate::gpu_state::GpuState;
+use crate::layout::{pack_bodies, pack_rows, unpack_contacts, unpack_states};
 use crate::shaders::{ABA_GENERAL_SHADER, INTEGRATE_SHADER};
 use bytemuck::{Pod, Zeroable};
 use phyz_model::{Model, State};
@@ -24,25 +25,6 @@ struct BatchSimParams {
     gz: f32,
     _padding: u32,
 }
-
-/// Packed body data for GPU upload (32 f32 values per body).
-///
-/// Layout matches the WGSL shader's `BODY_STRIDE` of 32:
-/// ```text
-/// [0]  parent (bitcast i32)
-/// [1]  joint_type (0=revolute, 1=prismatic, 2=fixed, 3=ball, 4=free)
-/// [2]  q_offset
-/// [3]  v_offset
-/// [4]  mass
-/// [5..8]  com (x,y,z)
-/// [8..14] inertia (xx,yy,zz,xy,xz,yz)
-/// [14..23] ptj rotation (row-major 3x3)
-/// [23..26] ptj translation (x,y,z)
-/// [26..29] axis (x,y,z)
-/// [29] damping
-/// [30..32] padding
-/// ```
-const BODY_STRIDE: usize = 32;
 
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
@@ -409,13 +391,7 @@ impl GpuBatchSimulator {
 
     /// Upload control inputs for all environments.
     pub fn set_controls(&self, controls: &[Vec<f64>]) {
-        let nv = self.model.nv;
-        let mut ctrl_data = vec![0.0f32; self.state.nworld * nv];
-        for (i, ctrl) in controls.iter().enumerate() {
-            for (j, &val) in ctrl.iter().enumerate().take(nv) {
-                ctrl_data[i * nv + j] = val as f32;
-            }
-        }
+        let ctrl_data = pack_rows(controls, self.state.nworld, self.model.nv);
         self.queue
             .write_buffer(&self.state.ctrl_buffer, 0, bytemuck::cast_slice(&ctrl_data));
     }
@@ -470,20 +446,7 @@ impl GpuBatchSimulator {
     pub fn readback_states(&self) -> Vec<State> {
         let (q_data, v_data) =
             pollster::block_on(self.state.download_states()).expect("Failed to download states");
-
-        let mut states = Vec::new();
-        for i in 0..self.state.nworld {
-            let mut state = self.model.default_state();
-            for j in 0..self.state.nq {
-                state.q[j] = q_data[i * self.state.nq + j] as f64;
-            }
-            for j in 0..self.state.nv {
-                state.v[j] = v_data[i * self.state.nv + j] as f64;
-            }
-            states.push(state);
-        }
-
-        states
+        unpack_states(&self.model, self.state.nworld, &q_data, &v_data)
     }
 
     /// Download per-body ground-contact state from the GPU.
@@ -504,87 +467,12 @@ impl GpuBatchSimulator {
         }
 
         let data = pollster::block_on(self.state.download_contact_states())?;
-        let stride = crate::contact_pipeline::CONTACT_STATE_STRIDE;
-        let nb = self.state.nbodies;
-
-        let mut result = Vec::with_capacity(self.state.nworld);
-        for env in 0..self.state.nworld {
-            let mut bodies = Vec::with_capacity(nb);
-            for body in 0..nb {
-                let base = (env * nb + body) * stride;
-                let s = &data[base..base + stride];
-                bodies.push(crate::BodyContactState {
-                    touching: s[0] != 0.0,
-                    penetration: s[1] as f64,
-                    point: phyz_math::Vec3::new(s[2] as f64, s[3] as f64, s[4] as f64),
-                    force: phyz_math::Vec3::new(s[5] as f64, s[6] as f64, s[7] as f64),
-                });
-            }
-            result.push(bodies);
-        }
-
-        Ok(result)
+        Ok(unpack_contacts(
+            &data,
+            self.state.nworld,
+            self.state.nbodies,
+        ))
     }
-}
-
-/// Pack model bodies into a flat f32 array for GPU upload.
-fn pack_bodies(model: &Model) -> Vec<f32> {
-    let nb = model.nbodies();
-    let mut data = vec![0.0f32; nb * BODY_STRIDE];
-
-    for (i, body) in model.bodies.iter().enumerate() {
-        let base = i * BODY_STRIDE;
-        let joint = &model.joints[body.joint_idx];
-
-        // [0] parent
-        data[base] = f32::from_bits(body.parent as u32);
-        // [1] joint_type
-        let jtype: u32 = match joint.joint_type {
-            phyz_model::JointType::Revolute | phyz_model::JointType::Hinge => 0,
-            phyz_model::JointType::Prismatic | phyz_model::JointType::Slide => 1,
-            phyz_model::JointType::Fixed => 2,
-            phyz_model::JointType::Spherical | phyz_model::JointType::Ball => 3,
-            phyz_model::JointType::Free => 4,
-        };
-        data[base + 1] = f32::from_bits(jtype);
-        // [2] q_offset
-        data[base + 2] = f32::from_bits(model.q_offsets[body.joint_idx] as u32);
-        // [3] v_offset
-        data[base + 3] = f32::from_bits(model.v_offsets[body.joint_idx] as u32);
-        // [4] mass
-        data[base + 4] = body.inertia.mass as f32;
-        // [5..8] com
-        data[base + 5] = body.inertia.com.x as f32;
-        data[base + 6] = body.inertia.com.y as f32;
-        data[base + 7] = body.inertia.com.z as f32;
-        // [8..14] inertia (xx,yy,zz,xy,xz,yz)
-        data[base + 8] = body.inertia.inertia[(0, 0)] as f32;
-        data[base + 9] = body.inertia.inertia[(1, 1)] as f32;
-        data[base + 10] = body.inertia.inertia[(2, 2)] as f32;
-        data[base + 11] = body.inertia.inertia[(0, 1)] as f32;
-        data[base + 12] = body.inertia.inertia[(0, 2)] as f32;
-        data[base + 13] = body.inertia.inertia[(1, 2)] as f32;
-        // [14..23] ptj rotation (row-major)
-        let r = &joint.parent_to_joint.rot;
-        for row in 0..3 {
-            for col in 0..3 {
-                data[base + 14 + row * 3 + col] = r[(row, col)] as f32;
-            }
-        }
-        // [23..26] ptj translation
-        data[base + 23] = joint.parent_to_joint.pos.x as f32;
-        data[base + 24] = joint.parent_to_joint.pos.y as f32;
-        data[base + 25] = joint.parent_to_joint.pos.z as f32;
-        // [26..29] axis
-        data[base + 26] = joint.axis.x as f32;
-        data[base + 27] = joint.axis.y as f32;
-        data[base + 28] = joint.axis.z as f32;
-        // [29] damping
-        data[base + 29] = joint.damping as f32;
-        // [30..32] padding
-    }
-
-    data
 }
 
 // Helper functions for bind group layout entries
@@ -630,6 +518,7 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::BODY_STRIDE;
     use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
     use phyz_model::ModelBuilder;
     use phyz_rigid::aba;

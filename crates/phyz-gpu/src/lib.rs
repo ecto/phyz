@@ -12,10 +12,13 @@
 pub struct ReadmeDocTests;
 
 pub mod contact_pipeline;
+#[cfg(any(feature = "cuda", feature = "cuda-host"))]
+pub mod cuda;
 pub mod gpu_batch_simulator;
 pub mod gpu_simulator;
 pub mod gpu_state;
 pub mod interop;
+pub mod layout;
 pub mod pd_pipeline;
 pub mod shaders;
 pub mod sparse;
@@ -30,3 +33,8 @@ pub use gpu_state::GpuState;
 pub use pd_pipeline::{PdDof, PdPipeline};
 
 pub use interop::GpuInterop;
+
+#[cfg(feature = "cuda")]
+pub use cuda::CudaBatchSimulator;
+#[cfg(feature = "cuda-host")]
+pub use cuda::HostBatchSimulator;

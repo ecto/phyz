@@ -686,11 +686,18 @@ fn build_motion_transform(rot: array<f32, 9>, pos: vec3<f32>) -> array<f32, 36> 
     // R * skew(p), then negate
     // (R * skew(p))_ij = sum_k R_ik * skew(p)_kj
     let px = pos.x; let py = pos.y; let pz = pos.z;
-    // skew matrix columns: col0 = [0, pz, -py], col1 = [-pz, 0, px], col2 = [py, -px, 0]
+    // skp is ROW-major (indexed skp[k*3+c] below), so it must hold skew(p)
+    // itself: row0 = [0, -pz, py], row1 = [pz, 0, -px], row2 = [-py, px, 0].
+    // It used to hold the transpose (= -skew(p)), which flipped the sign of
+    // the translation block of X and so of every articulated inertia
+    // propagated across a joint with a non-zero parent_to_joint offset —
+    // i.e. every real robot. apply_motion / inv_apply_force were hand-written
+    // and correct, which is why single-step tests at 5e-3 never caught it;
+    // tests/joint_offset_vs_cpu.rs pins the analytic double pendulum.
     var skp: array<f32, 9>;
-    skp[0] = 0.0;  skp[1] = pz;   skp[2] = -py;
-    skp[3] = -pz;  skp[4] = 0.0;  skp[5] = px;
-    skp[6] = py;   skp[7] = -px;  skp[8] = 0.0;
+    skp[0] = 0.0;  skp[1] = -pz;  skp[2] = py;
+    skp[3] = pz;   skp[4] = 0.0;  skp[5] = -px;
+    skp[6] = -py;  skp[7] = px;   skp[8] = 0.0;
 
     for (var r = 0u; r < 3u; r++) {
         for (var c = 0u; c < 3u; c++) {

@@ -25,6 +25,7 @@
 //! unactuated by construction.
 
 use crate::gpu_state::GpuState;
+use crate::layout::{check_pd_dofs, pack_pd_dofs, pack_rows};
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 
@@ -53,18 +54,6 @@ struct PdParams {
     nv: u32,
     n_dofs: u32,
 }
-
-/// Packed per-DOF data (8 f32 per entry).
-///
-/// ```text
-/// [0] q_index (as f32; exact for any index < 2^24)
-/// [1] v_index
-/// [2] kp
-/// [3] kd
-/// [4] max_force
-/// [5..8] reserved
-/// ```
-const DOF_STRIDE: usize = 8;
 
 /// WGSL source for the PD servo pass.
 ///
@@ -128,17 +117,7 @@ impl PdPipeline {
         state: &GpuState,
         dofs: &[PdDof],
     ) -> Result<Self, String> {
-        if dofs.is_empty() {
-            return Err("PD pipeline needs at least one servoed DOF".into());
-        }
-        for d in dofs {
-            if d.q_index >= state.nq || d.v_index >= state.nv {
-                return Err(format!(
-                    "PD DOF out of range: q_index {} (nq {}), v_index {} (nv {})",
-                    d.q_index, state.nq, d.v_index, state.nv
-                ));
-            }
-        }
+        check_pd_dofs(dofs, state.nq, state.nv)?;
         let nworld = state.nworld;
         let n_dofs = dofs.len();
 
@@ -156,15 +135,7 @@ impl PdPipeline {
         });
         queue.write_buffer(&params_buffer, 0, bytemuck::bytes_of(&params));
 
-        let mut dof_data = vec![0.0f32; n_dofs * DOF_STRIDE];
-        for (i, d) in dofs.iter().enumerate() {
-            let b = i * DOF_STRIDE;
-            dof_data[b] = d.q_index as f32;
-            dof_data[b + 1] = d.v_index as f32;
-            dof_data[b + 2] = d.kp as f32;
-            dof_data[b + 3] = d.kd as f32;
-            dof_data[b + 4] = d.max_force as f32;
-        }
+        let dof_data = pack_pd_dofs(dofs);
         let dofs_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pd_dofs"),
             size: (dof_data.len() * 4) as u64,
@@ -257,12 +228,7 @@ impl PdPipeline {
     /// Upload per-environment position targets (`targets[env][dof]`, in the
     /// order the pipeline's `PdDof` list was given).
     pub fn set_targets(&self, queue: &wgpu::Queue, targets: &[Vec<f64>]) {
-        let mut data = vec![0.0f32; self.nworld * self.n_dofs];
-        for (w, t) in targets.iter().enumerate().take(self.nworld) {
-            for (d, &val) in t.iter().enumerate().take(self.n_dofs) {
-                data[w * self.n_dofs + d] = val as f32;
-            }
-        }
+        let data = pack_rows(targets, self.nworld, self.n_dofs);
         queue.write_buffer(&self.targets_buffer, 0, bytemuck::cast_slice(&data));
     }
 

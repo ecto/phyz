@@ -55,6 +55,13 @@ jobs:
       # which hides every failure behind whichever crate happens to fail first.
       - name: Test workspace
         run: cargo test --workspace --no-fail-fast
+      # The CUDA path's parity harness. `cuda-host` compiles the CUDA C kernels
+      # as host C++ (g++ on the runner) and runs them against the f64 CPU;
+      # `cuda` builds cudarc with a dlopened driver, so it links here and its
+      # device tests report `skipping` rather than fail. This is what keeps
+      # cuda/phyz_kernels.cu honest on a runner with no NVIDIA GPU.
+      - name: CUDA kernels on the host, against the CPU
+        run: cargo test -p phyz-gpu --features cuda,cuda-host --no-fail-fast
 
   # The cross-platform half of the reproducibility contract.
   #

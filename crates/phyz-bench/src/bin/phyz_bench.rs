@@ -12,13 +12,14 @@ use phyz_bench::report::{Report, SCHEMA_VERSION, Suite};
 use phyz_bench::suites;
 use phyz_bench::{Budget, meta::RunMeta};
 
-const SUITE_NAMES: [&str; 7] = [
+const SUITE_NAMES: [&str; 8] = [
     "single-sim",
     "energy",
     "divergence",
     "gradient",
     "adjoint-scaling",
     "gpu",
+    "gpu-cuda",
     "rapier",
 ];
 
@@ -105,6 +106,10 @@ fn main() {
     if wants("gpu") {
         eprintln!("running: GPU batch sweep...");
         suites.push(suites::gpu_batch::run(budget));
+    }
+    if wants("gpu-cuda") {
+        eprintln!("running: GPU batch sweep (CUDA)...");
+        suites.push(suites::gpu_batch::run_cuda(budget));
     }
     if wants("rapier") {
         eprintln!("running: cross-library comparison...");

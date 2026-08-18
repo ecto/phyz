@@ -81,6 +81,33 @@ A working wgpu adapter (Metal, Vulkan or DX12). `GpuBatchSimulator::new`
 returns `Err` rather than panicking when none is available, so callers can fall
 back to the CPU path.
 
+## CUDA
+
+Rented cloud GPUs often expose `/dev/nvidia*` but not `/dev/dri/renderD*`, so
+Vulkan cannot open a device while CUDA can. The `cuda` feature adds
+`CudaBatchSimulator` — the same physics and the same method surface, with the
+kernels in CUDA C compiled at runtime by NVRTC:
+
+```rust,no_run
+# #[cfg(feature = "cuda")]
+# fn demo(model: phyz_model::Model, states: Vec<phyz_model::State>) -> Result<(), String> {
+use phyz_gpu::CudaBatchSimulator;
+
+let mut sim = CudaBatchSimulator::new(model, 4096)?; // Err, not panic, without a driver
+sim.load_states(&states);
+for _ in 0..500 {
+    sim.step();
+}
+let out = sim.readback_states();
+# Ok(())
+# }
+```
+
+The crate builds without a CUDA toolkit (the driver is dlopened); running needs
+an NVIDIA driver with CUDA API ≥ 12.8 and `libnvrtc`. `--features cuda-host`
+compiles the same CUDA C as host C++ so the port can be checked against the CPU
+anywhere. See `docs/design/cuda-backend.md`.
+
 ## Part of phyz
 
 [`phyz`](https://github.com/ecto/phyz) is an open-source differentiable

@@ -7,7 +7,7 @@ use crate::gpu_state::GpuState;
 use crate::shaders::CONTACT_GROUND_SHADER;
 use bytemuck::{Pod, Zeroable};
 use phyz_math::Vec3;
-use phyz_model::{Geometry, Model};
+use phyz_model::Model;
 use std::sync::Arc;
 
 /// Contact parameters for the ground plane shader.
@@ -41,30 +41,8 @@ struct ContactParams {
     _pad1: f32,
 }
 
-/// Packed geometry data per body (16 f32 values).
-///
-/// ```text
-/// [0]  geom_type (0=none, 1=sphere, 2=box, 3=capsule, 4=cylinder, 5=mesh)
-/// [1]  param0 (radius for sphere/capsule/cylinder, half_x for box, aabb min_x for mesh)
-/// [2]  param1 (length for capsule, half_y for box, height for cylinder, aabb min_y for mesh)
-/// [3]  param2 (half_z for box, aabb min_z for mesh)
-/// [4..7] aabb max (x,y,z) for mesh
-/// [7]  reserved
-/// [8]  contact stiffness (per body)
-/// [9]  contact damping (per body)
-/// [10..16] reserved
-/// ```
-const GEOM_STRIDE: usize = 16;
-
-/// Floats per body in the contact-state buffer.
-///
-/// ```text
-/// [0]  touching (1.0 while penetrating, else 0.0)
-/// [1]  penetration depth, metres
-/// [2..5] contact point, world frame (x, y, z)
-/// [5..8] contact force, world frame (x, y, z)
-/// ```
-pub const CONTACT_STATE_STRIDE: usize = 8;
+pub use crate::layout::CONTACT_STATE_STRIDE;
+use crate::layout::{lightest_collidable_body, no_collidable_geometry_error, pack_geometries};
 
 /// Explicit-integration stability factor: a penalty spring of stiffness `k`
 /// on a body of mass `m` has natural frequency `w = sqrt(k/m)`, and the
@@ -250,18 +228,7 @@ impl ContactPipeline {
         // Pack geometry data
         let (geom_data, collidable_bodies) = pack_geometries(model, &contact, body_gains);
         if collidable_bodies == 0 {
-            let skipped: Vec<&str> = model
-                .bodies
-                .iter()
-                .filter(|b| gpu_geom_type(b.geometry.as_ref()) == 0)
-                .map(|b| b.name.as_str())
-                .collect();
-            return Err(format!(
-                "ground contact enabled but no body has GPU-collidable geometry \
-                 (supported: sphere, box, capsule, cylinder, mesh); \
-                 bodies without a supported shape: [{}]",
-                skipped.join(", ")
-            ));
+            return Err(no_collidable_geometry_error(model));
         }
         let geom_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("geometry_buffer"),
@@ -369,103 +336,6 @@ impl ContactPipeline {
     }
 }
 
-/// The GPU geometry type code for a body's primary collision shape.
-fn gpu_geom_type(geometry: Option<&Geometry>) -> u32 {
-    match geometry {
-        None | Some(Geometry::Plane { .. }) => 0,
-        Some(Geometry::Sphere { .. }) => 1,
-        Some(Geometry::Box { .. }) => 2,
-        Some(Geometry::Capsule { .. }) => 3,
-        Some(Geometry::Cylinder { .. }) => 4,
-        Some(Geometry::Mesh { .. }) => 5,
-    }
-}
-
-/// The lightest body the contact pass can collide, for the stability bound.
-fn lightest_collidable_body(model: &Model) -> Option<(&str, f64)> {
-    model
-        .bodies
-        .iter()
-        .filter(|b| gpu_geom_type(b.geometry.as_ref()) != 0 && b.inertia.mass > 0.0)
-        .map(|b| (b.name.as_str(), b.inertia.mass))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-}
-
-/// Pack body geometry data into a flat f32 array.
-///
-/// Returns the packed data and the number of bodies with collidable geometry.
-fn pack_geometries(
-    model: &Model,
-    contact: &GroundContactParams,
-    body_gains: Option<&[BodyContactGains]>,
-) -> (Vec<f32>, usize) {
-    let nb = model.nbodies();
-    let mut data = vec![0.0f32; nb * GEOM_STRIDE];
-    let mut collidable = 0;
-
-    for (i, body) in model.bodies.iter().enumerate() {
-        let base = i * GEOM_STRIDE;
-        match &body.geometry {
-            Some(Geometry::Sphere { radius }) => {
-                data[base] = 1.0;
-                data[base + 1] = *radius as f32;
-            }
-            Some(Geometry::Box { half_extents }) => {
-                data[base] = 2.0;
-                data[base + 1] = half_extents.x as f32;
-                data[base + 2] = half_extents.y as f32;
-                data[base + 3] = half_extents.z as f32;
-            }
-            Some(Geometry::Capsule { radius, length }) => {
-                data[base] = 3.0;
-                data[base + 1] = *radius as f32;
-                data[base + 2] = *length as f32;
-            }
-            Some(Geometry::Cylinder { radius, height }) => {
-                data[base] = 4.0;
-                data[base + 1] = *radius as f32;
-                data[base + 2] = *height as f32;
-            }
-            Some(Geometry::Mesh { vertices, .. }) if !vertices.is_empty() => {
-                // Body-frame AABB; the shader takes the lowest of its eight
-                // rotated corners. Coarser than the true hull but it collides,
-                // which silence did not.
-                let mut mn = *vertices.first().unwrap();
-                let mut mx = mn;
-                for v in vertices {
-                    mn = Vec3::new(mn.x.min(v.x), mn.y.min(v.y), mn.z.min(v.z));
-                    mx = Vec3::new(mx.x.max(v.x), mx.y.max(v.y), mx.z.max(v.z));
-                }
-                data[base] = 5.0;
-                data[base + 1] = mn.x as f32;
-                data[base + 2] = mn.y as f32;
-                data[base + 3] = mn.z as f32;
-                data[base + 4] = mx.x as f32;
-                data[base + 5] = mx.y as f32;
-                data[base + 6] = mx.z as f32;
-            }
-            // Planes are the ground's own representation and empty meshes have
-            // no extent; neither can collide with the ground plane.
-            None | Some(Geometry::Plane { .. }) | Some(Geometry::Mesh { .. }) => {
-                data[base] = 0.0;
-            }
-        }
-
-        if data[base] != 0.0 {
-            collidable += 1;
-        }
-
-        let (k, d) = match body_gains {
-            Some(gains) => (gains[i].stiffness, gains[i].damping),
-            None => (contact.stiffness, contact.damping),
-        };
-        data[base + 8] = k as f32;
-        data[base + 9] = d as f32;
-    }
-
-    (data, collidable)
-}
-
 // Bind group layout helpers
 fn bgl_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -509,7 +379,9 @@ fn bgl_storage_rw(binding: u32) -> wgpu::BindGroupLayoutEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::GEOM_STRIDE;
     use phyz_math::{Mat3, SpatialInertia, SpatialTransform};
+    use phyz_model::Geometry;
     use phyz_model::ModelBuilder;
 
     fn ball_inertia(mass: f64, radius: f64) -> SpatialInertia {

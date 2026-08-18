@@ -13,7 +13,8 @@
 //! it can be subtracted mentally.
 //!
 //! Compiled only with `--features gpu`, and reports `skipped` (rather than
-//! failing) when no adapter is available.
+//! failing) when no adapter is available. `--features gpu-cuda` adds the same
+//! sweep on the CUDA path (`run_cuda`), for hosts where Vulkan is unavailable.
 
 use crate::report::Suite;
 use crate::timing::Budget;
@@ -30,6 +31,11 @@ const SUITE_DESC: &str = "Environment-steps per second on the phyz-gpu wgpu path
      running the same scene, which is the number that decides whether the GPU \
      path is worth using at all.";
 
+const CUDA_SUITE_NAME: &str = "batched GPU throughput (CUDA)";
+const CUDA_SUITE_DESC: &str = "Environment-steps per second on the phyz-gpu CUDA path, swept across \
+     batch size — the same sweep as the wgpu suite, on the backend a rented \
+     cloud GPU can actually open.";
+
 #[cfg(not(feature = "gpu"))]
 /// Run the GPU batch suite (disabled build: always reports skipped).
 pub fn run(_budget: Budget) -> Suite {
@@ -44,6 +50,20 @@ pub fn run(_budget: Budget) -> Suite {
 #[cfg(feature = "gpu")]
 pub use enabled::run;
 
+#[cfg(not(feature = "gpu-cuda"))]
+/// Run the CUDA batch suite (disabled build: always reports skipped).
+pub fn run_cuda(_budget: Budget) -> Suite {
+    Suite::skipped(
+        CUDA_SUITE_NAME,
+        CUDA_SUITE_DESC,
+        "built without `--features gpu-cuda`; rebuild with `cargo run --release -p phyz-bench \
+         --features gpu-cuda` on a machine with an NVIDIA driver",
+    )
+}
+
+#[cfg(feature = "gpu-cuda")]
+pub use enabled::run_cuda;
+
 #[cfg(feature = "gpu")]
 mod enabled {
     use super::*;
@@ -53,23 +73,83 @@ mod enabled {
     use crate::suites::single_sim;
     use crate::timing::measure;
     use phyz_gpu::GpuBatchSimulator;
+    use phyz_model::{Model, State};
+
+    /// The two batch simulators, seen through the four calls the sweep makes.
+    trait Batch: Sized {
+        const ENGINE: &'static str;
+        fn create(model: &Model, batch: usize) -> Result<Self, String>;
+        fn load_states(&mut self, states: &[State]);
+        fn set_controls(&mut self, controls: &[Vec<f64>]);
+        fn step(&mut self);
+        fn readback_states(&mut self) -> Vec<State>;
+    }
+
+    impl Batch for GpuBatchSimulator {
+        const ENGINE: &'static str = "phyz-gpu";
+        fn create(model: &Model, batch: usize) -> Result<Self, String> {
+            GpuBatchSimulator::new(model.clone(), batch)
+        }
+        fn load_states(&mut self, states: &[State]) {
+            GpuBatchSimulator::load_states(self, states)
+        }
+        fn set_controls(&mut self, controls: &[Vec<f64>]) {
+            GpuBatchSimulator::set_controls(self, controls)
+        }
+        fn step(&mut self) {
+            GpuBatchSimulator::step(self)
+        }
+        fn readback_states(&mut self) -> Vec<State> {
+            GpuBatchSimulator::readback_states(self)
+        }
+    }
+
+    #[cfg(feature = "gpu-cuda")]
+    impl Batch for phyz_gpu::CudaBatchSimulator {
+        const ENGINE: &'static str = "phyz-gpu (CUDA)";
+        fn create(model: &Model, batch: usize) -> Result<Self, String> {
+            phyz_gpu::CudaBatchSimulator::new(model.clone(), batch)
+        }
+        fn load_states(&mut self, states: &[State]) {
+            phyz_gpu::CudaBatchSimulator::load_states(self, states)
+        }
+        fn set_controls(&mut self, controls: &[Vec<f64>]) {
+            phyz_gpu::CudaBatchSimulator::set_controls(self, controls)
+        }
+        fn step(&mut self) {
+            phyz_gpu::CudaBatchSimulator::step(self)
+        }
+        fn readback_states(&mut self) -> Vec<State> {
+            phyz_gpu::CudaBatchSimulator::readback_states(self)
+        }
+    }
 
     /// The scene batched on the GPU. The ant is the interesting case: enough
     /// DOF that the per-environment work is nontrivial.
     const SCENE: Scene = Scene::Ant;
 
-    /// Run the GPU batch sweep, or report why it could not run.
+    /// Run the GPU batch sweep on the wgpu path, or report why it could not run.
     pub fn run(budget: Budget) -> Suite {
+        run_on::<GpuBatchSimulator>(budget, SUITE_NAME, SUITE_DESC)
+    }
+
+    /// Run the GPU batch sweep on the CUDA path, or report why it could not run.
+    #[cfg(feature = "gpu-cuda")]
+    pub fn run_cuda(budget: Budget) -> Suite {
+        run_on::<phyz_gpu::CudaBatchSimulator>(budget, CUDA_SUITE_NAME, CUDA_SUITE_DESC)
+    }
+
+    fn run_on<B: Batch>(budget: Budget, name: &'static str, desc: &'static str) -> Suite {
         let settings = Settings::articulated(DT_ARTICULATED);
         let model = build_model(SCENE, settings.dt);
 
         // Probe with the smallest batch: if the adapter or the pipeline is
         // unavailable we want to say so once, clearly.
-        if let Err(e) = GpuBatchSimulator::new(model.clone(), 1) {
+        if let Err(e) = B::create(&model, 1) {
             return Suite::skipped(
-                SUITE_NAME,
-                SUITE_DESC,
-                &format!("no usable GPU adapter or pipeline: {e}"),
+                name,
+                desc,
+                &format!("no usable GPU device or pipeline: {e}"),
             );
         }
 
@@ -96,7 +176,7 @@ mod enabled {
         }];
 
         for &batch in &BATCH_SIZES {
-            match run_batch(
+            match run_batch::<B>(
                 &model,
                 batch,
                 &settings,
@@ -108,18 +188,18 @@ mod enabled {
                 Err(e) => {
                     // A batch that will not allocate is a real limit; record it
                     // and stop climbing rather than silently truncating.
-                    results.push(failed_record(batch, &settings, model.nv, &e));
+                    results.push(failed_record::<B>(batch, &settings, model.nv, &e));
                     break;
                 }
             }
         }
 
-        Suite::new(SUITE_NAME, SUITE_DESC, results)
+        Suite::new(name, desc, results)
     }
 
-    fn failed_record(batch: usize, settings: &Settings, nv: usize, err: &str) -> Record {
+    fn failed_record<B: Batch>(batch: usize, settings: &Settings, nv: usize, err: &str) -> Record {
         Record {
-            engine: "phyz-gpu".into(),
+            engine: B::ENGINE.into(),
             scene: SCENE.name(),
             description: format!("{} — batch {batch} FAILED", SCENE.description()),
             dof: Some(nv),
@@ -134,7 +214,7 @@ mod enabled {
         }
     }
 
-    fn run_batch(
+    fn run_batch<B: Batch>(
         model: &phyz_model::Model,
         batch: usize,
         settings: &Settings,
@@ -142,7 +222,7 @@ mod enabled {
         cpu_baseline_noisy: bool,
         budget: Budget,
     ) -> Result<Record, String> {
-        let sim = GpuBatchSimulator::new(model.clone(), batch)?;
+        let mut sim = B::create(model, batch)?;
         let init = initial_state(SCENE, model);
         let states = vec![init; batch];
         sim.load_states(&states);
@@ -197,7 +277,7 @@ mod enabled {
         }
 
         Ok(Record {
-            engine: "phyz-gpu".into(),
+            engine: B::ENGINE.into(),
             scene: SCENE.name(),
             description: format!("{} — batch {batch}", SCENE.description()),
             dof: Some(model.nv),
