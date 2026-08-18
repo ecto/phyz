@@ -33,6 +33,9 @@ rapier = ["dep:rapier3d-f64"]
 # GPU batch suite. Requires a working wgpu adapter at runtime; the suite
 # reports `skipped` rather than failing when none is available.
 gpu = ["dep:phyz-gpu"]
+# The same sweep on phyz-gpu's CUDA path. Builds anywhere; the suite reports
+# `skipped` when there is no NVIDIA driver at runtime.
+gpu-cuda = ["gpu", "phyz-gpu/cuda"]
 
 [dependencies]
 phyz-math.workspace = true

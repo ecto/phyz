@@ -33,6 +33,20 @@ fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
 impl CudaBackend {
     /// Open device `ordinal` and compile the kernels with NVRTC.
     pub fn new(ordinal: usize) -> Result<Self, String> {
+        // cudarc panics if the shared libraries are absent; probe first so a
+        // machine without a driver gets an Err like a machine without a wgpu
+        // adapter does.
+        // SAFETY: only dlopens candidate library names and drops the handles.
+        if !unsafe { cudarc::driver::sys::is_culib_present() } {
+            return Err("libcuda not found: no NVIDIA driver on this machine".into());
+        }
+        // SAFETY: as above.
+        if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+            return Err(
+                "libnvrtc not found: install the CUDA runtime (nvrtc) or set LD_LIBRARY_PATH"
+                    .into(),
+            );
+        }
         let ctx = CudaContext::new(ordinal).map_err(err("CUDA context"))?;
         let stream = ctx.default_stream();
 

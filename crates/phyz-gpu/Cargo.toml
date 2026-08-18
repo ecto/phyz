@@ -47,3 +47,7 @@ cc = { version = "1.2", optional = true }
 [dev-dependencies]
 approx = "0.5"
 phyz-mjcf = { workspace = true }
+
+[[example]]
+name = "cuda_batch"
+required-features = ["cuda"]
