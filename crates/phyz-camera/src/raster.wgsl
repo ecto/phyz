@@ -27,6 +27,9 @@ struct VsIn {
     @location(3) row1: vec4<f32>,
     @location(4) row2: vec4<f32>,
     @location(5) albedo: vec4<f32>,
+    // Per-vertex tint, white unless the mesh was painted. Location 6 keeps it
+    // clear of the instance rows above.
+    @location(6) color: vec3<f32>,
 };
 
 struct VsOut {
@@ -56,7 +59,10 @@ fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     out.clip = u.proj * optical;
     out.normal_world = n;
-    out.albedo = in.albedo.xyz;
+    // Instance albedo stays a tint over the vertex colour, so an unpainted
+    // mesh (white) renders exactly as it did before vertex colour existed,
+    // and a painted one can still be dimmed or recoloured per instance.
+    out.albedo = in.albedo.xyz * in.color;
     out.z_optical = optical.z;
     return out;
 }

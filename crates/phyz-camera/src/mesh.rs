@@ -18,7 +18,18 @@ pub struct Vertex {
     pub position: [f32; 3],
     /// Unit surface normal in mesh-local coordinates.
     pub normal: [f32; 3],
+    /// Linear RGB tint in `[0, 1]`, **multiplied** by the instance albedo.
+    ///
+    /// White is the identity, which is what every geometric builder writes, so
+    /// a mesh nobody has painted renders exactly as it did before this field
+    /// existed. It carries measured appearance for meshes that have one — a
+    /// scanned room whose colour comes from the camera that mapped it — where
+    /// one albedo for the whole surface would flatten a garage into a grey box.
+    pub color: [f32; 3],
 }
+
+/// The vertex tint that changes nothing: `albedo * WHITE == albedo`.
+pub const UNPAINTED: [f32; 3] = [1.0, 1.0, 1.0];
 
 /// A flat-shaded triangle soup in mesh-local coordinates.
 #[derive(Debug, Clone, Default)]
@@ -49,14 +60,24 @@ impl TriMesh {
     /// surface, which is what makes the derived normal point outward. Degenerate
     /// triangles are dropped rather than emitting a NaN normal.
     pub fn push_triangle(&mut self, a: Vec3, b: Vec3, c: Vec3) {
+        self.push_triangle_painted(a, b, c, [UNPAINTED; 3]);
+    }
+
+    /// Append one triangle carrying a colour per corner.
+    ///
+    /// Same winding rule and same degenerate-drop as [`Self::push_triangle`];
+    /// the colours are interpolated across the face by the rasterizer, so a
+    /// scanned surface reads as a gradient rather than as facets.
+    pub fn push_triangle_painted(&mut self, a: Vec3, b: Vec3, c: Vec3, colors: [[f32; 3]; 3]) {
         let Some(n) = (b - a).cross(c - a).try_normalize() else {
             return;
         };
         let n = [n.x as f32, n.y as f32, n.z as f32];
-        for p in [a, b, c] {
+        for (p, color) in [a, b, c].into_iter().zip(colors) {
             self.vertices.push(Vertex {
                 position: [p.x as f32, p.y as f32, p.z as f32],
                 normal: n,
+                color,
             });
         }
     }

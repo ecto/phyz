@@ -341,6 +341,72 @@ fn colour_comes_back_shaded_and_opaque() {
     assert!(px[0] > 20, "lit surface should not be black: {px:?}");
 }
 
+/// A wall of two painted triangles filling the view at `z`, red on the left
+/// edge and blue on the right, so the interpolation across the face is
+/// visible in the rendered pixels.
+fn painted_wall(z: f64, half: f64) -> mesh::TriMesh {
+    let mut m = mesh::TriMesh::empty();
+    let red = [1.0, 0.0, 0.0];
+    let blue = [0.0, 0.0, 1.0];
+    let (a, b) = (Vec3::new(-half, -half, z), Vec3::new(half, -half, z));
+    let (c, d) = (Vec3::new(half, half, z), Vec3::new(-half, half, z));
+    m.push_triangle_painted(a, b, c, [red, blue, blue]);
+    m.push_triangle_painted(a, c, d, [red, blue, red]);
+    m
+}
+
+#[test]
+fn an_unpainted_mesh_renders_exactly_as_its_instance_albedo() {
+    let k = intrinsics();
+    let Some(mut cam) = camera(k) else { return };
+
+    // Vertex colour defaults to white and multiplies, so a mesh built by any
+    // geometric builder must be untouched by the feature's existence. The
+    // green channel is 0.8 albedo like every other test; red and blue equal
+    // it, which is only true if nothing tinted the surface.
+    let scene = one(
+        mesh::plane(Vec3::new(0.0, 0.0, -1.0), 20.0),
+        Mat3::identity(),
+        Vec3::new(0.0, 0.0, 2.0),
+    );
+    let frame = cam.render(&scene, &CameraPose::identity()).unwrap();
+    let px = frame.color_at(k.width / 2, k.height / 2).unwrap();
+    assert!(px[0] > 20, "lit surface should not be black: {px:?}");
+    assert!(
+        px[0] == px[1] && px[1] == px[2],
+        "a grey instance albedo must stay grey when nothing painted it: {px:?}"
+    );
+}
+
+#[test]
+fn vertex_colour_paints_the_surface_and_interpolates_across_it() {
+    let k = intrinsics();
+    let Some(mut cam) = camera(k) else { return };
+
+    let scene = one(
+        painted_wall(0.0, 4.0),
+        Mat3::identity(),
+        Vec3::new(0.0, 0.0, 2.0),
+    );
+    let frame = cam.render(&scene, &CameraPose::identity()).unwrap();
+
+    // The wall spans the view, so sample well inside either edge. Which pixel
+    // column is "left" follows the projection the depth tests already pin.
+    let left = frame.color_at(k.width / 8, k.height / 2).unwrap();
+    let right = frame.color_at(k.width - k.width / 8, k.height / 2).unwrap();
+
+    assert!(
+        left[0] > left[2] && right[2] > right[0],
+        "red edge should stay red and blue edge blue: left {left:?} right {right:?}"
+    );
+    let mid = frame.color_at(k.width / 2, k.height / 2).unwrap();
+    assert!(
+        mid[0] > 10 && mid[2] > 10,
+        "the middle should be a blend of both corners, not one of them: {mid:?}"
+    );
+    assert_eq!(mid[3], 255, "alpha must stay opaque");
+}
+
 #[test]
 fn invalid_intrinsics_are_rejected_not_rendered() {
     let mut k = intrinsics();
