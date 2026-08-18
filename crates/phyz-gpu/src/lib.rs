@@ -16,6 +16,7 @@ pub mod gpu_batch_simulator;
 pub mod gpu_simulator;
 pub mod gpu_state;
 pub mod interop;
+pub mod layout;
 pub mod pd_pipeline;
 pub mod shaders;
 pub mod sparse;

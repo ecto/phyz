@@ -38,7 +38,7 @@ pub struct GpuState {
     pub ext_forces_buffer: wgpu::Buffer,
     /// Per-body contact state written by the contact pass,
     /// `nworld * nbodies * CONTACT_STATE_STRIDE` f32
-    /// (see [`crate::contact_pipeline::CONTACT_STATE_STRIDE`] for the layout).
+    /// (see [`crate::layout::CONTACT_STATE_STRIDE`] for the layout).
     pub contact_state_buffer: wgpu::Buffer,
     /// Body count per world.
     pub nbodies: usize,
@@ -116,11 +116,9 @@ impl GpuState {
         });
 
         // Contact state: CONTACT_STATE_STRIDE floats per body per environment.
-        let contact_state_size = (nworld
-            * nbodies
-            * crate::contact_pipeline::CONTACT_STATE_STRIDE
-            * std::mem::size_of::<f32>())
-        .max(4) as u64;
+        let contact_state_size =
+            (nworld * nbodies * crate::layout::CONTACT_STATE_STRIDE * std::mem::size_of::<f32>())
+                .max(4) as u64;
         let contact_state_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("contact_state_buffer"),
             size: contact_state_size,
@@ -175,20 +173,7 @@ impl GpuState {
     pub fn upload_states(&self, states: &[State]) {
         assert_eq!(states.len(), self.nworld);
 
-        // Pack states into flat f32 arrays
-        let mut q_data = vec![0.0f32; self.nworld * self.nq];
-        let mut v_data = vec![0.0f32; self.nworld * self.nv];
-        let mut ctrl_data = vec![0.0f32; self.nworld * self.nv];
-
-        for (i, state) in states.iter().enumerate() {
-            for j in 0..self.nq {
-                q_data[i * self.nq + j] = state.q[j] as f32;
-            }
-            for j in 0..self.nv {
-                v_data[i * self.nv + j] = state.v[j] as f32;
-                ctrl_data[i * self.nv + j] = state.ctrl[j] as f32;
-            }
-        }
+        let (q_data, v_data, ctrl_data) = crate::layout::pack_states(states, self.nq, self.nv);
 
         // Upload to GPU
         self.queue
@@ -270,11 +255,11 @@ impl GpuState {
     ///
     /// Returns `nworld * nbodies * CONTACT_STATE_STRIDE` f32 in body-major
     /// order within each world (see
-    /// [`crate::contact_pipeline::CONTACT_STATE_STRIDE`] for the layout).
+    /// [`crate::layout::CONTACT_STATE_STRIDE`] for the layout).
     pub async fn download_contact_states(&self) -> Result<Vec<f32>, String> {
         let size = (self.nworld
             * self.nbodies
-            * crate::contact_pipeline::CONTACT_STATE_STRIDE
+            * crate::layout::CONTACT_STATE_STRIDE
             * std::mem::size_of::<f32>())
         .max(4) as u64;
 
