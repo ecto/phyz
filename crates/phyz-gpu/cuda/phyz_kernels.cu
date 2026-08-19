@@ -739,35 +739,16 @@ PHYZ_DEV void add_ext(float* ext_forces, u32 ef_base, v3 torque, v3 force) {
     ext_forces[ef_base + 5u] += force.z;
 }
 
-PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
-                             const float* bodies, const float* geometry,
-                             const float* q, const float* v,
-                             float* ext_forces, float* contact_state,
-                             const float* hf_heights, const float* qdd) {
-    cparams_t cp = decode_cparams(cparams);
-    if (world_idx >= cp.nworld) return;
-
-    u32 nb = cp.nbodies;
-    u32 q_base = world_idx * cp.nv;
-    u32 v_base = world_idx * cp.nv;
-    u32 solve_mode = cp.solve_mode;
-    float dt = cp.dt;
-
-    // Clear external forces for this env
-    u32 ef_env_base = world_idx * nb * 6u;
-    for (u32 i = 0; i < nb; i++)
-        for (u32 k = 0; k < 6u; k++)
-            ext_forces[ef_env_base + i * 6u + k] = 0.0f;
-
-    // FK: body-to-world rotation, body origin in world, and body-frame
-    // spatial velocity (angular, linear). Penalty mode uses the current
-    // velocity; impulse mode the FREE velocity v + dt*qdd — see the IMPULSE
-    // MODE block in shaders.rs.
-    r9 w_rot[MAX_BODIES];
-    v3 w_pos[MAX_BODIES];
-    v3 w_omega[MAX_BODIES];
-    v3 w_lin[MAX_BODIES];
-
+// ── Forward kinematics, shared by the contact pass and the FK readout ──────
+// Fills, per body: body-to-world rotation `w_rot` (so `rot_tmul(w_rot, x)`
+// takes a world vector into the body frame), body origin in world `w_pos`,
+// and the body-frame spatial velocity (`w_omega`, `w_lin`). With `use_free`
+// the velocity is the FREE velocity v + dt*qdd (impulse-mode contact);
+// otherwise `v` as it stands. Verbatim the loop the contact pass always ran.
+PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
+                       const float* q, u32 q_base, const float* v, u32 v_base,
+                       const float* qdd, float dt, bool use_free,
+                       r9* w_rot, v3* w_pos, v3* w_omega, v3* w_lin) {
     for (u32 i = 0; i < nb; i++) {
         i32 parent = body_parent(bodies, i);
         u32 jtype = body_jtype(bodies, i);
@@ -781,7 +762,7 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
         for (u32 k = 0; k < 6u; k++) {
             u32 idx = v_base + v_off + k;
             // Only the first ndof entries are read below; guard the slice end.
-            if (v_off + k < cp.nv) vv[k] = solve_mode == 0u ? v[idx] : v[idx] + dt * qdd[idx];
+            if (v_off + k < nv) vv[k] = use_free ? v[idx] + dt * qdd[idx] : v[idx];
             else vv[k] = 0.0f;
         }
         v3 j_omega = v3_(0.0f, 0.0f, 0.0f);
@@ -818,6 +799,38 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
             w_lin[i] = v3_add(pv, j_lin);
         }
     }
+}
+
+PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
+                             const float* bodies, const float* geometry,
+                             const float* q, const float* v,
+                             float* ext_forces, float* contact_state,
+                             const float* hf_heights, const float* qdd) {
+    cparams_t cp = decode_cparams(cparams);
+    if (world_idx >= cp.nworld) return;
+
+    u32 nb = cp.nbodies;
+    u32 q_base = world_idx * cp.nv;
+    u32 v_base = world_idx * cp.nv;
+    u32 solve_mode = cp.solve_mode;
+    float dt = cp.dt;
+
+    // Clear external forces for this env
+    u32 ef_env_base = world_idx * nb * 6u;
+    for (u32 i = 0; i < nb; i++)
+        for (u32 k = 0; k < 6u; k++)
+            ext_forces[ef_env_base + i * 6u + k] = 0.0f;
+
+    // FK: body-to-world rotation, body origin in world, and body-frame
+    // spatial velocity (angular, linear). Penalty mode uses the current
+    // velocity; impulse mode the FREE velocity v + dt*qdd — see the IMPULSE
+    // MODE block in shaders.rs.
+    r9 w_rot[MAX_BODIES];
+    v3 w_pos[MAX_BODIES];
+    v3 w_omega[MAX_BODIES];
+    v3 w_lin[MAX_BODIES];
+    fk_world(bodies, nb, cp.nv, q, q_base, v, v_base, qdd, dt, solve_mode != 0u,
+             w_rot, w_pos, w_omega, w_lin);
 
     // ── Ground / terrain contacts ──
     for (u32 i = 0; i < nb; i++) {
@@ -1408,6 +1421,224 @@ PHYZ_DEV void integrate_thread(u32 idx, u32 nworld, u32 nv, float dt, u32 nbodie
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FK readout. One thread per world. Writes, per body, XF_STRIDE floats:
+//   [0..9]   rotation, WORLD -> BODY, row-major (the CPU `State::body_xform`
+//            convention: `rot * (p_world - pos)` is the point in the body frame)
+//   [9..12]  body origin in world
+//   [12..15] angular velocity, body frame
+//   [15..18] linear velocity, body frame
+// The same chain the contact pass computes, made readable by other passes
+// (the observation pass below) and by the host (`readback_kinematics`).
+// ═══════════════════════════════════════════════════════════════════════════
+
+#define XF_STRIDE 18u
+
+PHYZ_DEV void fk_thread(u32 world_idx, u32 nworld, u32 nv, u32 nbodies,
+                        const float* bodies, const float* q, const float* v, float* xforms) {
+    if (world_idx >= nworld) return;
+    u32 nb = nbodies;
+    r9 w_rot[MAX_BODIES];
+    v3 w_pos[MAX_BODIES];
+    v3 w_omega[MAX_BODIES];
+    v3 w_lin[MAX_BODIES];
+    fk_world(bodies, nb, nv, q, world_idx * nv, v, world_idx * nv, q, 0.0f, false,
+             w_rot, w_pos, w_omega, w_lin);
+    for (u32 i = 0; i < nb; i++) {
+        u32 base = (world_idx * nb + i) * XF_STRIDE;
+        r9 wb = transpose_rot(w_rot[i]);
+        for (u32 k = 0; k < 9u; k++) xforms[base + k] = wb.r[k];
+        xforms[base + 9u] = w_pos[i].x;  xforms[base + 10u] = w_pos[i].y; xforms[base + 11u] = w_pos[i].z;
+        xforms[base + 12u] = w_omega[i].x; xforms[base + 13u] = w_omega[i].y; xforms[base + 14u] = w_omega[i].z;
+        xforms[base + 15u] = w_lin[i].x; xforms[base + 16u] = w_lin[i].y; xforms[base + 17u] = w_lin[i].z;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Observation pass. One thread per world; one row of n_in features from a
+// small op table (OBS_OP_STRIDE floats per feature: kind, a, b, c). Mirrors
+// `policy_pipeline::ObsOp` — keep the kinds in step with it.
+//   0 Const(c)
+//   1 QMinus(a, c)        q[a] - c
+//   2 V(a)                v[a]
+//   3 BodyPitch(a)        atan2(-r02, r22) of body a's world->body rotation
+//   4 BodyRoll(a)         atan2( r12, r22)
+//   5 BodyYawError(a, c)  wrap(c - atan2(r01, r00))
+//   6 BodyPosZ(a)         body origin z, world
+// Writes obs[obs_off + world*n_in + k].
+// ═══════════════════════════════════════════════════════════════════════════
+
+#define OBS_OP_STRIDE 4u
+
+PHYZ_DEV float wrap_pi(float a) {
+    const float PI_F = 3.14159265358979323846f;
+    while (a > PI_F) a -= 2.0f * PI_F;
+    while (a < -PI_F) a += 2.0f * PI_F;
+    return a;
+}
+
+PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
+                         u32 n_in, u32 obs_off,
+                         const float* ops, const float* q, const float* v,
+                         const float* xforms, float* obs) {
+    if (world_idx >= nworld) return;
+    u32 qb = world_idx * nq;
+    u32 vb = world_idx * nv;
+    for (u32 k = 0; k < n_in; k++) {
+        u32 kind = (u32)ops[k * OBS_OP_STRIDE];
+        u32 a = (u32)ops[k * OBS_OP_STRIDE + 1u];
+        float c = ops[k * OBS_OP_STRIDE + 3u];
+        float val = 0.0f;
+        if (kind == 0u) {
+            val = c;
+        } else if (kind == 1u) {
+            val = q[qb + a] - c;
+        } else if (kind == 2u) {
+            val = v[vb + a];
+        } else if (kind >= 3u && kind <= 6u) {
+            u32 xb = (world_idx * nbodies + a) * XF_STRIDE;
+            float r00 = xforms[xb + 0u], r01 = xforms[xb + 1u], r02 = xforms[xb + 2u];
+            float r12 = xforms[xb + 5u], r22 = xforms[xb + 8u];
+            if (kind == 3u) val = atan2f(-r02, r22);
+            else if (kind == 4u) val = atan2f(r12, r22);
+            else if (kind == 5u) val = wrap_pi(c - atan2f(r01, r00));
+            else val = xforms[xb + 11u];
+        }
+        obs[obs_off + world_idx * n_in + k] = val;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Policy pass. One thread per world: a two-hidden-layer tanh MLP over that
+// world's observation row, a diagonal-Gaussian sample around its mean, the
+// sample's log-probability, and the clamped action written into the PD
+// target row on top of a per-world base target. Mirrors
+// `policy_pipeline::PolicySpec`; the CPU reference is `policy_reference`.
+//
+// weights, row-major, in this order (the same flat layout an MLP with
+// layers [n_in->n_h], [n_h->n_h], [n_h->n_out] exports weight-then-bias):
+//   W1[n_h*n_in] b1[n_h] W2[n_h*n_h] b2[n_h] W3[n_out*n_h] b3[n_out]
+//
+// Randomness: one xorshift64 stream per world (two u32 words in `rng`),
+// standard normals by Box-Muller from two draws — the same recipe as
+// `XorShift::normal` on the host, so a test can replay it exactly. Draw
+// order per call: input noise for every entry whose scale is non-zero (in
+// index order), then one normal per action.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#define POLICY_MAX_IN 128u
+#define POLICY_MAX_H 256u
+#define POLICY_MAX_OUT 32u
+
+PHYZ_DEV float u_as_f(u32 u) {
+#if PHYZ_ON_DEVICE
+    return __uint_as_float(u);
+#else
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
+#endif
+}
+
+struct rng64 { u32 lo, hi; };
+
+PHYZ_DEV u32 rng_next_hi53(rng64* r, u32* lo_out) {
+    // xorshift64: x ^= x<<13; x ^= x>>7; x ^= x<<17. Done on the u64 built
+    // from the two words. Returns the top 21 bits and the low 32 of x>>11
+    // via the out params, so the caller can form (x >> 11) as a double.
+    unsigned long long x = ((unsigned long long)r->hi << 32) | (unsigned long long)r->lo;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    r->lo = (u32)(x & 0xffffffffull);
+    r->hi = (u32)(x >> 32);
+    unsigned long long top = x >> 11;
+    *lo_out = (u32)(top & 0xffffffffull);
+    return (u32)(top >> 32);
+}
+
+PHYZ_DEV double rng_uniform(rng64* r) {
+    u32 lo;
+    u32 hi = rng_next_hi53(r, &lo);
+    // (x >> 11) / 2^53, exactly as the host does it.
+    double top = (double)hi * 4294967296.0 + (double)lo;
+    return top / 9007199254740992.0;
+}
+
+PHYZ_DEV double rng_normal(rng64* r) {
+    double u1 = rng_uniform(r);
+    double u2 = rng_uniform(r);
+    if (u1 < 1e-300) u1 = 1e-300;
+    return sqrt(-2.0 * log(u1)) * cos(6.283185307179586476925286766559 * u2);
+}
+
+PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                            float act_clamp, float rho, u32 obs_off, u32 out_off,
+                            const float* weights, const float* stdv, const float* in_noise,
+                            float* obs, float* rng, float* z,
+                            const float* act_slots, const float* base_targets,
+                            float* targets, float* out) {
+    if (world_idx >= nworld) return;
+    if (n_in > POLICY_MAX_IN || n_h > POLICY_MAX_H || n_out > POLICY_MAX_OUT) return;
+
+    rng64 r;
+    r.lo = f_as_u(rng[world_idx * 2u]);
+    r.hi = f_as_u(rng[world_idx * 2u + 1u]);
+
+    float x[POLICY_MAX_IN];
+    float* row = obs + obs_off + world_idx * n_in;
+    for (u32 i = 0; i < n_in; i++) {
+        float xi = row[i];
+        if (in_noise[i] != 0.0f) {
+            xi += in_noise[i] * (float)rng_normal(&r);
+            row[i] = xi;
+        }
+        x[i] = xi;
+    }
+
+    const float* W1 = weights;
+    const float* b1 = W1 + n_h * n_in;
+    const float* W2 = b1 + n_h;
+    const float* b2 = W2 + n_h * n_h;
+    const float* W3 = b2 + n_h;
+    const float* b3 = W3 + n_out * n_h;
+
+    float h1[POLICY_MAX_H];
+    for (u32 j = 0; j < n_h; j++) {
+        float s = b1[j];
+        for (u32 i = 0; i < n_in; i++) s += W1[j * n_in + i] * x[i];
+        h1[j] = tanhf(s);
+    }
+    float h2[POLICY_MAX_H];
+    for (u32 j = 0; j < n_h; j++) {
+        float s = b2[j];
+        for (u32 i = 0; i < n_h; i++) s += W2[j * n_h + i] * h1[i];
+        h2[j] = tanhf(s);
+    }
+
+    float keep = sqrtf(fmax_(0.0f, 1.0f - rho * rho));
+    const float LN_2PI = 1.8378770664093453f;
+    float logp = 0.0f;
+    for (u32 k = 0; k < n_out; k++) {
+        float m = b3[k];
+        for (u32 i = 0; i < n_h; i++) m += W3[k * n_h + i] * h2[i];
+        float zk = rho * z[world_idx * n_out + k] + keep * (float)rng_normal(&r);
+        z[world_idx * n_out + k] = zk;
+        float sd = stdv[k];
+        float a = m + sd * zk;
+        float zi = (a - m) / sd;
+        logp += -0.5f * zi * zi - logf(sd) - 0.5f * LN_2PI;
+        out[out_off + world_idx * (n_out + 1u) + k] = a;
+        u32 slot = (u32)act_slots[k];
+        float applied = fclamp(a, -act_clamp, act_clamp);
+        targets[world_idx * n_dofs + slot] = base_targets[world_idx * n_dofs + slot] + applied;
+    }
+    out[out_off + world_idx * (n_out + 1u) + n_out] = logp;
+
+    rng[world_idx * 2u] = u_as_f(r.lo);
+    rng[world_idx * 2u + 1u] = u_as_f(r.hi);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Entry points
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1441,6 +1672,29 @@ extern "C" __global__ void phyz_integrate(u32 nworld, u32 nv, float dt, u32 nbod
     integrate_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv, dt, nbodies, q, v, qdd, bodies);
 }
 
+extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
+                                   const float* bodies, const float* q, const float* v, float* xforms) {
+    fk_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv, nbodies, bodies, q, v, xforms);
+}
+
+extern "C" __global__ void phyz_obs(u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
+                                    const float* ops, const float* q, const float* v,
+                                    const float* xforms, float* obs) {
+    obs_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, nbodies, n_in, obs_off,
+               ops, q, v, xforms, obs);
+}
+
+extern "C" __global__ void phyz_policy(u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                                       float act_clamp, float rho, u32 obs_off, u32 out_off,
+                                       const float* weights, const float* stdv, const float* in_noise,
+                                       float* obs, float* rng, float* z,
+                                       const float* act_slots, const float* base_targets,
+                                       float* targets, float* out) {
+    policy_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, n_in, n_h, n_out, n_dofs,
+                  act_clamp, rho, obs_off, out_off, weights, stdv, in_noise, obs, rng, z,
+                  act_slots, base_targets, targets, out);
+}
+
 #else  // host: walk the grid serially
 
 extern "C" void phyz_host_pd(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
@@ -1471,6 +1725,30 @@ extern "C" void phyz_host_integrate(u32 n_threads, u32 nworld, u32 nv, float dt,
                                     float* q, float* v, const float* qdd, const float* bodies) {
     for (u32 t = 0; t < n_threads; t++)
         integrate_thread(t, nworld, nv, dt, nbodies, q, v, qdd, bodies);
+}
+
+extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,
+                             const float* bodies, const float* q, const float* v, float* xforms) {
+    for (u32 t = 0; t < n_threads; t++)
+        fk_thread(t, nworld, nv, nbodies, bodies, q, v, xforms);
+}
+
+extern "C" void phyz_host_obs(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
+                              const float* ops, const float* q, const float* v,
+                              const float* xforms, float* obs) {
+    for (u32 t = 0; t < n_threads; t++)
+        obs_thread(t, nworld, nq, nv, nbodies, n_in, obs_off, ops, q, v, xforms, obs);
+}
+
+extern "C" void phyz_host_policy(u32 n_threads, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                                 float act_clamp, float rho, u32 obs_off, u32 out_off,
+                                 const float* weights, const float* stdv, const float* in_noise,
+                                 float* obs, float* rng, float* z,
+                                 const float* act_slots, const float* base_targets,
+                                 float* targets, float* out) {
+    for (u32 t = 0; t < n_threads; t++)
+        policy_thread(t, nworld, n_in, n_h, n_out, n_dofs, act_clamp, rho, obs_off, out_off,
+                      weights, stdv, in_noise, obs, rng, z, act_slots, base_targets, targets, out);
 }
 
 #endif

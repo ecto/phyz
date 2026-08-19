@@ -13,7 +13,8 @@ use cudarc::driver::{
 use cudarc::nvrtc::CompileOptions;
 
 use super::{
-    AbaArgs, BLOCK_SIZE, ContactArgs, IntegrateArgs, KERNEL_SOURCE, KernelBackend, PdArgs,
+    AbaArgs, BLOCK_SIZE, ContactArgs, FkArgs, IntegrateArgs, KERNEL_SOURCE, KernelBackend, ObsArgs,
+    PdArgs, PolicyArgs,
 };
 
 /// A CUDA device, stream and the four compiled kernels.
@@ -24,6 +25,9 @@ pub struct CudaBackend {
     contact: CudaFunction,
     aba: CudaFunction,
     integrate: CudaFunction,
+    fk: CudaFunction,
+    obs: CudaFunction,
+    policy: CudaFunction,
 }
 
 fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
@@ -69,6 +73,9 @@ impl CudaBackend {
             contact: load("phyz_contact")?,
             aba: load("phyz_aba")?,
             integrate: load("phyz_integrate")?,
+            fk: load("phyz_fk")?,
+            obs: load("phyz_obs")?,
+            policy: load("phyz_policy")?,
             ctx,
             stream,
         })
@@ -131,6 +138,44 @@ impl KernelBackend for CudaBackend {
 
     fn synchronize(&self) -> Result<(), String> {
         self.stream.synchronize().map_err(err("synchronize"))
+    }
+
+    fn download_range(
+        &self,
+        buf: &Self::Buffer,
+        start: usize,
+        len: usize,
+    ) -> Result<Vec<f32>, String> {
+        if start + len > buf.len() {
+            return Err(format!(
+                "download of {start}..{} from a {}-float buffer",
+                start + len,
+                buf.len()
+            ));
+        }
+        let view = buf.slice(start..start + len);
+        let out = self.stream.clone_dtoh(&view).map_err(err("memcpy_dtoh"))?;
+        self.stream.synchronize().map_err(err("synchronize"))?;
+        Ok(out)
+    }
+
+    fn copy(
+        &self,
+        src: &Self::Buffer,
+        dst: &mut Self::Buffer,
+        dst_offset: usize,
+    ) -> Result<(), String> {
+        if dst_offset + src.len() > dst.len() {
+            return Err(format!(
+                "copy of {} floats at {dst_offset} into a {}-float buffer",
+                src.len(),
+                dst.len()
+            ));
+        }
+        let mut view = dst.slice_mut(dst_offset..dst_offset + src.len());
+        self.stream
+            .memcpy_dtod(src, &mut view)
+            .map_err(err("memcpy_dtod"))
     }
 
     fn launch_pd(
@@ -249,5 +294,100 @@ impl KernelBackend for CudaBackend {
                 .launch(cfg(n))
         };
         r.map(|_| ()).map_err(err("launch phyz_integrate"))
+    }
+
+    fn launch_fk(
+        &self,
+        a: FkArgs,
+        bodies: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        xforms: &mut Self::Buffer,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_fk`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.fk)
+                .arg(&a.nworld)
+                .arg(&a.nv)
+                .arg(&a.nbodies)
+                .arg(bodies)
+                .arg(q)
+                .arg(v)
+                .arg(xforms)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_fk"))
+    }
+
+    fn launch_obs(
+        &self,
+        a: ObsArgs,
+        ops: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        xforms: &Self::Buffer,
+        obs: &mut Self::Buffer,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_obs`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.obs)
+                .arg(&a.nworld)
+                .arg(&a.nq)
+                .arg(&a.nv)
+                .arg(&a.nbodies)
+                .arg(&a.n_in)
+                .arg(&a.obs_off)
+                .arg(ops)
+                .arg(q)
+                .arg(v)
+                .arg(xforms)
+                .arg(obs)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_obs"))
+    }
+
+    fn launch_policy(
+        &self,
+        a: PolicyArgs,
+        weights: &Self::Buffer,
+        stdv: &Self::Buffer,
+        in_noise: &Self::Buffer,
+        obs: &mut Self::Buffer,
+        rng: &mut Self::Buffer,
+        z: &mut Self::Buffer,
+        act_slots: &Self::Buffer,
+        base_targets: &Self::Buffer,
+        targets: &mut Self::Buffer,
+        out: &mut Self::Buffer,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_policy`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.policy)
+                .arg(&a.nworld)
+                .arg(&a.n_in)
+                .arg(&a.n_h)
+                .arg(&a.n_out)
+                .arg(&a.n_dofs)
+                .arg(&a.act_clamp)
+                .arg(&a.rho)
+                .arg(&a.obs_off)
+                .arg(&a.out_off)
+                .arg(weights)
+                .arg(stdv)
+                .arg(in_noise)
+                .arg(obs)
+                .arg(rng)
+                .arg(z)
+                .arg(act_slots)
+                .arg(base_targets)
+                .arg(targets)
+                .arg(out)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_policy"))
     }
 }
