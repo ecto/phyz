@@ -155,8 +155,11 @@ pub struct PolicyArgs {
     pub n_out: u32,
     /// Servoed DOFs per world (the PD target row width).
     pub n_dofs: u32,
-    /// Applied-action clamp.
+    /// Applied-action clamp, used when `has_clamp_slots` is 0.
     pub act_clamp: f32,
+    /// Non-zero when the kernel should read the per-action-slot clamp
+    /// buffer instead of the `act_clamp` scalar.
+    pub has_clamp_slots: u32,
     /// AR(1) noise coefficient.
     pub rho: f32,
     /// Float offset of this step's rows in the observation history.
@@ -286,6 +289,7 @@ pub trait KernelBackend {
         rng: &mut Self::Buffer,
         z: &mut Self::Buffer,
         act_slots: &Self::Buffer,
+        act_clamp_slots: &Self::Buffer,
         base_targets: &Self::Buffer,
         targets: &mut Self::Buffer,
         out: &mut Self::Buffer,
@@ -317,6 +321,7 @@ struct PolicyPass<B: KernelBackend> {
     rng: B::Buffer,
     z: B::Buffer,
     act_slots: B::Buffer,
+    act_clamp_slots: B::Buffer,
     base_targets: B::Buffer,
     /// `[history_steps][nworld][n_in]`, written by the observation pass and
     /// noised in place by the policy pass.
@@ -881,6 +886,15 @@ impl<B: KernelBackend> BatchSim<B> {
             &mut act_slots,
             &spec.act_slots.iter().map(|&s| s as f32).collect::<Vec<_>>(),
         )?;
+        let mut act_clamp_slots = self.backend.alloc(n_out.max(1))?;
+        self.backend.upload(
+            &mut act_clamp_slots,
+            &spec
+                .clamp_row()
+                .iter()
+                .map(|&c| c as f32)
+                .collect::<Vec<_>>(),
+        )?;
 
         let reuse = self.policy.take().filter(|p| {
             p.spec.n_in() == n_in
@@ -918,6 +932,7 @@ impl<B: KernelBackend> BatchSim<B> {
             rng,
             z,
             act_slots,
+            act_clamp_slots,
             base_targets,
             obs_hist,
             out_hist,
@@ -1036,6 +1051,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 n_out: n_out as u32,
                 n_dofs: pd.n_dofs as u32,
                 act_clamp: p.spec.act_clamp as f32,
+                has_clamp_slots: u32::from(p.spec.act_clamp_slots.is_some()),
                 rho: p.spec.noise_rho as f32,
                 obs_off: obs_off as u32,
                 out_off: out_off as u32,
@@ -1047,6 +1063,7 @@ impl<B: KernelBackend> BatchSim<B> {
             &mut p.rng,
             &mut p.z,
             &p.act_slots,
+            &p.act_clamp_slots,
             &p.base_targets,
             &mut pd.targets,
             &mut p.out_hist,

@@ -359,6 +359,7 @@ impl KernelBackend for CudaBackend {
         rng: &mut Self::Buffer,
         z: &mut Self::Buffer,
         act_slots: &Self::Buffer,
+        act_clamp_slots: &Self::Buffer,
         base_targets: &Self::Buffer,
         targets: &mut Self::Buffer,
         out: &mut Self::Buffer,
@@ -373,6 +374,7 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.n_out)
                 .arg(&a.n_dofs)
                 .arg(&a.act_clamp)
+                .arg(&a.has_clamp_slots)
                 .arg(&a.rho)
                 .arg(&a.obs_off)
                 .arg(&a.out_off)
@@ -383,6 +385,7 @@ impl KernelBackend for CudaBackend {
                 .arg(rng)
                 .arg(z)
                 .arg(act_slots)
+                .arg(act_clamp_slots)
                 .arg(base_targets)
                 .arg(targets)
                 .arg(out)
