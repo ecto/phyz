@@ -1572,10 +1572,11 @@ PHYZ_DEV double rng_normal(rng64* r) {
 }
 
 PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
-                            float act_clamp, float rho, u32 obs_off, u32 out_off,
+                            float act_clamp, u32 has_clamp_slots, float rho, u32 obs_off, u32 out_off,
                             const float* weights, const float* stdv, const float* in_noise,
                             float* obs, float* rng, float* z,
-                            const float* act_slots, const float* base_targets,
+                            const float* act_slots, const float* act_clamp_slots,
+                            const float* base_targets,
                             float* targets, float* out) {
     if (world_idx >= nworld) return;
     if (n_in > POLICY_MAX_IN || n_h > POLICY_MAX_H || n_out > POLICY_MAX_OUT) return;
@@ -1615,6 +1616,12 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
         h2[j] = tanhf(s);
     }
 
+    // Every PD servo tracks its base target, not just the action slots:
+    // without this the non-action servos keep whatever the target buffer
+    // held at allocation (zero on a fresh sim) — a different robot.
+    for (u32 j = 0; j < n_dofs; j++)
+        targets[world_idx * n_dofs + j] = base_targets[world_idx * n_dofs + j];
+
     float keep = sqrtf(fmax_(0.0f, 1.0f - rho * rho));
     const float LN_2PI = 1.8378770664093453f;
     float logp = 0.0f;
@@ -1629,7 +1636,8 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
         logp += -0.5f * zi * zi - logf(sd) - 0.5f * LN_2PI;
         out[out_off + world_idx * (n_out + 1u) + k] = a;
         u32 slot = (u32)act_slots[k];
-        float applied = fclamp(a, -act_clamp, act_clamp);
+        float lim = has_clamp_slots ? act_clamp_slots[k] : act_clamp;
+        float applied = fclamp(a, -lim, lim);
         targets[world_idx * n_dofs + slot] = base_targets[world_idx * n_dofs + slot] + applied;
     }
     out[out_off + world_idx * (n_out + 1u) + n_out] = logp;
@@ -1685,14 +1693,16 @@ extern "C" __global__ void phyz_obs(u32 nworld, u32 nq, u32 nv, u32 nbodies, u32
 }
 
 extern "C" __global__ void phyz_policy(u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
-                                       float act_clamp, float rho, u32 obs_off, u32 out_off,
+                                       float act_clamp, u32 has_clamp_slots, float rho,
+                                       u32 obs_off, u32 out_off,
                                        const float* weights, const float* stdv, const float* in_noise,
                                        float* obs, float* rng, float* z,
-                                       const float* act_slots, const float* base_targets,
+                                       const float* act_slots, const float* act_clamp_slots,
+                                       const float* base_targets,
                                        float* targets, float* out) {
     policy_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, n_in, n_h, n_out, n_dofs,
-                  act_clamp, rho, obs_off, out_off, weights, stdv, in_noise, obs, rng, z,
-                  act_slots, base_targets, targets, out);
+                  act_clamp, has_clamp_slots, rho, obs_off, out_off, weights, stdv, in_noise,
+                  obs, rng, z, act_slots, act_clamp_slots, base_targets, targets, out);
 }
 
 #else  // host: walk the grid serially
@@ -1741,14 +1751,17 @@ extern "C" void phyz_host_obs(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 nbo
 }
 
 extern "C" void phyz_host_policy(u32 n_threads, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
-                                 float act_clamp, float rho, u32 obs_off, u32 out_off,
+                                 float act_clamp, u32 has_clamp_slots, float rho,
+                                 u32 obs_off, u32 out_off,
                                  const float* weights, const float* stdv, const float* in_noise,
                                  float* obs, float* rng, float* z,
-                                 const float* act_slots, const float* base_targets,
+                                 const float* act_slots, const float* act_clamp_slots,
+                                 const float* base_targets,
                                  float* targets, float* out) {
     for (u32 t = 0; t < n_threads; t++)
-        policy_thread(t, nworld, n_in, n_h, n_out, n_dofs, act_clamp, rho, obs_off, out_off,
-                      weights, stdv, in_noise, obs, rng, z, act_slots, base_targets, targets, out);
+        policy_thread(t, nworld, n_in, n_h, n_out, n_dofs, act_clamp, has_clamp_slots, rho,
+                      obs_off, out_off, weights, stdv, in_noise, obs, rng, z,
+                      act_slots, act_clamp_slots, base_targets, targets, out);
 }
 
 #endif

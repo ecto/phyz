@@ -7,7 +7,7 @@
 //! two-hidden-layer tanh MLP, a diagonal Gaussian. That is the whole of what
 //! `ipse-sim`'s PPO collector needs, and it is enough to keep the GPU busy;
 //! anything the table cannot express stays on the host, fed by
-//! [`crate::cuda::BatchSim::readback_state_history`] once per rollout instead of
+//! `BatchSim::readback_state_history` (the `cuda` feature) once per rollout instead of
 //! once per control step.
 //!
 //! Layouts here are mirrored verbatim in `cuda/phyz_kernels.cu`
@@ -140,8 +140,13 @@ pub struct PolicySpec {
     /// `set_position_targets`) that receives `base + clamp(action_k)`.
     /// Its length is the MLP output width.
     pub act_slots: Vec<usize>,
-    /// Applied-action clamp.
+    /// Applied-action clamp, one value for every action slot.
     pub act_clamp: f64,
+    /// Per-action-slot applied-action clamp. When `Some`, action `k` is
+    /// clamped to `±act_clamp_slots[k]` and `act_clamp` is unused; its
+    /// length must be `n_out()`. `None` is the scalar `act_clamp`, and
+    /// filling every entry with `act_clamp` reproduces it exactly.
+    pub act_clamp_slots: Option<Vec<f64>>,
     /// AR(1) coefficient of the exploration noise (0 = white).
     pub noise_rho: f64,
     /// Per-input Gaussian noise scale added in place before the forward
@@ -159,6 +164,21 @@ impl PolicySpec {
     /// Output width.
     pub fn n_out(&self) -> usize {
         self.act_slots.len()
+    }
+    /// The applied-action clamp for action `k`.
+    pub fn clamp_at(&self, k: usize) -> f64 {
+        match &self.act_clamp_slots {
+            Some(c) => c[k],
+            None => self.act_clamp,
+        }
+    }
+    /// The per-slot clamp row the kernel reads — the scalar broadcast when
+    /// no per-slot vector is set.
+    pub fn clamp_row(&self) -> Vec<f64> {
+        match &self.act_clamp_slots {
+            Some(c) => c.clone(),
+            None => vec![self.act_clamp; self.n_out()],
+        }
     }
     /// Number of weights the MLP takes, in the kernel's flat order.
     pub fn n_weights(&self) -> usize {
@@ -189,6 +209,15 @@ impl PolicySpec {
         if self.n_out() == 0 || self.n_out() > POLICY_MAX_OUT {
             return Err(format!(
                 "policy output width {} not in 1..={POLICY_MAX_OUT}",
+                self.n_out()
+            ));
+        }
+        if let Some(c) = &self.act_clamp_slots
+            && c.len() != self.n_out()
+        {
+            return Err(format!(
+                "act_clamp_slots has {} entries for {} actions",
+                c.len(),
                 self.n_out()
             ));
         }
@@ -300,6 +329,7 @@ pub fn policy_reference(
             *o += spec.input_noise[i] * rng.normal();
         }
     }
+    targets.copy_from_slice(base_targets);
     let mean = mlp_forward(spec.n_in(), spec.hidden, spec.n_out(), weights, obs);
     let rho = spec.noise_rho;
     let keep = (1.0 - rho * rho).max(0.0).sqrt();
@@ -311,7 +341,8 @@ pub fn policy_reference(
         let zi = (a - mean[k]) / std[k];
         logp += -0.5 * zi * zi - std[k].ln() - 0.5 * (2.0 * std::f64::consts::PI).ln();
         let slot = spec.act_slots[k];
-        targets[slot] = base_targets[slot] + a.clamp(-spec.act_clamp, spec.act_clamp);
+        let lim = spec.clamp_at(k);
+        targets[slot] = base_targets[slot] + a.clamp(-lim, lim);
         act.push(a);
     }
     (act, logp)
