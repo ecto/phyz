@@ -6,7 +6,9 @@
 //! port: it runs the exact text NVRTC will compile against phyz's CPU
 //! dynamics on any machine.
 
-use super::{AbaArgs, ContactArgs, IntegrateArgs, KernelBackend, PdArgs};
+use super::{
+    AbaArgs, ContactArgs, FkArgs, IntegrateArgs, KernelBackend, ObsArgs, PdArgs, PolicyArgs,
+};
 
 unsafe extern "C" {
     fn phyz_host_pd(
@@ -60,6 +62,52 @@ unsafe extern "C" {
         qdd: *const f32,
         bodies: *const f32,
     );
+    fn phyz_host_fk(
+        n_threads: u32,
+        nworld: u32,
+        nv: u32,
+        nbodies: u32,
+        bodies: *const f32,
+        q: *const f32,
+        v: *const f32,
+        xforms: *mut f32,
+    );
+    fn phyz_host_obs(
+        n_threads: u32,
+        nworld: u32,
+        nq: u32,
+        nv: u32,
+        nbodies: u32,
+        n_in: u32,
+        obs_off: u32,
+        ops: *const f32,
+        q: *const f32,
+        v: *const f32,
+        xforms: *const f32,
+        obs: *mut f32,
+    );
+    fn phyz_host_policy(
+        n_threads: u32,
+        nworld: u32,
+        n_in: u32,
+        n_h: u32,
+        n_out: u32,
+        n_dofs: u32,
+        act_clamp: f32,
+        rho: f32,
+        obs_off: u32,
+        out_off: u32,
+        weights: *const f32,
+        stdv: *const f32,
+        in_noise: *const f32,
+        obs: *mut f32,
+        rng: *mut f32,
+        z: *mut f32,
+        act_slots: *const f32,
+        base_targets: *const f32,
+        targets: *mut f32,
+        out: *mut f32,
+    );
 }
 
 /// Runs the CUDA C kernels on the host CPU.
@@ -94,6 +142,29 @@ impl KernelBackend for HostBackend {
     }
 
     fn synchronize(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn download_range(&self, buf: &Vec<f32>, start: usize, len: usize) -> Result<Vec<f32>, String> {
+        if start + len > buf.len() {
+            return Err(format!(
+                "download of {start}..{} from a {}-float buffer",
+                start + len,
+                buf.len()
+            ));
+        }
+        Ok(buf[start..start + len].to_vec())
+    }
+
+    fn copy(&self, src: &Vec<f32>, dst: &mut Vec<f32>, dst_offset: usize) -> Result<(), String> {
+        if dst_offset + src.len() > dst.len() {
+            return Err(format!(
+                "copy of {} floats at {dst_offset} into a {}-float buffer",
+                src.len(),
+                dst.len()
+            ));
+        }
+        dst[dst_offset..dst_offset + src.len()].copy_from_slice(src);
         Ok(())
     }
 
@@ -208,6 +279,101 @@ impl KernelBackend for HostBackend {
                 v.as_mut_ptr(),
                 qdd.as_ptr(),
                 bodies.as_ptr(),
+            );
+        }
+        Ok(())
+    }
+
+    fn launch_fk(
+        &self,
+        a: FkArgs,
+        bodies: &Vec<f32>,
+        q: &Vec<f32>,
+        v: &Vec<f32>,
+        xforms: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_host_fk`.
+        unsafe {
+            phyz_host_fk(
+                a.nworld,
+                a.nworld,
+                a.nv,
+                a.nbodies,
+                bodies.as_ptr(),
+                q.as_ptr(),
+                v.as_ptr(),
+                xforms.as_mut_ptr(),
+            );
+        }
+        Ok(())
+    }
+
+    fn launch_obs(
+        &self,
+        a: ObsArgs,
+        ops: &Vec<f32>,
+        q: &Vec<f32>,
+        v: &Vec<f32>,
+        xforms: &Vec<f32>,
+        obs: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_host_obs`.
+        unsafe {
+            phyz_host_obs(
+                a.nworld,
+                a.nworld,
+                a.nq,
+                a.nv,
+                a.nbodies,
+                a.n_in,
+                a.obs_off,
+                ops.as_ptr(),
+                q.as_ptr(),
+                v.as_ptr(),
+                xforms.as_ptr(),
+                obs.as_mut_ptr(),
+            );
+        }
+        Ok(())
+    }
+
+    fn launch_policy(
+        &self,
+        a: PolicyArgs,
+        weights: &Vec<f32>,
+        stdv: &Vec<f32>,
+        in_noise: &Vec<f32>,
+        obs: &mut Vec<f32>,
+        rng: &mut Vec<f32>,
+        z: &mut Vec<f32>,
+        act_slots: &Vec<f32>,
+        base_targets: &Vec<f32>,
+        targets: &mut Vec<f32>,
+        out: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_host_policy`.
+        unsafe {
+            phyz_host_policy(
+                a.nworld,
+                a.nworld,
+                a.n_in,
+                a.n_h,
+                a.n_out,
+                a.n_dofs,
+                a.act_clamp,
+                a.rho,
+                a.obs_off,
+                a.out_off,
+                weights.as_ptr(),
+                stdv.as_ptr(),
+                in_noise.as_ptr(),
+                obs.as_mut_ptr(),
+                rng.as_mut_ptr(),
+                z.as_mut_ptr(),
+                act_slots.as_ptr(),
+                base_targets.as_ptr(),
+                targets.as_mut_ptr(),
+                out.as_mut_ptr(),
             );
         }
         Ok(())

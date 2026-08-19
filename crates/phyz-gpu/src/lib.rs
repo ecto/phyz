@@ -20,6 +20,7 @@ pub mod gpu_state;
 pub mod interop;
 pub mod layout;
 pub mod pd_pipeline;
+pub mod policy_pipeline;
 pub mod shaders;
 pub mod sparse;
 pub mod sparse_shaders;
@@ -31,6 +32,7 @@ pub use gpu_batch_simulator::{DEFAULT_CONTACT_SWEEPS, GpuBatchSimulator};
 pub use gpu_simulator::GpuSimulator;
 pub use gpu_state::GpuState;
 pub use pd_pipeline::{PdDof, PdPipeline};
+pub use policy_pipeline::{ObsOp, PolicySpec};
 
 pub use interop::GpuInterop;
 

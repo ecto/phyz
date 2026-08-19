@@ -18,6 +18,9 @@
 
 use phyz_gpu::contact_pipeline::BodyPlane;
 use phyz_gpu::cuda::{BatchSim, KernelBackend};
+use phyz_gpu::policy_pipeline::{
+    KernelRng, ObsOp, PolicySpec, XF_STRIDE, observe_reference, policy_reference,
+};
 use phyz_gpu::{BodyContactGains, GpuBatchSimulator, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{
@@ -858,6 +861,260 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
     );
 }
 
+// ── The device-resident control loop: FK readout, observation, policy ─────
+
+/// Four worlds of the free base + limb, each in its own pose and motion, run
+/// through the on-device loop for three control steps with physics between
+/// them, against the CPU reference in `policy_pipeline`: the same FK, the
+/// same op table, the same MLP, and the same random stream (xorshift64 +
+/// Box–Muller from `world_seed`), so observations, noise, actions,
+/// log-probs and the PD targets they write are all checked to f32
+/// precision. Then the state history: two device snapshots against two
+/// direct readbacks.
+fn suite_policy<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let model = free_base_with_limb();
+    let nworld = 4;
+    let limb_q = model.q_offsets[model.bodies[1].joint_idx];
+    let limb_v = model.v_offsets[model.bodies[1].joint_idx];
+
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_pd_control(&[PdDof {
+        q_index: limb_q,
+        v_index: limb_v,
+        kp: 20.0,
+        kd: 1.0,
+        max_force: 10.0,
+    }])
+    .unwrap();
+
+    let spec = PolicySpec {
+        obs: vec![
+            ObsOp::BodyPitch(0),
+            ObsOp::BodyRoll(0),
+            ObsOp::V(0),
+            ObsOp::V(1),
+            ObsOp::V(2),
+            ObsOp::QMinus(limb_q, 0.1),
+            ObsOp::V(limb_v),
+            ObsOp::Const(0.5),
+            ObsOp::BodyYawError(0, 0.3),
+            ObsOp::BodyPosZ(1),
+        ],
+        hidden: 16,
+        act_slots: vec![0],
+        act_clamp: 0.4,
+        noise_rho: 0.3,
+        input_noise: vec![0.01, 0.01, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0],
+        history_steps: 3,
+    };
+    sim.enable_policy(spec.clone()).unwrap();
+
+    // Weights from a fixed stream — anything nontrivial and reproducible.
+    let mut wr = KernelRng(0xC0FFEE);
+    let weights: Vec<f64> = (0..spec.n_weights()).map(|_| 0.3 * wr.normal()).collect();
+    let std = vec![0.2];
+    let base: Vec<Vec<f64>> = (0..nworld).map(|w| vec![0.05 * w as f64]).collect();
+    sim.set_policy_weights(&weights).unwrap();
+    sim.set_policy_std(&std).unwrap();
+    sim.set_policy_base_targets(&base).unwrap();
+    let seed = 99u64;
+    sim.seed_policy(seed).unwrap();
+
+    // Distinct poses and motions per world.
+    let mut states: Vec<State> = (0..nworld)
+        .map(|w| {
+            let mut s = model.default_state();
+            let f = w as f64;
+            s.q[0] = 0.2 * f;
+            s.q[1] = -0.1 * f;
+            s.q[2] = 0.3 * f;
+            s.q[5] = 1.0 + 0.1 * f;
+            s.q[limb_q] = 0.4 - 0.2 * f;
+            s.v[0] = 0.5 * f;
+            s.v[1] = -0.2;
+            s.v[3] = 0.1 * f;
+            s.v[limb_v] = 0.7;
+            s
+        })
+        .collect();
+    sim.load_states(&states);
+    sim.enable_state_history(2).unwrap();
+
+    // Host mirror of every world's stream and AR(1) state.
+    let mut rngs: Vec<KernelRng> = (0..nworld).map(|w| KernelRng::for_world(seed, w)).collect();
+    let mut zs = vec![vec![0.0f64; spec.n_out()]; nworld];
+    let mut want_targets: Vec<Vec<f64>> = vec![vec![0.0; 1]; nworld];
+
+    let mut want_obs: Vec<Vec<f64>> = Vec::new();
+    let mut want_act: Vec<Vec<f64>> = Vec::new();
+    let mut want_logp: Vec<f64> = Vec::new();
+
+    for step in 0..3 {
+        if step == 0 {
+            sim.record_state(0).unwrap();
+        }
+        // The device: FK -> obs -> policy -> targets, from its own q/v.
+        sim.run_policy(step).unwrap();
+        // The reference: same q/v (the device's, so physics precision does
+        // not leak into this comparison), CPU FK, CPU policy.
+        let dev_states = sim.readback_states();
+        for w in 0..nworld {
+            let mut s = dev_states[w].clone();
+            let mut obs = observe_reference(&model, &mut s, &spec.obs);
+            let (act, logp) = policy_reference(
+                &spec,
+                &weights,
+                &std,
+                &mut rngs[w],
+                &mut obs,
+                &mut zs[w],
+                &base[w],
+                &mut want_targets[w],
+            );
+            want_obs.push(obs);
+            want_act.push(act);
+            want_logp.push(logp);
+        }
+        // Targets are what the PD pass will read: check them now.
+        let got_t = sim.readback_targets().unwrap();
+        for w in 0..nworld {
+            let d = (got_t[w] as f64 - want_targets[w][0]).abs();
+            assert!(
+                d < 2e-4,
+                "step {step} world {w}: target got {} want {} diff {d:.2e}",
+                got_t[w],
+                want_targets[w][0]
+            );
+        }
+        // Physics between control steps, PD driving toward those targets.
+        for _ in 0..5 {
+            sim.step();
+        }
+        if step == 0 {
+            sim.record_state(1).unwrap();
+            states = sim.readback_states();
+        }
+    }
+
+    // History rows against the reference rows.
+    let (obs_h, out_h) = sim.readback_policy_history(0..3).unwrap();
+    let n_in = spec.n_in();
+    let n_out = spec.n_out();
+    for (row, want) in want_obs.iter().enumerate() {
+        for i in 0..n_in {
+            let got = obs_h[row * n_in + i] as f64;
+            let d = (got - want[i]).abs();
+            assert!(
+                d < 1e-4,
+                "obs row {row} feature {i} ({:?}): got {got} want {} diff {d:.2e}",
+                spec.obs[i],
+                want[i]
+            );
+        }
+    }
+    for (row, want) in want_act.iter().enumerate() {
+        for k in 0..n_out {
+            let got = out_h[row * (n_out + 1) + k] as f64;
+            let d = (got - want[k]).abs();
+            assert!(
+                d < 2e-4,
+                "act row {row} k {k}: got {got} want {} diff {d:.2e}",
+                want[k]
+            );
+        }
+        let got_lp = out_h[row * (n_out + 1) + n_out] as f64;
+        let d = (got_lp - want_logp[row]).abs();
+        assert!(
+            d < 1e-3,
+            "logp row {row}: got {got_lp} want {} diff {d:.2e}",
+            want_logp[row]
+        );
+    }
+    // The observations moved between steps (the physics ran) and the noise
+    // was recorded (an entry with noise differs from the noiseless op).
+    assert!(
+        (obs_h[0] - obs_h[nworld * n_in]).abs() > 0.0
+            || (obs_h[5] - obs_h[nworld * n_in + 5]).abs() > 0.0
+    );
+
+    // FK readout against CPU FK on the same state.
+    sim.compute_kinematics().unwrap();
+    let kin = sim.readback_kinematics().unwrap();
+    let cur = sim.readback_states();
+    for w in 0..nworld {
+        let mut s = cur[w].clone();
+        let (xf, _) = phyz_rigid::forward_kinematics(&model, &s);
+        s.body_xform = xf;
+        for b in 0..model.nbodies() {
+            let row = &kin[(w * model.nbodies() + b) * XF_STRIDE..][..XF_STRIDE];
+            let x = &s.body_xform[b];
+            for r in 0..3 {
+                for c in 0..3 {
+                    let d = (row[r * 3 + c] as f64 - x.rot[(r, c)]).abs();
+                    assert!(d < 1e-5, "fk world {w} body {b} rot[{r}][{c}] diff {d:.2e}");
+                }
+            }
+            for (k, want) in [x.pos.x, x.pos.y, x.pos.z].into_iter().enumerate() {
+                let d = (row[9 + k] as f64 - want).abs();
+                assert!(d < 1e-5, "fk world {w} body {b} pos[{k}] diff {d:.2e}");
+            }
+        }
+    }
+
+    // State history: slot 0 was the loaded state, slot 1 the state after
+    // the first five steps — the same numbers a direct readback gave then.
+    let (qh, vh) = sim.readback_state_history(0..2).unwrap();
+    let (nq, nv) = (model.nq, model.nv);
+    let slot0 =
+        phyz_gpu::layout::unpack_states(&model, nworld, &qh[..nworld * nq], &vh[..nworld * nv]);
+    let slot1 =
+        phyz_gpu::layout::unpack_states(&model, nworld, &qh[nworld * nq..], &vh[nworld * nv..]);
+    for w in 0..nworld {
+        // Slot 0 vs the states we loaded (f32 round trip only).
+        let mut loaded = model.default_state();
+        let f = w as f64;
+        loaded.q[0] = 0.2 * f;
+        loaded.q[1] = -0.1 * f;
+        loaded.q[2] = 0.3 * f;
+        loaded.q[5] = 1.0 + 0.1 * f;
+        loaded.q[limb_q] = 0.4 - 0.2 * f;
+        loaded.v[0] = 0.5 * f;
+        loaded.v[1] = -0.2;
+        loaded.v[3] = 0.1 * f;
+        loaded.v[limb_v] = 0.7;
+        assert_state_close(
+            &format!("history slot 0 world {w}"),
+            &slot0[w],
+            &loaded,
+            1e-6,
+        );
+        assert_state_close(
+            &format!("history slot 1 world {w}"),
+            &slot1[w],
+            &states[w],
+            1e-6,
+        );
+    }
+
+    // The shape guards.
+    assert!(
+        sim.run_policy(3).is_err(),
+        "step past history_steps must be refused"
+    );
+    assert!(
+        sim.record_state(2).is_err(),
+        "slot past history must be refused"
+    );
+    let bad = PolicySpec {
+        act_slots: vec![7],
+        ..spec.clone()
+    };
+    assert!(
+        sim.enable_policy(bad).is_err(),
+        "action slot past the PD table must be refused"
+    );
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -867,6 +1124,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_ant(mk);
     suite_vs_wgpu(mk);
     suite_unified_contact(mk);
+    suite_policy(mk);
 }
 
 // ── Host harness ──────────────────────────────────────────────────────────
@@ -907,6 +1165,10 @@ mod host {
     #[test]
     fn unified_contact_matches_wgsl_kernels() {
         suite_unified_contact(mk);
+    }
+    #[test]
+    fn device_policy_loop_matches_cpu() {
+        suite_policy(mk);
     }
     #[test]
     fn rejects_oversized_models() {

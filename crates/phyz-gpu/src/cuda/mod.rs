@@ -41,6 +41,7 @@ use crate::layout::{
     pack_states, unpack_contacts, unpack_states,
 };
 use crate::pd_pipeline::PdDof;
+use crate::policy_pipeline::{OBS_OP_STRIDE, PolicySpec, XF_STRIDE, pack_obs_ops, world_seed};
 use phyz_model::{Heightfield, Model, State};
 
 #[cfg(feature = "cuda-host")]
@@ -113,8 +114,59 @@ pub struct IntegrateArgs {
     pub nbodies: u32,
 }
 
+/// Scalar arguments of the FK readout pass.
+#[derive(Debug, Clone, Copy)]
+pub struct FkArgs {
+    /// Worlds.
+    pub nworld: u32,
+    /// `v` (and `q`) width per world.
+    pub nv: u32,
+    /// Bodies per world.
+    pub nbodies: u32,
+}
+
+/// Scalar arguments of the observation pass.
+#[derive(Debug, Clone, Copy)]
+pub struct ObsArgs {
+    /// Worlds.
+    pub nworld: u32,
+    /// `q` width per world.
+    pub nq: u32,
+    /// `v` width per world.
+    pub nv: u32,
+    /// Bodies per world.
+    pub nbodies: u32,
+    /// Features per row.
+    pub n_in: u32,
+    /// Float offset of this step's rows in the observation history.
+    pub obs_off: u32,
+}
+
+/// Scalar arguments of the policy pass.
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyArgs {
+    /// Worlds.
+    pub nworld: u32,
+    /// MLP input width.
+    pub n_in: u32,
+    /// MLP hidden width.
+    pub n_h: u32,
+    /// MLP output width (actions).
+    pub n_out: u32,
+    /// Servoed DOFs per world (the PD target row width).
+    pub n_dofs: u32,
+    /// Applied-action clamp.
+    pub act_clamp: f32,
+    /// AR(1) noise coefficient.
+    pub rho: f32,
+    /// Float offset of this step's rows in the observation history.
+    pub obs_off: u32,
+    /// Float offset of this step's rows in the action/log-prob history.
+    pub out_off: u32,
+}
+
 /// Where the kernels run. Buffers are flat `f32` arrays; launches are the
-/// four passes with their arguments spelled out, so a backend is only the
+/// passes with their arguments spelled out, so a backend is only the
 /// plumbing and never the physics.
 pub trait KernelBackend {
     /// A device-side `f32` buffer.
@@ -131,6 +183,21 @@ pub trait KernelBackend {
     fn download(&self, buf: &Self::Buffer) -> Result<Vec<f32>, String>;
     /// Block until every launch so far has completed.
     fn synchronize(&self) -> Result<(), String>;
+    /// Copy `len` floats of `buf` starting at `start` back to the host.
+    fn download_range(
+        &self,
+        buf: &Self::Buffer,
+        start: usize,
+        len: usize,
+    ) -> Result<Vec<f32>, String>;
+    /// Device-to-device: copy the whole of `src` into `dst` at `dst_offset`,
+    /// ordered after every launch so far and never blocking the host.
+    fn copy(
+        &self,
+        src: &Self::Buffer,
+        dst: &mut Self::Buffer,
+        dst_offset: usize,
+    ) -> Result<(), String>;
 
     /// PD servo pass: `nworld * n_dofs` threads.
     fn launch_pd(
@@ -184,6 +251,45 @@ pub trait KernelBackend {
         qdd: &Self::Buffer,
         bodies: &Self::Buffer,
     ) -> Result<(), String>;
+
+    /// FK readout pass: `nworld` threads, `XF_STRIDE` floats per body.
+    fn launch_fk(
+        &self,
+        args: FkArgs,
+        bodies: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        xforms: &mut Self::Buffer,
+    ) -> Result<(), String>;
+
+    /// Observation pass: `nworld` threads, one op-table row each.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_obs(
+        &self,
+        args: ObsArgs,
+        ops: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        xforms: &Self::Buffer,
+        obs: &mut Self::Buffer,
+    ) -> Result<(), String>;
+
+    /// Policy pass: `nworld` threads — MLP, Gaussian sample, PD targets.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_policy(
+        &self,
+        args: PolicyArgs,
+        weights: &Self::Buffer,
+        stdv: &Self::Buffer,
+        in_noise: &Self::Buffer,
+        obs: &mut Self::Buffer,
+        rng: &mut Self::Buffer,
+        z: &mut Self::Buffer,
+        act_slots: &Self::Buffer,
+        base_targets: &Self::Buffer,
+        targets: &mut Self::Buffer,
+        out: &mut Self::Buffer,
+    ) -> Result<(), String>;
 }
 
 struct ContactPass<B: KernelBackend> {
@@ -200,6 +306,29 @@ struct PdPass<B: KernelBackend> {
     dofs: B::Buffer,
     targets: B::Buffer,
     n_dofs: usize,
+}
+
+struct PolicyPass<B: KernelBackend> {
+    spec: PolicySpec,
+    ops: B::Buffer,
+    weights: B::Buffer,
+    stdv: B::Buffer,
+    in_noise: B::Buffer,
+    rng: B::Buffer,
+    z: B::Buffer,
+    act_slots: B::Buffer,
+    base_targets: B::Buffer,
+    /// `[history_steps][nworld][n_in]`, written by the observation pass and
+    /// noised in place by the policy pass.
+    obs_hist: B::Buffer,
+    /// `[history_steps][nworld][n_out + 1]`: actions then log-prob.
+    out_hist: B::Buffer,
+}
+
+struct HistoryPass<B: KernelBackend> {
+    q: B::Buffer,
+    v: B::Buffer,
+    slots: usize,
 }
 
 /// Batched simulator over a [`KernelBackend`].
@@ -223,6 +352,10 @@ pub struct BatchSim<B: KernelBackend> {
     contact_state: B::Buffer,
     contact: Option<ContactPass<B>>,
     pd: Option<PdPass<B>>,
+    /// FK readout buffer, `[nworld][nbodies][XF_STRIDE]`.
+    kin: Option<B::Buffer>,
+    policy: Option<PolicyPass<B>>,
+    history: Option<HistoryPass<B>>,
     /// Contact sweeps per step in impulse mode; see
     /// [`crate::GpuBatchSimulator::contact_sweeps`].
     pub contact_sweeps: usize,
@@ -298,8 +431,37 @@ impl<B: KernelBackend> BatchSim<B> {
             contact_state,
             contact: None,
             pd: None,
+            kin: None,
+            policy: None,
+            history: None,
             contact_sweeps: DEFAULT_CONTACT_SWEEPS,
         })
+    }
+
+    /// Replace the model in place — same body count and DOF widths, new
+    /// masses, inertias, joint placements or limits. What a domain-
+    /// randomised rebuild of the same robot needs, without re-allocating a
+    /// simulator: re-run `enable_contact_*` / `enable_pd_control` after it
+    /// if their geometry or gains changed too.
+    pub fn set_model(&mut self, model: Model) -> Result<(), String> {
+        if model.nbodies() != self.model.nbodies()
+            || model.nq != self.model.nq
+            || model.nv != self.model.nv
+        {
+            return Err(format!(
+                "set_model: shape changed ({} bodies, nq {}, nv {} vs {} bodies, nq {}, nv {}); build a new simulator",
+                model.nbodies(),
+                model.nq,
+                model.nv,
+                self.model.nbodies(),
+                self.model.nq,
+                self.model.nv
+            ));
+        }
+        self.backend
+            .upload(&mut self.bodies, &pack_bodies(&model))?;
+        self.model = model;
+        Ok(())
     }
 
     /// The backend the kernels run on.
@@ -473,7 +635,13 @@ impl<B: KernelBackend> BatchSim<B> {
         let dof_data = pack_pd_dofs(dofs);
         let mut dof_buf = self.backend.alloc(dof_data.len())?;
         self.backend.upload(&mut dof_buf, &dof_data)?;
-        let targets = self.backend.alloc((self.nworld * dofs.len()).max(1))?;
+        // Re-enabling with the same servo count (a gain re-draw) keeps the
+        // target buffer — the policy pass holds no reference to it, but the
+        // last targets stay valid across the swap.
+        let targets = match self.pd.take() {
+            Some(old) if old.n_dofs == dofs.len() => old.targets,
+            _ => self.backend.alloc((self.nworld * dofs.len()).max(1))?,
+        };
         self.pd = Some(PdPass {
             dofs: dof_buf,
             targets,
@@ -640,5 +808,353 @@ impl<B: KernelBackend> BatchSim<B> {
     /// Number of bodies the contact pass can collide, or 0 if disabled.
     pub fn collidable_bodies(&self) -> usize {
         self.contact.as_ref().map_or(0, |c| c.collidable_bodies)
+    }
+
+    // ── FK readout ────────────────────────────────────────────────────────
+
+    /// Allocate the FK readout buffer (`[nworld][nbodies][XF_STRIDE]`).
+    /// Idempotent.
+    pub fn enable_kinematics(&mut self) -> Result<(), String> {
+        if self.kin.is_none() {
+            let nb = self.model.nbodies();
+            self.kin = Some(self.backend.alloc((self.nworld * nb * XF_STRIDE).max(1))?);
+        }
+        Ok(())
+    }
+
+    /// Run the FK readout pass over the current `q`/`v`.
+    pub fn compute_kinematics(&mut self) -> Result<(), String> {
+        let kin = self
+            .kin
+            .as_mut()
+            .ok_or("kinematics not enabled — call enable_kinematics first")?;
+        self.backend.launch_fk(
+            FkArgs {
+                nworld: self.nworld as u32,
+                nv: self.model.nv as u32,
+                nbodies: self.model.nbodies() as u32,
+            },
+            &self.bodies,
+            &self.q,
+            &self.v,
+            kin,
+        )
+    }
+
+    /// Download the FK readout, raw: `[nworld][nbodies][XF_STRIDE]` — see
+    /// [`crate::policy_pipeline::XF_STRIDE`] for the row layout.
+    pub fn readback_kinematics(&self) -> Result<Vec<f32>, String> {
+        let kin = self.kin.as_ref().ok_or("kinematics not enabled")?;
+        self.backend.synchronize()?;
+        self.backend.download(kin)
+    }
+
+    // ── Policy pass ───────────────────────────────────────────────────────
+
+    /// Enable the observation + policy pass. Needs PD control enabled (the
+    /// actions land in its target rows). Re-enabling with the same widths
+    /// and history length keeps the history buffers.
+    pub fn enable_policy(&mut self, spec: PolicySpec) -> Result<(), String> {
+        let n_dofs = self
+            .pd
+            .as_ref()
+            .ok_or("policy pass needs PD control — call enable_pd_control first")?
+            .n_dofs;
+        spec.validate(self.model.nq, self.model.nv, self.model.nbodies(), n_dofs)?;
+        self.enable_kinematics()?;
+        let nworld = self.nworld;
+        let (n_in, n_out) = (spec.n_in(), spec.n_out());
+
+        let mut ops = self.backend.alloc((n_in * OBS_OP_STRIDE).max(1))?;
+        self.backend.upload(&mut ops, &pack_obs_ops(&spec.obs))?;
+        let mut in_noise = self.backend.alloc(n_in.max(1))?;
+        self.backend.upload(
+            &mut in_noise,
+            &spec
+                .input_noise
+                .iter()
+                .map(|&x| x as f32)
+                .collect::<Vec<_>>(),
+        )?;
+        let mut act_slots = self.backend.alloc(n_out.max(1))?;
+        self.backend.upload(
+            &mut act_slots,
+            &spec.act_slots.iter().map(|&s| s as f32).collect::<Vec<_>>(),
+        )?;
+
+        let reuse = self.policy.take().filter(|p| {
+            p.spec.n_in() == n_in
+                && p.spec.hidden == spec.hidden
+                && p.spec.n_out() == n_out
+                && p.spec.history_steps == spec.history_steps
+        });
+        let (weights, stdv, rng, z, base_targets, obs_hist, out_hist) = match reuse {
+            Some(p) => (
+                p.weights,
+                p.stdv,
+                p.rng,
+                p.z,
+                p.base_targets,
+                p.obs_hist,
+                p.out_hist,
+            ),
+            None => (
+                self.backend.alloc(spec.n_weights())?,
+                self.backend.alloc(n_out)?,
+                self.backend.alloc(nworld * 2)?,
+                self.backend.alloc(nworld * n_out)?,
+                self.backend.alloc(nworld * n_dofs)?,
+                self.backend.alloc(spec.history_steps * nworld * n_in)?,
+                self.backend
+                    .alloc(spec.history_steps * nworld * (n_out + 1))?,
+            ),
+        };
+        self.policy = Some(PolicyPass {
+            spec,
+            ops,
+            weights,
+            stdv,
+            in_noise,
+            rng,
+            z,
+            act_slots,
+            base_targets,
+            obs_hist,
+            out_hist,
+        });
+        Ok(())
+    }
+
+    fn policy_parts(&mut self) -> Result<(&B, &mut PolicyPass<B>), String> {
+        let p = self
+            .policy
+            .as_mut()
+            .ok_or_else(|| "policy pass not enabled — call enable_policy first".to_string())?;
+        Ok((&self.backend, p))
+    }
+
+    /// Upload the MLP weights, flat, in the kernel's order (see
+    /// [`crate::policy_pipeline`]).
+    pub fn set_policy_weights(&mut self, weights: &[f64]) -> Result<(), String> {
+        let (backend, p) = self.policy_parts()?;
+        if weights.len() != p.spec.n_weights() {
+            return Err(format!(
+                "policy expects {} weights, got {}",
+                p.spec.n_weights(),
+                weights.len()
+            ));
+        }
+        let data: Vec<f32> = weights.iter().map(|&w| w as f32).collect();
+        backend.upload(&mut p.weights, &data)
+    }
+
+    /// Upload the per-action Gaussian standard deviations.
+    pub fn set_policy_std(&mut self, std: &[f64]) -> Result<(), String> {
+        let (backend, p) = self.policy_parts()?;
+        if std.len() != p.spec.n_out() {
+            return Err(format!(
+                "policy has {} actions, got {} stds",
+                p.spec.n_out(),
+                std.len()
+            ));
+        }
+        let data: Vec<f32> = std.iter().map(|&s| s as f32).collect();
+        backend.upload(&mut p.stdv, &data)
+    }
+
+    /// Upload the per-world base PD targets the actions are added to
+    /// (`rows[world][slot]`, registration order — as `set_position_targets`).
+    pub fn set_policy_base_targets(&mut self, rows: &[Vec<f64>]) -> Result<(), String> {
+        let n_dofs = self.pd.as_ref().map_or(0, |pd| pd.n_dofs);
+        let nworld = self.nworld;
+        let (backend, p) = self.policy_parts()?;
+        let data = pack_rows(rows, nworld, n_dofs);
+        backend.upload(&mut p.base_targets, &data)
+    }
+
+    /// Seed every world's random stream (see
+    /// [`crate::policy_pipeline::world_seed`]) and reset the AR(1) noise
+    /// state. Same seed, same device, same actions.
+    pub fn seed_policy(&mut self, seed: u64) -> Result<(), String> {
+        let nworld = self.nworld;
+        let (backend, p) = self.policy_parts()?;
+        let mut words = Vec::with_capacity(nworld * 2);
+        for w in 0..nworld {
+            let s = world_seed(seed, w);
+            words.push(f32::from_bits((s & 0xffff_ffff) as u32));
+            words.push(f32::from_bits((s >> 32) as u32));
+        }
+        let n_out = p.spec.n_out();
+        backend.upload(&mut p.rng, &words)?;
+        backend.upload(&mut p.z, &vec![0.0f32; nworld * n_out])
+    }
+
+    /// One control step's worth of the loop, on device: FK readout,
+    /// observation row `step`, policy forward + sample into action row
+    /// `step` and the PD targets. `step` indexes the history and must be
+    /// below `history_steps`.
+    pub fn run_policy(&mut self, step: usize) -> Result<(), String> {
+        self.compute_kinematics()?;
+        let nworld = self.nworld;
+        let m = &self.model;
+        let (nq, nv, nb) = (m.nq, m.nv, m.nbodies());
+        let pd = self.pd.as_mut().ok_or("policy pass needs PD control")?;
+        let p = self
+            .policy
+            .as_mut()
+            .ok_or("policy pass not enabled — call enable_policy first")?;
+        let kin = self.kin.as_ref().ok_or("kinematics not enabled")?;
+        if step >= p.spec.history_steps {
+            return Err(format!(
+                "policy step {step} exceeds history_steps {}",
+                p.spec.history_steps
+            ));
+        }
+        let (n_in, n_h, n_out) = (p.spec.n_in(), p.spec.hidden, p.spec.n_out());
+        let obs_off = step * nworld * n_in;
+        let out_off = step * nworld * (n_out + 1);
+        self.backend.launch_obs(
+            ObsArgs {
+                nworld: nworld as u32,
+                nq: nq as u32,
+                nv: nv as u32,
+                nbodies: nb as u32,
+                n_in: n_in as u32,
+                obs_off: obs_off as u32,
+            },
+            &p.ops,
+            &self.q,
+            &self.v,
+            kin,
+            &mut p.obs_hist,
+        )?;
+        self.backend.launch_policy(
+            PolicyArgs {
+                nworld: nworld as u32,
+                n_in: n_in as u32,
+                n_h: n_h as u32,
+                n_out: n_out as u32,
+                n_dofs: pd.n_dofs as u32,
+                act_clamp: p.spec.act_clamp as f32,
+                rho: p.spec.noise_rho as f32,
+                obs_off: obs_off as u32,
+                out_off: out_off as u32,
+            },
+            &p.weights,
+            &p.stdv,
+            &p.in_noise,
+            &mut p.obs_hist,
+            &mut p.rng,
+            &mut p.z,
+            &p.act_slots,
+            &p.base_targets,
+            &mut pd.targets,
+            &mut p.out_hist,
+        )
+    }
+
+    /// Download the observation and action history for control steps
+    /// `steps` (a range below `history_steps`): `(obs, out)` with `obs`
+    /// `[step][world][n_in]` and `out` `[step][world][n_out + 1]` (actions
+    /// then log-prob), flattened.
+    pub fn readback_policy_history(
+        &self,
+        steps: std::ops::Range<usize>,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let p = self.policy.as_ref().ok_or("policy pass not enabled")?;
+        if steps.end > p.spec.history_steps || steps.start > steps.end {
+            return Err(format!(
+                "policy history range {steps:?} outside 0..{}",
+                p.spec.history_steps
+            ));
+        }
+        let (n_in, n_out) = (p.spec.n_in(), p.spec.n_out());
+        let n = steps.len();
+        self.backend.synchronize()?;
+        let obs = self.backend.download_range(
+            &p.obs_hist,
+            steps.start * self.nworld * n_in,
+            n * self.nworld * n_in,
+        )?;
+        let out = self.backend.download_range(
+            &p.out_hist,
+            steps.start * self.nworld * (n_out + 1),
+            n * self.nworld * (n_out + 1),
+        )?;
+        Ok((obs, out))
+    }
+
+    /// The policy pass's PD target rows, downloaded (`[world][slot]`).
+    pub fn readback_targets(&self) -> Result<Vec<f32>, String> {
+        let pd = self.pd.as_ref().ok_or("PD control not enabled")?;
+        self.backend.synchronize()?;
+        self.backend.download(&pd.targets)
+    }
+
+    // ── State history ─────────────────────────────────────────────────────
+
+    /// Keep `slots` snapshots of `q`/`v` on device, so a rollout can be
+    /// read back once instead of once per control step. Re-enabling with
+    /// the same slot count keeps the buffers.
+    pub fn enable_state_history(&mut self, slots: usize) -> Result<(), String> {
+        if slots == 0 {
+            return Err("state history needs at least one slot".into());
+        }
+        if self.history.as_ref().is_some_and(|h| h.slots == slots) {
+            return Ok(());
+        }
+        let m = &self.model;
+        self.history = Some(HistoryPass {
+            q: self.backend.alloc((slots * self.nworld * m.nq).max(1))?,
+            v: self.backend.alloc((slots * self.nworld * m.nv).max(1))?,
+            slots,
+        });
+        Ok(())
+    }
+
+    /// Snapshot the current `q`/`v` into history `slot` — a device copy
+    /// ordered after every launch so far; the host does not wait.
+    pub fn record_state(&mut self, slot: usize) -> Result<(), String> {
+        let m = &self.model;
+        let h = self
+            .history
+            .as_mut()
+            .ok_or("state history not enabled — call enable_state_history first")?;
+        if slot >= h.slots {
+            return Err(format!("history slot {slot} exceeds {} slots", h.slots));
+        }
+        self.backend
+            .copy(&self.q, &mut h.q, slot * self.nworld * m.nq)?;
+        self.backend
+            .copy(&self.v, &mut h.v, slot * self.nworld * m.nv)
+    }
+
+    /// Download history slots `slots` raw: `(q, v)` with `q` `[slot][world][nq]`
+    /// and `v` `[slot][world][nv]`, flattened. Rebuild `State`s with
+    /// [`crate::layout::unpack_states`] per slot, or read the slices in
+    /// place — at thousands of worlds times hundreds of steps the `State`
+    /// objects are the expensive part.
+    pub fn readback_state_history(
+        &self,
+        slots: std::ops::Range<usize>,
+    ) -> Result<(Vec<f32>, Vec<f32>), String> {
+        let h = self.history.as_ref().ok_or("state history not enabled")?;
+        if slots.end > h.slots || slots.start > slots.end {
+            return Err(format!("history range {slots:?} outside 0..{}", h.slots));
+        }
+        let m = &self.model;
+        let n = slots.len();
+        self.backend.synchronize()?;
+        let q = self.backend.download_range(
+            &h.q,
+            slots.start * self.nworld * m.nq,
+            n * self.nworld * m.nq,
+        )?;
+        let v = self.backend.download_range(
+            &h.v,
+            slots.start * self.nworld * m.nv,
+            n * self.nworld * m.nv,
+        )?;
+        Ok((q, v))
     }
 }
