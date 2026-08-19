@@ -386,6 +386,7 @@ fn mixed_masses_stable_with_per_body_gains() {
         stiffness: 1.354e4,
         damping: 10.0,
         friction: 0.5,
+        ..Default::default()
     };
     assert!(unstable.check_stability(&model).is_err());
 

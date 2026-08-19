@@ -75,9 +75,86 @@
 use crate::material::ContactMaterial;
 use phyz_math::Vec3;
 
+/// How much of the Delassus operator the sweep is allowed to see.
+///
+/// This is the one knob that separates the CPU and GPU instantiations of the
+/// contact model, and it exists so that the difference between them is a
+/// *named, measurable approximation* rather than two divergent codebases.
+///
+/// The problem being solved — the objective, the friction cone, the solref
+/// bias, the impedance regularizer, the staged Coulomb update — is identical
+/// under both settings. Only the operator changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactCoupling {
+    /// The full `3n x 3n` Delassus operator: every contact sees the velocity
+    /// that every other contact's impulse induces on it, through the
+    /// articulated chain. This is the physically correct operator, and what
+    /// the CPU simulation path uses.
+    Full,
+    /// Only each contact's own `3x3` diagonal block. Contacts are blind to
+    /// one another within a sweep.
+    ///
+    /// # Why this mode exists
+    ///
+    /// The off-diagonal blocks `A_ck` are what make the assembled problem
+    /// *coupled*, and assembling them requires `M^-1 J^T` for every contact
+    /// row — an articulated-body solve per row, per step. On the GPU that is
+    /// the difference between a pass that reads each body's own spatial
+    /// inertia and a pass that runs `3n` backsubstitutions through the whole
+    /// kinematic tree, per environment, per step. The block-diagonal operator
+    /// is available for free: it is the isolated-body effective mass the
+    /// contact shader already computes.
+    ///
+    /// # What it costs
+    ///
+    /// The approximation is *not* uniform. It is exact when contacts share
+    /// neither a body nor a chain — two boxes far apart. It is worst for a
+    /// redundant manifold on one body (a foot's corner contacts all pushing
+    /// the same rigid plate) and for two contacts on opposite ends of a light
+    /// chain (two feet coupled through a floating base), where the true `A`
+    /// is strongly off-diagonal and the sweep, blind to it, over-assigns load
+    /// to every contact at once.
+    ///
+    /// Running the CPU solver in this mode is how that cost gets measured
+    /// without a GPU in the loop: `Full` versus `BlockDiagonal` in `f64` is
+    /// the *approximation*, and `BlockDiagonal` versus the GPU is the
+    /// *implementation gap*. Confounding those two is what made the earlier
+    /// GPU-vs-CPU numbers uninterpretable.
+    BlockDiagonal,
+    /// Every off-diagonal block between contacts that **share a body**, and
+    /// nothing across bodies.
+    ///
+    /// This is the GPU's operator. It is exact for a contact manifold on one
+    /// rigid body — a foot's four corners, a box's face — because those blocks
+    /// are `J_c M_i^-1 J_k^T` with `M_i` the single body's own spatial
+    /// inertia, which needs no articulated solve and no factorization: it is
+    /// the same isolated-body quantity the contact shader already forms for
+    /// the diagonal, evaluated at a second contact's lever arm.
+    ///
+    /// What it still drops is coupling *through the chain* — two feet talking
+    /// to each other via a floating base. That term genuinely does require
+    /// `M^-1 J^T` and is what the GPU does not pay for.
+    ///
+    /// Measured (`examples/contact_parity`), the split is lopsided in a way
+    /// that decided this design: on a single box landing on its face, going
+    /// from `Full` to `BlockDiagonal` moved the trajectory by up to 78 mm,
+    /// while `PerBody` is exact there by construction. Nearly all of the
+    /// block-diagonal error on a contact manifold is *within-body* coupling,
+    /// and within-body coupling is the part that is cheap.
+    PerBody,
+}
+
 /// Tuning for the contact solve.
 #[derive(Debug, Clone, Copy)]
 pub struct ContactSolverConfig {
+    /// Which Delassus operator the sweep iterates on. See [`ContactCoupling`].
+    pub coupling: ContactCoupling,
+    /// Allow the active-set Newton stage.
+    ///
+    /// Off in the GPU-equivalent preset: a dense `3n x 3n` factorization is
+    /// not something a contact shader can do, so leaving it on would put the
+    /// CPU reference out of the GPU's reach by construction.
+    pub newton: bool,
     /// Diagonal regularization `R` added to the Delassus operator.
     ///
     /// Larger values soften contact: more penetration, but a better
@@ -136,6 +213,8 @@ impl ContactSolverConfig {
     /// Fidelity-biased preset: crisp contact, minimal penetration.
     pub fn simulation() -> Self {
         Self {
+            coupling: ContactCoupling::Full,
+            newton: true,
             regularization: 1e-6,
             tolerance: 1e-10,
             // Generous, and it should stay generous, because it is now almost
@@ -165,6 +244,8 @@ impl ContactSolverConfig {
     /// simulator should validate the result under [`Self::simulation`].
     pub fn gradients() -> Self {
         Self {
+            coupling: ContactCoupling::Full,
+            newton: true,
             regularization: 1e-3,
             tolerance: 1e-12,
             max_iterations: 2000,
@@ -189,7 +270,45 @@ impl ContactSolverConfig {
             ..Self::simulation()
         }
     }
+
+    /// The exact problem, operator and schedule the GPU contact pass runs.
+    ///
+    /// This is the CPU's *model* of the GPU: same convex problem, same staged
+    /// Coulomb update, same solref bias and impedance regularizer, but the
+    /// block-diagonal Delassus operator, no Newton stage, and a fixed sweep
+    /// budget instead of a residual tolerance. Nothing here is a different
+    /// contact model — it is the same model under a documented restriction.
+    ///
+    /// It is the referee for GPU parity. A gap between this and the GPU is an
+    /// implementation bug; a gap between this and [`Self::simulation`] is the
+    /// price of the restriction. The two must be measured separately or
+    /// neither number means anything.
+    ///
+    /// `tolerance` is zero so the sweep budget always runs to completion: the
+    /// shader has no early exit (a workgroup cannot cheaply agree that every
+    /// contact has converged), so an early-exiting reference would drift from
+    /// it on exactly the easy steps where the GPU keeps sweeping. `converged`
+    /// is therefore `false` here by construction, which is honest — a
+    /// fixed-budget iterate is not a KKT point and must not anchor an IFT
+    /// gradient.
+    pub fn gpu_equivalent() -> Self {
+        Self {
+            coupling: ContactCoupling::BlockDiagonal,
+            newton: false,
+            tolerance: 0.0,
+            max_iterations: GPU_SWEEPS,
+            ..Self::simulation()
+        }
+    }
 }
+
+/// Sweeps the GPU contact pass performs per step, and therefore the budget
+/// [`ContactSolverConfig::gpu_equivalent`] matches.
+///
+/// The shader runs a fixed count with no early exit, so this number is part of
+/// the model rather than a tuning detail: change it in one place and the other
+/// stops being a reference for it.
+pub const GPU_SWEEPS: usize = 16;
 
 /// One contact's entry in the convex problem.
 #[derive(Debug, Clone, Copy)]
@@ -309,6 +428,21 @@ pub struct ContactProblem {
     pub free_velocity: Vec<f64>,
     /// Per-contact parameters.
     pub rows: Vec<ContactRow>,
+    /// The body pair each contact acts between, `(body_i, body_j)`, with
+    /// `usize::MAX` for the static world — the same sentinel
+    /// [`phyz_collision::Collision`] uses.
+    ///
+    /// Only [`ContactCoupling::PerBody`] reads this; it is what decides
+    /// whether two contacts share a body and therefore whether their
+    /// off-diagonal block is one the GPU can afford.
+    ///
+    /// A map whose length is not `n` means "body structure unknown", and
+    /// `PerBody` then degrades to [`ContactCoupling::Full`] rather than
+    /// dropping blocks it cannot justify dropping. Failing toward *more*
+    /// coupling is the safe direction: it costs time, where the other
+    /// direction silently changes the physics. Hand-built problems in the
+    /// tests take this path.
+    pub bodies: Vec<(usize, usize)>,
 }
 
 /// The outcome of a contact solve.
@@ -611,7 +745,8 @@ pub fn solve_contacts_warm(
     let mut stalls = 0;
     while iterations < config.max_iterations {
         let entry_residual = residual;
-        if newton_solves < NEWTON_ATTEMPTS
+        if config.newton
+            && newton_solves < NEWTON_ATTEMPTS
             && let Some(candidate) = newton_step(problem, config, &f)
         {
             newton_solves += 1;
@@ -736,6 +871,18 @@ const STALL_BLOCKS: usize = 3;
 /// the solve terminates on. With `normals_only`, the tangential impulses are
 /// held at their current values rather than re-solved.
 #[allow(clippy::needless_range_loop)]
+/// Do two contacts act on a common body?
+///
+/// `usize::MAX` is the static world. Every ground contact names it, and it
+/// couples nothing — it is immovable, so an impulse on one ground contact
+/// induces no velocity at another through the world. Counting it as shared
+/// would collapse `PerBody` back into `Full` for the most common case there
+/// is, so it is excluded explicitly.
+fn shares_body(a: (usize, usize), b: (usize, usize)) -> bool {
+    let real = |x: usize| x != usize::MAX;
+    (real(a.0) && (a.0 == b.0 || a.0 == b.1)) || (real(a.1) && (a.1 == b.0 || a.1 == b.1))
+}
+
 fn sweep(
     problem: &ContactProblem,
     config: &ContactSolverConfig,
@@ -753,17 +900,35 @@ fn sweep(
         let base = 3 * c;
 
         // r = b_c + sum_{k != c} A_ck f_k  (Gauss-Seidel: uses updated f)
+        //
+        // Under `ContactCoupling::BlockDiagonal` the sum is skipped entirely
+        // and `r` is just the free velocity: that *is* the approximation, and
+        // it is the whole of it. Everything below — the staged normal solve,
+        // the tangential 2x2, the isotropic disc clamp — is untouched, so the
+        // restricted mode remains the same contact model rather than becoming
+        // a second one.
         let mut r = [0.0f64; 3];
         for (row, r_row) in r.iter_mut().enumerate() {
             let mut acc = problem.free_velocity[base + row];
-            for k in 0..n {
-                if k == c {
-                    continue;
+            if config.coupling != ContactCoupling::BlockDiagonal {
+                for (k, f_k) in f.iter().enumerate().take(n) {
+                    if k == c {
+                        continue;
+                    }
+                    // PerBody keeps only the blocks the GPU can form without
+                    // an articulated solve: those between contacts on a
+                    // shared body.
+                    if config.coupling == ContactCoupling::PerBody
+                        && problem.bodies.len() == n
+                        && !shares_body(problem.bodies[c], problem.bodies[k])
+                    {
+                        continue;
+                    }
+                    let kb = 3 * k;
+                    acc += at(base + row, kb) * f_k.x
+                        + at(base + row, kb + 1) * f_k.y
+                        + at(base + row, kb + 2) * f_k.z;
                 }
-                let kb = 3 * k;
-                acc += at(base + row, kb) * f[k].x
-                    + at(base + row, kb + 1) * f[k].y
-                    + at(base + row, kb + 2) * f[k].z;
             }
             *r_row = acc;
         }
@@ -976,5 +1141,7 @@ pub fn point_mass_problem(
         // rather than 0, folded into b.
         free_velocity: vec![free_vel.x * (1.0 + e), free_vel.y, free_vel.z],
         rows: vec![ContactRow::from_material(material, depth, dt, e)],
+        // A single point mass against the static world: nothing to couple to.
+        bodies: vec![(0, usize::MAX)],
     }
 }

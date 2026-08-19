@@ -31,14 +31,17 @@
 //! kernel languages; the CPU-as-reference parity tests are what hold them
 //! together. See `docs/design/cuda-backend.md`.
 
-use crate::contact_pipeline::{BodyContactGains, BodyContactState, GroundContactParams};
+use crate::contact_pipeline::{
+    BodyContactGains, BodyContactState, BodyPlane, ContactParams, GroundContactParams,
+    pack_contact_geometry, validate_heightfield,
+};
+use crate::gpu_batch_simulator::DEFAULT_CONTACT_SWEEPS;
 use crate::layout::{
-    self, CONTACT_STATE_STRIDE, MAX_BODIES, check_pd_dofs, no_collidable_geometry_error,
-    pack_bodies, pack_geometries, pack_pd_dofs, pack_rows, pack_states, unpack_contacts,
-    unpack_states,
+    self, CONTACT_STATE_STRIDE, MAX_BODIES, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows,
+    pack_states, unpack_contacts, unpack_states,
 };
 use crate::pd_pipeline::PdDof;
-use phyz_model::{Model, State};
+use phyz_model::{Heightfield, Model, State};
 
 #[cfg(feature = "cuda-host")]
 pub mod host;
@@ -69,19 +72,13 @@ pub struct PdArgs {
     pub n_dofs: u32,
 }
 
-/// Scalar arguments of the ground-contact pass.
+/// Scalar arguments of the contact pass. Everything else the pass needs
+/// travels in the `cparams` buffer (see [`ContactParams`]), which is why
+/// this is only the launch width.
 #[derive(Debug, Clone, Copy)]
 pub struct ContactArgs {
     /// Worlds.
     pub nworld: u32,
-    /// Bodies per world.
-    pub nbodies: u32,
-    /// `v` (and `q`) width per world.
-    pub nv: u32,
-    /// Ground plane height.
-    pub ground_height: f32,
-    /// Timestep.
-    pub dt: f32,
 }
 
 /// Scalar arguments of the ABA pass.
@@ -146,17 +143,23 @@ pub trait KernelBackend {
         ctrl: &mut Self::Buffer,
     ) -> Result<(), String>;
 
-    /// Ground contact pass: `nworld` threads.
+    /// Contact pass: `nworld` threads. `cparams` is the packed
+    /// [`ContactParams`]; `hf_heights` the heightfield nodes (a placeholder
+    /// when there is no terrain); `qdd` the free acceleration the impulse
+    /// solve reads.
     #[allow(clippy::too_many_arguments)]
     fn launch_contact(
         &self,
         args: ContactArgs,
+        cparams: &Self::Buffer,
         bodies: &Self::Buffer,
         geometry: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         ext_forces: &mut Self::Buffer,
         contact_state: &mut Self::Buffer,
+        hf_heights: &Self::Buffer,
+        qdd: &Self::Buffer,
     ) -> Result<(), String>;
 
     /// ABA pass: `nworld` threads.
@@ -185,7 +188,11 @@ pub trait KernelBackend {
 
 struct ContactPass<B: KernelBackend> {
     geometry: B::Buffer,
-    ground_height: f32,
+    params: ContactParams,
+    params_buf: B::Buffer,
+    hf_buf: B::Buffer,
+    /// Node capacity of `hf_buf`; `set_heightfield` may not outgrow it.
+    hf_capacity: usize,
     collidable_bodies: usize,
 }
 
@@ -216,6 +223,9 @@ pub struct BatchSim<B: KernelBackend> {
     contact_state: B::Buffer,
     contact: Option<ContactPass<B>>,
     pd: Option<PdPass<B>>,
+    /// Contact sweeps per step in impulse mode; see
+    /// [`crate::GpuBatchSimulator::contact_sweeps`].
+    pub contact_sweeps: usize,
 }
 
 /// The CUDA batch simulator: [`BatchSim`] on [`CudaBackend`].
@@ -288,6 +298,7 @@ impl<B: KernelBackend> BatchSim<B> {
             contact_state,
             contact: None,
             pd: None,
+            contact_sweeps: DEFAULT_CONTACT_SWEEPS,
         })
     }
 
@@ -299,8 +310,7 @@ impl<B: KernelBackend> BatchSim<B> {
     /// Enable ground contact with one global stiffness/damping.
     ///
     /// Same contract as [`crate::GpuBatchSimulator::enable_ground_contact`]:
-    /// returns the collidable-body count, errors when it is zero, and
-    /// `friction` is accepted and ignored (the pass is normal-force only).
+    /// returns the collidable-body count and errors when it is zero.
     pub fn enable_ground_contact(
         &mut self,
         ground_height: f64,
@@ -314,7 +324,10 @@ impl<B: KernelBackend> BatchSim<B> {
                 stiffness,
                 damping,
                 friction,
+                ..Default::default()
             },
+            None,
+            None,
             None,
         )
     }
@@ -329,41 +342,127 @@ impl<B: KernelBackend> BatchSim<B> {
         friction: f64,
         gains: &[BodyContactGains],
     ) -> Result<usize, String> {
-        if gains.len() != self.model.nbodies() {
-            return Err(format!(
-                "body_gains has {} entries but the model has {} bodies",
-                gains.len(),
-                self.model.nbodies()
-            ));
-        }
+        self.enable_ground_contact_with_plane(ground_height, friction, gains, None)
+    }
+
+    /// [`Self::enable_ground_contact_per_body`] plus an optional
+    /// body-attached contact plane. Same contract as
+    /// [`crate::GpuBatchSimulator::enable_ground_contact_with_plane`].
+    pub fn enable_ground_contact_with_plane(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[BodyContactGains],
+        plane: Option<&BodyPlane>,
+    ) -> Result<usize, String> {
+        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+    }
+
+    /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain.
+    /// Same contract as [`crate::GpuBatchSimulator::enable_contact_terrain`]:
+    /// `ground_height` is ignored while a heightfield is loaded, and the node
+    /// buffer is sized to this first field.
+    pub fn enable_contact_terrain(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[BodyContactGains],
+        plane: Option<&BodyPlane>,
+        heightfield: Option<&Heightfield>,
+    ) -> Result<usize, String> {
         self.enable_contact(
             GroundContactParams {
                 ground_height,
                 stiffness: 0.0,
                 damping: 0.0,
                 friction,
+                ..Default::default()
             },
             Some(gains),
+            plane,
+            heightfield,
+        )
+    }
+
+    /// Enable contact as the velocity-level convex impulse solve. Same
+    /// contract as [`crate::GpuBatchSimulator::enable_contact_impulse`].
+    pub fn enable_contact_impulse(
+        &mut self,
+        ground_height: f64,
+        friction: f64,
+        gains: &[BodyContactGains],
+        plane: Option<&BodyPlane>,
+        heightfield: Option<&Heightfield>,
+    ) -> Result<usize, String> {
+        let dt = self.model.dt;
+        self.enable_contact(
+            GroundContactParams {
+                ground_height,
+                friction,
+                impulse_solve: true,
+                solref_erp: GroundContactParams::solref_erp_from(0.02, 1.0, dt),
+                ..Default::default()
+            },
+            Some(gains),
+            plane,
+            heightfield,
         )
     }
 
     fn enable_contact(
         &mut self,
-        params: GroundContactParams,
+        contact: GroundContactParams,
         gains: Option<&[BodyContactGains]>,
+        plane: Option<&BodyPlane>,
+        heightfield: Option<&Heightfield>,
     ) -> Result<usize, String> {
-        let (geom_data, collidable) = pack_geometries(&self.model, &params, gains);
-        if collidable == 0 {
-            return Err(no_collidable_geometry_error(&self.model));
-        }
+        let (geom_data, collidable) =
+            pack_contact_geometry(&self.model, &contact, gains, plane, heightfield)?;
         let mut geometry = self.backend.alloc(geom_data.len().max(1))?;
         self.backend.upload(&mut geometry, &geom_data)?;
+
+        let params = ContactParams::pack(&self.model, self.nworld, &contact, plane, heightfield);
+        let mut params_buf = self.backend.alloc(params.as_f32s().len())?;
+        self.backend.upload(&mut params_buf, params.as_f32s())?;
+
+        // Heightfield nodes; a single placeholder when there is no terrain,
+        // since hf_nx == 0 routes the kernel around it.
+        let hf_capacity = heightfield.map_or(1, |h| h.heights.len().max(1));
+        let mut hf_buf = self.backend.alloc(hf_capacity)?;
+        if let Some(h) = heightfield {
+            self.backend.upload(&mut hf_buf, &h.heights)?;
+        }
+
         self.contact = Some(ContactPass {
             geometry,
-            ground_height: params.ground_height as f32,
+            params,
+            params_buf,
+            hf_buf,
+            hf_capacity,
             collidable_bodies: collidable,
         });
         Ok(collidable)
+    }
+
+    /// Replace the contact terrain in place. Same contract as
+    /// [`crate::GpuBatchSimulator::set_heightfield`].
+    pub fn set_heightfield(&mut self, hf: &Heightfield) -> Result<(), String> {
+        let c = self
+            .contact
+            .as_mut()
+            .ok_or("contact not enabled — call enable_contact_terrain first")?;
+        validate_heightfield(hf)?;
+        if hf.heights.len() > c.hf_capacity {
+            return Err(format!(
+                "heightfield has {} nodes but the buffer was sized for {}; \
+                 enable contact with the largest grid first",
+                hf.heights.len(),
+                c.hf_capacity
+            ));
+        }
+        c.params.set_heightfield(hf);
+        self.backend.upload(&mut c.params_buf, c.params.as_f32s())?;
+        self.backend.upload(&mut c.hf_buf, &hf.heights)
     }
 
     /// Enable PD position servos on the given DOFs.
@@ -441,41 +540,36 @@ impl<B: KernelBackend> BatchSim<B> {
             )?;
         }
 
-        if let Some(c) = &self.contact {
-            self.backend.launch_contact(
-                ContactArgs {
-                    nworld,
-                    nbodies,
-                    nv,
-                    ground_height: c.ground_height,
-                    dt,
-                },
-                &self.bodies,
-                &c.geometry,
-                &self.q,
-                &self.v,
-                &mut self.ext_forces,
-                &mut self.contact_state,
-            )?;
+        // Contact + ABA. Penalty mode: one contact pass, one ABA. Impulse
+        // mode interleaves [contact, ABA] `contact_sweeps` times after a
+        // leading ABA — the same sequencing as `GpuBatchSimulator::step`,
+        // for the same reason (each sweep reads a `qdd` carrying the previous
+        // sweep's impulses; that is the matrix-free Delassus application).
+        let aba_args = AbaArgs {
+            nworld,
+            nv,
+            dt,
+            nbodies,
+            gx: m.gravity.x as f32,
+            gy: m.gravity.y as f32,
+            gz: m.gravity.z as f32,
+        };
+        let sweeps = match &self.contact {
+            Some(c) if c.params.solve_mode == 1 => self.contact_sweeps,
+            _ => 0,
+        };
+        if sweeps > 0 {
+            self.launch_aba(aba_args)?;
+            for _ in 0..sweeps {
+                self.launch_contact(nworld)?;
+                self.launch_aba(aba_args)?;
+            }
+        } else {
+            if self.contact.is_some() {
+                self.launch_contact(nworld)?;
+            }
+            self.launch_aba(aba_args)?;
         }
-
-        self.backend.launch_aba(
-            AbaArgs {
-                nworld,
-                nv,
-                dt,
-                nbodies,
-                gx: m.gravity.x as f32,
-                gy: m.gravity.y as f32,
-                gz: m.gravity.z as f32,
-            },
-            &self.bodies,
-            &self.q,
-            &self.v,
-            &self.ctrl,
-            &mut self.qdd,
-            &self.ext_forces,
-        )?;
 
         self.backend.launch_integrate(
             IntegrateArgs {
@@ -488,6 +582,36 @@ impl<B: KernelBackend> BatchSim<B> {
             &mut self.v,
             &self.qdd,
             &self.bodies,
+        )
+    }
+
+    fn launch_contact(&mut self, nworld: u32) -> Result<(), String> {
+        let Some(c) = &self.contact else {
+            return Ok(());
+        };
+        self.backend.launch_contact(
+            ContactArgs { nworld },
+            &c.params_buf,
+            &self.bodies,
+            &c.geometry,
+            &self.q,
+            &self.v,
+            &mut self.ext_forces,
+            &mut self.contact_state,
+            &c.hf_buf,
+            &self.qdd,
+        )
+    }
+
+    fn launch_aba(&mut self, args: AbaArgs) -> Result<(), String> {
+        self.backend.launch_aba(
+            args,
+            &self.bodies,
+            &self.q,
+            &self.v,
+            &self.ctrl,
+            &mut self.qdd,
+            &self.ext_forces,
         )
     }
 

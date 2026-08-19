@@ -23,17 +23,15 @@ unsafe extern "C" {
     );
     fn phyz_host_contact(
         n_threads: u32,
-        nworld: u32,
-        nbodies: u32,
-        nv: u32,
-        ground_height: f32,
-        dt: f32,
+        cparams: *const f32,
         bodies: *const f32,
         geometry: *const f32,
         q: *const f32,
         v: *const f32,
         ext_forces: *mut f32,
         contact_state: *mut f32,
+        hf_heights: *const f32,
+        qdd: *const f32,
     );
     fn phyz_host_aba(
         n_threads: u32,
@@ -130,28 +128,29 @@ impl KernelBackend for HostBackend {
     fn launch_contact(
         &self,
         a: ContactArgs,
+        cparams: &Vec<f32>,
         bodies: &Vec<f32>,
         geometry: &Vec<f32>,
         q: &Vec<f32>,
         v: &Vec<f32>,
         ext_forces: &mut Vec<f32>,
         contact_state: &mut Vec<f32>,
+        hf_heights: &Vec<f32>,
+        qdd: &Vec<f32>,
     ) -> Result<(), String> {
-        // SAFETY: as in launch_pd.
+        // SAFETY: as in launch_pd, against `phyz_host_contact`.
         unsafe {
             phyz_host_contact(
                 a.nworld,
-                a.nworld,
-                a.nbodies,
-                a.nv,
-                a.ground_height,
-                a.dt,
+                cparams.as_ptr(),
                 bodies.as_ptr(),
                 geometry.as_ptr(),
                 q.as_ptr(),
                 v.as_ptr(),
                 ext_forces.as_mut_ptr(),
                 contact_state.as_mut_ptr(),
+                hf_heights.as_ptr(),
+                qdd.as_ptr(),
             );
         }
         Ok(())

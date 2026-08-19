@@ -56,7 +56,7 @@ fn analytic_qdd(theta: f64) -> [f64; 2] {
 #[test]
 fn analytic_double_pendulum_matches_gpu() {
     let model = offset_double_pendulum();
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -86,7 +86,7 @@ fn analytic_double_pendulum_matches_gpu() {
 #[test]
 fn offset_double_pendulum_trajectory_matches_cpu() {
     let model = offset_double_pendulum();
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };

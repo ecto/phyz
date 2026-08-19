@@ -18,7 +18,7 @@ phyz-world = { workspace = true }
 phyz-collision = { workspace = true }
 # Must match phyz-gpu exactly: the two crates share a wgpu Device/Queue, and
 # wgpu types are not compatible across versions.
-wgpu = "23.0"
+wgpu = "25.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"
 thiserror = "2.0"

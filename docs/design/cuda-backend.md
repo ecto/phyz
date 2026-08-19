@@ -1,9 +1,13 @@
 # CUDA execution path for `phyz-gpu`
 
 Status: **implemented, gated behind `phyz-gpu/cuda`**; verified on the host
-against the CPU reference and against the WGSL kernels; **not yet run on an
-NVIDIA device** at the time of writing (this machine has none). The first
-device run is a smoke example + a test binary away — see §5.
+against the CPU reference and against the WGSL kernels, and on an RTX PRO
+6000 (Blackwell) pod: ant, 4096 worlds × 500 steps, 5.06e7 env-steps/s,
+404× a CPU thread, parity 2.7e-5 (2026-08-18). The unified contact model —
+heightfield terrain, the body-attached finite face (`BodyPlane`), Coulomb
+friction and box manifolds, the velocity-level impulse solve with sweeps,
+passive joint springs and armature — is ported too, and held to the WGSL
+kernel-for-kernel in `tests/cuda_vs_cpu.rs::suite_unified_contact`.
 
 ---
 
@@ -42,6 +46,8 @@ phyz_gpu::layout        one definition of every buffer layout (BODY_STRIDE …)
 
 phyz_gpu::cuda::BatchSim<B: KernelBackend>
     same surface as GpuBatchSimulator: new / enable_ground_contact[_per_body] /
+    enable_ground_contact_with_plane / enable_contact_terrain /
+    enable_contact_impulse / set_heightfield / contact_sweeps /
     enable_pd_control / set_position_targets / load_states / set_controls /
     step / readback_states / readback_contacts
     │
