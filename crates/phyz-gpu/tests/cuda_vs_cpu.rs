@@ -1115,6 +1115,61 @@ fn suite_policy<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     );
 }
 
+/// Every PD servo tracks its uploaded base target, not just the ones the
+/// policy actions. Four servos, two of them actioned; on a *fresh* sim
+/// (targets still zero from allocation) one policy pass must leave the
+/// other two at their non-zero base — issue #76, where they stayed at
+/// zero and drove a partially-actuated robot to a different pose.
+fn suite_policy_base_targets<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let model = arm_6dof();
+    let nworld = 3;
+    let pd: Vec<PdDof> = (0..4)
+        .map(|k| PdDof {
+            q_index: k,
+            v_index: k,
+            kp: 20.0,
+            kd: 1.0,
+            max_force: 10.0,
+        })
+        .collect();
+    let spec = PolicySpec {
+        obs: vec![ObsOp::Const(1.0), ObsOp::QMinus(0, 0.0), ObsOp::V(0)],
+        hidden: 8,
+        act_slots: vec![0, 2],
+        act_clamp: 0.5,
+        noise_rho: 0.0,
+        input_noise: vec![0.0, 0.0, 0.0],
+        history_steps: 1,
+    };
+    let base: Vec<Vec<f64>> = (0..nworld)
+        .map(|w| (0..4).map(|j| 0.1 + 0.01 * (4 * w + j) as f64).collect())
+        .collect();
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_pd_control(&pd).unwrap();
+    sim.enable_policy(spec.clone()).unwrap();
+    // Zero weights and zero exploration: the action is exactly zero, so
+    // every slot — actioned or not — must read back its base.
+    sim.set_policy_weights(&vec![0.0; spec.n_weights()])
+        .unwrap();
+    sim.set_policy_std(&vec![1e-9; spec.n_out()]).unwrap();
+    sim.set_policy_base_targets(&base).unwrap();
+    sim.seed_policy(11).unwrap();
+    sim.load_states(&vec![model.default_state(); nworld]);
+    sim.run_policy(0).unwrap();
+    let got = sim.readback_targets().unwrap();
+    for w in 0..nworld {
+        for slot in 0..4 {
+            let d = (got[w * 4 + slot] as f64 - base[w][slot]).abs();
+            assert!(
+                d < 1e-6,
+                "world {w} slot {slot}: got {} want base {} diff {d:.2e}",
+                got[w * 4 + slot],
+                base[w][slot]
+            );
+        }
+    }
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -1125,6 +1180,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_vs_wgpu(mk);
     suite_unified_contact(mk);
     suite_policy(mk);
+    suite_policy_base_targets(mk);
 }
 
 // ── Host harness ──────────────────────────────────────────────────────────
@@ -1169,6 +1225,10 @@ mod host {
     #[test]
     fn device_policy_loop_matches_cpu() {
         suite_policy(mk);
+    }
+    #[test]
+    fn policy_writes_every_base_target() {
+        suite_policy_base_targets(mk);
     }
     #[test]
     fn rejects_oversized_models() {

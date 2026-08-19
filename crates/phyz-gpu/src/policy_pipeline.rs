@@ -300,6 +300,7 @@ pub fn policy_reference(
             *o += spec.input_noise[i] * rng.normal();
         }
     }
+    targets.copy_from_slice(base_targets);
     let mean = mlp_forward(spec.n_in(), spec.hidden, spec.n_out(), weights, obs);
     let rho = spec.noise_rho;
     let keep = (1.0 - rho * rho).max(0.0).sqrt();

@@ -1615,6 +1615,12 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
         h2[j] = tanhf(s);
     }
 
+    // Every PD servo tracks its base target, not just the action slots:
+    // without this the non-action servos keep whatever the target buffer
+    // held at allocation (zero on a fresh sim) — a different robot.
+    for (u32 j = 0; j < n_dofs; j++)
+        targets[world_idx * n_dofs + j] = base_targets[world_idx * n_dofs + j];
+
     float keep = sqrtf(fmax_(0.0f, 1.0f - rho * rho));
     const float LN_2PI = 1.8378770664093453f;
     float logp = 0.0f;
