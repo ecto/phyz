@@ -54,7 +54,7 @@ pub const BODY_STRIDE: usize = 36;
 /// ```
 ///
 /// There is no separate "carried mass" override here, and deliberately so:
-/// the penalty gains are already per body ([8], [9]), so a foot that holds
+/// the penalty gains are already per body (slots 8 and 9), so a foot that holds
 /// up a whole robot is expressed by giving that foot the stiffness it needs
 /// rather than by naming a mass the kernel then divides. See
 /// [`BodyContactGains::uniform_frequency`] for the mass-proportional recipe

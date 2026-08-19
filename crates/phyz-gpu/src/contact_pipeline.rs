@@ -108,6 +108,7 @@ impl ContactParams {
     }
 
     /// The parameters as the flat f32 buffer the CUDA pass reads.
+    #[cfg(any(feature = "cuda", feature = "cuda-host"))]
     pub(crate) fn as_f32s(&self) -> &[f32] {
         bytemuck::cast_slice(std::slice::from_ref(self))
     }
