@@ -7,7 +7,7 @@
 //! two-hidden-layer tanh MLP, a diagonal Gaussian. That is the whole of what
 //! `ipse-sim`'s PPO collector needs, and it is enough to keep the GPU busy;
 //! anything the table cannot express stays on the host, fed by
-//! [`crate::cuda::BatchSim::readback_state_history`] once per rollout instead of
+//! `BatchSim::readback_state_history` (the `cuda` feature) once per rollout instead of
 //! once per control step.
 //!
 //! Layouts here are mirrored verbatim in `cuda/phyz_kernels.cu`
