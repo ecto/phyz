@@ -192,3 +192,56 @@ Not ported, deliberately:
 CUDA type has the same methods (with `&mut self` where wgpu takes `&self`),
 so a `type Sim = …` chosen by a `gpu-cuda` feature is the whole change on that
 side.
+
+## 7. The device-resident control loop (2026-08-19)
+
+`ipse-sim`'s PPO collector measured, at 4096 K1-on-skateboard worlds on the
+RTX PRO 6000: sim launches 0.0 s (async), `readback_states` 2–4 s, FK/observe
+1–2 s, actor forward 1 s, per-world bookkeeping 0.5 s — per iteration, on ~15
+host cores, GPU utilisation 0–19 %. Every control step read all worlds back,
+observed, forwarded and sampled on the host, and uploaded targets. The sim was
+never the clock; the host round trip was.
+
+Three passes and two buffers move that loop on-device, behind the same
+`KernelBackend` seam (three new `launch_*`, one `copy`, one `download_range`):
+
+| pass | threads | what |
+| --- | --- | --- |
+| `phyz_fk` | nworld | the contact pass's FK chain (factored into `fk_world`, verbatim), written out per body as `XF_STRIDE` = 18 floats: world→body rotation, origin, body-frame angular/linear velocity |
+| `phyz_obs` | nworld | one observation row per world from a small op table (`ObsOp`: const, `q−ref`, `v`, body pitch/roll/yaw-error/height) into a device history `[step][world][n_in]` |
+| `phyz_policy` | nworld | two-hidden-layer tanh MLP over that row, per-input Gaussian noise (recorded in place), AR(1) diagonal-Gaussian sample, log-prob, and `base + clamp(action)` written straight into the PD target row; actions + log-prob into `[step][world][n_out+1]` |
+
+Plus a **state history**: `record_state(slot)` is a device-to-device copy of
+`q`/`v` ordered after the launches (the host never waits), and
+`readback_state_history(range)` downloads a range once. A collector runs
+`run_policy(step)`, `step()` × control_every, `record_state(step)`, and reads
+everything back at the end (or in chunks it processes on a worker thread while
+the device continues) — the reward and anything the op table cannot express
+run on the host from the history, once per rollout instead of once per control
+step. `set_model` re-uploads the body table in place for a domain-randomised
+rebuild of the same robot; `enable_pd_control` / `enable_policy` /
+`enable_state_history` keep their buffers when the shape is unchanged, so a
+simulator lives across iterations.
+
+Randomness is one xorshift64 stream per world (`world_seed(seed, w)`,
+SplitMix-mixed), Box–Muller in double — the same arithmetic as
+`ipse_dojo::search::XorShift::normal`, mirrored on the host by
+`policy_pipeline::KernelRng`. That is what makes the parity test exact rather
+than statistical: `tests/cuda_vs_cpu.rs::suite_policy` replays every world's
+stream on the CPU (`policy_reference`, `observe_reference`) and holds
+observations, noise, actions, log-probs, PD targets, FK rows and history slots
+to f32 precision, on the host backend always and on the device when there is
+one. Same seed, same device, same actions.
+
+What it does not do, deliberately: reward and termination. `ipse-sim`'s
+`SkateReturn::tick` is stateful and large; the honest cut was to feed it from
+one bulk readback rather than port it. The device keeps stepping every world to
+the horizon (as the collector already did — lanes are not reclaimable), and the
+host discards samples after the step the referee says the episode ended.
+
+Measured, `gpu_sim_bench` in `ipse-sim` (K1 + board, 32 bodies): the sim floor
+alone is ~0.49 ms per step at ≤ 4096 worlds — 1024 and 4096 cost the same, so
+the kernels are latency-bound (one long thread per world, ~22 threads per SM
+on this part), and 16384 worlds cost 2×. Per 2500-step iteration that is
+~1.2 s before any host work; the control loop above removes the host from the
+per-step path, it does not make the kernels themselves faster.
