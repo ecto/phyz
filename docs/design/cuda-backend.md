@@ -245,3 +245,60 @@ the kernels are latency-bound (one long thread per world, ~22 threads per SM
 on this part), and 16384 worlds cost 2×. Per 2500-step iteration that is
 ~1.2 s before any host work; the control loop above removes the host from the
 per-step path, it does not make the kernels themselves faster.
+
+## The update pass
+
+`cuda/phyz_train.cu` is the second kernel file, and its own thing: the
+*update* half of a reinforcement-learning iteration, where `phyz_kernels.cu`
+is the collection half. Once the control loop runs on device, the PPO update
+is what is left on the CPU — an f64 minibatch loop over a three-layer tanh
+actor and critic — and it grows with the sample count until it is the clock.
+
+`cuda::TrainPipeline` runs that loop. Its seam is a second trait,
+`TrainBackend`, not more methods on `KernelBackend`: the simulation passes are
+f32 throughout, while the optimizer keeps an f64 master weight and f64 Adam
+moments, and the minibatch index list is `u32`. The same two backends exist
+for the same reason — `CudaTrainBackend` (NVRTC, and `on_context` so a run
+that collects and updates on one GPU opens one context) and
+`HostTrainBackend` (the same `.cu` text as host C++, the CI referee).
+
+Scope is the `epochs × minibatches` loop and nothing else. GAE, advantage
+normalization and the Huber delta's own statistics are one linear sweep of the
+batch, sequential per episode, and nowhere near the clock; the host does them
+and uploads finished `adv`/`ret` columns. The minibatch *order* is the host's
+too — the caller shuffles with its own PRNG and hands the indices over — so a
+same-seed comparison against a CPU loop is meaningful, which is exactly what
+`tests/train_parity.rs` does against tang's own `Linear`/`ModuleAdam` in f64.
+
+Precision: activations, gradients and the forward weights are f32; parameters
+and both Adam moments are f64, mirrored to f32 on every step. That is not a
+compromise for the device's benefit — tang's `ModuleAdam` keeps `m`/`v` in f64
+regardless of the parameter scalar, so this *is* the CPU optimizer's state.
+Only the gradient carries f32 error, and the master weight is never rounded
+through f32 between steps.
+
+Every accumulation over the minibatch — weight gradients, bias gradients, the
+loss and KL scalars — is a sequential double-accumulated loop in one thread.
+That trades parallelism for two things worth more: the device and the host
+walk of the same source agree, and the answer does not depend on how blocks
+were scheduled. It is also the pass's remaining headroom: a weight gradient is
+one thread per weight, so the actor's first layer launches 3520 threads on a
+part with far more, and the update is throughput-bound on those row loops
+rather than on launch latency (total time is flat in minibatch size — 2048,
+4096 and 16384 all land within 25% of each other). A fixed-tile two-stage
+reduction would keep the determinism and raise the occupancy; it is not done.
+
+Measured on an RTX PRO 6000 Blackwell, `examples/cuda_train` at the shape a
+real locomotion iteration produces — 1M samples, obs 55, action 22, hidden 64,
+minibatch 4096, one epoch, 245 minibatches:
+
+| | wall | per minibatch |
+|---|---|---|
+| tang f64 CPU | 35.26 s | 143.9 ms |
+| device | 3.57 s | 14.6 ms |
+
+9.9×, with the batch upload at 0.03 s. Parity on the same hardware, against
+tang in f64: the actor's weight delta after one update agrees to 3.2e-7
+relative, the critic's to 3.1e-7; after three updates 2.0e-7 and 1.7e-7; the
+policy and value losses to ~1e-7, and the KL brake stops on the same
+minibatch. The host walk of the same source lands in the same place.
