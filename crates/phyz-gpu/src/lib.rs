@@ -40,3 +40,8 @@ pub use interop::GpuInterop;
 pub use cuda::CudaBatchSimulator;
 #[cfg(feature = "cuda-host")]
 pub use cuda::HostBatchSimulator;
+
+#[cfg(any(feature = "cuda", feature = "cuda-host"))]
+pub use cuda::train::{
+    AdamCfg, KlMode, NetDims, PpoUpdateCfg, SampleBatch, TrainBackend, TrainPipeline, UpdateStats,
+};

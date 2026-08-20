@@ -48,11 +48,23 @@ use phyz_model::{Heightfield, Model, State};
 pub mod host;
 #[cfg(feature = "cuda")]
 pub mod nvrtc;
+pub mod train;
+#[cfg(feature = "cuda-host")]
+pub mod train_host;
+#[cfg(feature = "cuda")]
+pub mod train_nvrtc;
 
 #[cfg(feature = "cuda-host")]
 pub use host::HostBackend;
 #[cfg(feature = "cuda")]
 pub use nvrtc::CudaBackend;
+pub use train::{
+    AdamCfg, KlMode, NetDims, PpoUpdateCfg, SampleBatch, TrainBackend, TrainPipeline, UpdateStats,
+};
+#[cfg(feature = "cuda-host")]
+pub use train_host::HostTrainBackend;
+#[cfg(feature = "cuda")]
+pub use train_nvrtc::CudaTrainBackend;
 
 /// The CUDA source every backend in this module executes.
 pub const KERNEL_SOURCE: &str = include_str!("../../cuda/phyz_kernels.cu");

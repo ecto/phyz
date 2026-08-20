@@ -4,11 +4,13 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=cuda/phyz_kernels.cu");
+    println!("cargo:rerun-if-changed=cuda/phyz_train.cu");
     #[cfg(feature = "cuda-host")]
     {
         cc::Build::new()
             .cpp(true)
             .file("cuda/phyz_kernels.cu")
+            .file("cuda/phyz_train.cu")
             .flag("-xc++")
             .std("c++14")
             .opt_level(2)

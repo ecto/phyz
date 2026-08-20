@@ -51,7 +51,15 @@ approx = "0.5"
 phyz = { workspace = true }
 phyz-contact = { workspace = true }
 phyz-mjcf = { workspace = true }
+# The PPO-update parity test's referee: the *actual* f64 CPU optimizer the
+# device pass replaces, not a re-derivation of it.
+tang-tensor = { workspace = true }
+tang-train = { workspace = true }
 
 [[example]]
 name = "cuda_batch"
 required-features = ["cuda"]
+
+[[example]]
+name = "cuda_train"
+required-features = ["cuda-host"]
