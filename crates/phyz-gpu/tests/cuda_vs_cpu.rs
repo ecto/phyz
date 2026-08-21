@@ -1504,6 +1504,22 @@ mod device {
     use super::*;
     use phyz_gpu::CudaBatchSimulator;
 
+    /// Graph replay stands on its own rather than riding in `run_all`,
+    /// because it is the only test here that is about the device and not
+    /// about the port: it must still run when a kernel-vs-kernel comparison
+    /// against some other backend is unhappy.
+    #[test]
+    fn graph_replay_is_bit_identical_on_cuda() {
+        match CudaBatchSimulator::new(double_pendulum(), 1) {
+            Ok(sim) => eprintln!("running on {}", sim.backend().device_name()),
+            Err(e) => {
+                eprintln!("skipping CUDA graph replay: {e}");
+                return;
+            }
+        }
+        suite_graph_replay(|m, n| CudaBatchSimulator::new(m, n).unwrap());
+    }
+
     #[test]
     fn everything_matches_cpu_on_cuda() {
         match CudaBatchSimulator::new(double_pendulum(), 1) {
