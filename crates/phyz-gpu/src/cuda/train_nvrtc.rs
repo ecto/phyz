@@ -57,9 +57,24 @@ impl CudaTrainBackend {
         Self::on_context(ctx)
     }
 
-    /// Compile onto an already-open context — the collector's, normally.
+    /// Compile onto an already-open context, running on its null stream.
+    ///
+    /// Sharing a context with a [`crate::cuda::CudaBackend`] is **not**
+    /// enough to order against it: that backend runs on a stream it creates
+    /// so that it can capture launch graphs, and a non-blocking stream does
+    /// not serialise against the null stream this one uses. To interleave a
+    /// training update with a collector's simulation, hand the collector's
+    /// stream to [`CudaTrainBackend::on_stream`] instead.
     pub fn on_context(ctx: Arc<CudaContext>) -> Result<Self, String> {
         let stream = ctx.default_stream();
+        Self::on_stream(stream)
+    }
+
+    /// Compile onto an already-open stream — the collector's, normally, so
+    /// that the update and the simulation are ordered against each other
+    /// with no explicit synchronisation.
+    pub fn on_stream(stream: Arc<CudaStream>) -> Result<Self, String> {
+        let ctx = stream.context().clone();
         let opts = CompileOptions {
             // Same as the simulation kernels: no fast-math, IEEE division and
             // sqrt, so a parity gap is a precision question and nothing else.
