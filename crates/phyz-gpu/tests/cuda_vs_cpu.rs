@@ -1280,6 +1280,138 @@ fn suite_policy_clamp_slots<B: KernelBackend>(mk: impl Fn(Model, usize) -> Batch
     );
 }
 
+// ── Launch graphs ─────────────────────────────────────────────────────────
+
+/// A replayed step span against the same launches issued by hand.
+///
+/// A CUDA Graph records the kernels, their arguments and their buffer
+/// addresses, and replaying it re-runs exactly those. So the bar here is not
+/// a tolerance — it is bit-identity, and anything short of it means the
+/// capture picked up something that should not have been in it, or a stale
+/// recording survived a change that should have discarded it.
+///
+/// On a backend without graph support this still checks the contract from
+/// the other side: `step_many(n)` must be `n` calls to `step()`.
+fn suite_graph_replay<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let Some(model) = ant_or_skip() else { return };
+    let nworld = 16;
+    let steps = 60;
+    let chunk = 20;
+    let gains = BodyContactGains::uniform_frequency(&model, 100.0, 1.0);
+    let pd: Vec<PdDof> = (6..model.nv)
+        .map(|i| PdDof {
+            q_index: i,
+            v_index: i,
+            kp: 40.0,
+            kd: 2.0,
+            max_force: 60.0,
+        })
+        .collect();
+
+    let mut start = model.default_state();
+    start.q[5] = 0.75;
+    let states = vec![start; nworld];
+
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_contact_impulse(0.0, 0.8, &gains, None, None)
+        .unwrap();
+    sim.enable_pd_control(&pd).unwrap();
+    sim.set_position_targets(&vec![vec![0.2; pd.len()]; nworld])
+        .unwrap();
+    sim.set_controls(&vec![vec![0.0; model.nv]; nworld]);
+
+    // The reference: graphs off, one launch at a time.
+    sim.set_graphs_enabled(false);
+    assert!(!sim.graphs_enabled(), "graphs must stay off once disabled");
+    sim.load_states(&states);
+    for _ in 0..steps {
+        sim.step();
+    }
+    let want = sim.readback_states();
+
+    // Same simulator, graphs back on, from the same initial states.
+    sim.set_graphs_enabled(true);
+    sim.load_states(&states);
+    for _ in 0..steps {
+        sim.step();
+    }
+    assert_bit_identical("step() replayed", &model, &want, &sim.readback_states());
+
+    // And as one graph over a whole control period.
+    sim.load_states(&states);
+    for _ in 0..(steps / chunk) {
+        sim.step_many(chunk).unwrap();
+    }
+    assert_bit_identical(
+        "step_many() replayed",
+        &model,
+        &want,
+        &sim.readback_states(),
+    );
+
+    // Capture invalidation: a different sweep count is a different launch
+    // sequence, so the cached recording must not be replayed for it.
+    sim.contact_sweeps = 4;
+    sim.load_states(&states);
+    for _ in 0..(steps / chunk) {
+        sim.step_many(chunk).unwrap();
+    }
+    let few_sweeps = sim.readback_states();
+    sim.set_graphs_enabled(false);
+    sim.load_states(&states);
+    for _ in 0..steps {
+        sim.step();
+    }
+    assert_bit_identical(
+        "sweep count changed under a cached graph",
+        &model,
+        &sim.readback_states(),
+        &few_sweeps,
+    );
+    // Guard the guard: if 4 and 16 sweeps land in the same place, the check
+    // above would pass on a stale replay too.
+    assert!(
+        (0..model.nv).any(|j| want[0].v[j] != few_sweeps[0].v[j]),
+        "4 sweeps and 16 sweeps produced identical states — the sweep count \
+         is not reaching the solve, so this test proves nothing"
+    );
+}
+
+fn ant_or_skip() -> Option<Model> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/ant.xml");
+    match phyz_mjcf::MjcfLoader::from_file(path) {
+        Ok(l) => Some(l.build_model()),
+        Err(_) => {
+            eprintln!("skipping graph replay: {path} not found");
+            None
+        }
+    }
+}
+
+fn assert_bit_identical(what: &str, model: &Model, want: &[State], got: &[State]) {
+    assert_eq!(want.len(), got.len(), "{what}: world count");
+    for (w, (a, b)) in want.iter().zip(got).enumerate() {
+        for j in 0..model.nq {
+            assert_eq!(
+                a.q[j].to_bits(),
+                b.q[j].to_bits(),
+                "{what}: world {w} q[{j}] {} vs {}",
+                a.q[j],
+                b.q[j]
+            );
+        }
+        for j in 0..model.nv {
+            assert_eq!(
+                a.v[j].to_bits(),
+                b.v[j].to_bits(),
+                "{what}: world {w} v[{j}] {} vs {}",
+                a.v[j],
+                b.v[j]
+            );
+        }
+    }
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -1292,6 +1424,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_policy(mk);
     suite_policy_base_targets(mk);
     suite_policy_clamp_slots(mk);
+    suite_graph_replay(mk);
 }
 
 // ── Host harness ──────────────────────────────────────────────────────────
@@ -1344,6 +1477,10 @@ mod host {
     #[test]
     fn policy_clamps_per_action_slot() {
         suite_policy_clamp_slots(mk);
+    }
+    #[test]
+    fn step_many_matches_repeated_step() {
+        suite_graph_replay(mk);
     }
     #[test]
     fn rejects_oversized_models() {
