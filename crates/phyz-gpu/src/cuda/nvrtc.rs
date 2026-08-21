@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+    CudaContext, CudaFunction, CudaGraph, CudaSlice, CudaStream, LaunchConfig, PushKernelArg, sys,
 };
 use cudarc::nvrtc::CompileOptions;
 
@@ -28,6 +28,9 @@ pub struct CudaBackend {
     fk: CudaFunction,
     obs: CudaFunction,
     policy: CudaFunction,
+    /// False when the context could not give us a capturable stream and we
+    /// fell back to the legacy default stream, which cannot be captured.
+    capturable: bool,
 }
 
 fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
@@ -52,7 +55,30 @@ impl CudaBackend {
             );
         }
         let ctx = CudaContext::new(ordinal).map_err(err("CUDA context"))?;
-        let stream = ctx.default_stream();
+        // Every launch, copy and allocation goes through one stream, so the
+        // ordering is the default stream's — but it must be an explicitly
+        // created stream rather than the legacy null stream, because the
+        // legacy stream cannot be put into capture mode. If the context
+        // will not give us one, fall back and run without graphs.
+        //
+        // Creating a second stream also puts cudarc into multi-stream mode,
+        // where every buffer carries read/write events and every launch waits
+        // on them. With one stream those events order nothing, and inside a
+        // capture they are fatal: waiting on an event recorded outside the
+        // capture is a dependency on uncaptured work, which the driver
+        // rejects with CUDA_ERROR_STREAM_CAPTURE_ISOLATION. Turn the tracking
+        // off before allocating anything — the safety condition is that no
+        // buffer is touched from a second stream, and this backend has none.
+        let (stream, capturable) = match ctx.new_stream() {
+            Ok(s) => {
+                // SAFETY: every allocation, copy and launch in this backend
+                // goes through `s` and nothing else; the events cudarc would
+                // record exist only to order streams that are not there.
+                unsafe { ctx.disable_event_tracking() };
+                (s, true)
+            }
+            Err(_) => (ctx.default_stream(), false),
+        };
 
         let opts = CompileOptions {
             // Match the WGSL backends: no fast-math, keep IEEE division and
@@ -78,6 +104,7 @@ impl CudaBackend {
             policy: load("phyz_policy")?,
             ctx,
             stream,
+            capturable,
         })
     }
 
@@ -102,6 +129,45 @@ fn cfg(threads: u32) -> LaunchConfig {
 
 impl KernelBackend for CudaBackend {
     type Buffer = CudaSlice<f32>;
+    type Graph = CudaGraph;
+
+    fn supports_graphs(&self) -> bool {
+        self.capturable
+    }
+
+    fn capture_begin(&self) -> Result<(), String> {
+        if !self.capturable {
+            return Err("no capturable stream on this context".into());
+        }
+        // THREAD_LOCAL: only this thread's work on this stream is captured,
+        // so a capture here cannot swallow launches another thread makes on
+        // an unrelated stream, and unsafe calls elsewhere are not our error.
+        self.stream
+            .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+            .map_err(err("cuStreamBeginCapture"))
+    }
+
+    fn capture_end(&self) -> Result<Self::Graph, String> {
+        // The instantiate flag is a no-op for us and is only passed because
+        // cudarc's safe wrapper takes the enum, which has no zero variant:
+        // AUTO_FREE_ON_LAUNCH governs graph-owned async allocations, and a
+        // capture of nothing but kernel launches has none.
+        let graph = self
+            .stream
+            .end_capture(
+                sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+            )
+            .map_err(err("cuStreamEndCapture"))?
+            .ok_or("stream capture produced an empty graph")?;
+        // Push the graph's resources to the device now, so the first replay
+        // is not paying the upload the timing is about to attribute to it.
+        graph.upload().map_err(err("cuGraphUpload"))?;
+        Ok(graph)
+    }
+
+    fn graph_launch(&self, graph: &Self::Graph) -> Result<(), String> {
+        graph.launch().map_err(err("cuGraphLaunch"))
+    }
 
     fn device_name(&self) -> String {
         self.ctx

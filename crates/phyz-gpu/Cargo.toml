@@ -63,3 +63,7 @@ required-features = ["cuda"]
 [[example]]
 name = "cuda_train"
 required-features = ["cuda-host"]
+
+[[example]]
+name = "cuda_graph_bench"
+required-features = ["cuda"]

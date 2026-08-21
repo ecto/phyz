@@ -187,8 +187,49 @@ pub trait KernelBackend {
     /// A device-side `f32` buffer.
     type Buffer;
 
+    /// A captured, replayable sequence of launches. `()` on backends that
+    /// do not capture — see [`KernelBackend::supports_graphs`].
+    type Graph;
+
     /// Human-readable name of the device the kernels run on.
     fn device_name(&self) -> String;
+
+    // ── Graph capture ─────────────────────────────────────────────────────
+    //
+    // A physics step is ~35 launches in impulse mode (PD, then a leading ABA
+    // and `contact_sweeps` × [contact, ABA], then integrate), each a few
+    // microseconds of work. At the world counts RL wants the step time is
+    // flat in `nworld` — it is the per-launch cost, not the arithmetic. The
+    // sequence is also fixed: every argument that changes between steps
+    // lives in a device buffer already, and the scalars (world count, DOF
+    // widths, `dt`, gravity) do not change between steps at all. That is
+    // exactly the shape CUDA Graphs exist for: record the launches once,
+    // replay the whole span with one call.
+    //
+    // Backends that cannot capture leave these at their defaults and
+    // [`BatchSim`] executes the same call sequence directly, so the physics
+    // is identical either way and the parity harness compares the same math.
+
+    /// Whether this backend can capture launches into a replayable graph.
+    fn supports_graphs(&self) -> bool {
+        false
+    }
+
+    /// Start capturing launches instead of executing them. Every launch
+    /// until [`KernelBackend::capture_end`] is recorded.
+    fn capture_begin(&self) -> Result<(), String> {
+        Err("this backend does not capture launch graphs".into())
+    }
+
+    /// Stop capturing and instantiate what was recorded.
+    fn capture_end(&self) -> Result<Self::Graph, String> {
+        Err("this backend does not capture launch graphs".into())
+    }
+
+    /// Replay a captured sequence.
+    fn graph_launch(&self, _graph: &Self::Graph) -> Result<(), String> {
+        Err("this backend does not capture launch graphs".into())
+    }
 
     /// Allocate a zero-filled buffer of `len` floats.
     fn alloc(&self, len: usize) -> Result<Self::Buffer, String>;
@@ -342,6 +383,28 @@ struct PolicyPass<B: KernelBackend> {
     out_hist: B::Buffer,
 }
 
+/// Everything about a captured step span that must still hold for the
+/// recording to be a correct replay. The capture bakes in buffer addresses,
+/// launch widths and the scalar arguments; anything that moves one of those
+/// makes the graph stale, and the epoch covers the rest (a re-allocated
+/// buffer, a changed `dt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphKey {
+    /// Physics steps recorded in this graph.
+    steps: usize,
+    /// Contact sweeps at capture time — [`BatchSim::contact_sweeps`] is
+    /// public, so it is compared rather than hooked.
+    sweeps: usize,
+    /// Bumped by anything that re-allocates a buffer the step reads or
+    /// changes a scalar the step bakes in.
+    epoch: u64,
+}
+
+struct StepGraph<B: KernelBackend> {
+    key: GraphKey,
+    exec: B::Graph,
+}
+
 struct HistoryPass<B: KernelBackend> {
     q: B::Buffer,
     v: B::Buffer,
@@ -376,6 +439,14 @@ pub struct BatchSim<B: KernelBackend> {
     /// Contact sweeps per step in impulse mode; see
     /// [`crate::GpuBatchSimulator::contact_sweeps`].
     pub contact_sweeps: usize,
+    /// The most recently captured step span, replayed while its key holds.
+    graph: Option<StepGraph<B>>,
+    /// See [`GraphKey::epoch`].
+    graph_epoch: u64,
+    /// Whether to capture at all. Defaults to on where the backend supports
+    /// it; `PHYZ_CUDA_GRAPHS=0` and [`BatchSim::set_graphs_enabled`] turn it
+    /// off, which is also how the determinism test gets its reference.
+    graphs_enabled: bool,
 }
 
 /// The CUDA batch simulator: [`BatchSim`] on [`CudaBackend`].
@@ -452,7 +523,36 @@ impl<B: KernelBackend> BatchSim<B> {
             policy: None,
             history: None,
             contact_sweeps: DEFAULT_CONTACT_SWEEPS,
+            graph: None,
+            graph_epoch: 0,
+            graphs_enabled: !matches!(
+                std::env::var("PHYZ_CUDA_GRAPHS").as_deref(),
+                Ok("0") | Ok("off") | Ok("false")
+            ),
         })
+    }
+
+    /// Turn launch-graph capture on or off. On by default where the backend
+    /// supports it; with it off every step issues its launches one at a
+    /// time. The arithmetic is the same either way — this is a performance
+    /// switch and the reference path for the replay-determinism test.
+    pub fn set_graphs_enabled(&mut self, on: bool) {
+        self.graphs_enabled = on;
+        if !on {
+            self.graph = None;
+        }
+    }
+
+    /// Whether steps are currently replayed from a captured graph.
+    pub fn graphs_enabled(&self) -> bool {
+        self.graphs_enabled && self.backend.supports_graphs()
+    }
+
+    /// Discard any captured span. Called by everything that re-allocates a
+    /// buffer the step sequence reads or changes a scalar it bakes in.
+    fn invalidate_graph(&mut self) {
+        self.graph = None;
+        self.graph_epoch += 1;
     }
 
     /// Replace the model in place — same body count and DOF widths, new
@@ -478,6 +578,8 @@ impl<B: KernelBackend> BatchSim<B> {
         self.backend
             .upload(&mut self.bodies, &pack_bodies(&model))?;
         self.model = model;
+        // `dt` and gravity are baked into the ABA launch arguments.
+        self.invalidate_graph();
         Ok(())
     }
 
@@ -620,6 +722,9 @@ impl<B: KernelBackend> BatchSim<B> {
             hf_capacity,
             collidable_bodies: collidable,
         });
+        // Fresh geometry / params / heightfield buffers, and possibly a
+        // different pass count (penalty vs impulse).
+        self.invalidate_graph();
         Ok(collidable)
     }
 
@@ -664,6 +769,9 @@ impl<B: KernelBackend> BatchSim<B> {
             targets,
             n_dofs: dofs.len(),
         });
+        // A fresh DOF buffer, and the PD pass may not have been in the
+        // sequence at all before.
+        self.invalidate_graph();
         Ok(())
     }
 
@@ -702,7 +810,63 @@ impl<B: KernelBackend> BatchSim<B> {
     }
 
     /// [`Self::step`], returning launch errors instead of panicking.
+    ///
+    /// Where the backend captures graphs this replays a one-step recording
+    /// rather than issuing the ~35 launches by hand; [`Self::step_many`]
+    /// records a longer span and is the cheaper way to run a control period.
     pub fn try_step(&mut self) -> Result<(), String> {
+        self.step_many(1)
+    }
+
+    /// Run `n` simulation steps as one captured span.
+    ///
+    /// The launch sequence of a step is fixed and every argument that varies
+    /// between steps already lives in a device buffer, so `n` steps can be
+    /// recorded once and replayed with a single call — which is the whole
+    /// point, since the step is bound by per-launch cost and not by the
+    /// arithmetic. The recording is cached and reused until the world count,
+    /// sweep count, model scalars or any buffer it reads change.
+    ///
+    /// Semantically identical to calling [`Self::try_step`] `n` times, and
+    /// bit-identical on replay: the graph replays the same kernels on the
+    /// same addresses with the same arguments.
+    pub fn step_many(&mut self, n: usize) -> Result<(), String> {
+        if n == 0 {
+            return Ok(());
+        }
+        if !self.graphs_enabled() {
+            for _ in 0..n {
+                self.issue_step()?;
+            }
+            return Ok(());
+        }
+        let key = GraphKey {
+            steps: n,
+            sweeps: self.contact_sweeps,
+            epoch: self.graph_epoch,
+        };
+        if self.graph.as_ref().map(|g| g.key) != Some(key) {
+            // Drop the stale recording before capturing: on backends that
+            // hold a device-side instantiation this frees it first.
+            self.graph = None;
+            self.backend.capture_begin()?;
+            let issued = (0..n).try_for_each(|_| self.issue_step());
+            // End the capture even when a launch failed, or the stream stays
+            // in capture mode and every later call fails with it.
+            let captured = self.backend.capture_end();
+            issued?;
+            self.graph = Some(StepGraph {
+                key,
+                exec: captured?,
+            });
+        }
+        let g = self.graph.as_ref().expect("step graph captured just above");
+        self.backend.graph_launch(&g.exec)
+    }
+
+    /// One step's launches, issued directly. This is the sequence
+    /// [`Self::step_many`] records.
+    fn issue_step(&mut self) -> Result<(), String> {
         let m = &self.model;
         let nworld = self.nworld as u32;
         let nv = m.nv as u32;

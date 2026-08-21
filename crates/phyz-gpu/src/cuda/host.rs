@@ -118,6 +118,10 @@ pub struct HostBackend;
 
 impl KernelBackend for HostBackend {
     type Buffer = Vec<f32>;
+    /// Graphs are a passthrough here: `supports_graphs` stays at its `false`
+    /// default, so `BatchSim` executes the same call sequence directly and
+    /// the parity harness compares the arithmetic the device path replays.
+    type Graph = ();
 
     fn device_name(&self) -> String {
         "host (CUDA C compiled as C++)".into()
