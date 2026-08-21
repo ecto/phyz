@@ -570,8 +570,10 @@ impl RgbdCamera {
         let color = self.read_rows(&self.color_readback, self.color_row_bytes, 4)?;
         let depth_bytes = self.read_rows(&self.depth_readback, self.depth_row_bytes, 4)?;
         let depth: Vec<f32> = depth_bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&c| f32::from_le_bytes(c))
             .collect();
 
         Ok(CameraFrame {
