@@ -60,8 +60,23 @@ impl CudaBackend {
         // created stream rather than the legacy null stream, because the
         // legacy stream cannot be put into capture mode. If the context
         // will not give us one, fall back and run without graphs.
+        //
+        // Creating a second stream also puts cudarc into multi-stream mode,
+        // where every buffer carries read/write events and every launch waits
+        // on them. With one stream those events order nothing, and inside a
+        // capture they are fatal: waiting on an event recorded outside the
+        // capture is a dependency on uncaptured work, which the driver
+        // rejects with CUDA_ERROR_STREAM_CAPTURE_ISOLATION. Turn the tracking
+        // off before allocating anything — the safety condition is that no
+        // buffer is touched from a second stream, and this backend has none.
         let (stream, capturable) = match ctx.new_stream() {
-            Ok(s) => (s, true),
+            Ok(s) => {
+                // SAFETY: every allocation, copy and launch in this backend
+                // goes through `s` and nothing else; the events cudarc would
+                // record exist only to order streams that are not there.
+                unsafe { ctx.disable_event_tracking() };
+                (s, true)
+            }
             Err(_) => (ctx.default_stream(), false),
         };
 
