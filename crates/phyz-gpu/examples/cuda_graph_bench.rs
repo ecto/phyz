@@ -109,6 +109,39 @@ fn report(t: &Timing, nworld: usize, steps: usize) {
     );
 }
 
+/// Per-step wall time as the *minimum* over `reps` synchronised chunks.
+///
+/// A GPU shared with another CUDA context is time-sliced, and a mean over a
+/// long run measures the other process's kernels as much as ours: every
+/// configuration converges on the slice period and the signal is gone. The
+/// minimum does not — over enough repetitions some chunk lands wholly inside
+/// one slice and is timed without preemption, and that is the uncontended
+/// cost. Chunks must be short for that to happen at all, which is why this
+/// reports per-chunk rather than per-run.
+fn time_min<B: KernelBackend>(
+    sim: &mut BatchSim<B>,
+    states: &[State],
+    chunk: usize,
+    reps: usize,
+) -> Result<f64, String> {
+    sim.load_states(states);
+    for _ in 0..4 {
+        sim.step_many(chunk)?;
+    }
+    sim.backend().synchronize()?;
+    let mut best = f64::INFINITY;
+    for _ in 0..reps {
+        let t0 = Instant::now();
+        sim.step_many(chunk)?;
+        sim.backend().synchronize()?;
+        let dt = t0.elapsed().as_secs_f64() / chunk as f64;
+        if dt < best {
+            best = dt;
+        }
+    }
+    Ok(best)
+}
+
 fn run<B: KernelBackend>(
     mut sim: BatchSim<B>,
     model: &Model,
@@ -162,6 +195,30 @@ fn run<B: KernelBackend>(
                 runs[0].issue / t.issue
             );
         }
+    }
+
+    // The uncontended per-step cost, as the minimum over short synchronised
+    // chunks — see `time_min`. Reported for the same three configurations.
+    let reps: usize = std::env::var("GRAPH_BENCH_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000);
+    println!("\nmin over {reps} synchronised chunks (uncontended estimate):");
+    for (label, chunk, on) in [
+        ("off", 1, false),
+        ("step", 1, true),
+        ("span", control_every, true),
+    ] {
+        if on && !graphs {
+            continue;
+        }
+        sim.set_graphs_enabled(on);
+        let ms = 1e3 * time_min(&mut sim, &states, chunk, reps)?;
+        println!(
+            "  {:<10} {ms:>8.4} ms/step   {:>10.3e} env-steps/s",
+            format!("{label}({chunk})"),
+            nworld as f64 / (ms * 1e-3)
+        );
     }
 
     // Bit-identity: a replay runs the same kernels on the same addresses
