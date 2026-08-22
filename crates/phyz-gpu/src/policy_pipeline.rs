@@ -41,8 +41,19 @@ pub const POLICY_MAX_H: usize = 256;
 /// See [`POLICY_MAX_IN`].
 pub const POLICY_MAX_OUT: usize = 32;
 
+/// Floats per `ObsOp::ComOverSupport` support point in the aux buffer:
+/// body index then the body-frame offset.
+pub const SUPPORT_STRIDE: usize = 4;
+
 /// One observation feature. Kinds are mirrored in `obs_thread`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Most variants are one scalar from one body or one DOF and pack into the
+/// four floats of [`OBS_OP_STRIDE`]. [`ObsOp::ComOverSupport`] does not — it
+/// reduces over every body and over a caller-supplied set of support points
+/// — so its payload lives in the *aux* buffer [`pack_obs_ops`] returns
+/// alongside the table, and its table row is a `(offset, len)` window into
+/// it.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ObsOp {
     /// A constant — a zeroed slot, or a command channel.
     Const(f64),
@@ -58,11 +69,51 @@ pub enum ObsOp {
     BodyYawError(usize, f64),
     /// Body origin height, world z.
     BodyPosZ(usize),
+    /// Body origin, world, on `axis` (0 = x, 1 = y, 2 = z). The general
+    /// form of [`ObsOp::BodyPosZ`], which stays for the callers that read
+    /// better with a name.
+    BodyPos {
+        /// Body index.
+        body: usize,
+        /// World axis: 0 = x, 1 = y, 2 = z.
+        axis: u8,
+    },
+    /// The whole-model centre of mass minus a support reference, one axis,
+    /// optionally in a body's heading frame.
+    ///
+    /// ```text
+    /// com = (Σ_b m_b · X_b · c_b) / Σ_b m_b          // every body with mass
+    /// tgt = mean over `support` of  X_body · offset  // body-frame points
+    /// e   = com − tgt                                // world frame
+    /// ```
+    ///
+    /// With `heading_body: Some(h)`, the horizontal pair is rotated into
+    /// `h`'s yaw (`yaw = atan2(r01, r00)`, the same yaw
+    /// [`ObsOp::BodyYawError`] reads) before the axis is selected:
+    /// `[cos·e.x + sin·e.y, −sin·e.x + cos·e.y, e.z]`. With `None` the
+    /// world-frame `e` is used directly.
+    ///
+    /// An empty `support` evaluates to zero on both paths, so a rig with no
+    /// registered feet reads a defined value rather than a NaN.
+    ComOverSupport {
+        /// The support points: `(body, offset in that body's frame)`. The
+        /// reference is their mean — two soles for a biped, four for a
+        /// quadruped.
+        support: Vec<(usize, [f64; 3])>,
+        /// Body whose yaw defines the horizontal frame, or `None` for
+        /// world axes.
+        heading_body: Option<usize>,
+        /// Which component of the (possibly rotated) difference: 0 = along
+        /// heading, 1 = across, 2 = height.
+        axis: u8,
+    },
 }
 
 impl ObsOp {
-    fn pack(self) -> [f32; OBS_OP_STRIDE] {
-        match self {
+    /// The table row, given where this op's payload starts in the aux
+    /// buffer. Ops without a payload ignore `aux_off` and consume nothing.
+    fn pack(&self, aux_off: usize) -> [f32; OBS_OP_STRIDE] {
+        match *self {
             ObsOp::Const(c) => [0.0, 0.0, 0.0, c as f32],
             ObsOp::QMinus(i, c) => [1.0, i as f32, 0.0, c as f32],
             ObsOp::V(i) => [2.0, i as f32, 0.0, 0.0],
@@ -70,11 +121,38 @@ impl ObsOp {
             ObsOp::BodyRoll(b) => [4.0, b as f32, 0.0, 0.0],
             ObsOp::BodyYawError(b, c) => [5.0, b as f32, 0.0, c as f32],
             ObsOp::BodyPosZ(b) => [6.0, b as f32, 0.0, 0.0],
+            ObsOp::BodyPos { body, axis } => [7.0, body as f32, axis as f32, 0.0],
+            ObsOp::ComOverSupport {
+                ref support, axis, ..
+            } => [8.0, aux_off as f32, support.len() as f32, axis as f32],
         }
     }
 
-    fn check(self, nq: usize, nv: usize, nb: usize) -> Result<(), String> {
-        let ok = match self {
+    /// This op's aux payload — empty for everything but
+    /// [`ObsOp::ComOverSupport`], whose layout is
+    /// `[heading_flag, heading_body, (body, ox, oy, oz) × n]`.
+    fn aux(&self) -> Vec<f32> {
+        match *self {
+            ObsOp::ComOverSupport {
+                ref support,
+                heading_body,
+                ..
+            } => {
+                let mut a = Vec::with_capacity(2 + support.len() * SUPPORT_STRIDE);
+                a.push(f32::from(heading_body.is_some()));
+                a.push(heading_body.unwrap_or(0) as f32);
+                for &(b, o) in support {
+                    a.push(b as f32);
+                    a.extend(o.iter().map(|&x| x as f32));
+                }
+                a
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn check(&self, nq: usize, nv: usize, nb: usize) -> Result<(), String> {
+        let ok = match *self {
             ObsOp::Const(_) => true,
             ObsOp::QMinus(i, _) => i < nq,
             ObsOp::V(i) => i < nv,
@@ -82,6 +160,16 @@ impl ObsOp {
             | ObsOp::BodyRoll(b)
             | ObsOp::BodyYawError(b, _)
             | ObsOp::BodyPosZ(b) => b < nb,
+            ObsOp::BodyPos { body, axis } => body < nb && axis < 3,
+            ObsOp::ComOverSupport {
+                ref support,
+                heading_body,
+                axis,
+            } => {
+                axis < 3
+                    && heading_body.is_none_or(|h| h < nb)
+                    && support.iter().all(|&(b, _)| b < nb)
+            }
         };
         if ok {
             Ok(())
@@ -94,8 +182,12 @@ impl ObsOp {
 
     /// The feature on the CPU, from a state whose `body_xform` is current.
     /// This is the reference the device pass is held to.
-    pub fn eval(self, state: &State) -> f64 {
-        match self {
+    ///
+    /// `model` is read only for the mass distribution
+    /// [`ObsOp::ComOverSupport`] reduces over; every other variant ignores
+    /// it.
+    pub fn eval(&self, model: &Model, state: &State) -> f64 {
+        match *self {
             ObsOp::Const(c) => c,
             ObsOp::QMinus(i, c) => state.q[i] - c,
             ObsOp::V(i) => state.v[i],
@@ -120,13 +212,88 @@ impl ObsOp {
                 e
             }
             ObsOp::BodyPosZ(b) => state.body_xform[b].pos.z,
+            ObsOp::BodyPos { body, axis } => axis_of(state.body_xform[body].pos, axis),
+            ObsOp::ComOverSupport {
+                ref support,
+                heading_body,
+                axis,
+            } => {
+                if support.is_empty() {
+                    return 0.0;
+                }
+                let mut tgt = Vec3::zeros();
+                for &(b, o) in support {
+                    let x = &state.body_xform[b];
+                    tgt += x.pos + x.rot.transpose().mul_vec(Vec3::new(o[0], o[1], o[2]));
+                }
+                let tgt = tgt / support.len() as f64;
+                let e = centre_of_mass(model, state) - tgt;
+                match heading_body {
+                    None => axis_of(e, axis),
+                    Some(h) => {
+                        let r = &state.body_xform[h].rot;
+                        let (sy, cy) = r[(0, 1)].atan2(r[(0, 0)]).sin_cos();
+                        match axis {
+                            0 => cy * e.x + sy * e.y,
+                            1 => -sy * e.x + cy * e.y,
+                            _ => e.z,
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-/// Pack an op table for the observation kernel.
-pub fn pack_obs_ops(ops: &[ObsOp]) -> Vec<f32> {
-    ops.iter().flat_map(|o| o.pack()).collect()
+fn axis_of(v: Vec3, axis: u8) -> f64 {
+    match axis {
+        0 => v.x,
+        1 => v.y,
+        _ => v.z,
+    }
+}
+
+/// The model's mass-weighted centre of mass, world frame, from a state whose
+/// `body_xform` is current. Bodies with non-positive mass are skipped, as
+/// they are in the kernel.
+pub fn centre_of_mass(model: &Model, state: &State) -> Vec3 {
+    let mut num = Vec3::zeros();
+    let mut den = 0.0;
+    for (i, b) in model.bodies.iter().enumerate() {
+        if b.inertia.mass <= 0.0 || i >= state.body_xform.len() {
+            continue;
+        }
+        let x = &state.body_xform[i];
+        num += (x.pos + x.rot.transpose().mul_vec(b.inertia.com)) * b.inertia.mass;
+        den += b.inertia.mass;
+    }
+    if den > 0.0 { num / den } else { Vec3::zeros() }
+}
+
+/// The per-body mass table the observation kernel reduces over:
+/// `[mass, com.x, com.y, com.z]` per body, in model order.
+pub fn pack_com_table(model: &Model) -> Vec<f32> {
+    model
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            let c = b.inertia.com;
+            [b.inertia.mass as f32, c.x as f32, c.y as f32, c.z as f32]
+        })
+        .collect()
+}
+
+/// Pack an op table for the observation kernel: `(table, aux)`, where the
+/// table is `OBS_OP_STRIDE` floats per feature and `aux` is the
+/// variable-length payload the reducing ops index into.
+pub fn pack_obs_ops(ops: &[ObsOp]) -> (Vec<f32>, Vec<f32>) {
+    let mut table = Vec::with_capacity(ops.len() * OBS_OP_STRIDE);
+    let mut aux = Vec::new();
+    for op in ops {
+        table.extend(op.pack(aux.len()));
+        aux.extend(op.aux());
+    }
+    (table, aux)
 }
 
 /// What the policy pass runs: observation table, MLP shape, action wiring.
@@ -352,7 +519,7 @@ pub fn policy_reference(
 pub fn observe_reference(model: &Model, state: &mut State, ops: &[ObsOp]) -> Vec<f64> {
     let (xforms, _) = forward_kinematics(model, state);
     state.body_xform = xforms;
-    ops.iter().map(|o| o.eval(state)).collect()
+    ops.iter().map(|o| o.eval(model, state)).collect()
 }
 
 /// A body's world position from an FK readout row — for hosts that want

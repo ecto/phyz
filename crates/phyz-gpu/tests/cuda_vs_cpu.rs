@@ -1412,6 +1412,243 @@ fn assert_bit_identical(what: &str, model: &Model, want: &[State], got: &[State]
     }
 }
 
+/// A trunk on a free joint with two legs, each body's mass centred off its
+/// own origin — the smallest fixture that makes the COM reduction and the
+/// support average say something a single body could not.
+fn trunk_and_two_feet() -> Model {
+    let off =
+        |m: f64, c: Vec3| SpatialInertia::new(m, c, Mat3::from_diagonal(&Vec3::new(0.1, 0.1, 0.1)));
+    ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_body(
+            "trunk",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            off(8.0, Vec3::new(0.02, 0.0, 0.15)),
+        )
+        .add_revolute_body(
+            "left_foot",
+            0,
+            SpatialTransform::from_translation(Vec3::new(0.0, 0.12, -0.6)),
+            off(1.5, Vec3::new(0.03, 0.0, -0.02)),
+        )
+        .add_revolute_body(
+            "right_foot",
+            0,
+            SpatialTransform::from_translation(Vec3::new(0.0, -0.12, -0.6)),
+            off(1.5, Vec3::new(-0.03, 0.01, -0.02)),
+        )
+        .build()
+}
+
+/// `ObsOp::BodyPos` and `ObsOp::ComOverSupport` on device against
+/// `observe_reference` — the ops `ipse-sim`'s `learn::support_obs` is built
+/// from, over a rig whose bodies carry offset centres of mass and whose
+/// support is the mean of two sole points.
+///
+/// Yawed poses are the point: with the heading frame in play, a world at
+/// yaw 0 and a world at yaw 90° must read the *same* along/across pair for
+/// the same body-relative geometry, and the world-frame variant must not.
+/// Both are checked, along with the CPU reference's own agreement with a
+/// hand-written COM.
+fn suite_policy_support<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let model = trunk_and_two_feet();
+    let nworld = 4;
+    let (lq, lv) = (
+        model.q_offsets[model.bodies[1].joint_idx],
+        model.v_offsets[model.bodies[1].joint_idx],
+    );
+    let (rq, rv) = (
+        model.q_offsets[model.bodies[2].joint_idx],
+        model.v_offsets[model.bodies[2].joint_idx],
+    );
+
+    // The sole centres: a body-frame point under each foot, as
+    // `learn::support_reference` builds from the foot offset and half-extent.
+    let sole = |k: usize| (k, [0.01, 0.0, -0.04]);
+    let support = vec![sole(1), sole(2)];
+    let obs = vec![
+        ObsOp::BodyPos { body: 0, axis: 0 },
+        ObsOp::BodyPos { body: 0, axis: 1 },
+        ObsOp::BodyPos { body: 2, axis: 0 },
+        ObsOp::ComOverSupport {
+            support: support.clone(),
+            heading_body: Some(0),
+            axis: 0,
+        },
+        ObsOp::ComOverSupport {
+            support: support.clone(),
+            heading_body: Some(0),
+            axis: 1,
+        },
+        ObsOp::ComOverSupport {
+            support: support.clone(),
+            heading_body: Some(0),
+            axis: 2,
+        },
+        // The honest world-frame primitive, and a one-foot reference, so a
+        // bug in the averaging cannot hide behind the heading rotation.
+        ObsOp::ComOverSupport {
+            support: support.clone(),
+            heading_body: None,
+            axis: 0,
+        },
+        ObsOp::ComOverSupport {
+            support: vec![sole(1)],
+            heading_body: None,
+            axis: 1,
+        },
+        ObsOp::V(0),
+        ObsOp::QMinus(lq, 0.0),
+    ];
+    let n_in = obs.len();
+
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_pd_control(&[
+        PdDof {
+            q_index: lq,
+            v_index: lv,
+            kp: 20.0,
+            kd: 1.0,
+            max_force: 10.0,
+        },
+        PdDof {
+            q_index: rq,
+            v_index: rv,
+            kp: 20.0,
+            kd: 1.0,
+            max_force: 10.0,
+        },
+    ])
+    .unwrap();
+    let spec = PolicySpec {
+        obs: obs.clone(),
+        hidden: 8,
+        act_slots: vec![0, 1],
+        act_clamp: 0.3,
+        act_clamp_slots: None,
+        noise_rho: 0.0,
+        // No input noise: this suite is about the observation, and a
+        // noiseless row is the one the history records unmodified.
+        input_noise: vec![0.0; n_in],
+        history_steps: 2,
+    };
+    sim.enable_policy(spec.clone()).unwrap();
+    let mut wr = KernelRng(0xB0A7);
+    let weights: Vec<f64> = (0..spec.n_weights()).map(|_| 0.2 * wr.normal()).collect();
+    sim.set_policy_weights(&weights).unwrap();
+    sim.set_policy_std(&[0.1, 0.1]).unwrap();
+    sim.set_policy_base_targets(&vec![vec![0.0, 0.0]; nworld])
+        .unwrap();
+    sim.seed_policy(7).unwrap();
+
+    // World 0 upright; world 1 the same geometry yawed 90°; worlds 2-3
+    // tilted and leaning, so the heading rotation is exercised away from
+    // the identity in both arguments.
+    let yaw90 = std::f64::consts::FRAC_PI_2;
+    let states: Vec<State> = (0..nworld)
+        .map(|w| {
+            let mut s = model.default_state();
+            s.q[2] = match w {
+                1 => yaw90,
+                2 => 0.4,
+                3 => -1.2,
+                _ => 0.0,
+            };
+            s.q[0] = 0.15 * w as f64;
+            s.q[1] = -0.05 * w as f64;
+            s.q[3] = 0.3 * w as f64;
+            s.q[5] = 1.0;
+            s.q[lq] = 0.2 - 0.1 * w as f64;
+            s.q[rq] = -0.15 + 0.05 * w as f64;
+            s.v[lv] = 0.4;
+            s
+        })
+        .collect();
+    sim.load_states(&states);
+
+    for step in 0..2 {
+        sim.run_policy(step).unwrap();
+        let dev = sim.readback_states();
+        let (obs_h, _) = sim.readback_policy_history(step..step + 1).unwrap();
+        for w in 0..nworld {
+            let mut st = dev[w].clone();
+            let want = observe_reference(&model, &mut st, &spec.obs);
+            for i in 0..n_in {
+                let got = obs_h[w * n_in + i] as f64;
+                let d = (got - want[i]).abs();
+                // The device FK is f32; a metre-scale position carries
+                // ~1e-6 of it, and the COM reduction sums 3 bodies.
+                assert!(
+                    d < 1e-5,
+                    "support obs step {step} world {w} feature {i} ({:?}): got {got} want {} diff {d:.2e}",
+                    spec.obs[i],
+                    want[i]
+                );
+            }
+            // The COM triple is not a zero row: if the op silently fell
+            // through, every entry would be exactly 0.
+            let mag: f64 = (3..6).map(|i| (obs_h[w * n_in + i] as f64).abs()).sum();
+            assert!(mag > 1e-4, "world {w}: COM-over-support row is all zero");
+        }
+        // World 0 vs world 1 differ only by a 90° yaw of the whole rig at
+        // step 0: heading-relative entries agree, world-frame ones do not.
+        if step == 0 {
+            let (a, b) = (0usize, 1usize);
+            let mut same = model.default_state();
+            same.q[5] = 1.0;
+            // Rebuild both rows from a shared joint configuration so the
+            // only difference is the base yaw.
+            let mut s0 = same.clone();
+            let mut s1 = same.clone();
+            s0.q[lq] = 0.2;
+            s1.q[lq] = 0.2;
+            s0.q[rq] = -0.1;
+            s1.q[rq] = -0.1;
+            s1.q[2] = yaw90;
+            let r0 = observe_reference(&model, &mut s0, &spec.obs);
+            let r1 = observe_reference(&model, &mut s1, &spec.obs);
+            for i in 3..6 {
+                assert!(
+                    (r0[i] - r1[i]).abs() < 1e-12,
+                    "heading-relative feature {i} moved under a pure yaw: {} vs {}",
+                    r0[i],
+                    r1[i]
+                );
+            }
+            assert!(
+                (r0[6] - r1[6]).abs() > 1e-6,
+                "world-frame feature 6 should move under a pure yaw"
+            );
+            let _ = (a, b);
+        }
+        for _ in 0..5 {
+            sim.step();
+        }
+    }
+
+    // The CPU reference's COM against a hand-written one over this model.
+    let mut st = model.default_state();
+    st.q[5] = 1.0;
+    st.q[2] = 0.7;
+    let (xf, _) = phyz_rigid::forward_kinematics(&model, &st);
+    st.body_xform = xf;
+    let mut num = Vec3::zeros();
+    let mut den = 0.0;
+    for (i, b) in model.bodies.iter().enumerate() {
+        let x = &st.body_xform[i];
+        num += (x.pos + x.rot.transpose().mul_vec(b.inertia.com)) * b.inertia.mass;
+        den += b.inertia.mass;
+    }
+    let hand = num / den;
+    let got = phyz_gpu::policy_pipeline::centre_of_mass(&model, &st);
+    assert!(
+        (hand - got).norm() < 1e-12,
+        "centre_of_mass disagrees: {hand:?} vs {got:?}"
+    );
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -1424,6 +1661,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_policy(mk);
     suite_policy_base_targets(mk);
     suite_policy_clamp_slots(mk);
+    suite_policy_support(mk);
     suite_graph_replay(mk);
 }
 
@@ -1477,6 +1715,10 @@ mod host {
     #[test]
     fn policy_clamps_per_action_slot() {
         suite_policy_clamp_slots(mk);
+    }
+    #[test]
+    fn com_over_support_matches_cpu() {
+        suite_policy_support(mk);
     }
     #[test]
     fn step_many_matches_repeated_step() {

@@ -1464,7 +1464,18 @@ PHYZ_DEV void fk_thread(u32 world_idx, u32 nworld, u32 nv, u32 nbodies,
 //   4 BodyRoll(a)         atan2( r12, r22)
 //   5 BodyYawError(a, c)  wrap(c - atan2(r01, r00))
 //   6 BodyPosZ(a)         body origin z, world
+//   7 BodyPos(a, b)       body origin, world, on axis b (0 x, 1 y, 2 z)
+//   8 ComOverSupport      com - mean(support points), axis c, aux window
+//                         (a, b) = (offset, n_support) into `aux`
 // Writes obs[obs_off + world*n_in + k].
+//
+// Kind 8 is the one op that reduces: over every body with mass (the
+// `com` table, [mass, cx, cy, cz] per body, uploaded once with the spec)
+// and over a caller-supplied set of body-frame support points. Its
+// payload does not fit the four-float table row, so it lives in `aux`:
+//   [heading_flag, heading_body, (body, ox, oy, oz) * n_support]
+// With heading_flag the horizontal pair is rotated into heading_body's
+// yaw before the axis is selected. Mirrors `ObsOp::ComOverSupport`.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #define OBS_OP_STRIDE 4u
@@ -1476,9 +1487,19 @@ PHYZ_DEV float wrap_pi(float a) {
     return a;
 }
 
+// A body-frame point in world coordinates, from an FK readout row whose
+// rotation is world->body (so its transpose lifts the offset).
+PHYZ_DEV void obs_point_world(const float* xf, float ox, float oy, float oz,
+                              double* px, double* py, double* pz) {
+    *px = (double)xf[9u]  + (double)(xf[0u] * ox + xf[3u] * oy + xf[6u] * oz);
+    *py = (double)xf[10u] + (double)(xf[1u] * ox + xf[4u] * oy + xf[7u] * oz);
+    *pz = (double)xf[11u] + (double)(xf[2u] * ox + xf[5u] * oy + xf[8u] * oz);
+}
+
 PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
                          u32 n_in, u32 obs_off,
-                         const float* ops, const float* q, const float* v,
+                         const float* ops, const float* aux, const float* com,
+                         const float* q, const float* v,
                          const float* xforms, float* obs) {
     if (world_idx >= nworld) return;
     u32 qb = world_idx * nq;
@@ -1486,6 +1507,7 @@ PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
     for (u32 k = 0; k < n_in; k++) {
         u32 kind = (u32)ops[k * OBS_OP_STRIDE];
         u32 a = (u32)ops[k * OBS_OP_STRIDE + 1u];
+        u32 b = (u32)ops[k * OBS_OP_STRIDE + 2u];
         float c = ops[k * OBS_OP_STRIDE + 3u];
         float val = 0.0f;
         if (kind == 0u) {
@@ -1502,6 +1524,52 @@ PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
             else if (kind == 4u) val = atan2f(r12, r22);
             else if (kind == 5u) val = wrap_pi(c - atan2f(r01, r00));
             else val = xforms[xb + 11u];
+        } else if (kind == 7u) {
+            u32 xb = (world_idx * nbodies + a) * XF_STRIDE;
+            val = xforms[xb + 9u + (b > 2u ? 2u : b)];
+        } else if (kind == 8u) {
+            // a = aux offset, b = number of support points, c = axis.
+            u32 n_sup = b;
+            if (n_sup > 0u) {
+                double cx = 0.0, cy = 0.0, cz = 0.0, mtot = 0.0;
+                for (u32 i = 0; i < nbodies; i++) {
+                    float m = com[i * 4u];
+                    if (m <= 0.0f) continue;
+                    const float* xf = &xforms[(world_idx * nbodies + i) * XF_STRIDE];
+                    double px, py, pz;
+                    obs_point_world(xf, com[i * 4u + 1u], com[i * 4u + 2u], com[i * 4u + 3u],
+                                    &px, &py, &pz);
+                    cx += (double)m * px; cy += (double)m * py; cz += (double)m * pz;
+                    mtot += (double)m;
+                }
+                if (mtot > 0.0) { cx /= mtot; cy /= mtot; cz /= mtot; }
+                else { cx = 0.0; cy = 0.0; cz = 0.0; }
+
+                double tx = 0.0, ty = 0.0, tz = 0.0;
+                for (u32 i = 0; i < n_sup; i++) {
+                    const float* sp = &aux[a + 2u + i * 4u];
+                    const float* xf = &xforms[(world_idx * nbodies + (u32)sp[0]) * XF_STRIDE];
+                    double px, py, pz;
+                    obs_point_world(xf, sp[1], sp[2], sp[3], &px, &py, &pz);
+                    tx += px; ty += py; tz += pz;
+                }
+                double inv = 1.0 / (double)n_sup;
+                double ex = cx - tx * inv, ey = cy - ty * inv, ez = cz - tz * inv;
+
+                u32 axis = (u32)c;
+                if (aux[a] != 0.0f) {
+                    const float* hx = &xforms[(world_idx * nbodies + (u32)aux[a + 1u]) * XF_STRIDE];
+                    double yaw = atan2((double)hx[1u], (double)hx[0u]);
+                    double sy = sin(yaw), cyw = cos(yaw);
+                    if (axis == 0u) val = (float)(cyw * ex + sy * ey);
+                    else if (axis == 1u) val = (float)(-sy * ex + cyw * ey);
+                    else val = (float)ez;
+                } else {
+                    if (axis == 0u) val = (float)ex;
+                    else if (axis == 1u) val = (float)ey;
+                    else val = (float)ez;
+                }
+            }
         }
         obs[obs_off + world_idx * n_in + k] = val;
     }
@@ -1686,10 +1754,11 @@ extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
 }
 
 extern "C" __global__ void phyz_obs(u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
-                                    const float* ops, const float* q, const float* v,
+                                    const float* ops, const float* aux, const float* com,
+                                    const float* q, const float* v,
                                     const float* xforms, float* obs) {
     obs_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, nbodies, n_in, obs_off,
-               ops, q, v, xforms, obs);
+               ops, aux, com, q, v, xforms, obs);
 }
 
 extern "C" __global__ void phyz_policy(u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
@@ -1744,10 +1813,11 @@ extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,
 }
 
 extern "C" void phyz_host_obs(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
-                              const float* ops, const float* q, const float* v,
+                              const float* ops, const float* aux, const float* com,
+                              const float* q, const float* v,
                               const float* xforms, float* obs) {
     for (u32 t = 0; t < n_threads; t++)
-        obs_thread(t, nworld, nq, nv, nbodies, n_in, obs_off, ops, q, v, xforms, obs);
+        obs_thread(t, nworld, nq, nv, nbodies, n_in, obs_off, ops, aux, com, q, v, xforms, obs);
 }
 
 extern "C" void phyz_host_policy(u32 n_threads, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,

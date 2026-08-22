@@ -390,6 +390,8 @@ impl KernelBackend for CudaBackend {
         &self,
         a: ObsArgs,
         ops: &Self::Buffer,
+        aux: &Self::Buffer,
+        com: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         xforms: &Self::Buffer,
@@ -406,6 +408,8 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.n_in)
                 .arg(&a.obs_off)
                 .arg(ops)
+                .arg(aux)
+                .arg(com)
                 .arg(q)
                 .arg(v)
                 .arg(xforms)

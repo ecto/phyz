@@ -41,7 +41,9 @@ use crate::layout::{
     pack_states, unpack_contacts, unpack_states,
 };
 use crate::pd_pipeline::PdDof;
-use crate::policy_pipeline::{OBS_OP_STRIDE, PolicySpec, XF_STRIDE, pack_obs_ops, world_seed};
+use crate::policy_pipeline::{
+    OBS_OP_STRIDE, PolicySpec, XF_STRIDE, pack_com_table, pack_obs_ops, world_seed,
+};
 use phyz_model::{Heightfield, Model, State};
 
 #[cfg(feature = "cuda-host")]
@@ -324,6 +326,8 @@ pub trait KernelBackend {
         &self,
         args: ObsArgs,
         ops: &Self::Buffer,
+        aux: &Self::Buffer,
+        com: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         xforms: &Self::Buffer,
@@ -368,6 +372,12 @@ struct PdPass<B: KernelBackend> {
 struct PolicyPass<B: KernelBackend> {
     spec: PolicySpec,
     ops: B::Buffer,
+    /// Variable-length payload for the reducing observation ops (see
+    /// [`crate::policy_pipeline::pack_obs_ops`]).
+    obs_aux: B::Buffer,
+    /// `[mass, com.x, com.y, com.z]` per body — the mass distribution
+    /// `ObsOp::ComOverSupport` reduces over, uploaded once with the spec.
+    com: B::Buffer,
     weights: B::Buffer,
     stdv: B::Buffer,
     in_noise: B::Buffer,
@@ -1046,8 +1056,18 @@ impl<B: KernelBackend> BatchSim<B> {
         let nworld = self.nworld;
         let (n_in, n_out) = (spec.n_in(), spec.n_out());
 
+        let (op_table, aux_table) = pack_obs_ops(&spec.obs);
         let mut ops = self.backend.alloc((n_in * OBS_OP_STRIDE).max(1))?;
-        self.backend.upload(&mut ops, &pack_obs_ops(&spec.obs))?;
+        self.backend.upload(&mut ops, &op_table)?;
+        let mut obs_aux = self.backend.alloc(aux_table.len().max(1))?;
+        if !aux_table.is_empty() {
+            self.backend.upload(&mut obs_aux, &aux_table)?;
+        }
+        let com_table = pack_com_table(&self.model);
+        let mut com = self.backend.alloc(com_table.len().max(1))?;
+        if !com_table.is_empty() {
+            self.backend.upload(&mut com, &com_table)?;
+        }
         let mut in_noise = self.backend.alloc(n_in.max(1))?;
         self.backend.upload(
             &mut in_noise,
@@ -1102,6 +1122,8 @@ impl<B: KernelBackend> BatchSim<B> {
         self.policy = Some(PolicyPass {
             spec,
             ops,
+            obs_aux,
+            com,
             weights,
             stdv,
             in_noise,
@@ -1214,6 +1236,8 @@ impl<B: KernelBackend> BatchSim<B> {
                 obs_off: obs_off as u32,
             },
             &p.ops,
+            &p.obs_aux,
+            &p.com,
             &self.q,
             &self.v,
             kin,
