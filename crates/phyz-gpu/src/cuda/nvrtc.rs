@@ -25,6 +25,7 @@ pub struct CudaBackend {
     contact: CudaFunction,
     aba: CudaFunction,
     integrate: CudaFunction,
+    step_impulse: CudaFunction,
     fk: CudaFunction,
     obs: CudaFunction,
     policy: CudaFunction,
@@ -99,6 +100,7 @@ impl CudaBackend {
             contact: load("phyz_contact")?,
             aba: load("phyz_aba")?,
             integrate: load("phyz_integrate")?,
+            step_impulse: load("phyz_step_impulse")?,
             fk: load("phyz_fk")?,
             obs: load("phyz_obs")?,
             policy: load("phyz_policy")?,
@@ -360,6 +362,59 @@ impl KernelBackend for CudaBackend {
                 .launch(cfg(n))
         };
         r.map(|_| ()).map_err(err("launch phyz_integrate"))
+    }
+
+    fn supports_fused_step(&self) -> bool {
+        true
+    }
+
+    fn launch_step_impulse(
+        &self,
+        a: super::StepImpulseArgs,
+        pd_dofs: &Self::Buffer,
+        targets: &Self::Buffer,
+        cparams: &Self::Buffer,
+        bodies: &Self::Buffer,
+        geometry: &Self::Buffer,
+        hf_heights: &Self::Buffer,
+        q: &mut Self::Buffer,
+        v: &mut Self::Buffer,
+        ctrl: &mut Self::Buffer,
+        qdd: &mut Self::Buffer,
+        ext_forces: &mut Self::Buffer,
+        contact_state: &mut Self::Buffer,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_step_impulse`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.step_impulse)
+                .arg(&a.nworld)
+                .arg(&a.nq)
+                .arg(&a.nv)
+                .arg(&a.n_dofs)
+                .arg(&a.has_pd)
+                .arg(&a.dt)
+                .arg(&a.nbodies)
+                .arg(&a.gx)
+                .arg(&a.gy)
+                .arg(&a.gz)
+                .arg(&a.sweeps)
+                .arg(&a.nsteps)
+                .arg(pd_dofs)
+                .arg(targets)
+                .arg(cparams)
+                .arg(bodies)
+                .arg(geometry)
+                .arg(hf_heights)
+                .arg(q)
+                .arg(v)
+                .arg(ctrl)
+                .arg(qdd)
+                .arg(ext_forces)
+                .arg(contact_state)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_step_impulse"))
     }
 
     fn launch_fk(

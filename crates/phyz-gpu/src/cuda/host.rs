@@ -8,6 +8,7 @@
 
 use super::{
     AbaArgs, ContactArgs, FkArgs, IntegrateArgs, KernelBackend, ObsArgs, PdArgs, PolicyArgs,
+    StepImpulseArgs,
 };
 
 unsafe extern "C" {
@@ -61,6 +62,33 @@ unsafe extern "C" {
         v: *mut f32,
         qdd: *const f32,
         bodies: *const f32,
+    );
+    fn phyz_host_step_impulse(
+        n_threads: u32,
+        nworld: u32,
+        nq: u32,
+        nv: u32,
+        n_dofs: u32,
+        has_pd: u32,
+        dt: f32,
+        nbodies: u32,
+        gx: f32,
+        gy: f32,
+        gz: f32,
+        sweeps: u32,
+        nsteps: u32,
+        pd_dofs: *const f32,
+        targets: *const f32,
+        cparams: *const f32,
+        bodies: *const f32,
+        geometry: *const f32,
+        hf_heights: *const f32,
+        q: *mut f32,
+        v: *mut f32,
+        ctrl: *mut f32,
+        qdd: *mut f32,
+        ext_forces: *mut f32,
+        contact_state: *mut f32,
     );
     fn phyz_host_fk(
         n_threads: u32,
@@ -287,6 +315,60 @@ impl KernelBackend for HostBackend {
                 v.as_mut_ptr(),
                 qdd.as_ptr(),
                 bodies.as_ptr(),
+            );
+        }
+        Ok(())
+    }
+
+    fn supports_fused_step(&self) -> bool {
+        true
+    }
+
+    #[allow(clippy::ptr_arg)]
+    fn launch_step_impulse(
+        &self,
+        a: StepImpulseArgs,
+        pd_dofs: &Vec<f32>,
+        targets: &Vec<f32>,
+        cparams: &Vec<f32>,
+        bodies: &Vec<f32>,
+        geometry: &Vec<f32>,
+        hf_heights: &Vec<f32>,
+        q: &mut Vec<f32>,
+        v: &mut Vec<f32>,
+        ctrl: &mut Vec<f32>,
+        qdd: &mut Vec<f32>,
+        ext_forces: &mut Vec<f32>,
+        contact_state: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd.
+        unsafe {
+            phyz_host_step_impulse(
+                a.nworld,
+                a.nworld,
+                a.nq,
+                a.nv,
+                a.n_dofs,
+                a.has_pd,
+                a.dt,
+                a.nbodies,
+                a.gx,
+                a.gy,
+                a.gz,
+                a.sweeps,
+                a.nsteps,
+                pd_dofs.as_ptr(),
+                targets.as_ptr(),
+                cparams.as_ptr(),
+                bodies.as_ptr(),
+                geometry.as_ptr(),
+                hf_heights.as_ptr(),
+                q.as_mut_ptr(),
+                v.as_mut_ptr(),
+                ctrl.as_mut_ptr(),
+                qdd.as_mut_ptr(),
+                ext_forces.as_mut_ptr(),
+                contact_state.as_mut_ptr(),
             );
         }
         Ok(())
