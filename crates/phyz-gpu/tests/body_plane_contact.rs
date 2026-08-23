@@ -345,3 +345,118 @@ fn the_face_pass_reports_its_own_contacts() {
         "points_on should group the manifold by face"
     );
 }
+
+/// A compound face set ranks by DEPTH, not by table order.
+///
+/// This is a concave deck: a low centre strip and two rails a centimetre
+/// proud of it, as a convex decomposition produces. A foot lying across it
+/// rests on the RAILS — that is what concave is for — and the centre strip
+/// carries nothing.
+///
+/// The pass used to run face-major and hand each body its warm-start ranks in
+/// FACE order. With two faces that is harmless. With a strip set it is not:
+/// the centre strip is first in the table and shallowest, so it would claim
+/// slots that the load-bearing rails needed, and the rider would sink through
+/// the rails to the centre plane. Hence the centre face is deliberately
+/// listed first here.
+///
+/// Measured cost of getting this wrong, on ipse's pre-tip: modelling the deck
+/// as one flat rectangle put the rider's rear foot 5.4 mm ABOVE the face at
+/// the spawn, so the device found no foot/deck contact at all where the CPU
+/// found eleven points carrying ~95% of the rig (ecto/phyz#85).
+#[test]
+fn a_strip_set_ranks_by_depth_not_by_table_order() {
+    let deck_half = Vec3::new(0.4, 0.2, 0.05);
+    let rider_half = Vec3::new(0.1, 0.2, 0.1);
+    let rail_rise = 0.01;
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_body(
+            "deck",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(4.0, deck_half),
+        )
+        .add_body(
+            "rider",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(1.0, rider_half),
+        )
+        .build();
+    model.bodies[0].collisions = vec![GeomInstance::centered(Geometry::Box {
+        half_extents: deck_half,
+    })];
+    model.bodies[1].geometry = Some(Geometry::Box {
+        half_extents: rider_half,
+    });
+
+    let strip = |cy: f64, hy: f64, lift: f64| BodyPlane {
+        body: 0,
+        offset: deck_half.z,
+        max_depth: 0.05,
+        half_x: deck_half.x,
+        half_y: hy,
+        exclude: vec![],
+        tilt: Mat3::identity(),
+        center: Vec3::new(0.0, cy, lift),
+    };
+    // Centre first, on purpose: table order must not decide the manifold.
+    let planes = [
+        strip(0.0, 0.08, 0.0),
+        strip(0.14, 0.06, rail_rise),
+        strip(-0.14, 0.06, rail_rise),
+    ];
+
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        0.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        &planes,
+    )
+    .expect("contact");
+
+    let mut s = model.default_state();
+    s.q[5] = deck_half.z;
+    s.q[11] = 2.0 * deck_half.z + rail_rise + rider_half.z + 0.01;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..3000 {
+        sim.step();
+    }
+
+    let out = &sim.readback_states()[0];
+    // Measured deck-to-rider, so the deck's own sag into the ground does not
+    // enter: a penalty contact rests at g/omega^2 by construction and both
+    // stacks carry different loads.
+    let gap = out.q[11] - out.q[5];
+    let on_rails = deck_half.z + rail_rise + rider_half.z;
+    let on_centre = deck_half.z + rider_half.z;
+    assert!(
+        gap > 0.5 * (on_rails + on_centre),
+        "the rider should rest on the RAILS (gap ~{on_rails:.4}), not sink to \
+         the centre strip (~{on_centre:.4}); got {gap:.4}"
+    );
+
+    let f = &sim.readback_contacts().expect("readback")[0][1].plane;
+    assert!(
+        f.touching && f.points > 0,
+        "the rider is on the deck: {f:?}"
+    );
+    for (k, d) in f.detail[..f.points].iter().enumerate() {
+        assert_ne!(
+            d.plane,
+            Some(0),
+            "point {k} landed on the centre strip, which carries nothing here: {d:?}"
+        );
+    }
+    // ...and it is on BOTH rails, not balanced on one.
+    assert!(
+        f.points_on(1).count() > 0 && f.points_on(2).count() > 0,
+        "the rider should be carried by both rails: {f:?}"
+    );
+}
