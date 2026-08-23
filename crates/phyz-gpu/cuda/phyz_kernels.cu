@@ -612,20 +612,6 @@ PHYZ_DEV float impedance_at(const cparams_t* c, float depth) {
     return sc * sc * (3.0f - 2.0f * sc) * solimp_impedance(c, 0.0f);
 }
 
-// The normal row's impedance regularizer, as `phyz_contact::convex::
-// regularization_diag` builds it: `R = max((1-d)/d * A_nn, 1e-6)`, normal row
-// only (`mujoco_compat` is off by default, so the tangential rows keep the
-// bare floor). Dividing the normal update by `A_nn + R` rather than `A_nn` is
-// what makes a contact detected inside the margin — where the impedance has
-// tapered to zero — carry no load instead of behaving as a rigid constraint.
-// Without it a body comes to rest a whole `margin` above the surface while
-// the CPU rests on it.
-PHYZ_DEV float normal_reg(float d_imp, float a_nn) {
-    float d = fclamp(d_imp, 1e-6f, 1.0f);
-    float r = (1.0f - d) / d * a_nn;
-    return r > 1e-6f ? r : 1e-6f;
-}
-
 // Smoothstep restitution ramp between v_rest and 2 v_rest.
 PHYZ_DEV float effective_restitution(const cparams_t* c, float e, float approach) {
     float vr = c->restitution_threshold;
@@ -1053,7 +1039,7 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                 float e = effective_restitution(&cp, cp.restitution, fmin_(b_n, 0.0f));
                 float b_n_eff = b_n * (1.0f + e);
                 float r_n = b_n_eff - a_nn * f_c.x;
-                float fn_new = fmax_((bias - r_n) / (a_nn + normal_reg(d_imp, a_nn)), 0.0f);
+                float fn_new = fmax_((bias - r_n) / a_nn, 0.0f);
 
                 float a_uu = (float)n_active / fmax_(contact_eff_mass(bodies, i, support, t_u), 1e-9f);
                 float a_ww = (float)n_active / fmax_(contact_eff_mass(bodies, i, support, t_w), 1e-9f);
@@ -1249,7 +1235,7 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                     float d_imp = impedance_at(&cp, penetration);
                     float bias = d_imp * cp.solref_erp * fmax_(penetration, 0.0f) / fmax_(dt, 1e-9f);
                     float ee = effective_restitution(&cp, cp.restitution, fmin_(bn, 0.0f));
-                    float nf = fmax_((bias - (bn * (1.0f + ee) - ann * pf.x)) / (ann + normal_reg(d_imp, ann)), 0.0f);
+                    float nf = fmax_((bias - (bn * (1.0f + ee) - ann * pf.x)) / ann, 0.0f);
 
                     v3 u_i = rot_tmul(w_rot[i], pu);
                     v3 u_p = rot_tmul(w_rot[pb], pu);

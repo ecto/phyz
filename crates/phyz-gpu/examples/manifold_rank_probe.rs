@@ -20,6 +20,36 @@
 //! The probe is a box dropped flat with its centre of mass offset toward one
 //! edge (a heavy nose), which is the pre-tip stance in miniature: it either
 //! settles or it rolls off the edge.
+//!
+//! # What it measured, including the part that did not work
+//!
+//! Convergence is NOT the gap: 4 -> 256 sweeps moves the resting pitch by
+//! 0.01 deg and the height not at all.
+//!
+//! What it did find is a **standoff**: the device settles 0.98 mm HIGHER than
+//! the CPU convex solve, and flat in the sweep count for the same reason —
+//! not a convergence error. The cause is real. Contacts are detected within
+//! `ContactMaterial::margin` (1 mm) and the impedance tapers to zero across
+//! that band, so a separated contact inside it should carry no load. The CPU
+//! gets that from `phyz_contact::convex::regularization_diag`: the normal row
+//! carries `R = max((1-d)/d * A_nn, 1e-6)`, so as `d -> 0` the row goes
+//! infinitely soft. The GPU uses the impedance in the BIAS only, leaving its
+//! normal row rigid at every detected point — so it kills the approach
+//! velocity at the outer edge of the margin and stops there.
+//!
+//! **Adding `R` to the GPU normal row fixes this fixture and makes the real
+//! task worse, so it is not in the tree.** With `R` on both impulse sites the
+//! standoff falls 0.98 mm -> 0.09 mm here, and the ipse pre-tip parity run
+//! (`gpu_policy_parity`, 8 episodes, seed 7, wgpu, deterministic actor)
+//! regresses from `len ratio 0.51, 5/8 falls` to `0.09, 8/8 falls` against a
+//! CPU that holds all 8 for the full horizon. A softer normal row inside 16
+//! PGS sweeps with a per-body preconditioner is not the same object as a
+//! softer row inside the CPU's fully coupled Newton solve, and the K1 stance
+//! is the difference. Whoever picks this up: the standoff is real and worth
+//! removing, but it has to come with the convergence to carry it — more
+//! sweeps, tighter coupling, or the regularizer folded into the
+//! preconditioner rather than added to a diagonal that is already an
+//! under-estimate.
 use phyz::Simulator;
 use phyz_contact::material::ContactMaterial;
 use phyz_gpu::GpuBatchSimulator;

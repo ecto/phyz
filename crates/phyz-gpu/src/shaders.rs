@@ -340,17 +340,6 @@ fn impedance_at(depth: f32) -> f32 {
 // Effective restitution after the smooth low-speed ramp. Mirrors
 // `ContactProblem::effective_restitution`: smoothstep between v_rest and
 // 2*v_rest, so it stays C^1 in the approach speed rather than switching.
-// The normal row's impedance regularizer, as `phyz_contact::convex::
-// regularization_diag` builds it: `R = max((1-d)/d * A_nn, 1e-6)`, normal row
-// only. Dividing the normal update by `A_nn + R` is what makes a contact
-// detected inside the margin — impedance tapered to zero — carry no load
-// instead of behaving as a rigid constraint, and it is why a body rests ON
-// the surface here rather than a margin above it. Mirrors phyz_kernels.cu.
-fn normal_reg(d_imp: f32, a_nn: f32) -> f32 {
-    let d = clamp(d_imp, 1e-6, 1.0);
-    return max((1.0 - d) / d * a_nn, 1e-6);
-}
-
 fn effective_restitution(e: f32, approach: f32) -> f32 {
     let vr = cparams.restitution_threshold;
     if (vr <= 0.0) { return e; }
@@ -856,7 +845,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // which `v_point` already contains, so add it back: the
                 // update is coordinate descent on the contact's own block.
                 let r_n = b_n_eff - a_nn * f_c.x;
-                var fn_new = max((bias - r_n) / (a_nn + normal_reg(d_imp, a_nn)), 0.0);
+                var fn_new = max((bias - r_n) / a_nn, 0.0);
 
                 // Tangential diagonals get their OWN effective masses: the
                 // lever arm `r x u` for a corner contact points somewhere else
@@ -1157,7 +1146,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     let d_imp = impedance_at(penetration);
                     let bias = d_imp * cparams.solref_erp * max(penetration, 0.0) / max(cparams.dt, 1e-9);
                     let ee = effective_restitution(cparams.restitution, min(bn, 0.0));
-                    var nf = max((bias - (bn * (1.0 + ee) - ann * pf.x)) / (ann + normal_reg(d_imp, ann)), 0.0);
+                    var nf = max((bias - (bn * (1.0 + ee) - ann * pf.x)) / ann, 0.0);
 
                     let u_i = rot_t_mul(w_rot[i], pu);
                     let u_p = rot_t_mul(w_rot[pb], pu);
