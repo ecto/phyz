@@ -115,6 +115,39 @@ pub struct AbaArgs {
     pub gz: f32,
 }
 
+/// Scalar arguments of the fused impulse step.
+///
+/// One launch covers `nsteps` whole steps of the impulse sequence — PD, the
+/// leading ABA, `sweeps` x [contact, ABA], integrate — for one world per
+/// thread. See `step_impulse_thread` in `cuda/phyz_kernels.cu`.
+#[derive(Debug, Clone, Copy)]
+pub struct StepImpulseArgs {
+    /// Worlds.
+    pub nworld: u32,
+    /// `q` width per world.
+    pub nq: u32,
+    /// `v` width per world.
+    pub nv: u32,
+    /// Servoed DOFs, or 0 when there is no PD pass.
+    pub n_dofs: u32,
+    /// Whether to run the PD pass at all.
+    pub has_pd: u32,
+    /// Timestep.
+    pub dt: f32,
+    /// Bodies per world.
+    pub nbodies: u32,
+    /// Gravity.
+    pub gx: f32,
+    /// Gravity.
+    pub gy: f32,
+    /// Gravity.
+    pub gz: f32,
+    /// Contact sweeps per step.
+    pub sweeps: u32,
+    /// Steps fused into this launch.
+    pub nsteps: u32,
+}
+
 /// Scalar arguments of the integration pass.
 #[derive(Debug, Clone, Copy)]
 pub struct IntegrateArgs {
@@ -310,6 +343,36 @@ pub trait KernelBackend {
         bodies: &Self::Buffer,
     ) -> Result<(), String>;
 
+    /// Whether this backend has the fused impulse step
+    /// ([`KernelBackend::launch_step_impulse`]).
+    fn supports_fused_step(&self) -> bool {
+        false
+    }
+
+    /// The whole impulse-mode step, `nworld` threads: PD, ABA, `sweeps` x
+    /// [contact, ABA], integrate, `nsteps` times. Same arithmetic in the
+    /// same order as the separate launches, with the ABA factorisation
+    /// carried across the sweeps of a step.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_step_impulse(
+        &self,
+        _args: StepImpulseArgs,
+        _pd_dofs: &Self::Buffer,
+        _targets: &Self::Buffer,
+        _cparams: &Self::Buffer,
+        _bodies: &Self::Buffer,
+        _geometry: &Self::Buffer,
+        _hf_heights: &Self::Buffer,
+        _q: &mut Self::Buffer,
+        _v: &mut Self::Buffer,
+        _ctrl: &mut Self::Buffer,
+        _qdd: &mut Self::Buffer,
+        _ext_forces: &mut Self::Buffer,
+        _contact_state: &mut Self::Buffer,
+    ) -> Result<(), String> {
+        Err("this backend has no fused impulse step".into())
+    }
+
     /// FK readout pass: `nworld` threads, `XF_STRIDE` floats per body.
     fn launch_fk(
         &self,
@@ -457,6 +520,11 @@ pub struct BatchSim<B: KernelBackend> {
     /// it; `PHYZ_CUDA_GRAPHS=0` and [`BatchSim::set_graphs_enabled`] turn it
     /// off, which is also how the determinism test gets its reference.
     graphs_enabled: bool,
+    /// Whether an impulse step goes out as one fused launch where the
+    /// backend has one. `PHYZ_FUSED_STEP=0` and
+    /// [`BatchSim::set_fused_step_enabled`] turn it off — which is how the
+    /// parity test gets its unfused reference.
+    fused_enabled: bool,
 }
 
 /// The CUDA batch simulator: [`BatchSim`] on [`CudaBackend`].
@@ -535,6 +603,10 @@ impl<B: KernelBackend> BatchSim<B> {
             contact_sweeps: DEFAULT_CONTACT_SWEEPS,
             graph: None,
             graph_epoch: 0,
+            fused_enabled: !matches!(
+                std::env::var("PHYZ_FUSED_STEP").as_deref(),
+                Ok("0") | Ok("off")
+            ),
             graphs_enabled: !matches!(
                 std::env::var("PHYZ_CUDA_GRAPHS").as_deref(),
                 Ok("0") | Ok("off") | Ok("false")
@@ -551,6 +623,20 @@ impl<B: KernelBackend> BatchSim<B> {
         if !on {
             self.graph = None;
         }
+    }
+
+    /// Turn the fused impulse step on or off. On by default where the
+    /// backend has one; the unfused sequence is the same arithmetic.
+    pub fn set_fused_step_enabled(&mut self, on: bool) {
+        if self.fused_enabled != on {
+            self.fused_enabled = on;
+            self.invalidate_graph();
+        }
+    }
+
+    /// Whether an impulse step currently goes out as one fused launch.
+    pub fn fused_step_enabled(&self) -> bool {
+        self.fused_enabled && self.backend.supports_fused_step() && self.impulse_sweeps() > 0
     }
 
     /// Whether steps are currently replayed from a captured graph.
@@ -821,9 +907,11 @@ impl<B: KernelBackend> BatchSim<B> {
 
     /// [`Self::step`], returning launch errors instead of panicking.
     ///
-    /// Where the backend captures graphs this replays a one-step recording
-    /// rather than issuing the ~35 launches by hand; [`Self::step_many`]
-    /// records a longer span and is the cheaper way to run a control period.
+    /// In impulse mode this is ONE launch of the fused step where the
+    /// backend has it (see [`Self::set_fused_step_enabled`]); otherwise, and
+    /// where the backend captures graphs, it replays a one-step recording
+    /// rather than issuing the ~35 launches by hand. [`Self::step_many`]
+    /// covers a whole control period in one launch either way.
     pub fn try_step(&mut self) -> Result<(), String> {
         self.step_many(1)
     }
@@ -845,6 +933,9 @@ impl<B: KernelBackend> BatchSim<B> {
             return Ok(());
         }
         if !self.graphs_enabled() {
+            if self.fuses(n) {
+                return self.issue_fused(n);
+            }
             for _ in 0..n {
                 self.issue_step()?;
             }
@@ -860,7 +951,11 @@ impl<B: KernelBackend> BatchSim<B> {
             // hold a device-side instantiation this frees it first.
             self.graph = None;
             self.backend.capture_begin()?;
-            let issued = (0..n).try_for_each(|_| self.issue_step());
+            let issued = if self.fuses(n) {
+                self.issue_fused(n)
+            } else {
+                (0..n).try_for_each(|_| self.issue_step())
+            };
             // End the capture even when a launch failed, or the stream stays
             // in capture mode and every later call fails with it.
             let captured = self.backend.capture_end();
@@ -872,6 +967,71 @@ impl<B: KernelBackend> BatchSim<B> {
         }
         let g = self.graph.as_ref().expect("step graph captured just above");
         self.backend.graph_launch(&g.exec)
+    }
+
+    /// Sweeps per step in impulse mode, 0 in penalty mode.
+    fn impulse_sweeps(&self) -> usize {
+        match &self.contact {
+            Some(c) if c.params.solve_mode == 1 => self.contact_sweeps,
+            _ => 0,
+        }
+    }
+
+    /// Whether `n` steps can go out as one fused launch.
+    fn fuses(&self, n: usize) -> bool {
+        self.fused_enabled
+            && self.backend.supports_fused_step()
+            && self.impulse_sweeps() > 0
+            && n <= u32::MAX as usize
+    }
+
+    /// `n` steps of the impulse sequence in ONE launch — see
+    /// `step_impulse_thread` in the kernels. Identical arithmetic to `n`
+    /// calls of [`Self::issue_step`], with the ABA factorisation reused
+    /// across the sweeps of each step.
+    fn issue_fused(&mut self, n: usize) -> Result<(), String> {
+        let m = &self.model;
+        let (n_dofs, has_pd) = match &self.pd {
+            Some(pd) => (pd.n_dofs as u32, 1u32),
+            None => (0, 0),
+        };
+        let args = StepImpulseArgs {
+            nworld: self.nworld as u32,
+            nq: m.nq as u32,
+            nv: m.nv as u32,
+            n_dofs,
+            has_pd,
+            dt: m.dt as f32,
+            nbodies: m.nbodies() as u32,
+            gx: m.gravity.x as f32,
+            gy: m.gravity.y as f32,
+            gz: m.gravity.z as f32,
+            sweeps: self.impulse_sweeps() as u32,
+            nsteps: n as u32,
+        };
+        let c = self.contact.as_ref().expect("fused step needs contact");
+        // Unused when `has_pd` is 0; the kernel never reads them, and the
+        // bodies table is the one buffer guaranteed to exist and to be
+        // borrowed immutably here.
+        let (pd_dofs, targets) = match &self.pd {
+            Some(pd) => (&pd.dofs, &pd.targets),
+            None => (&self.bodies, &self.bodies),
+        };
+        self.backend.launch_step_impulse(
+            args,
+            pd_dofs,
+            targets,
+            &c.params_buf,
+            &self.bodies,
+            &c.geometry,
+            &c.hf_buf,
+            &mut self.q,
+            &mut self.v,
+            &mut self.ctrl,
+            &mut self.qdd,
+            &mut self.ext_forces,
+            &mut self.contact_state,
+        )
     }
 
     /// One step's launches, issued directly. This is the sequence

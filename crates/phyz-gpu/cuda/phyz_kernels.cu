@@ -748,11 +748,76 @@ PHYZ_DEV void add_ext(float* ext_forces, u32 ef_base, v3 torque, v3 force) {
 // and the body-frame spatial velocity (`w_omega`, `w_lin`). With `use_free`
 // the velocity is the FREE velocity v + dt*qdd (impulse-mode contact);
 // otherwise `v` as it stands. Verbatim the loop the contact pass always ran.
-PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
-                       const float* q, u32 q_base, const float* v, u32 v_base,
-                       const float* qdd, float dt, bool use_free,
-                       r9* w_rot, v3* w_pos, v3* w_omega, v3* w_lin) {
+// The `q`-only half of the contact pass's FK chain. A contact sweep changes
+// velocities alone, so the body-to-world rotations and origins — and the
+// joint transforms they are built from — are the same for every sweep of a
+// step. Same argument as `aba_cache_t`, same bit-identity.
+typedef struct {
+    r9 w_rot[MAX_BODIES];
+    v3 w_pos[MAX_BODIES];
+    r9 tree_rot[MAX_BODIES];
+    v3 tree_pos[MAX_BODIES];
+    /// The manifold each body ended up with: how many points, which
+    /// (instance, corner) they are and how deep. Ranking candidates by depth
+    /// is a function of `q` alone, so it too survives a sweep.
+    u32 n_sel[MAX_BODIES];
+    float sel_pen[MAX_BODIES * MAX_PTS];
+    u32 sel_g[MAX_BODIES * MAX_PTS];
+    u32 sel_c[MAX_BODIES * MAX_PTS];
+} fk_cache_t;
+
+#define PHYZ_FK_PLAIN 0u
+#define PHYZ_FK_BUILD 1u
+#define PHYZ_FK_REUSE 2u
+
+PHYZ_DEV void fk_world_c(const float* bodies, u32 nb, u32 nv,
+                         const float* q, u32 q_base, const float* v, u32 v_base,
+                         const float* qdd, float dt, bool use_free,
+                         r9* w_rot, v3* w_pos, v3* w_omega, v3* w_lin,
+                         fk_cache_t* fc, u32 fk_mode) {
+    bool fk_reuse = fk_mode == PHYZ_FK_REUSE;
     for (u32 i = 0; i < nb; i++) {
+        if (fk_reuse) {
+            // Cached: only the velocities are rebuilt.
+            i32 parent_r = body_parent(bodies, i);
+            u32 jtype_r = body_jtype(bodies, i);
+            u32 v_off_r = body_voff(bodies, i);
+            v3 axis_r = body_axis(bodies, i);
+            float vv_r[6];
+            for (u32 k = 0; k < 6u; k++) {
+                u32 idx = v_base + v_off_r + k;
+                if (v_off_r + k < nv) vv_r[k] = use_free ? v[idx] + dt * qdd[idx] : v[idx];
+                else vv_r[k] = 0.0f;
+            }
+            v3 jo = v3_(0.0f, 0.0f, 0.0f);
+            v3 jl = v3_(0.0f, 0.0f, 0.0f);
+            if (jtype_r == 0u) {
+                jo = v3_scale(axis_r, vv_r[0]);
+            } else if (jtype_r == 1u) {
+                jl = v3_scale(axis_r, vv_r[0]);
+            } else if (jtype_r == 3u) {
+                jo = v3_(vv_r[0], vv_r[1], vv_r[2]);
+            } else if (jtype_r == 4u) {
+                jo = v3_(vv_r[0], vv_r[1], vv_r[2]);
+                jl = v3_(vv_r[3], vv_r[4], vv_r[5]);
+            }
+            w_rot[i] = fc->w_rot[i];
+            w_pos[i] = fc->w_pos[i];
+            if (parent_r < 0) {
+                w_omega[i] = jo;
+                w_lin[i] = jl;
+            } else {
+                u32 pi = (u32)parent_r;
+                r9 tr = fc->tree_rot[i];
+                v3 tp = fc->tree_pos[i];
+                v3 pw = rot_mul(tr, w_omega[pi]);
+                v3 pv = v3_sub(rot_mul(tr, w_lin[pi]),
+                               rot_mul(tr, cross3(tp, w_omega[pi])));
+                w_omega[i] = v3_add(pw, jo);
+                w_lin[i] = v3_add(pv, jl);
+            }
+            continue;
+        }
         i32 parent = body_parent(bodies, i);
         u32 jtype = body_jtype(bodies, i);
         u32 v_off = body_voff(bodies, i);
@@ -785,6 +850,10 @@ PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
         r9 tree_rot = compose_rot(j.rot, ptj_rot);
         v3 tree_pos = v3_add(ptj_pos, rot_tmul(ptj_rot, j.pos));
         r9 tree_rt = transpose_rot(tree_rot);
+        if (fk_mode == PHYZ_FK_BUILD) {
+            fc->tree_rot[i] = tree_rot;
+            fc->tree_pos[i] = tree_pos;
+        }
         if (parent < 0) {
             w_rot[i] = tree_rt;
             w_pos[i] = tree_pos;
@@ -801,14 +870,28 @@ PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
             w_omega[i] = v3_add(pw, j_omega);
             w_lin[i] = v3_add(pv, j_lin);
         }
+        if (fk_mode == PHYZ_FK_BUILD) {
+            fc->w_rot[i] = w_rot[i];
+            fc->w_pos[i] = w_pos[i];
+        }
     }
 }
 
-PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
-                             const float* bodies, const float* geometry,
-                             const float* q, const float* v,
-                             float* ext_forces, float* contact_state,
-                             const float* hf_heights, const float* qdd) {
+/// The FK chain with no cache — the standalone contact pass's call.
+PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
+                       const float* q, u32 q_base, const float* v, u32 v_base,
+                       const float* qdd, float dt, bool use_free,
+                       r9* w_rot, v3* w_pos, v3* w_omega, v3* w_lin) {
+    fk_world_c(bodies, nb, nv, q, q_base, v, v_base, qdd, dt, use_free,
+               w_rot, w_pos, w_omega, w_lin, (fk_cache_t*)0, PHYZ_FK_PLAIN);
+}
+
+PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
+                               const float* bodies, const float* geometry,
+                               const float* q, const float* v,
+                               float* ext_forces, float* contact_state,
+                               const float* hf_heights, const float* qdd,
+                               fk_cache_t* fc, u32 fk_mode) {
     cparams_t cp = decode_cparams(cparams);
     if (world_idx >= cp.nworld) return;
 
@@ -832,8 +915,8 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
     v3 w_pos[MAX_BODIES];
     v3 w_omega[MAX_BODIES];
     v3 w_lin[MAX_BODIES];
-    fk_world(bodies, nb, cp.nv, q, q_base, v, v_base, qdd, dt, solve_mode != 0u,
-             w_rot, w_pos, w_omega, w_lin);
+    fk_world_c(bodies, nb, cp.nv, q, q_base, v, v_base, qdd, dt, solve_mode != 0u,
+               w_rot, w_pos, w_omega, w_lin, fc, fk_mode);
 
     // ── Ground / terrain contact, over every collision instance ──
     //
@@ -859,7 +942,15 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
         u32 sel_g[MAX_PTS];
         u32 sel_c[MAX_PTS];
         u32 n_sel = 0u;
-        for (u32 g = gbegin; g < gbegin + gcount; g++) {
+        if (fk_mode == PHYZ_FK_REUSE) {
+            n_sel = fc->n_sel[i];
+            for (u32 k = 0; k < n_sel; k++) {
+                sel_pen[k] = fc->sel_pen[i * MAX_PTS + k];
+                sel_g[k] = fc->sel_g[i * MAX_PTS + k];
+                sel_c[k] = fc->sel_c[i * MAX_PTS + k];
+            }
+        }
+        for (u32 g = gbegin; fk_mode != PHYZ_FK_REUSE && g < gbegin + gcount; g++) {
             u32 gt = (u32)geometry[g * GEOM_STRIDE];
             if (gt == 0u) continue;
             u32 np = gt == 2u ? 8u : 1u;
@@ -882,6 +973,15 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
                 sel_pen[k] = pen;
                 sel_g[k] = g;
                 sel_c[k] = c;
+            }
+        }
+
+        if (fk_mode == PHYZ_FK_BUILD) {
+            fc->n_sel[i] = n_sel;
+            for (u32 k = 0; k < n_sel; k++) {
+                fc->sel_pen[i * MAX_PTS + k] = sel_pen[k];
+                fc->sel_g[i * MAX_PTS + k] = sel_g[k];
+                fc->sel_c[i * MAX_PTS + k] = sel_c[k];
             }
         }
 
@@ -1251,29 +1351,59 @@ PHYZ_DEV void joint_udu(const float* bodies, u32 i, u32 jtype, u32 ndof, v3 axis
     }
 }
 
-PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
-                         float gx, float gy, float gz,
-                         const float* bodies, const float* q, const float* v,
-                         const float* ctrl, float* qdd, const float* ext_forces) {
+// The part of an ABA solve that depends only on `q`, `v` and `dt` — and so
+// is the SAME for every contact sweep within one step, because a sweep
+// changes `ext_forces` and nothing else. Carrying it across the sweeps of a
+// step is what `PHYZ_ABA_REUSE` below buys; the values are bit-identical to
+// recomputing them, since the inputs are bit-identical.
+typedef struct {
+    r9 x_rot[MAX_BODIES];
+    v3 x_pos[MAX_BODIES];
+    /// Articulated inertia AFTER pass 2's child propagation, before this
+    /// body's own `-W Uᵀ` — exactly what pass 2 and pass 3 read.
+    m66 i_a[MAX_BODIES];
+    sv6 c_bias[MAX_BODIES];
+    /// `v × (I v)`: the bias force before `ext_forces` is subtracted.
+    sv6 p_bias[MAX_BODIES];
+} aba_cache_t;
+
+#define PHYZ_ABA_BUILD 0u
+#define PHYZ_ABA_REUSE 1u
+
+PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
+                           float gx, float gy, float gz,
+                           const float* bodies, const float* q, const float* v,
+                           const float* ctrl, float* qdd, const float* ext_forces,
+                           aba_cache_t* kc, u32 mode) {
     if (world_idx >= nworld) return;
 
     u32 nb = nbodies;
     u32 q_base = world_idx * nv;  // nq == nv: ball/free use exponential coordinates
     u32 v_base = world_idx * nv;
 
+    bool reuse = mode == PHYZ_ABA_REUSE;
     sv6 vel[MAX_BODIES];
-    sv6 c_bias[MAX_BODIES];
     sv6 p_a[MAX_BODIES];
-    m66 i_a[MAX_BODIES];
     sv6 acc[MAX_BODIES];
-    r9 x_rot[MAX_BODIES];
-    v3 x_pos[MAX_BODIES];
+    r9* x_rot = kc->x_rot;
+    v3* x_pos = kc->x_pos;
+    m66* i_a = kc->i_a;
+    sv6* c_bias = kc->c_bias;
 
     // Gravity as base acceleration: a0 = [0; -g]
     sv6 a0 = sv_(0.0f, 0.0f, 0.0f, -gx, -gy, -gz);
 
     // ── Pass 1: forward — velocities and bias forces ──
-    for (u32 i = 0; i < nb; i++) {
+    //
+    // Everything here but the `ext_forces` read is a function of `q`, `v` and
+    // the body table, so a reusing sweep skips straight to that read.
+    for (u32 i = 0; reuse && i < nb; i++) {
+        u32 ef_base = (world_idx * nb + i) * 6u;
+        sv6 ef;
+        for (u32 kk = 0; kk < 6u; kk++) ef.a[kk] = ext_forces[ef_base + kk];
+        p_a[i] = sv_sub(kc->p_bias[i], ef);
+    }
+    for (u32 i = 0; !reuse && i < nb; i++) {
         i32 parent = body_parent(bodies, i);
         u32 jtype = body_jtype(bodies, i);
         u32 v_off = body_voff(bodies, i);
@@ -1310,10 +1440,11 @@ PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodie
 
         sv6 iv = m6_mul_vec(&i_a[i], vel[i]);
         p_a[i] = sv_cross_force(vel[i], iv);
+        kc->p_bias[i] = p_a[i];
 
         u32 ef_base = (world_idx * nb + i) * 6u;
         sv6 ef;
-        for (u32 k = 0; k < 6u; k++) ef.a[k] = ext_forces[ef_base + k];
+        for (u32 kk = 0; kk < 6u; kk++) ef.a[kk] = ext_forces[ef_base + kk];
         p_a[i] = sv_sub(p_a[i], ef);
     }
 
@@ -1329,10 +1460,15 @@ PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodie
         if (jtype == 2u) {
             if (parent >= 0) {
                 u32 pi = (u32)parent;
-                m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
-                m66 x_mot_t = transpose6(&x_mot);
-                m66 ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
-                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                // The inertia half of the propagation is `q`-only: a reusing
+                // sweep already has the articulated `i_a` and must NOT add
+                // the child in a second time.
+                if (!reuse) {
+                    m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
+                    m66 x_mot_t = transpose6(&x_mot);
+                    m66 ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
+                    i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                }
                 sv6 p_parent = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_parent);
             }
@@ -1350,10 +1486,12 @@ PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodie
         if (!invert_small(d_mat, ndof)) {
             if (parent >= 0) {
                 u32 pi = (u32)parent;
-                m66 x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
-                m66 x_mot_st = transpose6(&x_mot_s);
-                m66 ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
-                i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                if (!reuse) {
+                    m66 x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
+                    m66 x_mot_st = transpose6(&x_mot_s);
+                    m66 ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
+                    i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                }
                 sv6 p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_par_s);
             }
@@ -1388,10 +1526,12 @@ PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodie
                 for (u32 r = 0; r < 6u; r++) wu.a[r] += w_mat[c * 6u + r] * u_vec[c];
             sv6 p_new = sv_add(sv_add(p_a[i], ia_c), wu);
 
-            m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
-            m66 x_mot_t = transpose6(&x_mot);
-            m66 ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
-            i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+            if (!reuse) {
+                m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
+                m66 x_mot_t = transpose6(&x_mot);
+                m66 ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
+                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+            }
 
             sv6 p_parent = inv_apply_force(x_rot[i], x_pos[i], p_new);
             p_a[pi] = sv_add(p_a[pi], p_parent);
@@ -1447,6 +1587,17 @@ PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodie
     }
 }
 
+
+/// One ABA solve with a fresh factorisation — the standalone pass.
+PHYZ_DEV void aba_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
+                         float gx, float gy, float gz,
+                         const float* bodies, const float* q, const float* v,
+                         const float* ctrl, float* qdd, const float* ext_forces) {
+    aba_cache_t kc;
+    aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
+                 bodies, q, v, ctrl, qdd, ext_forces, &kc, PHYZ_ABA_BUILD);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Pass 2: joint-aware semi-implicit Euler. One thread per (world, joint).
 // Must match phyz_rigid::semi_implicit_euler.
@@ -1497,6 +1648,59 @@ PHYZ_DEV void integrate_thread(u32 idx, u32 nworld, u32 nv, float dt, u32 nbodie
     v4 nxt = qnormalize(qmul(cur, quat_exp(v3_scale(omega, dt))));
     v3 lg = qlog(nxt);
     q[q_off] = lg.x; q[q_off + 1u] = lg.y; q[q_off + 2u] = lg.z;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A whole impulse-mode step (or several), in one thread per world.
+//
+// The unfused sequence is PD, a leading ABA, `sweeps` x [contact, ABA], and
+// integrate — 2 + 2*sweeps launches, every one of them one thread per world
+// with no cross-thread coupling whatsoever. The kernel boundaries therefore
+// buy nothing but a barrier nobody needs, and they cost: each ABA launch
+// rebuilds the articulated-body factorisation from scratch, and within a
+// step that factorisation cannot have changed (`q`, `v`, `dt` are fixed
+// until `integrate`; a sweep moves `ext_forces` alone). Fusing lets one
+// `aba_cache_t` live across the sweeps, so sweeps 1..n skip the rigid
+// inertias, the joint transforms and — the expensive part — the two 6x6
+// congruence products per body that propagate inertia up the tree.
+//
+// The arithmetic that remains is unchanged and runs in the same order, so
+// the result is bit-identical to the unfused sequence. `nsteps` steps are
+// fused as well, which is legal exactly while no host input lands between
+// them (one control period).
+// ═══════════════════════════════════════════════════════════════════════════
+PHYZ_DEV void step_impulse_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv,
+                                  u32 n_dofs, u32 has_pd, float dt, u32 nbodies,
+                                  float gx, float gy, float gz,
+                                  u32 sweeps, u32 nsteps,
+                                  const float* pd_dofs, const float* targets,
+                                  const float* cparams, const float* bodies,
+                                  const float* geometry, const float* hf_heights,
+                                  float* q, float* v, float* ctrl, float* qdd,
+                                  float* ext_forces, float* contact_state) {
+    if (world_idx >= nworld) return;
+    aba_cache_t kc;
+    fk_cache_t fc;
+    for (u32 s = 0; s < nsteps; s++) {
+        if (has_pd != 0u)
+            for (u32 d = 0; d < n_dofs; d++)
+                pd_thread(world_idx * n_dofs + d, nworld, nq, nv, n_dofs,
+                          pd_dofs, q, v, targets, ctrl);
+
+        aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
+                     bodies, q, v, ctrl, qdd, ext_forces, &kc, PHYZ_ABA_BUILD);
+        for (u32 w = 0; w < sweeps; w++) {
+            contact_thread_c(world_idx, cparams, bodies, geometry, q, v,
+                             ext_forces, contact_state, hf_heights, qdd, &fc,
+                             w == 0u ? PHYZ_FK_BUILD : PHYZ_FK_REUSE);
+            aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
+                         bodies, q, v, ctrl, qdd, ext_forces, &kc, PHYZ_ABA_REUSE);
+        }
+
+        for (u32 b = 0; b < nbodies; b++)
+            integrate_thread(world_idx * nbodies + b, nworld, nv, dt, nbodies,
+                             q, v, qdd, bodies);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1797,6 +2001,16 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
 // Entry points
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The contact pass with a fresh FK chain — the standalone pass.
+PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
+                             const float* bodies, const float* geometry,
+                             const float* q, const float* v,
+                             float* ext_forces, float* contact_state,
+                             const float* hf_heights, const float* qdd) {
+    contact_thread_c(world_idx, cparams, bodies, geometry, q, v, ext_forces,
+                     contact_state, hf_heights, qdd, (fk_cache_t*)0, PHYZ_FK_PLAIN);
+}
+
 #if PHYZ_ON_DEVICE
 
 extern "C" __global__ void phyz_pd(u32 nworld, u32 nq, u32 nv, u32 n_dofs,
@@ -1825,6 +2039,21 @@ extern "C" __global__ void phyz_aba(u32 nworld, u32 nv, float dt, u32 nbodies,
 extern "C" __global__ void phyz_integrate(u32 nworld, u32 nv, float dt, u32 nbodies,
                                           float* q, float* v, const float* qdd, const float* bodies) {
     integrate_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv, dt, nbodies, q, v, qdd, bodies);
+}
+
+extern "C" __global__ void phyz_step_impulse(u32 nworld, u32 nq, u32 nv, u32 n_dofs,
+                                            u32 has_pd, float dt, u32 nbodies,
+                                            float gx, float gy, float gz,
+                                            u32 sweeps, u32 nsteps,
+                                            const float* pd_dofs, const float* targets,
+                                            const float* cparams, const float* bodies,
+                                            const float* geometry, const float* hf_heights,
+                                            float* q, float* v, float* ctrl, float* qdd,
+                                            float* ext_forces, float* contact_state) {
+    step_impulse_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, n_dofs,
+                        has_pd, dt, nbodies, gx, gy, gz, sweeps, nsteps,
+                        pd_dofs, targets, cparams, bodies, geometry, hf_heights,
+                        q, v, ctrl, qdd, ext_forces, contact_state);
 }
 
 extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
@@ -1883,6 +2112,21 @@ extern "C" void phyz_host_integrate(u32 n_threads, u32 nworld, u32 nv, float dt,
                                     float* q, float* v, const float* qdd, const float* bodies) {
     for (u32 t = 0; t < n_threads; t++)
         integrate_thread(t, nworld, nv, dt, nbodies, q, v, qdd, bodies);
+}
+
+extern "C" void phyz_host_step_impulse(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
+                                      u32 has_pd, float dt, u32 nbodies,
+                                      float gx, float gy, float gz,
+                                      u32 sweeps, u32 nsteps,
+                                      const float* pd_dofs, const float* targets,
+                                      const float* cparams, const float* bodies,
+                                      const float* geometry, const float* hf_heights,
+                                      float* q, float* v, float* ctrl, float* qdd,
+                                      float* ext_forces, float* contact_state) {
+    for (u32 t = 0; t < n_threads; t++)
+        step_impulse_thread(t, nworld, nq, nv, n_dofs, has_pd, dt, nbodies, gx, gy, gz,
+                            sweeps, nsteps, pd_dofs, targets, cparams, bodies, geometry,
+                            hf_heights, q, v, ctrl, qdd, ext_forces, contact_state);
 }
 
 extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,
