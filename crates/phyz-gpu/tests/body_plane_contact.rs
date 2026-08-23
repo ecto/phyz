@@ -250,3 +250,213 @@ fn a_pushed_box_does_not_creep() {
         "box crept {slid:.4} m under a force well inside the friction cone"
     );
 }
+
+/// The face pass reports what it solved, in a block of its own.
+///
+/// Until ecto/phyz#85 it reported nothing: the readback slot is per body and
+/// already held the GROUND result, so writing a face contact there would have
+/// erased whatever else that body was standing on. The consequence was that a
+/// foot pressing on a deck produced no row at all from the host — the exact
+/// contact set the pre-tip parity gap turns on was unobservable, and its
+/// absence read like the rider standing on nothing.
+///
+/// So: rider resting on the deck, deck resting on the ground.
+///   - the DECK's ground block is unchanged and still reports the ground;
+///   - the RIDER's face block reports the deck, 4 corners, normal +z, and a
+///     total normal force equal to the rider's weight.
+#[test]
+fn the_face_pass_reports_its_own_contacts() {
+    let (model, deck_half, rider_half) = deck_and_rider(-9.81);
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        0.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        std::slice::from_ref(&plane(deck_half)),
+    )
+    .expect("contact");
+
+    let mut s = model.default_state();
+    s.q[5] = deck_half.z;
+    s.q[11] = 2.0 * deck_half.z + rider_half.z;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..2000 {
+        sim.step();
+    }
+
+    let c = &sim.readback_contacts().expect("contact readback")[0];
+    let (deck, rider) = (&c[0], &c[1]);
+
+    // The deck still reports the GROUND in its own block, untouched by the
+    // face pass — the whole reason the face got a second block.
+    assert!(deck.touching, "the deck is on the ground: {deck:?}");
+    assert!(
+        deck.force.z > 30.0,
+        "the deck's ground block should carry both masses (~49 N), got {:?}",
+        deck.force
+    );
+    // ...and no face block of its own: nothing is standing on the deck's
+    // *underside*, and the deck is excluded from its own face.
+    assert!(
+        !deck.plane.touching,
+        "the deck is on no face: {:?}",
+        deck.plane
+    );
+
+    // The rider is on the deck and on nothing else.
+    assert!(!rider.touching, "the rider is not on the ground: {rider:?}");
+    let f = &rider.plane;
+    assert!(f.touching, "the rider is on the deck's face: {f:?}");
+    assert_eq!(f.points, 4, "a box rests on a face through four corners");
+    assert!(
+        f.penetration > 0.0 && f.penetration < 5e-3,
+        "settled penetration should be sub-millimetric, got {:.4} mm",
+        f.penetration * 1000.0
+    );
+    assert!(
+        (f.force.z - 9.81).abs() < 1.0,
+        "the face should carry the rider's weight (9.81 N), got {:?}",
+        f.force
+    );
+    // Every point names the same face, agrees on the normal, and the normal
+    // forces sum to the aggregate — this is what makes the block usable as a
+    // per-pair manifold table against the CPU narrow phase.
+    let mut total = 0.0;
+    for (k, d) in f.detail[..f.points].iter().enumerate() {
+        assert_eq!(d.plane, Some(0), "point {k} names the wrong face: {d:?}");
+        assert!(
+            (d.normal - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-5,
+            "point {k} normal should be world +z, got {:?}",
+            d.normal
+        );
+        total += d.normal_force;
+    }
+    assert!(
+        (total - f.force.z).abs() < 1e-2 * (1.0 + f.force.z.abs()),
+        "per-point normal forces {total:.4} N do not sum to the aggregate {:.4} N",
+        f.force.z
+    );
+    assert_eq!(
+        f.points_on(0).count(),
+        4,
+        "points_on should group the manifold by face"
+    );
+}
+
+/// A compound face set ranks by DEPTH, not by table order.
+///
+/// This is a concave deck: a low centre strip and two rails a centimetre
+/// proud of it, as a convex decomposition produces. A foot lying across it
+/// rests on the RAILS — that is what concave is for — and the centre strip
+/// carries nothing.
+///
+/// The pass used to run face-major and hand each body its warm-start ranks in
+/// FACE order. With two faces that is harmless. With a strip set it is not:
+/// the centre strip is first in the table and shallowest, so it would claim
+/// slots that the load-bearing rails needed, and the rider would sink through
+/// the rails to the centre plane. Hence the centre face is deliberately
+/// listed first here.
+///
+/// Measured cost of getting this wrong, on ipse's pre-tip: modelling the deck
+/// as one flat rectangle put the rider's rear foot 5.4 mm ABOVE the face at
+/// the spawn, so the device found no foot/deck contact at all where the CPU
+/// found eleven points carrying ~95% of the rig (ecto/phyz#85).
+#[test]
+fn a_strip_set_ranks_by_depth_not_by_table_order() {
+    let deck_half = Vec3::new(0.4, 0.2, 0.05);
+    let rider_half = Vec3::new(0.1, 0.2, 0.1);
+    let rail_rise = 0.01;
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_body(
+            "deck",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(4.0, deck_half),
+        )
+        .add_body(
+            "rider",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(1.0, rider_half),
+        )
+        .build();
+    model.bodies[0].collisions = vec![GeomInstance::centered(Geometry::Box {
+        half_extents: deck_half,
+    })];
+    model.bodies[1].geometry = Some(Geometry::Box {
+        half_extents: rider_half,
+    });
+
+    let strip = |cy: f64, hy: f64, lift: f64| BodyPlane {
+        body: 0,
+        offset: deck_half.z,
+        max_depth: 0.05,
+        half_x: deck_half.x,
+        half_y: hy,
+        exclude: vec![],
+        tilt: Mat3::identity(),
+        center: Vec3::new(0.0, cy, lift),
+    };
+    // Centre first, on purpose: table order must not decide the manifold.
+    let planes = [
+        strip(0.0, 0.08, 0.0),
+        strip(0.14, 0.06, rail_rise),
+        strip(-0.14, 0.06, rail_rise),
+    ];
+
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        0.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        &planes,
+    )
+    .expect("contact");
+
+    let mut s = model.default_state();
+    s.q[5] = deck_half.z;
+    s.q[11] = 2.0 * deck_half.z + rail_rise + rider_half.z + 0.01;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..3000 {
+        sim.step();
+    }
+
+    let out = &sim.readback_states()[0];
+    // Measured deck-to-rider, so the deck's own sag into the ground does not
+    // enter: a penalty contact rests at g/omega^2 by construction and both
+    // stacks carry different loads.
+    let gap = out.q[11] - out.q[5];
+    let on_rails = deck_half.z + rail_rise + rider_half.z;
+    let on_centre = deck_half.z + rider_half.z;
+    assert!(
+        gap > 0.5 * (on_rails + on_centre),
+        "the rider should rest on the RAILS (gap ~{on_rails:.4}), not sink to \
+         the centre strip (~{on_centre:.4}); got {gap:.4}"
+    );
+
+    let f = &sim.readback_contacts().expect("readback")[0][1].plane;
+    assert!(
+        f.touching && f.points > 0,
+        "the rider is on the deck: {f:?}"
+    );
+    for (k, d) in f.detail[..f.points].iter().enumerate() {
+        assert_ne!(
+            d.plane,
+            Some(0),
+            "point {k} landed on the centre strip, which carries nothing here: {d:?}"
+        );
+    }
+    // ...and it is on BOTH rails, not balanced on one.
+    assert!(
+        f.points_on(1).count() > 0 && f.points_on(2).count() > 0,
+        "the rider should be carried by both rails: {f:?}"
+    );
+}

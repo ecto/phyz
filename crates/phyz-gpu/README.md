@@ -65,6 +65,16 @@ penetration, contact point and normal force in world coordinates — which is
 the observation channel a contact-bearing RL task needs without recomputing
 contacts on the CPU.
 
+Each row also carries a `plane` block: what that body found on the
+body-attached faces (`BodyPlane`), reported separately because a body can rest
+on the ground and on a deck in the same step and one slot cannot hold both.
+Besides the aggregate (touching, deepest penetration and point, total face
+force) it lists the individual points — face index, depth, normal, normal
+force — so a foot on a deck can be compared point for point against the CPU
+narrow phase's manifold. Before this the face pass wrote no readback at all,
+and a foot pressing on a deck was indistinguishable from a body touching
+nothing.
+
 Use `with_device_queue` to share an existing `wgpu::Device`/`Queue` with the
 rest of your application instead of creating a private one.
 

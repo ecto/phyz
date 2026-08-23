@@ -47,18 +47,8 @@ fn rig() -> Model {
             Joint::free(SpatialTransform::identity()),
             box_inertia(3.0, half),
         )
-        .add_body(
-            "link",
-            0,
-            hinge(-0.2),
-            box_inertia(1.0, half),
-        )
-        .add_body(
-            "foot",
-            1,
-            hinge(-0.2),
-            box_inertia(0.5, half),
-        )
+        .add_body("link", 0, hinge(-0.2), box_inertia(1.0, half))
+        .add_body("foot", 1, hinge(-0.2), box_inertia(0.5, half))
         .build();
     for b in &mut model.bodies {
         b.geometry = Some(phyz_model::Geometry::Box { half_extents: half });
