@@ -85,7 +85,24 @@ pub const GEOM_STRIDE: usize = 24;
 /// `phyz_contact::solver::find_ground_contacts_model` (one candidate pool per
 /// body, sorted deepest-first, truncated to
 /// `phyz_collision::MAX_MANIFOLD_POINTS`). The GPU keeps 8 where the CPU
-/// keeps 4, so the device manifold is never the coarser of the two.
+/// keeps 4.
+///
+/// That used to be written here as "the device manifold is never the coarser
+/// of the two", which is a category error worth not repeating: the manifold
+/// size IS the within-body load-sharing divisor `n_active`, so 8 points and
+/// 4 points are two different fixed points of the same solve, not a fine and
+/// a coarse version of one. The extra four are also the four SHALLOWEST — on
+/// ipse's pre-tip kicktail, which pools 9 to 12 candidate corners, points 5
+/// through 8 run from 0.3 mm of penetration to 0.1 mm of SEPARATION, and the
+/// device's normal row is rigid across that whole band where the CPU's has
+/// gone soft.
+///
+/// Capping the ranking at 4 was measured on that stance and is a NULL
+/// (5/8 falls either way — see `examples/manifold_rank_probe.rs` for the
+/// table), so the constant is left at 8 rather than churned on no evidence.
+/// It is still a real divergence from the reference; if the device is ever
+/// held to bit-parity with the CPU contact set, this is one of the places it
+/// is not.
 ///
 /// Consequence for warm starting: a slot's identity is `(body, rank)` — the
 /// depth rank within the body's manifold — not `(body, corner)`. Ranks are

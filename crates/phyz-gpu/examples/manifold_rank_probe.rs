@@ -38,7 +38,52 @@
 //! velocity at the outer edge of the margin and stops there.
 //!
 //! **Adding `R` to the GPU normal row fixes this fixture and makes the real
-//! task worse, so it is not in the tree.** With `R` on both impulse sites the
+//! task worse, so it is not in the tree.** The mechanism is now known, and it
+//! is arithmetic rather than "PGS cannot carry a soft row": `a_nn` in the
+//! kernels is the ISOLATED-body diagonal, deliberately an OVER-estimate of the
+//! true `A_nn`. That is safe while it is only a preconditioner — it
+//! under-relaxes — but `R` is not a preconditioner, it enters the fixed point:
+//!
+//! ```text
+//!     f / f_rigid = A_true / (A_true + (1-d)/d * a_nn)
+//! ```
+//!
+//! With `a_nn >> A_true` for a foot backed by a whole robot, that row is far
+//! softer than the CPU's, which builds `R` from the true `A_nn` out of an
+//! assembled Delassus operator. The device cannot reproduce the CPU's `R`
+//! without the true `A_nn`.
+//!
+//! A bounded variant WAS measured and is also not in the tree. Confining the
+//! softening to points that are SEPARATED and merely inside the margin — where
+//! the CPU carries essentially no load and the device carries a full rigid
+//! stop — and applying it as a multiply (`fn_new = d * rigid_update`) rather
+//! than a division by `d`, takes this fixture's standoff to **0.03 mm**, flat
+//! from 4 sweeps to 16. It is better than the `R` form on both counts. It
+//! still fails `unified_contact_matches_wgsl_kernels` on the impulse
+//! heightfield case (cuda-c 1.9e-6 vs wgsl 7.2e-4 on `v[0]`), and that
+//! disagreement was not run to ground, so it is not shippable. Anyone
+//! resuming: the branch on `penetration < 0.0` is a discontinuity at
+//! `penetration == 0`, and the two backends do not have to land on the same
+//! side of it.
+//!
+//! **The standoff is not the ipse pre-tip gap.** Measured on that ruler
+//! (`gpu_policy_parity models/skate-bc-init-pretip-s7.policy 8 7`,
+//! `PARITY_MODE=pretip`, wgpu, deterministic actor, against a CPU f64 holding
+//! all 8 episodes for the full 625-step horizon at return 546.47):
+//!
+//! ```text
+//!   device, main                          229.21 +- 95.03   len 321.5   5/8 falls   ratio 0.51
+//!   manifold cap 4 (SEL_PTS)              216.88 +- 97.65   len 310.5   5/8 falls   ratio 0.50
+//!   separated-side softening              217.12 +- 96.43   len 310.5   5/8 falls   ratio 0.50
+//!   both                                  214.71 +- 97.38   len 306.5   5/8 falls   ratio 0.49
+//! ```
+//!
+//! Flat. Together with the sweep count (4 -> 256), the contact frequency
+//! (60..250 rad/s), the carried mass (0.25x..4x) and the timestep
+//! (1.0/0.5/0.25 ms), every knob inside the contact SOLVE is now a measured
+//! null on that stance. What is left is the contact SET: the device meets the
+//! deck top as two flat `BodyPlane` rectangles where the CPU collides the
+//! foot's boxes against the deck's 27 and the kicktail's 18. With `R` on both impulse sites the
 //! standoff falls 0.98 mm -> 0.09 mm here, and the ipse pre-tip parity run
 //! (`gpu_policy_parity`, 8 episodes, seed 7, wgpu, deterministic actor)
 //! regresses from `len ratio 0.51, 5/8 falls` to `0.09, 8/8 falls` against a
