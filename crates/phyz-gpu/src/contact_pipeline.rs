@@ -121,8 +121,8 @@ impl ContactParams {
 }
 
 pub use crate::layout::{
-    CONTACT_STATE_STRIDE, CS_PLANE_DETAIL_OFF, CS_PLANE_READBACK_OFF, MAX_CONTACT_PTS,
-    PLANE_DETAIL_STRIDE,
+    CONTACT_STATE_STRIDE, CS_PLANE_DETAIL_OFF, CS_PLANE_OFF, CS_PLANE_READBACK_OFF,
+    MAX_CONTACT_PTS, MAX_PLANE_CONTACT_PTS, PLANE_DETAIL_STRIDE,
 };
 use crate::layout::{
     GEOM_STRIDE, lightest_collidable_body, no_collidable_geometry_error, pack_geometries,
@@ -480,7 +480,7 @@ pub struct PlaneContactState {
     pub force: Vec3,
     /// The individual points, deepest-first within each face, in the order
     /// the pass claimed warm-start slots. Entries past `points` are empty.
-    pub detail: [PlaneContactPoint; MAX_CONTACT_PTS],
+    pub detail: [PlaneContactPoint; MAX_PLANE_CONTACT_PTS],
 }
 
 impl Default for PlaneContactState {
@@ -491,7 +491,7 @@ impl Default for PlaneContactState {
             penetration: 0.0,
             point: Vec3::zeros(),
             force: Vec3::zeros(),
-            detail: [PlaneContactPoint::default(); MAX_CONTACT_PTS],
+            detail: [PlaneContactPoint::default(); MAX_PLANE_CONTACT_PTS],
         }
     }
 }

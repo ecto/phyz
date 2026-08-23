@@ -44,13 +44,16 @@ typedef int i32;
 #define GEOM_STRIDE 24u
 // Plane records share the geometry buffer and its stride; see layout.rs.
 #define PLANE_STRIDE 24u
-#define CS_STRIDE 112u
+#define CS_STRIDE 184u
 // Body-attached-face readback + per-point detail. [0..8] is the GROUND result
 // and cannot hold a face contact too (a wheel touches both in one step), so
 // the face gets blocks of its own. Mirrors shaders.rs / layout.rs.
-#define CS_PLANE_RB_OFF 56u
-#define CS_PLANE_DETAIL_OFF 64u
+#define CS_PLANE_RB_OFF 80u
+#define CS_PLANE_DETAIL_OFF 88u
 #define PLANE_DETAIL_STRIDE 6u
+// Face manifold slots per body, separate from MAX_PTS and larger: the face
+// branch builds a CLIPPED manifold against a SET of faces. Mirrors shaders.rs.
+#define MAX_PLANE_PTS 16u
 #define PD_DOF_STRIDE 8u
 
 // ── Scalar helpers ─────────────────────────────────────────────────────────
@@ -581,6 +584,40 @@ PHYZ_DEV void plane_readback(float *contact_state, u32 world_idx, u32 nb, u32 i,
     contact_state[d + 3u] = n_w.x;
     contact_state[d + 4u] = n_w.y;
     contact_state[d + 5u] = n_w.z;
+}
+
+// ── The incident face of a box against a contact normal ──
+//
+// The four corners, in BODY coordinates, of the box face most opposed to
+// `n_body`. Sampling a box's eight CORNERS against a face plane is only
+// correct while the face is at least as big as the box; on a narrow strip the
+// corners are all outside it and their "penetration" is measured against the
+// strip's INFINITE extension, which is a fiction. Mirrors shaders.rs.
+PHYZ_DEV void box_incident_face(const float* geometry, u32 g, v3 n_body, v3* out) {
+    u32 gbase = g * GEOM_STRIDE;
+    v3 h = v3_(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+    v3 o_p = v3_(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    r9 o_r; for (u32 k = 0; k < 9u; k++) o_r.r[k] = geometry[gbase + 13u + k];
+    v3 n = rot_mul(o_r, n_body);
+    float ax = fabsf(n.x), ay = fabsf(n.y), az = fabsf(n.z);
+    u32 axis = 0u;
+    if (ay >= ax && ay >= az) axis = 1u;
+    else if (az >= ax && az >= ay) axis = 2u;
+    // -sign so the face points INTO the surface; sign(0) would collapse the
+    // face to the box centre, so the tie goes to -1.
+    float sgn = -1.0f;
+    if (axis == 0u && n.x < 0.0f) sgn = 1.0f;
+    if (axis == 1u && n.y < 0.0f) sgn = 1.0f;
+    if (axis == 2u && n.z < 0.0f) sgn = 1.0f;
+    for (u32 c = 0; c < 4u; c++) {
+        float s0 = (c & 1u) ? 1.0f : -1.0f;
+        float s1 = (c & 2u) ? 1.0f : -1.0f;
+        v3 v;
+        if (axis == 0u) v = v3_(sgn * h.x, s0 * h.y, s1 * h.z);
+        else if (axis == 1u) v = v3_(s0 * h.x, sgn * h.y, s1 * h.z);
+        else v = v3_(s0 * h.x, s1 * h.y, sgn * h.z);
+        out[c] = v3_add(o_p, rot_tmul(o_r, v));
+    }
 }
 
 // I^-1 w for the body's rotational inertia about its COM (cofactor inverse).
@@ -1171,25 +1208,28 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
     for (u32 i = 0; i < nb; i++) {
         u32 cs_i = (world_idx * nb + i) * CS_STRIDE;
         // Readback block, cleared before it is accumulated into.
-        for (u32 k = 0; k < 8u + MAX_PTS * PLANE_DETAIL_STRIDE; k++) {
+        for (u32 k = 0; k < 8u + MAX_PLANE_PTS * PLANE_DETAIL_STRIDE; k++) {
             contact_state[cs_i + CS_PLANE_RB_OFF + k] = 0.0f;
         }
 
         u32 gbegin = (u32)bf(bodies, i, 33u);
         u32 gcount = (u32)bf(bodies, i, 34u);
 
-        float sel_pen[MAX_PTS];
-        u32 sel_g[MAX_PTS];
-        u32 sel_c[MAX_PTS];
-        u32 sel_pl[MAX_PTS];
+        // ── Pool this body's candidates across every face, deepest first ──
+        //
+        // A candidate is its position in the FACE's own 2-D frame plus its
+        // depth: (u, v, penetration). Mirrors shaders.rs.
+        float sel_pen[MAX_PLANE_PTS];
+        float sel_u[MAX_PLANE_PTS];
+        float sel_v[MAX_PLANE_PTS];
+        u32 sel_g[MAX_PLANE_PTS];
+        u32 sel_pl[MAX_PLANE_PTS];
         u32 n_sel = 0u;
 
         if (gcount > 0u) {
         for (u32 pl = 0; pl < cp.nplanes; pl++) {
             u32 pbase = cp.plane_base + pl * PLANE_STRIDE;
             u32 excl = f_as_u(geometry[pbase + 16u]);
-            // The mask carries the face's own body, so this also skips a
-            // body's own faces.
             if ((excl & (1u << i)) != 0u) continue;
             u32 pb = f_as_u(geometry[pbase]);
             float face_half_x = geometry[pbase + 1u];
@@ -1201,57 +1241,127 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
             v3 p0_w = v3_add(w_pos[pb], rot_mul(w_rot[pb], face_o));
             v3 n_body = rot_tmul(w_rot[i], n_w);
 
-            // Footprint of the shape in face coordinates, intersected with
-            // the finite face: a deck narrower than a foot still carries that
-            // foot along its edge, so overhanging points are CLAMPED into the
-            // overlap rather than dropped. Recomputed in the solve loop for
-            // the handful of faces that actually win a slot.
-            float lo_x = 1e30f, lo_y = 1e30f, hi_x = -1e30f, hi_y = -1e30f;
-            for (u32 fg = gbegin; fg < gbegin + gcount; fg++) {
-                u32 fgt = (u32)geometry[fg * GEOM_STRIDE];
-                if (fgt == 0u) continue;
-                u32 fnp = fgt == 2u ? 8u : 1u;
-                for (u32 fc = 0; fc < fnp; fc++) {
-                    v3 fsp = contact_pt(geometry, fg, fgt, fc, n_body);
-                    v3 fspw = v3_add(w_pos[i], rot_mul(w_rot[i], fsp));
-                    v3 frf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(fspw, w_pos[pb])), face_o));
-                    lo_x = fmin_(lo_x, frf.x); lo_y = fmin_(lo_y, frf.y);
-                    hi_x = fmax_(hi_x, frf.x); hi_y = fmax_(hi_y, frf.y);
-                }
-            }
-            float ov_lo_x = fmax_(lo_x, -face_half_x);
-            float ov_lo_y = fmax_(lo_y, -face_half_y);
-            float ov_hi_x = fmin_(hi_x, face_half_x);
-            float ov_hi_y = fmin_(hi_y, face_half_y);
-            // No overlap at all means nothing is over this face: the shape
-            // genuinely falls past it.
-            if (ov_lo_x > ov_hi_x || ov_lo_y > ov_hi_y) continue;
-
             for (u32 g = gbegin; g < gbegin + gcount; g++) {
                 u32 gt = (u32)geometry[g * GEOM_STRIDE];
                 if (gt == 0u) continue;
-                u32 np = gt == 2u ? 8u : 1u;
-                for (u32 c = 0; c < np; c++) {
-                    v3 sp = contact_pt(geometry, g, gt, c, n_body);
+
+                if (gt != 2u) {
+                    // Non-box shapes contact through their single support
+                    // point; there is no face to clip.
+                    v3 sp = support_point(geometry, g, n_body);
                     v3 spw = v3_add(w_pos[i], rot_mul(w_rot[i], sp));
-                    // The upper bound guards a body approaching from BELOW the
-                    // face against being captured and catapulted through it.
+                    v3 rf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(spw, w_pos[pb])), face_o));
                     float pen = -v3_dot(v3_sub(spw, p0_w), n_w);
                     if (pen <= 0.0f || pen > max_depth) continue;
-                    if (n_sel < MAX_PTS) n_sel++;
-                    else if (pen <= sel_pen[MAX_PTS - 1u]) continue;
-                    u32 k = n_sel - 1u;
-                    while (k > 0u && sel_pen[k - 1u] < pen) {
-                        sel_pen[k] = sel_pen[k - 1u];
-                        sel_g[k] = sel_g[k - 1u];
-                        sel_c[k] = sel_c[k - 1u];
-                        sel_pl[k] = sel_pl[k - 1u];
-                        k--;
+                    if (fabsf(rf.x) > face_half_x || fabsf(rf.y) > face_half_y) continue;
+                    {
+                        bool keep = true;
+                        if (n_sel < MAX_PLANE_PTS) n_sel++;
+                        else if (pen <= sel_pen[MAX_PLANE_PTS - 1u]) keep = false;
+                        if (keep) {
+                            u32 q = n_sel - 1u;
+                            while (q > 0u && sel_pen[q - 1u] < pen) {
+                                sel_pen[q] = sel_pen[q - 1u];
+                                sel_u[q] = sel_u[q - 1u];
+                                sel_v[q] = sel_v[q - 1u];
+                                sel_g[q] = sel_g[q - 1u];
+                                sel_pl[q] = sel_pl[q - 1u];
+                                q--;
+                            }
+                            sel_pen[q] = pen;
+                            sel_u[q] = rf.x;
+                            sel_v[q] = rf.y;
+                            sel_g[q] = g;
+                            sel_pl[q] = pl;
+                        }
                     }
-                    sel_pen[k] = pen;
-                    sel_g[k] = g;
-                    sel_c[k] = c;
-                    sel_pl[k] = pl;
+                    continue;
+                }
+
+                // ── A box meets a face: the CLIPPED manifold ──
+                // Sutherland-Hodgman, the incident quad against the
+                // rectangle's four half-planes, in the face's 2-D frame.
+                v3 inc[4];
+                box_incident_face(geometry, g, n_body, inc);
+                float qu[4], qv[4], qp[4];
+                for (u32 c = 0; c < 4u; c++) {
+                    v3 spw = v3_add(w_pos[i], rot_mul(w_rot[i], inc[c]));
+                    v3 rf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(spw, w_pos[pb])), face_o));
+                    qu[c] = rf.x; qv[c] = rf.y;
+                    qp[c] = -v3_dot(v3_sub(spw, p0_w), n_w);
+                }
+
+                // Depth over the overlap is AFFINE in the in-face
+                // coordinates, so a clipped vertex's depth is exact.
+                float d1u = qu[1] - qu[0], d1v = qv[1] - qv[0];
+                float d2u = qu[2] - qu[0], d2v = qv[2] - qv[0];
+                float det = d1u * d2v - d1v * d2u;
+                if (fabsf(det) < 1e-12f) continue;
+                float ga = ((qp[1] - qp[0]) * d2v - (qp[2] - qp[0]) * d1v) / det;
+                float gb = ((qp[2] - qp[0]) * d1u - (qp[1] - qp[0]) * d2u) / det;
+
+                // The 2-bit corner index is not a winding; 0,1,3,2 is the
+                // quad's perimeter.
+                float pu[8], pv[8];
+                pu[0] = qu[0]; pv[0] = qv[0];
+                pu[1] = qu[1]; pv[1] = qv[1];
+                pu[2] = qu[3]; pv[2] = qv[3];
+                pu[3] = qu[2]; pv[3] = qv[2];
+                u32 pn = 4u;
+
+                for (u32 e = 0; e < 4u && pn > 0u; e++) {
+                    u32 axis = e >> 1u;
+                    bool upper = (e & 1u) != 0u;
+                    float lim = axis == 1u ? (upper ? face_half_y : -face_half_y)
+                                           : (upper ? face_half_x : -face_half_x);
+                    float ou[8], ov[8];
+                    u32 on = 0u;
+                    for (u32 k = 0; k < pn; k++) {
+                        float cu = pu[k], cv = pv[k];
+                        u32 kp = (k + pn - 1u) % pn;
+                        float ru = pu[kp], rv = pv[kp];
+                        float ca = axis == 1u ? cv : cu;
+                        float pa = axis == 1u ? rv : ru;
+                        bool cin = upper ? (ca <= lim) : (ca >= lim);
+                        bool pin = upper ? (pa <= lim) : (pa >= lim);
+                        if (cin != pin) {
+                            float d = ca - pa;
+                            float t = fabsf(d) > 1e-20f ? (lim - pa) / d : 0.0f;
+                            if (on < 8u) { ou[on] = ru + (cu - ru) * t; ov[on] = rv + (cv - rv) * t; on++; }
+                        }
+                        if (cin) {
+                            if (on < 8u) { ou[on] = cu; ov[on] = cv; on++; }
+                        }
+                    }
+                    for (u32 k = 0; k < on; k++) { pu[k] = ou[k]; pv[k] = ov[k]; }
+                    pn = on;
+                }
+
+                for (u32 k = 0; k < pn; k++) {
+                    float cu = pu[k], cv = pv[k];
+                    float pen = qp[0] + ga * (cu - qu[0]) + gb * (cv - qv[0]);
+                    if (pen <= 0.0f || pen > max_depth) continue;
+                    {
+                        bool keep = true;
+                        if (n_sel < MAX_PLANE_PTS) n_sel++;
+                        else if (pen <= sel_pen[MAX_PLANE_PTS - 1u]) keep = false;
+                        if (keep) {
+                            u32 q = n_sel - 1u;
+                            while (q > 0u && sel_pen[q - 1u] < pen) {
+                                sel_pen[q] = sel_pen[q - 1u];
+                                sel_u[q] = sel_u[q - 1u];
+                                sel_v[q] = sel_v[q - 1u];
+                                sel_g[q] = sel_g[q - 1u];
+                                sel_pl[q] = sel_pl[q - 1u];
+                                q--;
+                            }
+                            sel_pen[q] = pen;
+                            sel_u[q] = cu;
+                            sel_v[q] = cv;
+                            sel_g[q] = g;
+                            sel_pl[q] = pl;
+                        }
+                    }
                 }
             }
         }
@@ -1260,7 +1370,7 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         // Slots beyond the manifold carry a stale impulse; drop them for the
         // same reason the ground branch does.
         if (solve_mode == 1u) {
-            for (u32 k = n_sel; k < MAX_PTS; k++) {
+            for (u32 k = n_sel; k < MAX_PLANE_PTS; k++) {
                 u32 dead = cs_i + CS_PLANE_OFF + k * 3u;
                 contact_state[dead] = 0.0f;
                 contact_state[dead + 1u] = 0.0f;
@@ -1276,45 +1386,19 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
             u32 pl = sel_pl[cpt];
             u32 pbase = cp.plane_base + pl * PLANE_STRIDE;
             u32 pb = f_as_u(geometry[pbase]);
-            float face_half_x = geometry[pbase + 1u];
-            float face_half_y = geometry[pbase + 2u];
             v3 face_o = v3_(geometry[pbase + 4u], geometry[pbase + 5u], geometry[pbase + 6u]);
             r9 face_r; for (u32 k = 0; k < 9u; k++) face_r.r[k] = geometry[pbase + 7u + k];
             v3 n_w = rot_mul(w_rot[pb], rot_tmul(face_r, v3_(0.0f, 0.0f, 1.0f)));
-            v3 n_body = rot_tmul(w_rot[i], n_w);
-
-            float lo_x = 1e30f, lo_y = 1e30f, hi_x = -1e30f, hi_y = -1e30f;
-            for (u32 fg = gbegin; fg < gbegin + gcount; fg++) {
-                u32 fgt = (u32)geometry[fg * GEOM_STRIDE];
-                if (fgt == 0u) continue;
-                u32 fnp = fgt == 2u ? 8u : 1u;
-                for (u32 fc = 0; fc < fnp; fc++) {
-                    v3 fsp = contact_pt(geometry, fg, fgt, fc, n_body);
-                    v3 fspw = v3_add(w_pos[i], rot_mul(w_rot[i], fsp));
-                    v3 frf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(fspw, w_pos[pb])), face_o));
-                    lo_x = fmin_(lo_x, frf.x); lo_y = fmin_(lo_y, frf.y);
-                    hi_x = fmax_(hi_x, frf.x); hi_y = fmax_(hi_y, frf.y);
-                }
-            }
-            float ov_lo_x = fmax_(lo_x, -face_half_x);
-            float ov_lo_y = fmax_(lo_y, -face_half_y);
-            float ov_hi_x = fmin_(hi_x, face_half_x);
-            float ov_hi_y = fmin_(hi_y, face_half_y);
 
             u32 g = sel_g[cpt];
             u32 gbase = g * GEOM_STRIDE;
             u32 gtype = (u32)geometry[gbase];
             float pt_scale = gtype == 2u ? 0.25f : 1.0f;
 
-            v3 support = contact_pt(geometry, g, gtype, sel_c[cpt], n_body);
-            v3 sup_w0 = v3_add(w_pos[i], rot_mul(w_rot[i], support));
             float penetration = sel_pen[cpt];
-
-            // Contact point in the face body's frame, clamped into the
-            // overlap, then the same world point as a lever on body i.
-            v3 rf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(sup_w0, w_pos[pb])), face_o));
-            v3 in_face = v3_(fclamp(rf.x, ov_lo_x, ov_hi_x), fclamp(rf.y, ov_lo_y, ov_hi_y), rf.z);
-            v3 r_p = v3_add(face_o, rot_tmul(face_r, in_face));
+            // The contact point is already in the face's 2-D frame, so
+            // placing it needs no clamp and no second footprint pass.
+            v3 r_p = v3_add(face_o, rot_tmul(face_r, v3_(sel_u[cpt], sel_v[cpt], -penetration)));
             v3 sup_w = v3_add(w_pos[pb], rot_mul(w_rot[pb], r_p));
             v3 support_c = rot_tmul(w_rot[i], v3_sub(sup_w, w_pos[i]));
 

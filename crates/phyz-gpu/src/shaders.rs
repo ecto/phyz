@@ -21,7 +21,7 @@ const PLANE_STRIDE: u32 = 24u;
 // vec3s. The impulses live in this buffer rather than their own because the
 // WebGPU baseline allows 8 storage buffers per stage and the pass already
 // binds 8; a ninth binding validates away on a conforming device.
-const CS_STRIDE: u32 = 112u;
+const CS_STRIDE: u32 = 184u;
 const CS_IMPULSE_OFF: u32 = 8u;
 // The body-attached plane gets its own impulse slots: a body can rest on the
 // deck and the ground in the same step (a wheel does exactly that), so the two
@@ -33,12 +33,17 @@ const CS_PLANE_OFF: u32 = 32u;
 // block existed the plane pass reported nothing at all, and a foot pressing
 // on a deck was indistinguishable from a rider standing on nothing
 // (ecto/phyz#85).
-const CS_PLANE_RB_OFF: u32 = 56u;
+const CS_PLANE_RB_OFF: u32 = 80u;
 // Per-point face detail: (plane index + 1, penetration, normal force,
 // normal xyz). The plane index is biased by one so a zeroed slot reads as
 // "empty" rather than as "plane 0".
-const CS_PLANE_DETAIL_OFF: u32 = 64u;
+const CS_PLANE_DETAIL_OFF: u32 = 88u;
 const PLANE_DETAIL_STRIDE: u32 = 6u;
+// Face manifold slots per body, separate from MAX_PTS and larger: the face
+// branch builds a CLIPPED manifold against a SET of faces, and on a concave
+// deck a foot meets several narrow strips at once with up to four points
+// each. Kept separate so the ground manifold is bit-identical.
+const MAX_PLANE_PTS: u32 = 16u;
 
 struct ContactParams {
     nworld: u32,
@@ -197,6 +202,52 @@ fn plane_readback(world_idx: u32, nb: u32, i: u32, pl: u32, rank: u32,
     contact_state[d + 3u] = n_w.x;
     contact_state[d + 4u] = n_w.y;
     contact_state[d + 5u] = n_w.z;
+}
+
+// ── The incident face of a box against a contact normal ──
+//
+// Returns the four corners, in BODY coordinates, of the box face most
+// opposed to `n_body` — the face that is actually meeting the surface.
+//
+// This is what makes a clipped manifold possible. Sampling a box's eight
+// CORNERS against a face plane is only correct while the face is at least as
+// big as the box: on a narrow strip, the corners are all outside the strip
+// and their "penetration" is measured against the strip's INFINITE extension,
+// which is a fiction. Measured on ipse's pre-tip: 7 of the 9 candidate points
+// on the loaded foot lay outside their strip, and the three deepest — 2.26,
+// 1.27, 1.11 mm — were pure extension artifacts, while the deepest point
+// genuinely over its strip was 0.64 mm, which is the referee's number.
+fn box_incident_face(g: u32, n_body: vec3<f32>) -> array<vec3<f32>, 4> {
+    let gbase = g * GEOM_STRIDE;
+    let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    // Normal in the shape's own frame; the incident face is the one whose
+    // outward normal is most anti-parallel to it.
+    let n = rot_mul(o_r, n_body);
+    let a = abs(n);
+    var axis = 0u;
+    if (a.y >= a.x && a.y >= a.z) { axis = 1u; }
+    else if (a.z >= a.x && a.z >= a.y) { axis = 2u; }
+    // -sign so the face points INTO the surface. sign(0) is 0, which would
+    // collapse the face to the box centre, so bias the tie to -1.
+    var sgn = -1.0;
+    if (axis == 0u && n.x < 0.0) { sgn = 1.0; }
+    if (axis == 1u && n.y < 0.0) { sgn = 1.0; }
+    if (axis == 2u && n.z < 0.0) { sgn = 1.0; }
+
+    var out: array<vec3<f32>, 4>;
+    for (var c = 0u; c < 4u; c++) {
+        let s0 = select(-1.0, 1.0, (c & 1u) != 0u);
+        let s1 = select(-1.0, 1.0, (c & 2u) != 0u);
+        var v: vec3<f32>;
+        if (axis == 0u) { v = vec3<f32>(sgn * h.x, s0 * h.y, s1 * h.z); }
+        else if (axis == 1u) { v = vec3<f32>(s0 * h.x, sgn * h.y, s1 * h.z); }
+        else { v = vec3<f32>(s0 * h.x, s1 * h.y, sgn * h.z); }
+        out[c] = o_p + rot_t_mul(o_r, v);
+    }
+    return out;
 }
 
 // ── Impulse-like bounds on the dissipative contact terms ──
@@ -1049,7 +1100,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // buffer rather than in registers because a per-body accumulator
         // would want another 14 floats x MAX_BODIES of function-scope array
         // on top of the FK state this kernel already carries.
-        for (var k = 0u; k < 8u + MAX_PTS * PLANE_DETAIL_STRIDE; k++) {
+        for (var k = 0u; k < 8u + MAX_PLANE_PTS * PLANE_DETAIL_STRIDE; k++) {
             contact_state[cs_i + CS_PLANE_RB_OFF + k] = 0.0;
         }
 
@@ -1057,10 +1108,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let gcount = u32(bf(i, 34u));
 
         // ── Pool this body's candidates across every face, deepest first ──
-        var sel_pen: array<f32, MAX_PTS>;
-        var sel_g: array<u32, MAX_PTS>;
-        var sel_c: array<u32, MAX_PTS>;
-        var sel_pl: array<u32, MAX_PTS>;
+        //
+        // A candidate is stored as its position in the FACE's own 2-D frame
+        // plus its depth: (u, v, penetration). That is the natural coordinate
+        // for a clipped manifold, it is what the solve needs to place the
+        // force, and it means the solve loop never has to recover the corner
+        // or recompute a footprint.
+        var sel_pen: array<f32, MAX_PLANE_PTS>;
+        var sel_u: array<f32, MAX_PLANE_PTS>;
+        var sel_v: array<f32, MAX_PLANE_PTS>;
+        var sel_g: array<u32, MAX_PLANE_PTS>;
+        var sel_pl: array<u32, MAX_PLANE_PTS>;
         var n_sel = 0u;
 
         if (gcount > 0u) {
@@ -1080,77 +1138,151 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let p0_w = w_pos[pb] + rot_mul(w_rot[pb], face_o);
             let n_body = rot_t_mul(w_rot[i], n_w);
 
-            // ── How much of this shape is actually over the face ──
-            //
-            // The face is a rectangle, not an infinite plane, and a shape may
-            // hang over its edge. Dropping the overhanging points outright is
-            // the obvious reading and it is wrong: a deck narrower than a foot
-            // still carries that foot, along its edge. Measured on the K1, the
-            // foot is 22 cm across a 19.7 cm deck — feet point ACROSS the board,
-            // so toes and heel overhang, as a real skater's do — and deleting
-            // those corners deleted the whole roll support. Standing fell from
-            // 3.00 s to 0.8 s in every stance.
-            //
-            // So the footprint is intersected with the face and contact points
-            // are clamped into the overlap. The solve loop below recomputes
-            // this footprint for the handful of faces that actually won a
-            // slot, rather than carrying four more floats per slot through
-            // the ranking — a body that touches anything at all touches at
-            // most MAX_PTS faces, and only bodies in contact pay for it.
-            var flo = vec2<f32>(1e30, 1e30);
-            var fhi = vec2<f32>(-1e30, -1e30);
-            for (var fg = gbegin; fg < gbegin + gcount; fg++) {
-                let fgt = u32(geometry[fg * GEOM_STRIDE]);
-                if (fgt == 0u) { continue; }
-                var fnp = 1u;
-                if (fgt == 2u) { fnp = 8u; }
-                for (var fc = 0u; fc < fnp; fc++) {
-                    var fsp: vec3<f32>;
-                    if (fgt == 2u) { fsp = box_corner(fg, fc); }
-                    else { fsp = support_point(fg, n_body); }
-                    let fspw = w_pos[i] + rot_mul(w_rot[i], fsp);
-                    let frf = rot_mul(face_r, rot_t_mul(w_rot[pb], fspw - w_pos[pb]) - face_o);
-                    flo = min(flo, frf.xy);
-                    fhi = max(fhi, frf.xy);
-                }
-            }
-            // The footprint is an AABB in face coordinates: exact while the shape
-            // is aligned with the face, a slight over-estimate under yaw.
-            let ov = vec4<f32>(max(flo, -face_half), min(fhi, face_half));
-            // No overlap at all means nothing is over this face: the shape
-            // genuinely falls past it.
-            if (ov.x > ov.z || ov.y > ov.w) { continue; }
-
             for (var g = gbegin; g < gbegin + gcount; g++) {
                 let gt = u32(geometry[g * GEOM_STRIDE]);
                 if (gt == 0u) { continue; }
-                var np = 1u;
-                if (gt == 2u) { np = 8u; }
-                for (var c = 0u; c < np; c++) {
-                    var sp: vec3<f32>;
-                    if (gt == 2u) { sp = box_corner(g, c); }
-                    else { sp = support_point(g, n_body); }
+
+                if (gt != 2u) {
+                    // Non-box shapes contact through their single support
+                    // point, as before. There is no face to clip.
+                    let sp = support_point(g, n_body);
                     let spw = w_pos[i] + rot_mul(w_rot[i], sp);
-                    // The upper bound guards a body approaching from BELOW the
-                    // face against being captured and catapulted through it.
+                    let rf = rot_mul(face_r, rot_t_mul(w_rot[pb], spw - w_pos[pb]) - face_o);
                     let pen = -dot(spw - p0_w, n_w);
                     if (pen <= 0.0 || pen > max_depth) { continue; }
-                    if (n_sel < MAX_PTS) { n_sel++; }
-                    else if (pen <= sel_pen[MAX_PTS - 1u]) { continue; }
-                    var k = n_sel - 1u;
-                    loop {
-                        if (k == 0u) { break; }
-                        if (sel_pen[k - 1u] >= pen) { break; }
-                        sel_pen[k] = sel_pen[k - 1u];
-                        sel_g[k] = sel_g[k - 1u];
-                        sel_c[k] = sel_c[k - 1u];
-                        sel_pl[k] = sel_pl[k - 1u];
-                        k--;
+                    if (abs(rf.x) > face_half.x || abs(rf.y) > face_half.y) { continue; }
+                    {
+                        if (n_sel < MAX_PLANE_PTS) { n_sel++; }
+                        else if (pen <= sel_pen[MAX_PLANE_PTS - 1u]) { continue; }
+                        var k = n_sel - 1u;
+                        loop {
+                            if (k == 0u) { break; }
+                            if (sel_pen[k - 1u] >= pen) { break; }
+                            sel_pen[k] = sel_pen[k - 1u];
+                            sel_u[k] = sel_u[k - 1u];
+                            sel_v[k] = sel_v[k - 1u];
+                            sel_g[k] = sel_g[k - 1u];
+                            sel_pl[k] = sel_pl[k - 1u];
+                            k--;
+                        }
+                        sel_pen[k] = pen;
+                        sel_u[k] = rf.x;
+                        sel_v[k] = rf.y;
+                        sel_g[k] = g;
+                        sel_pl[k] = pl;
                     }
-                    sel_pen[k] = pen;
-                    sel_g[k] = g;
-                    sel_c[k] = c;
-                    sel_pl[k] = pl;
+                    continue;
+                }
+
+                // ── A box meets a face: build the CLIPPED manifold ──
+                //
+                // The overlap of the box's incident face with the rectangle is
+                // what the CPU's narrow phase clips out, and its corners come
+                // from BOTH shapes and from neither: where the box is
+                // narrower, the box's own corners; where the face is narrower
+                // — a concave deck's 8 mm strip under a 190 mm foot — the
+                // face's; and where they cross, vertices that belong to no
+                // input shape at all. Taking only the box's corners is what
+                // left the device pooling extension artifacts instead of
+                // contacts, and taking only both shapes' corners misses every
+                // crossing (a foot wider than a strip but shorter than it has
+                // FOUR mixed corners and no pure ones).
+                //
+                // So: Sutherland-Hodgman, the incident quad against the
+                // rectangle's four half-planes, in the face's own 2-D frame.
+                // A convex quad clipped by a rectangle has at most 8 vertices.
+                let inc = box_incident_face(g, n_body);
+                var qu: array<f32, 4>;
+                var qv: array<f32, 4>;
+                var qp: array<f32, 4>;
+                for (var c = 0u; c < 4u; c++) {
+                    let spw = w_pos[i] + rot_mul(w_rot[i], inc[c]);
+                    let rf = rot_mul(face_r, rot_t_mul(w_rot[pb], spw - w_pos[pb]) - face_o);
+                    qu[c] = rf.x;
+                    qv[c] = rf.y;
+                    qp[c] = -dot(spw - p0_w, n_w);
+                }
+
+                // Depth over the overlap is an AFFINE function of the in-face
+                // coordinates — the incident face is a plane and so is the
+                // rectangle — so a clipped vertex's depth is exact, not
+                // interpolated. Fit from corners 0,1,2, which span the quad
+                // by construction (each differs from 0 in one axis bit).
+                let du1 = vec2<f32>(qu[1] - qu[0], qv[1] - qv[0]);
+                let du2 = vec2<f32>(qu[2] - qu[0], qv[2] - qv[0]);
+                let det = du1.x * du2.y - du1.y * du2.x;
+                if (abs(det) < 1e-12) { continue; }
+                let ga = ((qp[1] - qp[0]) * du2.y - (qp[2] - qp[0]) * du1.y) / det;
+                let gb = ((qp[2] - qp[0]) * du1.x - (qp[1] - qp[0]) * du2.x) / det;
+
+                // Cyclic order: the 2-bit corner index is not a winding, so
+                // 0,1,3,2 is the quad's perimeter.
+                var poly: array<vec2<f32>, 8>;
+                poly[0] = vec2<f32>(qu[0], qv[0]);
+                poly[1] = vec2<f32>(qu[1], qv[1]);
+                poly[2] = vec2<f32>(qu[3], qv[3]);
+                poly[3] = vec2<f32>(qu[2], qv[2]);
+                var pn = 4u;
+
+                for (var e = 0u; e < 4u; e++) {
+                    if (pn == 0u) { break; }
+                    // Edge e: axis 0 = u, 1 = v; the odd edges are the upper
+                    // bounds. Axis-aligned, so an intersection is one lerp.
+                    let axis = e >> 1u;
+                    let upper = (e & 1u) != 0u;
+                    let lim = select(
+                        select(-face_half.x, face_half.x, upper),
+                        select(-face_half.y, face_half.y, upper),
+                        axis == 1u);
+                    var out: array<vec2<f32>, 8>;
+                    var on = 0u;
+                    for (var k = 0u; k < pn; k++) {
+                        let cur = poly[k];
+                        let prv = poly[(k + pn - 1u) % pn];
+                        let ca = select(cur.x, cur.y, axis == 1u);
+                        let pa = select(prv.x, prv.y, axis == 1u);
+                        let cin = select(ca >= lim, ca <= lim, upper);
+                        let pin = select(pa >= lim, pa <= lim, upper);
+                        if (cin != pin) {
+                            let d = ca - pa;
+                            var t = 0.0;
+                            if (abs(d) > 1e-20) { t = (lim - pa) / d; }
+                            if (on < 8u) { out[on] = prv + (cur - prv) * t; on++; }
+                        }
+                        if (cin) {
+                            if (on < 8u) { out[on] = cur; on++; }
+                        }
+                    }
+                    for (var k = 0u; k < on; k++) { poly[k] = out[k]; }
+                    pn = on;
+                }
+
+                for (var k = 0u; k < pn; k++) {
+                    let cu = poly[k].x;
+                    let cv = poly[k].y;
+                    let pen = qp[0] + ga * (cu - qu[0]) + gb * (cv - qv[0]);
+                    if (pen <= 0.0 || pen > max_depth) { continue; }
+                    let rf = vec3<f32>(cu, cv, 0.0);
+                    {
+                        if (n_sel < MAX_PLANE_PTS) { n_sel++; }
+                        else if (pen <= sel_pen[MAX_PLANE_PTS - 1u]) { continue; }
+                        var q = n_sel - 1u;
+                        loop {
+                            if (q == 0u) { break; }
+                            if (sel_pen[q - 1u] >= pen) { break; }
+                            sel_pen[q] = sel_pen[q - 1u];
+                            sel_u[q] = sel_u[q - 1u];
+                            sel_v[q] = sel_v[q - 1u];
+                            sel_g[q] = sel_g[q - 1u];
+                            sel_pl[q] = sel_pl[q - 1u];
+                            q--;
+                        }
+                        sel_pen[q] = pen;
+                        sel_u[q] = rf.x;
+                        sel_v[q] = rf.y;
+                        sel_g[q] = g;
+                        sel_pl[q] = pl;
+                    }
                 }
             }
         }
@@ -1159,7 +1291,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Slots beyond the manifold carry a stale impulse; drop them for the
         // same reason the ground branch does.
         if (cparams.solve_mode == 1u) {
-            for (var k = n_sel; k < MAX_PTS; k++) {
+            for (var k = n_sel; k < MAX_PLANE_PTS; k++) {
                 let dead = cs_i + CS_PLANE_OFF + k * 3u;
                 contact_state[dead] = 0.0;
                 contact_state[dead + 1u] = 0.0;
@@ -1178,32 +1310,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let pl = sel_pl[cpt];
             let pbase = cparams.plane_base + pl * PLANE_STRIDE;
             let pb = bitcast<u32>(geometry[pbase]);
-            let face_half = vec2<f32>(geometry[pbase + 1u], geometry[pbase + 2u]);
             let face_o = vec3<f32>(geometry[pbase + 4u], geometry[pbase + 5u], geometry[pbase + 6u]);
             var face_r: array<f32, 9>;
             for (var k = 0u; k < 9u; k++) { face_r[k] = geometry[pbase + 7u + k]; }
             let n_w = rot_mul(w_rot[pb], rot_t_mul(face_r, vec3<f32>(0.0, 0.0, 1.0)));
-            let n_body = rot_t_mul(w_rot[i], n_w);
-            var flo = vec2<f32>(1e30, 1e30);
-            var fhi = vec2<f32>(-1e30, -1e30);
-            for (var fg = gbegin; fg < gbegin + gcount; fg++) {
-                let fgt = u32(geometry[fg * GEOM_STRIDE]);
-                if (fgt == 0u) { continue; }
-                var fnp = 1u;
-                if (fgt == 2u) { fnp = 8u; }
-                for (var fc = 0u; fc < fnp; fc++) {
-                    var fsp: vec3<f32>;
-                    if (fgt == 2u) { fsp = box_corner(fg, fc); }
-                    else { fsp = support_point(fg, n_body); }
-                    let fspw = w_pos[i] + rot_mul(w_rot[i], fsp);
-                    let frf = rot_mul(face_r, rot_t_mul(w_rot[pb], fspw - w_pos[pb]) - face_o);
-                    flo = min(flo, frf.xy);
-                    fhi = max(fhi, frf.xy);
-                }
-            }
-            // The footprint is an AABB in face coordinates: exact while the shape
-            // is aligned with the face, a slight over-estimate under yaw.
-            let ov = vec4<f32>(max(flo, -face_half), min(fhi, face_half));
 
             let g = sel_g[cpt];
             let gbase = g * GEOM_STRIDE;
@@ -1211,20 +1321,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             var pt_scale = 1.0;
             if (gtype == 2u) { pt_scale = 0.25; }
 
-            var support: vec3<f32>;
-            if (gtype == 2u) { support = box_corner(g, sel_c[cpt]); }
-            else { support = support_point(g, n_body); }
-            let sup_w0 = w_pos[i] + rot_mul(w_rot[i], support);
-            // Penetration is measured at the shape's own point: that is
-            // where its material is, and the face is planar, so sliding the
-            // application point along the face does not change the depth.
             let penetration = sel_pen[cpt];
-
-            // The contact point in the face body's own frame, pulled into
-            // the overlap: the force lands where the face has material.
-            let rf = rot_mul(face_r, rot_t_mul(w_rot[pb], sup_w0 - w_pos[pb]) - face_o);
-            let in_face = clamp(rf.xy, ov.xy, ov.zw);
-            let r_p = face_o + rot_t_mul(face_r, vec3<f32>(in_face.x, in_face.y, rf.z));
+            // The contact point is already in the face's own 2-D frame — that
+            // is how the manifold was built — so placing it needs no clamp and
+            // no second footprint pass. `-penetration` along the face normal
+            // puts it on the touching body's material, which is where the
+            // previous corner-based point sat too.
+            let r_p = face_o + rot_t_mul(face_r,
+                vec3<f32>(sel_u[cpt], sel_v[cpt], -penetration));
             let sup_w = w_pos[pb] + rot_mul(w_rot[pb], r_p);
             // The same world point, as a lever arm on the touching body, so
             // action and reaction act at one point rather than two.
