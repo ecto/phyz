@@ -250,3 +250,98 @@ fn a_pushed_box_does_not_creep() {
         "box crept {slid:.4} m under a force well inside the friction cone"
     );
 }
+
+/// The face pass reports what it solved, in a block of its own.
+///
+/// Until ecto/phyz#85 it reported nothing: the readback slot is per body and
+/// already held the GROUND result, so writing a face contact there would have
+/// erased whatever else that body was standing on. The consequence was that a
+/// foot pressing on a deck produced no row at all from the host — the exact
+/// contact set the pre-tip parity gap turns on was unobservable, and its
+/// absence read like the rider standing on nothing.
+///
+/// So: rider resting on the deck, deck resting on the ground.
+///   - the DECK's ground block is unchanged and still reports the ground;
+///   - the RIDER's face block reports the deck, 4 corners, normal +z, and a
+///     total normal force equal to the rider's weight.
+#[test]
+fn the_face_pass_reports_its_own_contacts() {
+    let (model, deck_half, rider_half) = deck_and_rider(-9.81);
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        0.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        std::slice::from_ref(&plane(deck_half)),
+    )
+    .expect("contact");
+
+    let mut s = model.default_state();
+    s.q[5] = deck_half.z;
+    s.q[11] = 2.0 * deck_half.z + rider_half.z;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..2000 {
+        sim.step();
+    }
+
+    let c = &sim.readback_contacts().expect("contact readback")[0];
+    let (deck, rider) = (&c[0], &c[1]);
+
+    // The deck still reports the GROUND in its own block, untouched by the
+    // face pass — the whole reason the face got a second block.
+    assert!(deck.touching, "the deck is on the ground: {deck:?}");
+    assert!(
+        deck.force.z > 30.0,
+        "the deck's ground block should carry both masses (~49 N), got {:?}",
+        deck.force
+    );
+    // ...and no face block of its own: nothing is standing on the deck's
+    // *underside*, and the deck is excluded from its own face.
+    assert!(
+        !deck.plane.touching,
+        "the deck is on no face: {:?}",
+        deck.plane
+    );
+
+    // The rider is on the deck and on nothing else.
+    assert!(!rider.touching, "the rider is not on the ground: {rider:?}");
+    let f = &rider.plane;
+    assert!(f.touching, "the rider is on the deck's face: {f:?}");
+    assert_eq!(f.points, 4, "a box rests on a face through four corners");
+    assert!(
+        f.penetration > 0.0 && f.penetration < 5e-3,
+        "settled penetration should be sub-millimetric, got {:.4} mm",
+        f.penetration * 1000.0
+    );
+    assert!(
+        (f.force.z - 9.81).abs() < 1.0,
+        "the face should carry the rider's weight (9.81 N), got {:?}",
+        f.force
+    );
+    // Every point names the same face, agrees on the normal, and the normal
+    // forces sum to the aggregate — this is what makes the block usable as a
+    // per-pair manifold table against the CPU narrow phase.
+    let mut total = 0.0;
+    for (k, d) in f.detail[..f.points].iter().enumerate() {
+        assert_eq!(d.plane, Some(0), "point {k} names the wrong face: {d:?}");
+        assert!(
+            (d.normal - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-5,
+            "point {k} normal should be world +z, got {:?}",
+            d.normal
+        );
+        total += d.normal_force;
+    }
+    assert!(
+        (total - f.force.z).abs() < 1e-2 * (1.0 + f.force.z.abs()),
+        "per-point normal forces {total:.4} N do not sum to the aggregate {:.4} N",
+        f.force.z
+    );
+    assert_eq!(
+        f.points_on(0).count(),
+        4,
+        "points_on should group the manifold by face"
+    );
+}

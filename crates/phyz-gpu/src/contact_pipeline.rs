@@ -120,7 +120,10 @@ impl ContactParams {
     }
 }
 
-pub use crate::layout::{CONTACT_STATE_STRIDE, MAX_CONTACT_PTS};
+pub use crate::layout::{
+    CONTACT_STATE_STRIDE, CS_PLANE_DETAIL_OFF, CS_PLANE_READBACK_OFF, MAX_CONTACT_PTS,
+    PLANE_DETAIL_STRIDE,
+};
 use crate::layout::{
     GEOM_STRIDE, lightest_collidable_body, no_collidable_geometry_error, pack_geometries,
 };
@@ -445,6 +448,89 @@ pub struct BodyContactState {
     pub point: Vec3,
     /// Contact force in world coordinates.
     pub force: Vec3,
+    /// What this body found on the body-attached faces ([`BodyPlane`]), as a
+    /// block of its own.
+    ///
+    /// Separate from the fields above because a body can rest on the ground
+    /// and on a deck in the same step, and one readback slot cannot hold both
+    /// without one surface overwriting the other — which is why the plane
+    /// pass wrote nothing here until ecto/phyz#85 named the instrument gap.
+    pub plane: PlaneContactState,
+}
+
+/// What a body found on the body-attached faces this step.
+///
+/// World frame throughout. `points` is how many contact points the face pass
+/// actually solved for this body, pooled across every plane it touched;
+/// `detail` carries them one by one so the host can group by plane and get a
+/// per-pair table (points, depth, normal, normal force) comparable with the
+/// CPU narrow phase's manifolds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneContactState {
+    /// True while this body has at least one face contact.
+    pub touching: bool,
+    /// Number of populated entries in `detail` (0 when not touching).
+    pub points: usize,
+    /// Deepest face penetration in metres (0 when not touching).
+    pub penetration: f64,
+    /// The deepest face contact point, world frame.
+    pub point: Vec3,
+    /// Total face contact force on this body, world frame — the load it
+    /// actually carries, summed over every point and every face.
+    pub force: Vec3,
+    /// The individual points, deepest-first within each face, in the order
+    /// the pass claimed warm-start slots. Entries past `points` are empty.
+    pub detail: [PlaneContactPoint; MAX_CONTACT_PTS],
+}
+
+impl Default for PlaneContactState {
+    fn default() -> Self {
+        Self {
+            touching: false,
+            points: 0,
+            penetration: 0.0,
+            point: Vec3::zeros(),
+            force: Vec3::zeros(),
+            detail: [PlaneContactPoint::default(); MAX_CONTACT_PTS],
+        }
+    }
+}
+
+impl PlaneContactState {
+    /// Every point on `plane`, for building a per-pair table.
+    pub fn points_on(&self, plane: usize) -> impl Iterator<Item = &PlaneContactPoint> {
+        self.detail[..self.points]
+            .iter()
+            .filter(move |p| p.plane == Some(plane))
+    }
+}
+
+/// One solved face contact point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneContactPoint {
+    /// Index into the `planes` table the pipeline was built with, or `None`
+    /// for an empty slot.
+    pub plane: Option<usize>,
+    /// Penetration depth of this point, metres.
+    pub penetration: f64,
+    /// Normal force at this point, newtons. In the impulse solve this is the
+    /// converged normal impulse divided by `dt`, so the two modes report the
+    /// same quantity.
+    pub normal_force: f64,
+    /// Face normal at this point, world frame — the direction the touching
+    /// body must move to separate.
+    pub normal: Vec3,
+}
+
+impl Default for PlaneContactPoint {
+    fn default() -> Self {
+        Self {
+            plane: None,
+            penetration: 0.0,
+            normal_force: 0.0,
+            normal: Vec3::zeros(),
+        }
+    }
 }
 
 impl ContactPipeline {

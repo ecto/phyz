@@ -102,7 +102,9 @@ use phyz_gpu::contact_pipeline::BodyContactGains;
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Geometry, Joint, Model, ModelBuilder, State};
 
-fn half() -> Vec3 { Vec3::new(0.20, 0.10, 0.02) }
+fn half() -> Vec3 {
+    Vec3::new(0.20, 0.10, 0.02)
+}
 const MASS: f64 = 5.0;
 /// Centre of mass toward +x, i.e. over the edge the box wants to roll across.
 const COM_X: f64 = 0.16;
@@ -128,7 +130,9 @@ fn model() -> Model {
             inertia,
         )
         .build();
-    m.bodies[0].geometry = Some(Geometry::Box { half_extents: half() });
+    m.bodies[0].geometry = Some(Geometry::Box {
+        half_extents: half(),
+    });
     m
 }
 
@@ -159,13 +163,17 @@ fn main() {
         cpu.step_with_contacts(&m, &mut cpu_state, 0.0, &mat);
     }
     let (cpu_pitch, cpu_z) = readout(cpu_state.q.as_slice());
-    println!("model: plank {:?} m, {MASS} kg, com x {COM_X} m, dt 0.5 ms, {steps} steps", half());
+    println!(
+        "model: plank {:?} m, {MASS} kg, com x {COM_X} m, dt 0.5 ms, {steps} steps",
+        half()
+    );
     println!("  cpu convex        pitch {cpu_pitch:>8.3} deg   z {cpu_z:>8.5} m");
 
     let gains = BodyContactGains::uniform_frequency(&m, 100.0, 1.0);
     for sweeps in [4usize, 16, 64, 256] {
         let mut gpu = GpuBatchSimulator::new(m.clone(), 1).unwrap();
-        gpu.enable_contact_impulse(0.0, 0.8, &gains, &[], None).unwrap();
+        gpu.enable_contact_impulse(0.0, 0.8, &gains, &[], None)
+            .unwrap();
         gpu.contact_sweeps = sweeps;
         gpu.load_states(std::slice::from_ref(&s0));
         for _ in 0..steps {
@@ -178,5 +186,8 @@ fn main() {
             z - cpu_z
         );
     }
-    println!("  device manifold cap {} pts", phyz_gpu::layout::MAX_CONTACT_PTS);
+    println!(
+        "  device manifold cap {} pts",
+        phyz_gpu::layout::MAX_CONTACT_PTS
+    );
 }

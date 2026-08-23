@@ -21,12 +21,24 @@ const PLANE_STRIDE: u32 = 24u;
 // vec3s. The impulses live in this buffer rather than their own because the
 // WebGPU baseline allows 8 storage buffers per stage and the pass already
 // binds 8; a ninth binding validates away on a conforming device.
-const CS_STRIDE: u32 = 56u;
+const CS_STRIDE: u32 = 112u;
 const CS_IMPULSE_OFF: u32 = 8u;
 // The body-attached plane gets its own impulse slots: a body can rest on the
 // deck and the ground in the same step (a wheel does exactly that), so the two
 // contacts must not share a warm-start slot or they overwrite each other.
 const CS_PLANE_OFF: u32 = 32u;
+// ...and, for the same reason, its own READBACK block. [0..8] is the ground
+// result; a foot resting on a deck cannot be written there without erasing
+// the ground reading of whatever else that body is touching. Before this
+// block existed the plane pass reported nothing at all, and a foot pressing
+// on a deck was indistinguishable from a rider standing on nothing
+// (ecto/phyz#85).
+const CS_PLANE_RB_OFF: u32 = 56u;
+// Per-point face detail: (plane index + 1, penetration, normal force,
+// normal xyz). The plane index is biased by one so a zeroed slot reads as
+// "empty" rather than as "plane 0".
+const CS_PLANE_DETAIL_OFF: u32 = 64u;
+const PLANE_DETAIL_STRIDE: u32 = 6u;
 
 struct ContactParams {
     nworld: u32,
@@ -149,6 +161,42 @@ const MAX_PTS: u32 = 8u;
 
 fn coulomb(mu_fn: f32, vt: f32) -> f32 {
     return mu_fn * min(1.0, vt / SLIP_EPS);
+}
+
+// ── Body-attached-face readback ──
+//
+// Accumulates one solved face contact into the touching body's own readback
+// block: the aggregate (touching, deepest penetration, deepest point, TOTAL
+// force) plus a per-point entry keyed by the same warm-start rank the solve
+// used, carrying the plane index so the host can group points by face and
+// compare a per-pair manifold against the CPU narrow phase.
+//
+// Called once per solved point by BOTH the impulse and the penalty branch,
+// with `f_w` the world force on the touching body and `f_n` the normal
+// component of it, so the two modes report the same quantities.
+fn plane_readback(world_idx: u32, nb: u32, i: u32, pl: u32, rank: u32,
+                  penetration: f32, point_w: vec3<f32>, n_w: vec3<f32>,
+                  f_w: vec3<f32>, f_n: f32) {
+    let rb = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_RB_OFF;
+    contact_state[rb] = 1.0;
+    if (penetration > contact_state[rb + 1u]) {
+        contact_state[rb + 1u] = penetration;
+        contact_state[rb + 2u] = point_w.x;
+        contact_state[rb + 3u] = point_w.y;
+        contact_state[rb + 4u] = point_w.z;
+    }
+    contact_state[rb + 5u] += f_w.x;
+    contact_state[rb + 6u] += f_w.y;
+    contact_state[rb + 7u] += f_w.z;
+
+    let d = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_DETAIL_OFF + rank * PLANE_DETAIL_STRIDE;
+    // Biased by one: a zeroed slot must read as "empty", not as "plane 0".
+    contact_state[d] = f32(pl) + 1.0;
+    contact_state[d + 1u] = penetration;
+    contact_state[d + 2u] = f_n;
+    contact_state[d + 3u] = n_w.x;
+    contact_state[d + 4u] = n_w.y;
+    contact_state[d + 5u] = n_w.z;
 }
 
 // ── Impulse-like bounds on the dissipative contact terms ──
@@ -977,14 +1025,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // hinged 15 deg off it, on a SEPARATE body — is a set of these, which is
     // why the pass takes a table and not one record (ecto/phyz#82).
     //
-    // Contacts here are not written to contact_state's readback slots: those
-    // are per-body and already hold the ground result, and a foot on a deck
-    // would otherwise overwrite the ground reading with a different surface.
-    // The plane warm-start block (CS_PLANE_OFF) IS per body, and ranks are
-    // handed out across all planes in order, so a body touching two faces
-    // keeps distinct slots.
+    // Contacts here get their OWN readback block (CS_PLANE_RB_OFF), not the
+    // ground one at [0..8]: those slots already hold the ground result, and a
+    // foot on a deck would otherwise overwrite the ground reading with a
+    // different surface. The plane warm-start block (CS_PLANE_OFF) IS per
+    // body, and ranks are handed out across all planes in order, so a body
+    // touching two faces keeps distinct slots — and the same rank keys the
+    // per-point detail entry, so the host can group the points by plane and
+    // recover a per-pair manifold.
     var plane_slot: array<u32, MAX_BODIES>;
     for (var i = 0u; i < nb; i++) { plane_slot[i] = 0u; }
+
+    // Clear the readback blocks before accumulating into them. Done in the
+    // buffer rather than in registers because a per-body accumulator would
+    // want another 14 floats x MAX_BODIES of function-scope array on top of
+    // the FK state this kernel already carries. Skipped entirely when there
+    // are no planes: the buffer is zeroed at construction, so untouched IS
+    // the correct answer, and this is the common case.
+    if (cparams.nplanes > 0u) {
+        for (var i = 0u; i < nb; i++) {
+            let rb = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_RB_OFF;
+            for (var k = 0u; k < 8u + MAX_PTS * PLANE_DETAIL_STRIDE; k++) {
+                contact_state[rb + k] = 0.0;
+            }
+        }
+    }
 
     for (var pl = 0u; pl < cparams.nplanes; pl++) {
         let pbase = cparams.plane_base + pl * PLANE_STRIDE;
@@ -1192,6 +1257,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     ext_forces[e_p + 3u] += fp2.x;
                     ext_forces[e_p + 4u] += fp2.y;
                     ext_forces[e_p + 5u] += fp2.z;
+
+                    // Readback. The normal force is the converged normal
+                    // impulse over dt, so it is the same quantity the penalty
+                    // branch reports and the two modes are comparable.
+                    plane_readback(world_idx, nb, i, pl, slot_rank, penetration,
+                                   sup_w, n_w, fw2, nf / max(cparams.dt, 1e-9));
                     continue;
                 }
 
@@ -1237,6 +1308,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 ext_forces[ef_p + 3u] += f_p.x;
                 ext_forces[ef_p + 4u] += f_p.y;
                 ext_forces[ef_p + 5u] += f_p.z;
+
+                plane_readback(world_idx, nb, i, pl, slot_rank, penetration,
+                               sup_w, n_w, f_w, f_n);
             }
         }
     }

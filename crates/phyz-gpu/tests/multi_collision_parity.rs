@@ -280,8 +280,8 @@ fn a_tilted_face_holds_what_a_flat_face_drops() {
         for _ in 0..800 {
             sim.step();
         }
-        let z = sim.readback_states()[0].q.as_slice()
-            [model.q_offsets[model.bodies[1].joint_idx] + 5];
+        let z =
+            sim.readback_states()[0].q.as_slice()[model.q_offsets[model.bodies[1].joint_idx] + 5];
         assert!(z.is_finite(), "{label} face produced NaN");
         rested.push((label, z));
     }

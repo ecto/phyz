@@ -678,6 +678,54 @@ fn kernel_vs_kernel<B: KernelBackend>(
                         && (p.force - q.force).norm() < 1e-2 * (1.0 + p.force.norm()),
                     "{label}: contact readback world {w} body {bi}: {p:?} vs {q:?}"
                 );
+                // The body-attached-face readback block, which the plane pass
+                // did not write at all before ecto/phyz#85. Same tolerances,
+                // and the per-point detail as well: the plane INDEX and the
+                // point COUNT are exact integers, so any disagreement there is
+                // a real set difference between the two backends, not float
+                // drift.
+                let (pf, qf) = (&p.plane, &q.plane);
+                assert_eq!(
+                    (pf.touching, pf.points),
+                    (qf.touching, qf.points),
+                    "{label}: face contact set, world {w} body {bi}: {pf:?} vs {qf:?}"
+                );
+                assert!(
+                    (pf.penetration - qf.penetration).abs() < 1e-4
+                        && (pf.force - qf.force).norm() < 1e-2 * (1.0 + pf.force.norm()),
+                    "{label}: face readback world {w} body {bi}: {pf:?} vs {qf:?}"
+                );
+                // Per point: the identity (which face, which normal, how
+                // deep) is held tightly. The individual normal FORCES are
+                // not, and deliberately: how a manifold splits one load
+                // across its coplanar corners is a fixed point the two
+                // backends reach in different float order, and at the
+                // micrometre penetrations a settled stack sits at, a 1 N
+                // difference in the split is routine while the SUM — the load
+                // the body actually carries, which is the physical quantity —
+                // agrees. So the split is checked as a total.
+                let (mut fa, mut fb) = (0.0, 0.0);
+                for (k, (dp, dq)) in pf.detail[..pf.points]
+                    .iter()
+                    .zip(&qf.detail[..qf.points])
+                    .enumerate()
+                {
+                    assert_eq!(
+                        dp.plane, dq.plane,
+                        "{label}: face point {k}, world {w} body {bi}"
+                    );
+                    assert!(
+                        (dp.penetration - dq.penetration).abs() < 1e-4
+                            && (dp.normal - dq.normal).norm() < 1e-4,
+                        "{label}: face point {k}, world {w} body {bi}: {dp:?} vs {dq:?}"
+                    );
+                    fa += dp.normal_force;
+                    fb += dq.normal_force;
+                }
+                assert!(
+                    (fa - fb).abs() < 1e-2 * (1.0 + fa.abs()),
+                    "{label}: total face normal force, world {w} body {bi}: {fa} vs {fb}"
+                );
             }
         }
     }

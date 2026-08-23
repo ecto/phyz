@@ -120,11 +120,36 @@ pub const MAX_CONTACT_PTS: usize = 8;
 /// [5..8] contact force, world frame (x, y, z)
 /// [8..32]  warm-start impulses, ground/terrain contacts (MAX_CONTACT_PTS vec3s)
 /// [32..56] warm-start impulses, body-attached face
+/// [56..64] readback, body-attached face: touching, deepest penetration,
+///          deepest point (world xyz), total face force on this body (world xyz)
+/// [64..112] per-point face detail, MAX_CONTACT_PTS x
+///          (plane index + 1, penetration, normal force, normal world xyz);
+///          a leading 0.0 means the slot is empty
 /// ```
 /// Two impulse blocks because a body can touch both the ground and the face
 /// in the same step and must not share a warm-start slot. Matches `CS_STRIDE`
 /// in the kernels.
-pub const CONTACT_STATE_STRIDE: usize = 8 + 2 * MAX_CONTACT_PTS * 3;
+///
+/// **Why the face gets its own readback block rather than sharing [0..8].**
+/// The first block is the GROUND result, and a body can rest on the ground
+/// and on a deck in the same step (a wheel does exactly that), so one block
+/// cannot hold both without one surface silently overwriting the other. That
+/// is the reason the plane pass wrote no readback at all until now — and it
+/// made the contact set under investigation in ecto/phyz#85 unobservable:
+/// a foot standing on a deck produced no row from the host however hard it
+/// was pressing, which reads exactly like "the rider is standing on nothing".
+pub const CONTACT_STATE_STRIDE: usize =
+    8 + 2 * MAX_CONTACT_PTS * 3 + 8 + MAX_CONTACT_PTS * PLANE_DETAIL_STRIDE;
+
+/// Float offset of the body-attached-face readback block within a body's slot.
+pub const CS_PLANE_READBACK_OFF: usize = 8 + 2 * MAX_CONTACT_PTS * 3;
+
+/// Float offset of the per-point face detail block within a body's slot.
+pub const CS_PLANE_DETAIL_OFF: usize = CS_PLANE_READBACK_OFF + 8;
+
+/// Floats per per-point face detail entry:
+/// `[plane index + 1, penetration, normal force, normal x, y, z]`.
+pub const PLANE_DETAIL_STRIDE: usize = 6;
 
 /// Floats per servoed DOF in the PD table.
 ///
@@ -498,11 +523,38 @@ pub fn unpack_contacts(
                 .map(|body| {
                     let base = (env * nbodies + body) * stride;
                     let s = &data[base..base + stride];
+                    let r = &s[CS_PLANE_READBACK_OFF..CS_PLANE_READBACK_OFF + 8];
+                    let mut detail =
+                        [crate::contact_pipeline::PlaneContactPoint::default(); MAX_CONTACT_PTS];
+                    let mut points = 0usize;
+                    for (k, d) in detail.iter_mut().enumerate() {
+                        let e = &s[CS_PLANE_DETAIL_OFF + k * PLANE_DETAIL_STRIDE..];
+                        // The plane index is stored biased by one so that a
+                        // zeroed buffer reads as "empty", not as "plane 0".
+                        if e[0] <= 0.0 {
+                            continue;
+                        }
+                        points += 1;
+                        *d = crate::contact_pipeline::PlaneContactPoint {
+                            plane: Some(e[0] as usize - 1),
+                            penetration: e[1] as f64,
+                            normal_force: e[2] as f64,
+                            normal: Vec3::new(e[3] as f64, e[4] as f64, e[5] as f64),
+                        };
+                    }
                     crate::contact_pipeline::BodyContactState {
                         touching: s[0] != 0.0,
                         penetration: s[1] as f64,
                         point: Vec3::new(s[2] as f64, s[3] as f64, s[4] as f64),
                         force: Vec3::new(s[5] as f64, s[6] as f64, s[7] as f64),
+                        plane: crate::contact_pipeline::PlaneContactState {
+                            touching: r[0] != 0.0,
+                            points,
+                            penetration: r[1] as f64,
+                            point: Vec3::new(r[2] as f64, r[3] as f64, r[4] as f64),
+                            force: Vec3::new(r[5] as f64, r[6] as f64, r[7] as f64),
+                            detail,
+                        },
                     }
                 })
                 .collect()

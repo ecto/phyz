@@ -44,7 +44,13 @@ typedef int i32;
 #define GEOM_STRIDE 24u
 // Plane records share the geometry buffer and its stride; see layout.rs.
 #define PLANE_STRIDE 24u
-#define CS_STRIDE 56u
+#define CS_STRIDE 112u
+// Body-attached-face readback + per-point detail. [0..8] is the GROUND result
+// and cannot hold a face contact too (a wheel touches both in one step), so
+// the face gets blocks of its own. Mirrors shaders.rs / layout.rs.
+#define CS_PLANE_RB_OFF 56u
+#define CS_PLANE_DETAIL_OFF 64u
+#define PLANE_DETAIL_STRIDE 6u
 #define PD_DOF_STRIDE 8u
 
 // ── Scalar helpers ─────────────────────────────────────────────────────────
@@ -543,6 +549,39 @@ PHYZ_DEV v3 v3_normalize(v3 a) { float l = v3_len(a); return l > 0.0f ? v3_scale
 
 // mu*f_n*min(1, vt/SLIP_EPS): Coulomb regularized by slip speed.
 PHYZ_DEV float coulomb(float mu_fn, float vt) { return mu_fn * fmin_(1.0f, vt / SLIP_EPS); }
+
+// ── Body-attached-face readback ──
+//
+// One solved face contact into the touching body's readback block: the
+// aggregate (touching, deepest penetration, deepest point, TOTAL force) plus a
+// per-point entry keyed by the warm-start rank, carrying the plane index so
+// the host can group points by face. Called by both the impulse and the
+// penalty branch with the world force on the touching body and its normal
+// component. Mirrors `plane_readback` in shaders.rs.
+PHYZ_DEV void plane_readback(float *contact_state, u32 world_idx, u32 nb, u32 i,
+                             u32 pl, u32 rank, float penetration, v3 point_w,
+                             v3 n_w, v3 f_w, float f_n) {
+    u32 rb = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_RB_OFF;
+    contact_state[rb] = 1.0f;
+    if (penetration > contact_state[rb + 1u]) {
+        contact_state[rb + 1u] = penetration;
+        contact_state[rb + 2u] = point_w.x;
+        contact_state[rb + 3u] = point_w.y;
+        contact_state[rb + 4u] = point_w.z;
+    }
+    contact_state[rb + 5u] += f_w.x;
+    contact_state[rb + 6u] += f_w.y;
+    contact_state[rb + 7u] += f_w.z;
+
+    u32 d = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_DETAIL_OFF + rank * PLANE_DETAIL_STRIDE;
+    // Biased by one: a zeroed slot must read as "empty", not as "plane 0".
+    contact_state[d] = (float)pl + 1.0f;
+    contact_state[d + 1u] = penetration;
+    contact_state[d + 2u] = f_n;
+    contact_state[d + 3u] = n_w.x;
+    contact_state[d + 4u] = n_w.y;
+    contact_state[d + 5u] = n_w.z;
+}
 
 // I^-1 w for the body's rotational inertia about its COM (cofactor inverse).
 PHYZ_DEV v3 inertia_solve(const float* bodies, u32 bidx, v3 w) {
@@ -1121,6 +1160,18 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
     u32 plane_slot[MAX_BODIES];
     for (u32 i = 0; i < nb; i++) plane_slot[i] = 0u;
 
+    // Clear the readback blocks before accumulating into them; skipped
+    // entirely when there are no planes, since the buffer is zeroed at
+    // construction and untouched IS the correct answer.
+    if (cp.nplanes > 0u) {
+        for (u32 i = 0; i < nb; i++) {
+            u32 rb = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_RB_OFF;
+            for (u32 k = 0; k < 8u + MAX_PTS * PLANE_DETAIL_STRIDE; k++) {
+                contact_state[rb + k] = 0.0f;
+            }
+        }
+    }
+
     for (u32 pl = 0; pl < cp.nplanes; pl++) {
         u32 pbase = cp.plane_base + pl * PLANE_STRIDE;
         u32 pb = f_as_u(geometry[pbase]);
@@ -1266,6 +1317,12 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                     add_ext(ext_forces, ef_env_base + i * 6u, cross3(support_c, fi2), fi2);
                     v3 fp2 = rot_tmul(w_rot[pb], v3_neg(fw2));
                     add_ext(ext_forces, ef_env_base + pb * 6u, cross3(r_p, fp2), fp2);
+
+                    // Readback. The normal force is the converged normal
+                    // impulse over dt, the same quantity the penalty branch
+                    // reports.
+                    plane_readback(contact_state, world_idx, nb, i, pl, slot_rank,
+                                   penetration, sup_w, n_w, fw2, nf / fmax_(dt, 1e-9f));
                     continue;
                 }
 
@@ -1293,6 +1350,9 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                 add_ext(ext_forces, ef_env_base + i * 6u, cross3(support_c, f_i), f_i);
                 v3 f_p = rot_tmul(w_rot[pb], v3_neg(f_w));
                 add_ext(ext_forces, ef_env_base + pb * 6u, cross3(r_p, f_p), f_p);
+
+                plane_readback(contact_state, world_idx, nb, i, pl, slot_rank,
+                               penetration, sup_w, n_w, f_w, f_n);
             }
         }
     }

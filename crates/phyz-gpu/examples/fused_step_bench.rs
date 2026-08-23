@@ -35,7 +35,13 @@ fn run() {
         .build_model();
     model.gravity = Vec3::new(0.0, 0.0, -GRAVITY);
     let pd: Vec<PdDof> = (6..model.nv)
-        .map(|i| PdDof { q_index: i, v_index: i, kp: 40.0, kd: 2.0, max_force: 60.0 })
+        .map(|i| PdDof {
+            q_index: i,
+            v_index: i,
+            kp: 40.0,
+            kd: 2.0,
+            max_force: 60.0,
+        })
         .collect();
     let gains = BodyContactGains::uniform_frequency(&model, 100.0, 1.0);
     let states: Vec<State> = (0..nworld)
@@ -56,10 +62,12 @@ fn run() {
         for fused in [false, true] {
             let mut sim = HostBatchSimulator::new(model.clone(), nworld).expect("sim");
             sim.set_fused_step_enabled(fused);
-            sim.enable_contact_impulse(0.0, 0.8, &gains, &[], None).unwrap();
+            sim.enable_contact_impulse(0.0, 0.8, &gains, &[], None)
+                .unwrap();
             sim.contact_sweeps = sweeps;
             sim.enable_pd_control(&pd).unwrap();
-            sim.set_position_targets(&vec![vec![0.0; pd.len()]; nworld]).unwrap();
+            sim.set_position_targets(&vec![vec![0.0; pd.len()]; nworld])
+                .unwrap();
             sim.load_states(&states);
             sim.step_many(4).unwrap();
             sim.load_states(&states);
