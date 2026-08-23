@@ -39,7 +39,11 @@ typedef int i32;
 // Mirrors layout.rs.
 #define MAX_BODIES 32u
 #define BODY_STRIDE 36u
+// The geometry table is indexed by COLLISION INSTANCE, not by body: a body's
+// slice is [bf(bodies,i,33), +bf(bodies,i,34)). Mirrors layout.rs / shaders.rs.
 #define GEOM_STRIDE 24u
+// Plane records share the geometry buffer and its stride; see layout.rs.
+#define PLANE_STRIDE 24u
 #define CS_STRIDE 56u
 #define PD_DOF_STRIDE 8u
 
@@ -508,8 +512,7 @@ PHYZ_DEV void pd_thread(u32 idx, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
 typedef struct {
     u32 nworld, nbodies, nv;
     float ground_height, dt, friction;
-    i32 plane_body;
-    float plane_offset, plane_max_depth, plane_half_x, plane_half_y;
+    u32 nplanes, plane_base;
     u32 hf_nx, hf_ny;
     float hf_ox, hf_oy, hf_oz, hf_cell;
     u32 solve_mode;
@@ -521,8 +524,8 @@ PHYZ_DEV cparams_t decode_cparams(const float* p) {
     cparams_t c;
     c.nworld = f_as_u(p[0]); c.nbodies = f_as_u(p[1]); c.nv = f_as_u(p[2]);
     c.ground_height = p[3]; c.dt = p[4]; c.friction = p[5];
-    c.plane_body = f_as_i(p[6]);
-    c.plane_offset = p[7]; c.plane_max_depth = p[8]; c.plane_half_x = p[9]; c.plane_half_y = p[10];
+    c.nplanes = f_as_u(p[6]); c.plane_base = f_as_u(p[7]);
+    // p[8..11] reserved (were the single plane's offset / depth / half-extents)
     c.hf_nx = f_as_u(p[11]); c.hf_ny = f_as_u(p[12]);
     c.hf_ox = p[13]; c.hf_oy = p[14]; c.hf_oz = p[15]; c.hf_cell = p[16];
     c.solve_mode = f_as_u(p[17]);
@@ -663,7 +666,7 @@ PHYZ_DEV float terrain(const cparams_t* c, const float* hf, float px, float py, 
     return h;
 }
 
-// Instance origin of body i's collision shape: pos at [10..13], rot
+// Origin of collision instance i: pos at [10..13], rot
 // (body -> shape, row-major) at [13..22].
 PHYZ_DEV v3 geom_origin_pos(const float* geometry, u32 i) {
     u32 g = i * GEOM_STRIDE;
@@ -675,7 +678,7 @@ PHYZ_DEV r9 geom_origin_rot(const float* geometry, u32 i) {
     return r;
 }
 
-// Corner c (0..8) of body i's box, body frame, instance origin applied.
+// Corner c (0..8) of collision instance i's box, body frame, origin applied.
 PHYZ_DEV v3 box_corner(const float* geometry, u32 i, u32 c) {
     u32 g = i * GEOM_STRIDE;
     v3 h = v3_(geometry[g + 1u], geometry[g + 2u], geometry[g + 3u]);
@@ -686,7 +689,7 @@ PHYZ_DEV v3 box_corner(const float* geometry, u32 i, u32 c) {
     return v3_add(geom_origin_pos(geometry, i), rot_tmul(geom_origin_rot(geometry, i), corner));
 }
 
-// Support point of body i's shape against unit body-frame direction n_body,
+// Support point of collision instance i against unit body-frame direction n_body,
 // body frame, instance origin applied.
 PHYZ_DEV v3 support_point(const float* geometry, u32 i, v3 n_body) {
     u32 g = i * GEOM_STRIDE;
@@ -724,7 +727,7 @@ PHYZ_DEV v3 support_point(const float* geometry, u32 i, v3 n_body) {
     return v3_add(o_p, rot_tmul(o_r, support));
 }
 
-// Contact point cpt of body i (box: corner; else: support against n_body).
+// Contact point cpt of collision instance i (box: corner; else: support against n_body).
 PHYZ_DEV v3 contact_pt(const float* geometry, u32 i, u32 gtype, u32 cpt, v3 n_body) {
     if (gtype == 2u) return box_corner(geometry, i, cpt);
     return support_point(geometry, i, n_body);
@@ -832,12 +835,18 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
     fk_world(bodies, nb, cp.nv, q, q_base, v, v_base, qdd, dt, solve_mode != 0u,
              w_rot, w_pos, w_omega, w_lin);
 
-    // ── Ground / terrain contacts ──
+    // ── Ground / terrain contact, over every collision instance ──
+    //
+    // A body's shapes compete for ONE manifold, exactly as
+    // `phyz_contact::solver::find_ground_contacts_model` does on the CPU: pool
+    // every candidate point of every instance, rank by depth, keep the deepest
+    // MAX_PTS (the CPU keeps 4). Slot identity is (body, depth rank), not
+    // (body, corner) — see MAX_CONTACT_PTS in layout.rs. Mirrors shaders.rs.
     for (u32 i = 0; i < nb; i++) {
-        u32 gbase = i * GEOM_STRIDE;
-        u32 gtype = (u32)geometry[gbase];
+        u32 gbegin = (u32)bf(bodies, i, 33u);
+        u32 gcount = (u32)bf(bodies, i, 34u);
         u32 cs_base = (world_idx * nb + i) * CS_STRIDE;
-        if (gtype == 0u) {
+        if (gcount == 0u) {
             for (u32 k = 0; k < CS_STRIDE; k++) contact_state[cs_base + k] = 0.0f;
             continue;
         }
@@ -846,43 +855,66 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
         // even on a heightfield (the small-slope assumption).
         v3 z_body = rot_tmul(w_rot[i], v3_(0.0f, 0.0f, 1.0f));
 
-        u32 n_pts = 1u;
-        float pt_scale = 1.0f;
-        if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25f; }
+        float sel_pen[MAX_PTS];
+        u32 sel_g[MAX_PTS];
+        u32 sel_c[MAX_PTS];
+        u32 n_sel = 0u;
+        for (u32 g = gbegin; g < gbegin + gcount; g++) {
+            u32 gt = (u32)geometry[g * GEOM_STRIDE];
+            if (gt == 0u) continue;
+            u32 np = gt == 2u ? 8u : 1u;
+            for (u32 c = 0; c < np; c++) {
+                v3 sp = contact_pt(geometry, g, gt, c, z_body);
+                v3 spw = v3_add(w_pos[i], rot_mul(w_rot[i], sp));
+                v3 tn; float th = terrain(&cp, hf_heights, spw.x, spw.y, &tn);
+                float pen = tn.z * (th - spw.z);
+                bool hit = solve_mode == 1u ? (pen > -cp.margin) : (pen > 0.0f);
+                if (!hit) continue;
+                if (n_sel < MAX_PTS) n_sel++;
+                else if (pen <= sel_pen[MAX_PTS - 1u]) continue;
+                u32 k = n_sel - 1u;
+                while (k > 0u && sel_pen[k - 1u] < pen) {
+                    sel_pen[k] = sel_pen[k - 1u];
+                    sel_g[k] = sel_g[k - 1u];
+                    sel_c[k] = sel_c[k - 1u];
+                    k--;
+                }
+                sel_pen[k] = pen;
+                sel_g[k] = g;
+                sel_c[k] = c;
+            }
+        }
+
+        // Every selected point is in contact, so the manifold size IS the
+        // within-body load-sharing divisor (see shaders.rs for the 8x
+        // overshoot this prevents).
+        u32 n_active = n_sel > 0u ? n_sel : 1u;
 
         v3 f_w_total = v3_(0.0f, 0.0f, 0.0f);
         float deepest = 0.0f;
         v3 deepest_w = v3_(0.0f, 0.0f, 0.0f);
         bool any_touch = false;
 
-        // Within-body load sharing for the impulse solve: active-point count.
-        u32 n_active = 0u;
-        if (solve_mode == 1u) {
-            for (u32 cq = 0; cq < n_pts; cq++) {
-                v3 sq = contact_pt(geometry, i, gtype, cq, z_body);
-                v3 sq_w = v3_add(w_pos[i], rot_mul(w_rot[i], sq));
-                v3 tn; float th = terrain(&cp, hf_heights, sq_w.x, sq_w.y, &tn);
-                if (tn.z * (th - sq_w.z) > -cp.margin) n_active++;
-            }
-            if (n_active < 1u) n_active = 1u;
+        // Slots beyond the manifold carry no impulse: clearing them stops a
+        // warm start re-applying force at a contact that has ended.
+        for (u32 k = n_sel; k < MAX_PTS; k++) {
+            u32 dead = cs_base + CS_IMPULSE_OFF + k * 3u;
+            contact_state[dead] = 0.0f;
+            contact_state[dead + 1u] = 0.0f;
+            contact_state[dead + 2u] = 0.0f;
         }
 
-        for (u32 cpt = 0; cpt < n_pts; cpt++) {
-            v3 support = contact_pt(geometry, i, gtype, cpt, z_body);
+        for (u32 cpt = 0; cpt < n_sel; cpt++) {
+            u32 g = sel_g[cpt];
+            u32 gbase = g * GEOM_STRIDE;
+            u32 gtype = (u32)geometry[gbase];
+            float pt_scale = gtype == 2u ? 0.25f : 1.0f;
+
+            v3 support = contact_pt(geometry, g, gtype, sel_c[cpt], z_body);
             v3 sup_w = v3_add(w_pos[i], rot_mul(w_rot[i], support));
 
             v3 n_w; float terr_h = terrain(&cp, hf_heights, sup_w.x, sup_w.y, &n_w);
-            float penetration = n_w.z * (terr_h - sup_w.z);
-            bool in_contact = solve_mode == 1u ? (penetration > -cp.margin) : (penetration > 0.0f);
-            if (!in_contact) {
-                if (solve_mode == 1u) {
-                    u32 dead = cs_base + CS_IMPULSE_OFF + cpt * 3u;
-                    contact_state[dead] = 0.0f;
-                    contact_state[dead + 1u] = 0.0f;
-                    contact_state[dead + 2u] = 0.0f;
-                }
-                continue;
-            }
+            float penetration = sel_pen[cpt];
             v3 n_body = rot_tmul(w_rot[i], n_w);
 
             // Velocity of the contact point, body frame.
@@ -965,7 +997,7 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
         }
 
         if (!any_touch) {
-            for (u32 k = 0; k < CS_STRIDE; k++) contact_state[cs_base + k] = 0.0f;
+            for (u32 k = 0; k < 8u; k++) contact_state[cs_base + k] = 0.0f;
             continue;
         }
 
@@ -979,69 +1011,103 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
         contact_state[cs_base + 7u] = f_w_total.z;
     }
 
-    // ── Body-attached contact plane (the deck's top face) ──
-    if (cp.plane_body >= 0) {
-        u32 pb = (u32)cp.plane_body;
-        v3 n_w = rot_mul(w_rot[pb], v3_(0.0f, 0.0f, 1.0f));
-        v3 p0_w = v3_add(w_pos[pb], rot_mul(w_rot[pb], v3_(0.0f, 0.0f, cp.plane_offset)));
+    // ── Body-attached contact planes (deck top, kicktail) ──
+    //
+    // A compound top surface is a SET of faces: the kicktail rises 15 deg off
+    // the deck and lives on a separate flex-hinged body, so one untilted plane
+    // could not express it (ecto/phyz#82). Plane warm-start ranks are handed
+    // out across all planes in order, so a body touching two faces keeps
+    // distinct slots. Mirrors shaders.rs.
+    u32 plane_slot[MAX_BODIES];
+    for (u32 i = 0; i < nb; i++) plane_slot[i] = 0u;
+
+    for (u32 pl = 0; pl < cp.nplanes; pl++) {
+        u32 pbase = cp.plane_base + pl * PLANE_STRIDE;
+        u32 pb = f_as_u(geometry[pbase]);
+        float face_half_x = geometry[pbase + 1u];
+        float face_half_y = geometry[pbase + 2u];
+        float max_depth = geometry[pbase + 3u];
+        v3 face_o = v3_(geometry[pbase + 4u], geometry[pbase + 5u], geometry[pbase + 6u]);
+        r9 face_r; for (u32 k = 0; k < 9u; k++) face_r.r[k] = geometry[pbase + 7u + k];
+        u32 excl = f_as_u(geometry[pbase + 16u]);
+
+        // Plane frame in world: w_rot is body->world, face_r is body->face.
+        v3 n_w = rot_mul(w_rot[pb], rot_tmul(face_r, v3_(0.0f, 0.0f, 1.0f)));
+        v3 p0_w = v3_add(w_pos[pb], rot_mul(w_rot[pb], face_o));
 
         for (u32 i = 0; i < nb; i++) {
-            if (i == pb) continue;
-            u32 gbase = i * GEOM_STRIDE;
-            u32 gtype = (u32)geometry[gbase];
-            if (gtype == 0u) continue;
-            if (geometry[gbase + 7u] != 0.0f) continue;
+            if ((excl & (1u << i)) != 0u) continue;
+            u32 gbegin = (u32)bf(bodies, i, 33u);
+            u32 gcount = (u32)bf(bodies, i, 34u);
+            if (gcount == 0u) continue;
 
             v3 n_body = rot_tmul(w_rot[i], n_w);
-            u32 n_pts = 1u;
-            float pt_scale = 1.0f;
-            if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25f; }
 
             // Footprint of the shape in face coordinates, intersected with
             // the finite face; contact points are clamped into the overlap.
             float lo_x = 1e30f, lo_y = 1e30f, hi_x = -1e30f, hi_y = -1e30f;
-            for (u32 cpt = 0; cpt < n_pts; cpt++) {
-                v3 sp = contact_pt(geometry, i, gtype, cpt, n_body);
-                v3 rp = rot_tmul(w_rot[pb], v3_sub(v3_add(w_pos[i], rot_mul(w_rot[i], sp)), w_pos[pb]));
-                lo_x = fmin_(lo_x, rp.x); lo_y = fmin_(lo_y, rp.y);
-                hi_x = fmax_(hi_x, rp.x); hi_y = fmax_(hi_y, rp.y);
+            float sel_pen[MAX_PTS];
+            u32 sel_g[MAX_PTS];
+            u32 sel_c[MAX_PTS];
+            u32 n_sel = 0u;
+
+            for (u32 g = gbegin; g < gbegin + gcount; g++) {
+                u32 gt = (u32)geometry[g * GEOM_STRIDE];
+                if (gt == 0u) continue;
+                u32 np = gt == 2u ? 8u : 1u;
+                for (u32 c = 0; c < np; c++) {
+                    v3 sp = contact_pt(geometry, g, gt, c, n_body);
+                    v3 spw = v3_add(w_pos[i], rot_mul(w_rot[i], sp));
+                    v3 rf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(spw, w_pos[pb])), face_o));
+                    lo_x = fmin_(lo_x, rf.x); lo_y = fmin_(lo_y, rf.y);
+                    hi_x = fmax_(hi_x, rf.x); hi_y = fmax_(hi_y, rf.y);
+                    // The upper bound guards a body approaching from BELOW the
+                    // face against being captured and catapulted through it.
+                    float pen = -v3_dot(v3_sub(spw, p0_w), n_w);
+                    if (pen <= 0.0f || pen > max_depth) continue;
+                    if (n_sel < MAX_PTS) n_sel++;
+                    else if (pen <= sel_pen[MAX_PTS - 1u]) continue;
+                    u32 k = n_sel - 1u;
+                    while (k > 0u && sel_pen[k - 1u] < pen) {
+                        sel_pen[k] = sel_pen[k - 1u];
+                        sel_g[k] = sel_g[k - 1u];
+                        sel_c[k] = sel_c[k - 1u];
+                        k--;
+                    }
+                    sel_pen[k] = pen;
+                    sel_g[k] = g;
+                    sel_c[k] = c;
+                }
             }
-            float ov_lo_x = fmax_(lo_x, -cp.plane_half_x);
-            float ov_lo_y = fmax_(lo_y, -cp.plane_half_y);
-            float ov_hi_x = fmin_(hi_x, cp.plane_half_x);
-            float ov_hi_y = fmin_(hi_y, cp.plane_half_y);
+            if (n_sel == 0u) continue;
+
+            float ov_lo_x = fmax_(lo_x, -face_half_x);
+            float ov_lo_y = fmax_(lo_y, -face_half_y);
+            float ov_hi_x = fmin_(hi_x, face_half_x);
+            float ov_hi_y = fmin_(hi_y, face_half_y);
             if (ov_lo_x > ov_hi_x || ov_lo_y > ov_hi_y) continue;
 
-            u32 n_pts_active = 1u;
-            if (solve_mode == 1u) {
-                u32 cnt = 0u;
-                for (u32 cq = 0; cq < n_pts; cq++) {
-                    v3 sq = contact_pt(geometry, i, gtype, cq, n_body);
-                    float d = -v3_dot(v3_sub(v3_add(w_pos[i], rot_mul(w_rot[i], sq)), p0_w), n_w);
-                    if (d > 0.0f && d <= cp.plane_max_depth) cnt++;
-                }
-                n_pts_active = cnt > 1u ? cnt : 1u;
-            }
+            u32 n_pts_active = n_sel;
 
-            for (u32 cpt = 0; cpt < n_pts; cpt++) {
-                v3 support = contact_pt(geometry, i, gtype, cpt, n_body);
+            for (u32 cpt = 0; cpt < n_sel; cpt++) {
+                u32 slot_rank = plane_slot[i];
+                if (slot_rank >= MAX_PTS) break;
+                plane_slot[i] = slot_rank + 1u;
+
+                u32 g = sel_g[cpt];
+                u32 gbase = g * GEOM_STRIDE;
+                u32 gtype = (u32)geometry[gbase];
+                float pt_scale = gtype == 2u ? 0.25f : 1.0f;
+
+                v3 support = contact_pt(geometry, g, gtype, sel_c[cpt], n_body);
                 v3 sup_w0 = v3_add(w_pos[i], rot_mul(w_rot[i], support));
-                float penetration = -v3_dot(v3_sub(sup_w0, p0_w), n_w);
-                if (penetration <= 0.0f || penetration > cp.plane_max_depth) {
-                    if (solve_mode == 1u) {
-                        u32 dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
-                        contact_state[dead] = 0.0f;
-                        contact_state[dead + 1u] = 0.0f;
-                        contact_state[dead + 2u] = 0.0f;
-                    }
-                    continue;
-                }
+                float penetration = sel_pen[cpt];
 
                 // Contact point in the plane body's frame, clamped into the
                 // overlap, then the same world point as a lever on body i.
-                v3 r_p = rot_tmul(w_rot[pb], v3_sub(sup_w0, w_pos[pb]));
-                r_p.x = fclamp(r_p.x, ov_lo_x, ov_hi_x);
-                r_p.y = fclamp(r_p.y, ov_lo_y, ov_hi_y);
+                v3 rf = rot_mul(face_r, v3_sub(rot_tmul(w_rot[pb], v3_sub(sup_w0, w_pos[pb])), face_o));
+                v3 in_face = v3_(fclamp(rf.x, ov_lo_x, ov_hi_x), fclamp(rf.y, ov_lo_y, ov_hi_y), rf.z);
+                v3 r_p = v3_add(face_o, rot_tmul(face_r, in_face));
                 v3 sup_w = v3_add(w_pos[pb], rot_mul(w_rot[pb], r_p));
                 v3 support_c = rot_tmul(w_rot[i], v3_sub(sup_w, w_pos[i]));
 
@@ -1058,7 +1124,7 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
 
                 if (solve_mode == 1u) {
                     // ── Impulse mode on the face: both bodies move ──
-                    u32 pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                    u32 pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + slot_rank * 3u;
                     v3 pf = v3_(contact_state[pslot], contact_state[pslot + 1u], contact_state[pslot + 2u]);
                     v3 pu, pw; contact_tangents(n_w, &pu, &pw);
                     float bn = v_normal;
@@ -1127,6 +1193,19 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
                 add_ext(ext_forces, ef_env_base + i * 6u, cross3(support_c, f_i), f_i);
                 v3 f_p = rot_tmul(w_rot[pb], v3_neg(f_w));
                 add_ext(ext_forces, ef_env_base + pb * 6u, cross3(r_p, f_p), f_p);
+            }
+        }
+    }
+
+    // Plane slots nothing claimed this step carry a stale impulse; drop them
+    // for the same reason the ground branch does.
+    if (cp.nplanes > 0u && solve_mode == 1u) {
+        for (u32 i = 0; i < nb; i++) {
+            for (u32 k = plane_slot[i]; k < MAX_PTS; k++) {
+                u32 dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + k * 3u;
+                contact_state[dead] = 0.0f;
+                contact_state[dead + 1u] = 0.0f;
+                contact_state[dead + 2u] = 0.0f;
             }
         }
     }

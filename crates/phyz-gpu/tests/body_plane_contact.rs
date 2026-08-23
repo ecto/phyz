@@ -68,6 +68,8 @@ fn plane(deck_half: Vec3) -> BodyPlane {
         half_x: deck_half.x,
         half_y: deck_half.y,
         exclude: vec![],
+        tilt: phyz_math::Mat3::identity(),
+        center: phyz_math::Vec3::zeros(),
     }
 }
 
@@ -88,7 +90,7 @@ fn the_face_does_not_support_what_is_past_its_edge() {
         -100.0,
         0.8,
         &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
-        Some(&plane(deck_half)),
+        std::slice::from_ref(&plane(deck_half)),
     )
     .expect("contact");
 
@@ -122,7 +124,7 @@ fn a_rider_settles_on_the_deck() {
         0.0,
         0.8,
         &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
-        Some(&plane(deck_half)),
+        std::slice::from_ref(&plane(deck_half)),
     )
     .expect("contact");
 
@@ -170,7 +172,7 @@ fn the_deck_feels_the_rider() {
         -100.0,
         0.8,
         &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
-        Some(&plane(deck_half)),
+        std::slice::from_ref(&plane(deck_half)),
     )
     .expect("contact");
 

@@ -98,7 +98,7 @@ fn divergence(model: &Model, init: impl Fn(&mut State), steps: usize, friction: 
         return 0.0;
     };
     let gains = BodyContactGains::uniform_frequency(&gpu.model, 50.0, 1.0);
-    gpu.enable_contact_impulse(0.0, friction, &gains, None, None)
+    gpu.enable_contact_impulse(0.0, friction, &gains, &[], None)
         .expect("impulse contact");
     gpu.load_states(&[gpu_state]);
 
