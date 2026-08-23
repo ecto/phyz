@@ -460,3 +460,116 @@ fn a_strip_set_ranks_by_depth_not_by_table_order() {
         "the rider should be carried by both rails: {f:?}"
     );
 }
+
+/// A box wider than its face contacts the FACE's rectangle, not the face's
+/// infinite extension.
+///
+/// This is the defect that survived the face-set fix. Sampling a box's eight
+/// corners against a face plane is only correct while the face is at least as
+/// big as the box. On a concave deck the faces are 8 mm strips and the foot
+/// is 190 mm across, so every corner lies outside the strip it is being
+/// tested against, and the depth reported is the distance to the strip's
+/// INFINITE extension — a fiction, and a large one. Measured on ipse's
+/// pre-tip: 7 of the 9 candidate points on the loaded foot were outside their
+/// strip, and the three deepest (2.26, 1.27, 1.11 mm) were pure artifacts
+/// against a referee whose deepest contact was 0.66 mm.
+///
+/// So the manifold is clipped. Here the rider is much wider than the strip in
+/// `y` and much shorter than it in `x`, which makes every vertex of the
+/// overlap a MIXED one — `x` from the box, `y` from the face — so neither
+/// shape's own corners appear in the answer. That is the case that forces
+/// real clipping rather than "test both shapes' corners".
+#[test]
+fn a_box_wider_than_its_face_is_clipped_to_the_face() {
+    let deck_half = Vec3::new(0.4, 0.2, 0.05);
+    let rider_half = Vec3::new(0.1, 0.2, 0.1);
+    // A strip much narrower than the rider in y, much longer in x.
+    let strip_half_y = 0.02;
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -9.81))
+        .dt(0.001)
+        .add_body(
+            "deck",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(4.0, deck_half),
+        )
+        .add_body(
+            "rider",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(1.0, rider_half),
+        )
+        .build();
+    model.bodies[0].collisions = vec![GeomInstance::centered(Geometry::Box {
+        half_extents: deck_half,
+    })];
+    model.bodies[1].geometry = Some(Geometry::Box {
+        half_extents: rider_half,
+    });
+
+    let face = BodyPlane {
+        body: 0,
+        offset: deck_half.z,
+        max_depth: 0.05,
+        half_x: deck_half.x,
+        half_y: strip_half_y,
+        exclude: vec![],
+        tilt: Mat3::identity(),
+        center: Vec3::zeros(),
+    };
+
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping: no GPU adapter");
+        return;
+    };
+    sim.enable_ground_contact_with_plane(
+        0.0,
+        0.8,
+        &BodyContactGains::uniform_frequency(&model, OMEGA, 1.0),
+        std::slice::from_ref(&face),
+    )
+    .expect("contact");
+
+    let mut s = model.default_state();
+    s.q[5] = deck_half.z;
+    s.q[11] = 2.0 * deck_half.z + rider_half.z;
+    sim.load_states(std::slice::from_ref(&s));
+    for _ in 0..2000 {
+        sim.step();
+    }
+
+    let c = &sim.readback_contacts().expect("readback")[0];
+    let f = &c[1].plane;
+    assert!(f.touching, "the rider is on the strip: {f:?}");
+    // Four vertices, and each one is a corner of the OVERLAP: |x| is the
+    // rider's half-length, |y| is the strip's half-width. Recovered from the
+    // reported world point, since the deck is axis-aligned and at the origin.
+    assert_eq!(
+        f.points, 4,
+        "a box over a narrower strip clips to a 4-vertex overlap: {f:?}"
+    );
+    for (k, d) in f.detail[..f.points].iter().enumerate() {
+        assert!(
+            (d.normal - Vec3::new(0.0, 0.0, 1.0)).norm() < 1e-5,
+            "point {k} normal: {:?}",
+            d.normal
+        );
+        // The depth is the real one — a settled penalty contact at g/omega^2,
+        // not the metres of "penetration" the strip's extension would report
+        // for a corner 180 mm off to the side.
+        assert!(
+            d.penetration > 0.0 && d.penetration < 6e-3,
+            "point {k} depth {:.4} mm is not a settled contact — the face's \
+             extension is being sampled",
+            d.penetration * 1000.0
+        );
+    }
+    // The load is the rider's weight and nothing more: an over-counted
+    // manifold on an extended plane would carry more.
+    assert!(
+        (f.force.z - 9.81).abs() < 1.0,
+        "the strip should carry the rider's weight, got {:?}",
+        f.force
+    );
+}

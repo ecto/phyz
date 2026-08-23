@@ -119,10 +119,10 @@ pub const MAX_CONTACT_PTS: usize = 8;
 /// [2..5] contact point, world frame (x, y, z)
 /// [5..8] contact force, world frame (x, y, z)
 /// [8..32]  warm-start impulses, ground/terrain contacts (MAX_CONTACT_PTS vec3s)
-/// [32..56] warm-start impulses, body-attached face
-/// [56..64] readback, body-attached face: touching, deepest penetration,
+/// [32..80] warm-start impulses, body-attached faces (MAX_PLANE_CONTACT_PTS)
+/// [80..88] readback, body-attached face: touching, deepest penetration,
 ///          deepest point (world xyz), total face force on this body (world xyz)
-/// [64..112] per-point face detail, MAX_CONTACT_PTS x
+/// [88..184] per-point face detail, MAX_PLANE_CONTACT_PTS x
 ///          (plane index + 1, penetration, normal force, normal world xyz);
 ///          a leading 0.0 means the slot is empty
 /// ```
@@ -139,10 +139,29 @@ pub const MAX_CONTACT_PTS: usize = 8;
 /// a foot standing on a deck produced no row from the host however hard it
 /// was pressing, which reads exactly like "the rider is standing on nothing".
 pub const CONTACT_STATE_STRIDE: usize =
-    8 + 2 * MAX_CONTACT_PTS * 3 + 8 + MAX_CONTACT_PTS * PLANE_DETAIL_STRIDE;
+    CS_PLANE_DETAIL_OFF + MAX_PLANE_CONTACT_PTS * PLANE_DETAIL_STRIDE;
+
+/// Contact slots per body on the body-attached FACES, separate from
+/// [`MAX_CONTACT_PTS`] and larger.
+///
+/// The ground manifold and the face manifold are built by different
+/// algorithms and do not want the same cap. The ground branch samples a
+/// body's own support points against one terrain, so eight is generous. The
+/// face branch builds a CLIPPED manifold against a set of faces — on ipse's
+/// concave deck a foot meets several narrow strips at once, and each strip
+/// contributes up to four points of its own — so eight is binding by
+/// construction and the deepest contacts get truncated away.
+///
+/// Kept separate rather than raising `MAX_CONTACT_PTS` so the ground
+/// manifold, and therefore every ground contact in the engine, is
+/// bit-identical across this change.
+pub const MAX_PLANE_CONTACT_PTS: usize = 16;
+
+/// Float offset of the body-attached-face warm-start impulses.
+pub const CS_PLANE_OFF: usize = 8 + MAX_CONTACT_PTS * 3;
 
 /// Float offset of the body-attached-face readback block within a body's slot.
-pub const CS_PLANE_READBACK_OFF: usize = 8 + 2 * MAX_CONTACT_PTS * 3;
+pub const CS_PLANE_READBACK_OFF: usize = CS_PLANE_OFF + MAX_PLANE_CONTACT_PTS * 3;
 
 /// Float offset of the per-point face detail block within a body's slot.
 pub const CS_PLANE_DETAIL_OFF: usize = CS_PLANE_READBACK_OFF + 8;
@@ -524,8 +543,8 @@ pub fn unpack_contacts(
                     let base = (env * nbodies + body) * stride;
                     let s = &data[base..base + stride];
                     let r = &s[CS_PLANE_READBACK_OFF..CS_PLANE_READBACK_OFF + 8];
-                    let mut detail =
-                        [crate::contact_pipeline::PlaneContactPoint::default(); MAX_CONTACT_PTS];
+                    let mut detail = [crate::contact_pipeline::PlaneContactPoint::default();
+                        MAX_PLANE_CONTACT_PTS];
                     let mut points = 0usize;
                     for (k, d) in detail.iter_mut().enumerate() {
                         let e = &s[CS_PLANE_DETAIL_OFF + k * PLANE_DETAIL_STRIDE..];
