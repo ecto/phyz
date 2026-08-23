@@ -618,7 +618,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 ..Default::default()
             },
             None,
-            None,
+            &[],
             None,
         )
     }
@@ -633,7 +633,7 @@ impl<B: KernelBackend> BatchSim<B> {
         friction: f64,
         gains: &[BodyContactGains],
     ) -> Result<usize, String> {
-        self.enable_ground_contact_with_plane(ground_height, friction, gains, None)
+        self.enable_ground_contact_with_plane(ground_height, friction, gains, &[])
     }
 
     /// [`Self::enable_ground_contact_per_body`] plus an optional
@@ -644,9 +644,9 @@ impl<B: KernelBackend> BatchSim<B> {
         ground_height: f64,
         friction: f64,
         gains: &[BodyContactGains],
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
     ) -> Result<usize, String> {
-        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+        self.enable_contact_terrain(ground_height, friction, gains, planes, None)
     }
 
     /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain.
@@ -658,7 +658,7 @@ impl<B: KernelBackend> BatchSim<B> {
         ground_height: f64,
         friction: f64,
         gains: &[BodyContactGains],
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
         heightfield: Option<&Heightfield>,
     ) -> Result<usize, String> {
         self.enable_contact(
@@ -670,7 +670,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 ..Default::default()
             },
             Some(gains),
-            plane,
+            planes,
             heightfield,
         )
     }
@@ -682,7 +682,7 @@ impl<B: KernelBackend> BatchSim<B> {
         ground_height: f64,
         friction: f64,
         gains: &[BodyContactGains],
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
         heightfield: Option<&Heightfield>,
     ) -> Result<usize, String> {
         let dt = self.model.dt;
@@ -695,7 +695,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 ..Default::default()
             },
             Some(gains),
-            plane,
+            planes,
             heightfield,
         )
     }
@@ -704,15 +704,15 @@ impl<B: KernelBackend> BatchSim<B> {
         &mut self,
         contact: GroundContactParams,
         gains: Option<&[BodyContactGains]>,
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
         heightfield: Option<&Heightfield>,
     ) -> Result<usize, String> {
         let (geom_data, collidable) =
-            pack_contact_geometry(&self.model, &contact, gains, plane, heightfield)?;
+            pack_contact_geometry(&self.model, &contact, gains, planes, heightfield)?;
         let mut geometry = self.backend.alloc(geom_data.len().max(1))?;
         self.backend.upload(&mut geometry, &geom_data)?;
 
-        let params = ContactParams::pack(&self.model, self.nworld, &contact, plane, heightfield);
+        let params = ContactParams::pack(&self.model, self.nworld, &contact, planes, heightfield);
         let mut params_buf = self.backend.alloc(params.as_f32s().len())?;
         self.backend.upload(&mut params_buf, params.as_f32s())?;
 

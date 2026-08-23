@@ -351,7 +351,7 @@ impl GpuBatchSimulator {
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
     ) -> Result<usize, String> {
-        self.enable_ground_contact_with_plane(ground_height, friction, gains, None)
+        self.enable_ground_contact_with_plane(ground_height, friction, gains, &[])
     }
 
     /// [`Self::enable_ground_contact_per_body`] plus an optional
@@ -364,9 +364,9 @@ impl GpuBatchSimulator {
         ground_height: f64,
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
-        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        planes: &[crate::contact_pipeline::BodyPlane],
     ) -> Result<usize, String> {
-        self.enable_contact_terrain(ground_height, friction, gains, plane, None)
+        self.enable_contact_terrain(ground_height, friction, gains, planes, None)
     }
 
     /// [`Self::enable_ground_contact_with_plane`] over heightfield terrain
@@ -383,7 +383,7 @@ impl GpuBatchSimulator {
         ground_height: f64,
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
-        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        planes: &[crate::contact_pipeline::BodyPlane],
         heightfield: Option<&phyz_model::Heightfield>,
     ) -> Result<usize, String> {
         let pipeline = ContactPipeline::with_body_gains(
@@ -400,7 +400,7 @@ impl GpuBatchSimulator {
                 ..Default::default()
             },
             Some(gains),
-            plane,
+            planes,
             heightfield,
         )?;
         let collidable = pipeline.collidable_bodies();
@@ -431,7 +431,7 @@ impl GpuBatchSimulator {
         ground_height: f64,
         friction: f64,
         gains: &[crate::contact_pipeline::BodyContactGains],
-        plane: Option<&crate::contact_pipeline::BodyPlane>,
+        planes: &[crate::contact_pipeline::BodyPlane],
         heightfield: Option<&phyz_model::Heightfield>,
     ) -> Result<usize, String> {
         let dt = self.model.dt;
@@ -453,7 +453,7 @@ impl GpuBatchSimulator {
                 ..Default::default()
             },
             Some(gains),
-            plane,
+            planes,
             heightfield,
         )?;
         let collidable = pipeline.collidable_bodies();

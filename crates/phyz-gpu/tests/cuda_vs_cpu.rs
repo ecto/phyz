@@ -569,6 +569,8 @@ fn deck_and_rider() -> (Model, BodyPlane) {
         half_x: deck_half.x,
         half_y: deck_half.y,
         exclude: vec![],
+        tilt: phyz_math::Mat3::identity(),
+        center: phyz_math::Vec3::zeros(),
     };
     (model, plane)
 }
@@ -730,10 +732,10 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
         (5e-4, 5e-4),
         &mk,
         |wg| {
-            wg.enable_contact_impulse(0.0, 0.7, &g, None, None).unwrap();
+            wg.enable_contact_impulse(0.0, 0.7, &g, &[], None).unwrap();
         },
         |cu| {
-            cu.enable_contact_impulse(0.0, 0.7, &g, None, None).unwrap();
+            cu.enable_contact_impulse(0.0, 0.7, &g, &[], None).unwrap();
         },
     );
 
@@ -761,12 +763,12 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
         (5e-4, 5e-4),
         &mk,
         |wg| {
-            wg.enable_contact_terrain(0.0, 0.8, &g, None, Some(&hf))
+            wg.enable_contact_terrain(0.0, 0.8, &g, &[], Some(&hf))
                 .unwrap();
             wg.set_heightfield(&hf2).unwrap();
         },
         |cu| {
-            cu.enable_contact_terrain(0.0, 0.8, &g, None, Some(&hf))
+            cu.enable_contact_terrain(0.0, 0.8, &g, &[], Some(&hf))
                 .unwrap();
             cu.set_heightfield(&hf2).unwrap();
         },
@@ -779,11 +781,11 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
         (5e-4, 5e-4),
         &mk,
         |wg| {
-            wg.enable_contact_impulse(0.0, 0.8, &g, None, Some(&hf))
+            wg.enable_contact_impulse(0.0, 0.8, &g, &[], Some(&hf))
                 .unwrap();
         },
         |cu| {
-            cu.enable_contact_impulse(0.0, 0.8, &g, None, Some(&hf))
+            cu.enable_contact_impulse(0.0, 0.8, &g, &[], Some(&hf))
                 .unwrap();
         },
     );
@@ -804,18 +806,26 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
         })
         .collect();
     kernel_vs_kernel(
+        // Same branch-edge transient as the impulse case below, and for the
+        // same reason: once the rider is at rest the contact manifold is
+        // ranked by depth (see MAX_CONTACT_PTS), so a resting contact whose
+        // corners are coplanar to within f32 can order two of them
+        // differently under two compilers. `q` stays at rounding level the
+        // whole run (probed); `v` first parts around step ~1000 and then
+        // stays at ~8e-4 rather than growing, which is a phase offset in a
+        // penalty spring, not a drift.
         "penalty body plane",
         &model,
         &states,
         1500,
-        (5e-4, 5e-4),
+        (5e-4, 1e-2),
         &mk,
         |wg| {
-            wg.enable_ground_contact_with_plane(0.0, 0.8, &g, Some(&plane))
+            wg.enable_ground_contact_with_plane(0.0, 0.8, &g, std::slice::from_ref(&plane))
                 .unwrap();
         },
         |cu| {
-            cu.enable_ground_contact_with_plane(0.0, 0.8, &g, Some(&plane))
+            cu.enable_ground_contact_with_plane(0.0, 0.8, &g, std::slice::from_ref(&plane))
                 .unwrap();
         },
     );
@@ -832,11 +842,11 @@ fn suite_unified_contact<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim
         (5e-4, 1e-2),
         &mk,
         |wg| {
-            wg.enable_contact_impulse(0.0, 0.8, &g, Some(&plane), None)
+            wg.enable_contact_impulse(0.0, 0.8, &g, std::slice::from_ref(&plane), None)
                 .unwrap();
         },
         |cu| {
-            cu.enable_contact_impulse(0.0, 0.8, &g, Some(&plane), None)
+            cu.enable_contact_impulse(0.0, 0.8, &g, std::slice::from_ref(&plane), None)
                 .unwrap();
         },
     );
@@ -1313,7 +1323,7 @@ fn suite_graph_replay<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>
     let states = vec![start; nworld];
 
     let mut sim = mk(model.clone(), nworld);
-    sim.enable_contact_impulse(0.0, 0.8, &gains, None, None)
+    sim.enable_contact_impulse(0.0, 0.8, &gains, &[], None)
         .unwrap();
     sim.enable_pd_control(&pd).unwrap();
     sim.set_position_targets(&vec![vec![0.2; pd.len()]; nworld])

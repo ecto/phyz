@@ -69,7 +69,7 @@ fn flat_heightfield_matches_flat_plane() {
         .enable_ground_contact_per_body(0.0, 0.8, &g)
         .unwrap();
     sim_hf
-        .enable_contact_terrain(0.0, 0.8, &g, None, Some(&Heightfield::flat(0.0)))
+        .enable_contact_terrain(0.0, 0.8, &g, &[], Some(&Heightfield::flat(0.0)))
         .unwrap();
 
     let st = model.default_state();
@@ -123,7 +123,7 @@ fn uniform_slope_matches_tilted_gravity() {
     let n = 65;
     let flat = Heightfield::new(Vec3::new(-32.0, -32.0, 0.0), 1.0, n, n);
     sim_hf
-        .enable_contact_terrain(0.0, 0.0, &gains(&sim_hf.model.clone()), None, Some(&flat))
+        .enable_contact_terrain(0.0, 0.0, &gains(&sim_hf.model.clone()), &[], Some(&flat))
         .unwrap();
     let mut slope = flat.clone();
     for iy in 0..n {
@@ -207,7 +207,7 @@ fn ball_settles_at_the_bottom_of_a_bowl() {
         eprintln!("skipping: no GPU adapter");
         return;
     };
-    sim.enable_contact_terrain(0.0, 0.4, &gains(&sim.model.clone()), None, Some(&hf))
+    sim.enable_contact_terrain(0.0, 0.4, &gains(&sim.model.clone()), &[], Some(&hf))
         .unwrap();
     let st = sim.model.default_state();
     sim.load_states(&[st]);
@@ -262,7 +262,7 @@ fn gpu_matches_cpu_on_bumpy_field() {
         eprintln!("skipping: no GPU adapter");
         return;
     };
-    gpu.enable_contact_terrain(0.0, 0.8, &gains(&model), None, Some(&hf))
+    gpu.enable_contact_terrain(0.0, 0.8, &gains(&model), &[], Some(&hf))
         .unwrap();
     let st = model.default_state();
     gpu.load_states(std::slice::from_ref(&st));

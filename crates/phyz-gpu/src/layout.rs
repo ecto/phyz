@@ -33,11 +33,23 @@ use crate::pd_pipeline::PdDof;
 /// [30] passive spring stiffness (single-DOF joints; see joint.rs passive_force)
 /// [31] spring reference angle
 /// [32] armature (rotor inertia, added to the D diagonal like the CPU's crba/aba)
-/// [33..36] padding
+/// [33] geometry range begin (index of this body's first collision instance
+///      in the geometry table, as f32; exact for any index < 2^24)
+/// [34] geometry range count (number of collision instances)
+/// [35] padding
 /// ```
+///
+/// Slots 33/34 are how a body finds its shapes now that the geometry table is
+/// indexed by *collision instance* rather than by body: see
+/// [`geometry_ranges`].
 pub const BODY_STRIDE: usize = 36;
 
-/// Floats per body in the packed geometry table.
+/// Floats per **collision instance** in the packed geometry table.
+///
+/// Was per body, which silently dropped every shape after `collisions[0]` —
+/// a convex-decomposed deck or kicktail is a *set* of boxes, and the set's
+/// lowest point is nowhere near box 0's. The table is now one record per
+/// instance, and each body carries its range in body-table slots 33/34.
 ///
 /// ```text
 /// [0]  geom_type (0=none, 1=sphere, 2=box, 3=capsule, 4=cylinder, 5=mesh)
@@ -50,7 +62,9 @@ pub const BODY_STRIDE: usize = 36;
 /// [9]  contact damping (per body)
 /// [10..13] instance origin position, body frame
 /// [13..22] instance origin rotation, row-major (body -> shape coordinates)
-/// [22..24] reserved
+/// [22] owning body index (bitcast u32) — the kernels walk instances, and an
+///      instance must be able to name the body whose pose it rides on
+/// [23] reserved
 /// ```
 ///
 /// There is no separate "carried mass" override here, and deliberately so:
@@ -61,8 +75,23 @@ pub const BODY_STRIDE: usize = 36;
 /// that makes one setting work across a robot.
 pub const GEOM_STRIDE: usize = 24;
 
-/// Contact slots per body, matching `MAX_PTS` in the kernels: a box contacts
-/// through all eight corners, every other shape through one.
+/// Contact slots per body per surface, matching `MAX_PTS` in the kernels.
+///
+/// **This is the per-body contact cap, and it is a cap on points, not on
+/// shapes.** A body may carry any number of collision instances; the kernels
+/// enumerate every candidate point of every instance (8 corners for a box,
+/// 1 support point otherwise) and keep the `MAX_CONTACT_PTS` **deepest**,
+/// which is exactly what the CPU reference does in
+/// `phyz_contact::solver::find_ground_contacts_model` (one candidate pool per
+/// body, sorted deepest-first, truncated to
+/// `phyz_collision::MAX_MANIFOLD_POINTS`). The GPU keeps 8 where the CPU
+/// keeps 4, so the device manifold is never the coarser of the two.
+///
+/// Consequence for warm starting: a slot's identity is `(body, rank)` — the
+/// depth rank within the body's manifold — not `(body, corner)`. Ranks are
+/// stable for as long as the stance is, and a mis-keyed warm start costs
+/// only a worse initial guess (the contact problem is strongly convex; see
+/// `phyz_contact::cache`), never a different answer.
 pub const MAX_CONTACT_PTS: usize = 8;
 
 /// Floats per body in the contact-state buffer.
@@ -103,6 +132,7 @@ pub const MAX_BODIES: usize = 32;
 pub fn pack_bodies(model: &Model) -> Vec<f32> {
     let nb = model.nbodies();
     let mut data = vec![0.0f32; nb * BODY_STRIDE];
+    let ranges = geometry_ranges(model);
 
     for (i, body) in model.bodies.iter().enumerate() {
         let base = i * BODY_STRIDE;
@@ -148,13 +178,58 @@ pub fn pack_bodies(model: &Model) -> Vec<f32> {
         data[base + 30] = joint.stiffness as f32;
         data[base + 31] = joint.spring_ref as f32;
         data[base + 32] = joint.armature as f32;
-        // [33..36] padding
+        // [33..35] the body's slice of the geometry table; [35] padding.
+        let (begin, count) = ranges[i];
+        data[base + 33] = begin as f32;
+        data[base + 34] = count as f32;
     }
 
     data
 }
 
-/// The kernel geometry type code for a body's primary collision shape.
+/// One body's collision instances, in the order the geometry table packs them.
+///
+/// `Body::collisions` when it is non-empty — *all* of it, not just the first —
+/// falling back to the legacy centred `Body::geometry` as a single instance
+/// with an identity origin. This is the one definition of "what shapes does
+/// this body collide with" that the body table's range slots, the geometry
+/// table and the kernels all read.
+pub fn body_instances(body: &phyz_model::Body) -> Vec<(Geometry, phyz_math::SpatialTransform)> {
+    if !body.collisions.is_empty() {
+        return body
+            .collisions
+            .iter()
+            .map(|inst| (inst.geometry.clone(), inst.origin))
+            .collect();
+    }
+    match &body.geometry {
+        Some(g) => vec![(g.clone(), phyz_math::SpatialTransform::identity())],
+        None => Vec::new(),
+    }
+}
+
+/// Per-body `(begin, count)` slices of the instance-indexed geometry table.
+///
+/// A prefix sum over [`body_instances`]. Packed into body-table slots 33/34 by
+/// [`pack_bodies`] and read by both kernel backends, so the range the kernel
+/// walks and the records [`pack_geometries`] wrote cannot drift apart.
+pub fn geometry_ranges(model: &Model) -> Vec<(usize, usize)> {
+    let mut out = Vec::with_capacity(model.nbodies());
+    let mut begin = 0usize;
+    for body in &model.bodies {
+        let n = body_instances(body).len();
+        out.push((begin, n));
+        begin += n;
+    }
+    out
+}
+
+/// Total collision instances across the model — the geometry table's length.
+pub fn geometry_instance_count(model: &Model) -> usize {
+    model.bodies.iter().map(|b| body_instances(b).len()).sum()
+}
+
+/// The kernel geometry type code for a collision shape.
 pub fn gpu_geom_type(geometry: Option<&Geometry>) -> u32 {
     match geometry {
         None | Some(Geometry::Plane { .. }) => 0,
@@ -166,113 +241,135 @@ pub fn gpu_geom_type(geometry: Option<&Geometry>) -> u32 {
     }
 }
 
+/// Does this body carry at least one GPU-collidable shape?
+///
+/// Reads the whole collision set, not `collisions[0]`: a body whose first
+/// instance is a plane and whose second is a box does collide.
+pub fn body_is_collidable(body: &phyz_model::Body) -> bool {
+    body_instances(body)
+        .iter()
+        .any(|(g, _)| gpu_geom_type(Some(g)) != 0)
+}
+
 /// The lightest body the contact pass can collide, for the stability bound.
 pub fn lightest_collidable_body(model: &Model) -> Option<(&str, f64)> {
     model
         .bodies
         .iter()
-        .filter(|b| gpu_geom_type(b.geometry.as_ref()) != 0 && b.inertia.mass > 0.0)
+        .filter(|b| body_is_collidable(b) && b.inertia.mass > 0.0)
         .map(|b| (b.name.as_str(), b.inertia.mass))
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// Pack body geometry data into a flat f32 array (see [`GEOM_STRIDE`]).
+/// Write one collision instance's record into `data` at `base`.
+fn pack_instance(
+    data: &mut [f32],
+    base: usize,
+    body_idx: usize,
+    geom: &Geometry,
+    origin: &phyz_math::SpatialTransform,
+    k: f64,
+    d: f64,
+) -> bool {
+    data[base + 10] = origin.pos.x as f32;
+    data[base + 11] = origin.pos.y as f32;
+    data[base + 12] = origin.pos.z as f32;
+    for r in 0..3 {
+        for c in 0..3 {
+            data[base + 13 + r * 3 + c] = origin.rot[(r, c)] as f32;
+        }
+    }
+    data[base + 22] = f32::from_bits(body_idx as u32);
+
+    match geom {
+        Geometry::Sphere { radius } => {
+            data[base] = 1.0;
+            data[base + 1] = *radius as f32;
+        }
+        Geometry::Box { half_extents } => {
+            data[base] = 2.0;
+            data[base + 1] = half_extents.x as f32;
+            data[base + 2] = half_extents.y as f32;
+            data[base + 3] = half_extents.z as f32;
+        }
+        Geometry::Capsule { radius, length } => {
+            data[base] = 3.0;
+            data[base + 1] = *radius as f32;
+            data[base + 2] = *length as f32;
+        }
+        Geometry::Cylinder { radius, height } => {
+            data[base] = 4.0;
+            data[base + 1] = *radius as f32;
+            data[base + 2] = *height as f32;
+        }
+        Geometry::Mesh { vertices, .. } if !vertices.is_empty() => {
+            // Body-frame AABB; the kernel takes the lowest of its eight
+            // rotated corners. Coarser than the true hull but it collides,
+            // which silence did not.
+            let mut mn = *vertices.first().unwrap();
+            let mut mx = mn;
+            for v in vertices {
+                mn = Vec3::new(mn.x.min(v.x), mn.y.min(v.y), mn.z.min(v.z));
+                mx = Vec3::new(mx.x.max(v.x), mx.y.max(v.y), mx.z.max(v.z));
+            }
+            data[base] = 5.0;
+            data[base + 1] = mn.x as f32;
+            data[base + 2] = mn.y as f32;
+            data[base + 3] = mn.z as f32;
+            data[base + 4] = mx.x as f32;
+            data[base + 5] = mx.y as f32;
+            data[base + 6] = mx.z as f32;
+        }
+        // Planes are the ground's own representation and empty meshes have
+        // no extent; neither can collide with the ground plane.
+        Geometry::Plane { .. } | Geometry::Mesh { .. } => {
+            data[base] = 0.0;
+        }
+    }
+
+    data[base + 8] = k as f32;
+    data[base + 9] = d as f32;
+    data[base] != 0.0
+}
+
+/// Pack every collision instance in the model into a flat f32 array (see
+/// [`GEOM_STRIDE`]), one record per instance, bodies in order.
 ///
-/// Returns the packed data and the number of bodies with collidable geometry.
+/// Returns the packed data and the number of **bodies** with at least one
+/// collidable instance.
+///
+/// This packs *all* of `Body::collisions`, offsets and orientations included.
+/// The previous version took `collisions[0]` and dropped the rest, which is
+/// invisible for a single-shape link and load-bearing for a convex-decomposed
+/// one: a skateboard kicktail of 18 boxes had its box 0 sitting 22 mm in the
+/// air while the set's true lowest point was 0.9 mm *into* the ground, so the
+/// contact the whole scenario rested on did not exist on device
+/// (ecto/phyz#82). Per-body gains are replicated across that body's instances,
+/// since stiffness is a property of the body, not of one of its boxes.
 pub fn pack_geometries(
     model: &Model,
     contact: &GroundContactParams,
     body_gains: Option<&[BodyContactGains]>,
 ) -> (Vec<f32>, usize) {
-    let nb = model.nbodies();
-    let mut data = vec![0.0f32; nb * GEOM_STRIDE];
+    let ranges = geometry_ranges(model);
+    let ninst = geometry_instance_count(model);
+    let mut data = vec![0.0f32; ninst * GEOM_STRIDE];
     let mut collidable = 0;
 
     for (i, body) in model.bodies.iter().enumerate() {
-        let base = i * GEOM_STRIDE;
-
-        // Identity instance origin unless a collision instance carries one.
-        data[base + 13] = 1.0;
-        data[base + 17] = 1.0;
-        data[base + 21] = 1.0;
-
-        // Prefer `Body::collisions[0]` — offsets included, which is where a
-        // K1 rig mounts its foot pads (2.6 cm forward of the ankle) —
-        // falling back to the legacy centred `Body::geometry`. Bodies with
-        // more than one collision instance contact through their FIRST
-        // instance only on the GPU; that is a documented fidelity gap, not a
-        // silent one, and the CPU impulse path remains the referee.
-        let (geom, origin) = match body.collisions.first() {
-            Some(inst) => (Some(&inst.geometry), Some(&inst.origin)),
-            None => (body.geometry.as_ref(), None),
-        };
-        if let Some(o) = origin {
-            data[base + 10] = o.pos.x as f32;
-            data[base + 11] = o.pos.y as f32;
-            data[base + 12] = o.pos.z as f32;
-            for r in 0..3 {
-                for c in 0..3 {
-                    data[base + 13 + r * 3 + c] = o.rot[(r, c)] as f32;
-                }
-            }
-        }
-
-        match geom {
-            Some(Geometry::Sphere { radius }) => {
-                data[base] = 1.0;
-                data[base + 1] = *radius as f32;
-            }
-            Some(Geometry::Box { half_extents }) => {
-                data[base] = 2.0;
-                data[base + 1] = half_extents.x as f32;
-                data[base + 2] = half_extents.y as f32;
-                data[base + 3] = half_extents.z as f32;
-            }
-            Some(Geometry::Capsule { radius, length }) => {
-                data[base] = 3.0;
-                data[base + 1] = *radius as f32;
-                data[base + 2] = *length as f32;
-            }
-            Some(Geometry::Cylinder { radius, height }) => {
-                data[base] = 4.0;
-                data[base + 1] = *radius as f32;
-                data[base + 2] = *height as f32;
-            }
-            Some(Geometry::Mesh { vertices, .. }) if !vertices.is_empty() => {
-                // Body-frame AABB; the kernel takes the lowest of its eight
-                // rotated corners. Coarser than the true hull but it collides,
-                // which silence did not.
-                let mut mn = *vertices.first().unwrap();
-                let mut mx = mn;
-                for v in vertices {
-                    mn = Vec3::new(mn.x.min(v.x), mn.y.min(v.y), mn.z.min(v.z));
-                    mx = Vec3::new(mx.x.max(v.x), mx.y.max(v.y), mx.z.max(v.z));
-                }
-                data[base] = 5.0;
-                data[base + 1] = mn.x as f32;
-                data[base + 2] = mn.y as f32;
-                data[base + 3] = mn.z as f32;
-                data[base + 4] = mx.x as f32;
-                data[base + 5] = mx.y as f32;
-                data[base + 6] = mx.z as f32;
-            }
-            // Planes are the ground's own representation and empty meshes have
-            // no extent; neither can collide with the ground plane.
-            None | Some(Geometry::Plane { .. }) | Some(Geometry::Mesh { .. }) => {
-                data[base] = 0.0;
-            }
-        }
-
-        if data[base] != 0.0 {
-            collidable += 1;
-        }
-
         let (k, d) = match body_gains {
             Some(gains) => (gains[i].stiffness, gains[i].damping),
             None => (contact.stiffness, contact.damping),
         };
-        data[base + 8] = k as f32;
-        data[base + 9] = d as f32;
+        let (begin, _) = ranges[i];
+        let mut any = false;
+        for (n, (geom, origin)) in body_instances(body).iter().enumerate() {
+            let base = (begin + n) * GEOM_STRIDE;
+            any |= pack_instance(&mut data, base, i, geom, origin, k, d);
+        }
+        if any {
+            collidable += 1;
+        }
     }
 
     (data, collidable)
@@ -283,7 +380,7 @@ pub fn no_collidable_geometry_error(model: &Model) -> String {
     let skipped: Vec<&str> = model
         .bodies
         .iter()
-        .filter(|b| gpu_geom_type(b.geometry.as_ref()) == 0)
+        .filter(|b| !body_is_collidable(b))
         .map(|b| b.name.as_str())
         .collect();
     format!(

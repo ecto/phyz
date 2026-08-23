@@ -246,7 +246,7 @@ fn compare(name: &str, model: Model, init: impl Fn(&mut State), steps: usize, fr
         gpu.enable_ground_contact_per_body(0.0, friction, &gains)
             .expect("gpu contact");
     } else {
-        gpu.enable_contact_impulse(0.0, friction, &gains, None, None)
+        gpu.enable_contact_impulse(0.0, friction, &gains, &[], None)
             .expect("gpu contact");
         if let Ok(n) = std::env::var("SWEEPS") {
             gpu.contact_sweeps = n.parse().expect("SWEEPS");

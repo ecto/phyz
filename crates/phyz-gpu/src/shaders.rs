@@ -10,7 +10,13 @@
 pub const CONTACT_GROUND_SHADER: &str = r#"
 const MAX_BODIES: u32 = 32u;
 const BODY_STRIDE: u32 = 36u;
+// The geometry table is indexed by COLLISION INSTANCE, not by body: a body's
+// slice of it is [bodies[i].33, +bodies[i].34). Packing only instance 0 is
+// what left a convex-decomposed kicktail 22 mm in the air on device while its
+// true lowest box was 0.9 mm into the ground (ecto/phyz#82).
 const GEOM_STRIDE: u32 = 24u;
+// Plane records share the geometry buffer and its stride; see layout.rs.
+const PLANE_STRIDE: u32 = 24u;
 // Per-body contact slot: 8 floats of readback state, then MAX_PTS impulse
 // vec3s. The impulses live in this buffer rather than their own because the
 // WebGPU baseline allows 8 storage buffers per stage and the pass already
@@ -29,12 +35,15 @@ struct ContactParams {
     ground_height: f32,
     dt: f32,
     friction: f32,
-    // Body-attached contact plane; plane_body < 0 disables it.
-    plane_body: i32,
-    plane_offset: f32,
-    plane_max_depth: f32,
-    plane_half_x: f32,
-    plane_half_y: f32,
+    // Body-attached contact planes: `nplanes` records of PLANE_STRIDE floats
+    // starting at float offset `plane_base` inside the geometry buffer. They
+    // live in that buffer rather than their own because the WebGPU baseline
+    // allows 8 storage buffers per stage and this pass already binds 8.
+    nplanes: u32,
+    plane_base: u32,
+    _pad_plane0: f32,
+    _pad_plane1: f32,
+    _pad_plane2: f32,
     // Heightfield terrain. hf_nx == 0 means "no heightfield": the ground is
     // the flat plane at ground_height, exactly as before the feature.
     hf_nx: u32,
@@ -470,12 +479,12 @@ fn rot_t_mul(r: array<f32, 9>, vv: vec3<f32>) -> vec3<f32> {
     );
 }
 
-// Corner `c` (0..8) of body i's box, in BODY coordinates with the collision
+// Corner `c` (0..8) of collision instance `g`'s box, in BODY coordinates with the collision
 // instance's origin applied. Boxes contact through all penetrating corners —
 // a single support point lets an angled foot rock on one corner, which is
 // exactly what felled the loose-stance rollouts.
-fn box_corner(i: u32, c: u32) -> vec3<f32> {
-    let gbase = i * GEOM_STRIDE;
+fn box_corner(g: u32, c: u32) -> vec3<f32> {
+    let gbase = g * GEOM_STRIDE;
     let h = vec3<f32>(geometry[gbase + 1u], geometry[gbase + 2u], geometry[gbase + 3u]);
     let sx = select(-1.0, 1.0, (c & 1u) != 0u);
     let sy = select(-1.0, 1.0, (c & 2u) != 0u);
@@ -487,7 +496,7 @@ fn box_corner(i: u32, c: u32) -> vec3<f32> {
     return o_p + rot_t_mul(o_r, corner);
 }
 
-// Support point of body i's shape in the direction of -n_body (n_body a unit
+// Support point of collision instance `g` in the direction of -n_body (n_body a unit
 // vector in the body's own frame): the point of the shape that reaches
 // furthest against the contact normal, returned in BODY coordinates with the
 // collision instance's own origin (offset + rotation) applied.
@@ -497,8 +506,8 @@ fn box_corner(i: u32, c: u32) -> vec3<f32> {
 // The rotation is not either — an axis-aligned lowest point is only the true
 // support point while the body is upright, which is exactly the case a
 // test fixture starts in and a walking robot never stays in.
-fn support_point(i: u32, n_body: vec3<f32>) -> vec3<f32> {
-    let gbase = i * GEOM_STRIDE;
+fn support_point(g: u32, n_body: vec3<f32>) -> vec3<f32> {
+    let gbase = g * GEOM_STRIDE;
     let gtype = u32(geometry[gbase]);
     // Instance origin: pos at [10..13], rot (body -> shape, row-major) at [13..22].
     let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
@@ -662,16 +671,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Check ground contacts for each body
+    // ── Ground / terrain contact, over every collision instance ──
+    //
+    // A body's shapes compete for ONE manifold, exactly as
+    // `phyz_contact::solver::find_ground_contacts_model` does on the CPU: pool
+    // every candidate point of every instance, rank by depth, keep the
+    // deepest MAX_PTS. The CPU keeps 4 (`MAX_MANIFOLD_POINTS`), so the device
+    // manifold is never the coarser of the two.
+    //
+    // Slot identity is therefore (body, depth rank), not (body, corner). Rank
+    // is stable while the stance is, and a mis-keyed warm start costs only a
+    // worse initial guess — the contact problem is strongly convex, so every
+    // seed converges to the same minimizer (see `phyz_contact::cache`).
     for (var i = 0u; i < nb; i++) {
-        let gbase = i * GEOM_STRIDE;
-        let gtype = u32(geometry[gbase]);
+        let gbegin = u32(bf(i, 33u));
+        let gcount = u32(bf(i, 34u));
         // Slots are indexed by BODY index, matching readback_contacts, so a
         // body with no geometry still owns its slot — clear it here rather
         // than relying on the buffer never having been written, so the
         // "not touching" invariant holds without an allocation-order argument.
         let cs_base = (world_idx * nb + i) * CS_STRIDE;
-        if (gtype == 0u) {
+        if (gcount == 0u) {
             for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
             continue;
         }
@@ -685,16 +705,60 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // local surface normal pick the same feature.
         let z_body = rot_t_mul(w_rot[i], vec3<f32>(0.0, 0.0, 1.0));
 
-        // Boxes contact through EVERY penetrating corner; other shapes
-        // through the single support point they actually touch at. A box
-        // reduced to one point can rock on that corner with nothing to
-        // resist it, which is what felled the loose-stance rollouts — a
-        // resting box needs a real support polygon. Per-point stiffness is
-        // a quarter of the body's, so a flat-resting face carries the same
-        // total spring as a single-point shape does.
-        var n_pts = 1u;
-        var pt_scale = 1.0;
-        if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
+        // ── Rank this body's candidate points, deepest first ──
+        var sel_pen: array<f32, MAX_PTS>;
+        var sel_g: array<u32, MAX_PTS>;
+        var sel_c: array<u32, MAX_PTS>;
+        var n_sel = 0u;
+        for (var g = gbegin; g < gbegin + gcount; g++) {
+            let gt = u32(geometry[g * GEOM_STRIDE]);
+            if (gt == 0u) { continue; }
+            // Boxes contact through EVERY penetrating corner; other shapes
+            // through the single support point they actually touch at. A box
+            // reduced to one point can rock on that corner with nothing to
+            // resist it, which is what felled the loose-stance rollouts.
+            var np = 1u;
+            if (gt == 2u) { np = 8u; }
+            for (var c = 0u; c < np; c++) {
+                var sp: vec3<f32>;
+                if (gt == 2u) { sp = box_corner(g, c); }
+                else { sp = support_point(g, z_body); }
+                let spw = w_pos[i] + rot_mul(w_rot[i], sp);
+                let tq = terrain(spw.xy);
+                let pen = tq.z * (tq.w - spw.z);
+                let hit = select(pen > 0.0, pen > -cparams.margin, cparams.solve_mode == 1u);
+                if (!hit) { continue; }
+                // Insertion into the deepest-first list, dropping the shallowest
+                // once the manifold is full.
+                if (n_sel < MAX_PTS) { n_sel++; }
+                else if (pen <= sel_pen[MAX_PTS - 1u]) { continue; }
+                var k = n_sel - 1u;
+                loop {
+                    if (k == 0u) { break; }
+                    if (sel_pen[k - 1u] >= pen) { break; }
+                    sel_pen[k] = sel_pen[k - 1u];
+                    sel_g[k] = sel_g[k - 1u];
+                    sel_c[k] = sel_c[k - 1u];
+                    k--;
+                }
+                sel_pen[k] = pen;
+                sel_g[k] = g;
+                sel_c[k] = c;
+            }
+        }
+
+        // Every selected point is in contact by construction, so the manifold
+        // size IS the within-body load-sharing divisor. Each point of a rigid
+        // body's manifold pushes the SAME mass, but each one only sees the
+        // body's total effective mass when it sizes its own impulse; left
+        // uncorrected, k coplanar corners each apply the full correction and
+        // the body gets k times the impulse it needed (measured: a box landing
+        // on its face overshot 8x and reached 5e6 m in two seconds). This is
+        // the diagonal of the within-body coupling block — the cheap half of
+        // the Delassus operator, and the difference between the CPU's
+        // `ContactCoupling::BlockDiagonal` (78 mm of error) and `PerBody`
+        // (0.1 mm).
+        let n_active = max(n_sel, 1u);
 
         // Accumulated for the readback slot: total force, and the deepest
         // point, which is the one worth reporting as THE contact.
@@ -703,38 +767,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var deepest_w = vec3<f32>(0.0, 0.0, 0.0);
         var any_touch = false;
 
-        // How many of this body's points are actually in contact.
-        //
-        // This is the within-body load sharing, and in impulse mode it is not
-        // optional. Every point of a rigid body's manifold pushes the SAME
-        // mass, but each one only sees the body's total effective mass when
-        // it sizes its own impulse. Left uncorrected, k coplanar corners each
-        // apply the full correction and the body gets k times the impulse it
-        // needed: measured on a box landing on its face, the eight corners
-        // overshot by 8x and the state was 5e6 metres away within two seconds.
-        //
-        // Dividing the effective mass by the active count is the diagonal of
-        // the within-body coupling block — the same term that, on the CPU,
-        // is the difference between `ContactCoupling::BlockDiagonal` (up to
-        // 78 mm of error) and `PerBody` (0.1 mm). It is the cheap half of the
-        // Delassus operator, and this is where the GPU pays for it.
-        var n_active = 0u;
-        if (cparams.solve_mode == 1u) {
-            for (var cq = 0u; cq < n_pts; cq++) {
-                var sq: vec3<f32>;
-                if (gtype == 2u) { sq = box_corner(i, cq); }
-                else { sq = support_point(i, z_body); }
-                let sq_w = w_pos[i] + rot_mul(w_rot[i], sq);
-                let tq = terrain(sq_w.xy);
-                if (tq.z * (tq.w - sq_w.z) > -cparams.margin) { n_active++; }
-            }
-            n_active = max(n_active, 1u);
+        // Slots beyond the manifold carry no impulse. Clearing them is what
+        // stops a warm start re-applying force at a contact that has ended.
+        for (var k = n_sel; k < MAX_PTS; k++) {
+            let dead = cs_base + CS_IMPULSE_OFF + k * 3u;
+            contact_state[dead] = 0.0;
+            contact_state[dead + 1u] = 0.0;
+            contact_state[dead + 2u] = 0.0;
         }
 
-        for (var cpt = 0u; cpt < n_pts; cpt++) {
+        for (var cpt = 0u; cpt < n_sel; cpt++) {
+            let g = sel_g[cpt];
+            let gbase = g * GEOM_STRIDE;
+            let gtype = u32(geometry[gbase]);
+            // Per-point stiffness is a quarter of the body's for a box, so a
+            // flat-resting face carries the same total spring as a
+            // single-point shape does.
+            var pt_scale = 1.0;
+            if (gtype == 2u) { pt_scale = 0.25; }
+
             var support: vec3<f32>;
-            if (gtype == 2u) { support = box_corner(i, cpt); }
-            else { support = support_point(i, z_body); }
+            if (gtype == 2u) { support = box_corner(g, sel_c[cpt]); }
+            else { support = support_point(g, z_body); }
             let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
 
             // Terrain under this contact point (the flat plane when no
@@ -743,27 +797,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // field this reduces exactly to the old ground test.
             let terr = terrain(sup_w.xy);
             let n_w = terr.xyz;
-            let penetration = n_w.z * (terr.w - sup_w.z);
-            let in_contact = select(penetration > 0.0, penetration > -cparams.margin, cparams.solve_mode == 1u);
-            if (!in_contact) {
-                // Separated: drop any impulse this slot carried. Without this
-                // the cross-step warm start would keep re-applying force at a
-                // contact that has already left the ground.
-                if (cparams.solve_mode == 1u) {
-                    let dead = cs_base + CS_IMPULSE_OFF + cpt * 3u;
-                    contact_state[dead] = 0.0;
-                    contact_state[dead + 1u] = 0.0;
-                    contact_state[dead + 2u] = 0.0;
-                }
-                continue;
-            }
+            let penetration = sel_pen[cpt];
             let n_body = rot_t_mul(w_rot[i], n_w);
 
-            // Velocity of the contact POINT, body frame. This replaces the
-            // finite-differenced penetration rate the single-point model
-            // used: that needed one history slot per contact and there is
-            // only one slot per body, and it cannot produce a tangential
-            // velocity at all, so friction was simply absent.
+            // Velocity of the contact POINT, body frame.
             let v_point = w_lin[i] + cross3(w_omega[i], support);
             let v_normal = dot(v_point, n_body);
 
@@ -800,9 +837,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let bias = d_imp * cparams.solref_erp * max(penetration, 0.0) / max(cparams.dt, 1e-9);
 
                 // Restitution enters as a target normal velocity, folded into
-                // b, rather than a post-solve velocity reset — the same
-                // choice `point_mass_problem` makes, and what keeps it from
-                // fighting the solver.
+                // b, rather than a post-solve velocity reset.
                 let e = effective_restitution(cparams.restitution, min(b_n, 0.0));
                 let b_n_eff = b_n * (1.0 + e);
 
@@ -812,18 +847,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let r_n = b_n_eff - a_nn * f_c.x;
                 var fn_new = max((bias - r_n) / a_nn, 0.0);
 
-                // Tangential, at the normal just chosen, then clamped into
-                // the disc of radius mu*f_n. Isotropic, so a contact sliding
-                // at any heading loses speed identically — the property a
-                // pyramidal cone gives up.
-                // Tangential diagonals get their OWN effective masses. Reusing
-                // the normal's is tempting and wrong: `contact_eff_mass`
-                // depends on the lever arm `r x u`, which for a corner contact
-                // points somewhere else entirely along a tangent than along
-                // the normal. Measured on a tumbling box, sharing the normal's
-                // mass left a 0.23 m slide error that more sweeps only
-                // sharpened, because the solve was converging accurately to
-                // the wrong tangential step size.
+                // Tangential diagonals get their OWN effective masses: the
+                // lever arm `r x u` for a corner contact points somewhere else
+                // entirely along a tangent than along the normal. Measured on
+                // a tumbling box, sharing the normal's mass left a 0.23 m
+                // slide error that more sweeps only sharpened.
                 let a_uu = f32(n_active) / max(contact_eff_mass(i, support, t_u), 1e-9);
                 let a_ww = f32(n_active) / max(contact_eff_mass(i, support, t_w), 1e-9);
                 let r_u = b_u - a_uu * f_c.y;
@@ -833,12 +861,6 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // Clamp into the friction disc of radius mu*f_n, isotropically
                 // — a contact sliding at any heading loses speed identically,
                 // the property a pyramidal cone gives up.
-                //
-                // Re-aiming the clamped impulse along the slip direction was
-                // tried and is WRONG here: `b_u`/`b_w` already contain this
-                // contact's own current impulse, so using them as the slip
-                // axis moves the fixed point rather than correcting it, and it
-                // cost 4x on the high-friction slides while helping nothing.
                 let limit = cparams.friction * fn_new;
                 let tn = sqrt(tu * tu + tw * tw);
                 if (tn > limit) {
@@ -874,8 +896,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // along the OUTWARD normal, so it is negative while the body is
             // still moving into the ground — hence the minus sign, and hence
             // a damper that always opposes the approach. max(_, 0) stops it
-            // pulling the body back down as it separates, which is the real
-            // hazard in any penalty contact.
+            // pulling the body back down as it separates.
             let m_n = contact_eff_mass(i, support, n_body);
             let k_body = min(pt_scale * geometry[gbase + 8u], max_stiffness(m_n));
             var d_body = pt_scale * geometry[gbase + 9u];
@@ -924,7 +945,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
 
         if (!any_touch) {
-            for (var k = 0u; k < CS_STRIDE; k++) { contact_state[cs_base + k] = 0.0; }
+            for (var k = 0u; k < 8u; k++) { contact_state[cs_base + k] = 0.0; }
             continue;
         }
 
@@ -942,38 +963,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         contact_state[cs_base + 7u] = f_w_total.z;
     }
 
-    // ── Body-attached contact plane (the deck's top face) ──
+    // ── Body-attached contact planes (deck top, kicktail) ──
     //
-    // Same penalty model as the ground, two differences: the plane moves
-    // with its body, and the reaction lands on that body — a deck that felt
-    // no rider could never be kicked out from under one.
+    // Same contact model as the ground, two differences: the plane moves with
+    // its body, and the reaction lands on that body — a deck that felt no
+    // rider could never be kicked out from under one.
     //
-    // Deliberately NOT general body-body contact. The plane is the body's
-    // local +Z face at `offset`, infinite in extent; a foot only ever meets
-    // a deck's top face, and an infinite moving plane captures that at a
-    // fraction of a broad phase's cost.
+    // Deliberately NOT general body-body contact. Each plane is a rectangular
+    // face at a pose inside its body; a foot only ever meets a deck's top
+    // face, and a moving face captures that at a fraction of a broad phase's
+    // cost. The CPU reference has no plane: it collides the foot's boxes
+    // against the deck's boxes. A compound top — a deck plus a kicktail
+    // hinged 15 deg off it, on a SEPARATE body — is a set of these, which is
+    // why the pass takes a table and not one record (ecto/phyz#82).
     //
-    // Contacts here are not written to contact_state: those slots are
-    // per-body and already hold the ground result, and a foot on a deck
+    // Contacts here are not written to contact_state's readback slots: those
+    // are per-body and already hold the ground result, and a foot on a deck
     // would otherwise overwrite the ground reading with a different surface.
-    if (cparams.plane_body >= 0) {
-        let pb = u32(cparams.plane_body);
-        // Plane frame in world. w_rot is body→world, so the body's local +Z
-        // in world coordinates is rot_mul.
-        let n_w = rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, 1.0));
-        let p0_w = w_pos[pb] + rot_mul(w_rot[pb], vec3<f32>(0.0, 0.0, cparams.plane_offset));
+    // The plane warm-start block (CS_PLANE_OFF) IS per body, and ranks are
+    // handed out across all planes in order, so a body touching two faces
+    // keeps distinct slots.
+    var plane_slot: array<u32, MAX_BODIES>;
+    for (var i = 0u; i < nb; i++) { plane_slot[i] = 0u; }
+
+    for (var pl = 0u; pl < cparams.nplanes; pl++) {
+        let pbase = cparams.plane_base + pl * PLANE_STRIDE;
+        let pb = bitcast<u32>(geometry[pbase]);
+        let face_half = vec2<f32>(geometry[pbase + 1u], geometry[pbase + 2u]);
+        let max_depth = geometry[pbase + 3u];
+        let face_o = vec3<f32>(geometry[pbase + 4u], geometry[pbase + 5u], geometry[pbase + 6u]);
+        // Body -> face rotation, row-major, same sense as a collision
+        // instance's origin. Identity is the body's own local +Z face.
+        var face_r: array<f32, 9>;
+        for (var k = 0u; k < 9u; k++) { face_r[k] = geometry[pbase + 7u + k]; }
+        let excl = bitcast<u32>(geometry[pbase + 16u]);
+
+        // Plane frame in world. w_rot is body->world, so face->world is
+        // w_rot[pb] applied to face_r^T.
+        let n_w = rot_mul(w_rot[pb], rot_t_mul(face_r, vec3<f32>(0.0, 0.0, 1.0)));
+        let p0_w = w_pos[pb] + rot_mul(w_rot[pb], face_o);
 
         for (var i = 0u; i < nb; i++) {
-            if (i == pb) { continue; }
-            let gbase = i * GEOM_STRIDE;
-            let gtype = u32(geometry[gbase]);
-            if (gtype == 0u) { continue; }
-            if (geometry[gbase + 7u] != 0.0) { continue; }
+            if ((excl & (1u << i)) != 0u) { continue; }
+            let gbegin = u32(bf(i, 33u));
+            let gcount = u32(bf(i, 34u));
+            if (gcount == 0u) { continue; }
 
             let n_body = rot_t_mul(w_rot[i], n_w);
-            var n_pts = 1u;
-            var pt_scale = 1.0;
-            if (gtype == 2u) { n_pts = 8u; pt_scale = 0.25; }
 
             // ── How much of this shape is actually over the face ──
             //
@@ -987,73 +1023,88 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // 3.00 s to 0.8 s in every stance.
             //
             // So: intersect the shape's footprint with the face, in the face's
-            // own 2-D coordinates. No overlap means nothing is over the face and
-            // the shape genuinely falls. Otherwise every contact point is
-            // clamped into the overlap, which puts the force on the deck's edge
-            // where the deck actually has material — support is kept, and the
-            // phantom support out past the edge, which is what an infinite plane
-            // invents, is gone.
-            //
-            // The footprint is taken as an AABB in face coordinates: exact while
-            // the shape is aligned with the face, and a slight over-estimate
+            // own 2-D coordinates, and clamp every contact point into the
+            // overlap. The footprint is an AABB in face coordinates: exact
+            // while the shape is aligned with the face, a slight over-estimate
             // under yaw.
             var lo = vec2<f32>(1e30, 1e30);
             var hi = vec2<f32>(-1e30, -1e30);
-            for (var cpt = 0u; cpt < n_pts; cpt++) {
-                var sp: vec3<f32>;
-                if (gtype == 2u) { sp = box_corner(i, cpt); }
-                else { sp = support_point(i, n_body); }
-                let rp = rot_t_mul(w_rot[pb], w_pos[i] + rot_mul(w_rot[i], sp) - w_pos[pb]);
-                lo = min(lo, rp.xy);
-                hi = max(hi, rp.xy);
+            // Ranked candidates, deepest first, exactly as the ground branch.
+            var sel_pen: array<f32, MAX_PTS>;
+            var sel_g: array<u32, MAX_PTS>;
+            var sel_c: array<u32, MAX_PTS>;
+            var n_sel = 0u;
+
+            for (var g = gbegin; g < gbegin + gcount; g++) {
+                let gt = u32(geometry[g * GEOM_STRIDE]);
+                if (gt == 0u) { continue; }
+                var np = 1u;
+                if (gt == 2u) { np = 8u; }
+                for (var c = 0u; c < np; c++) {
+                    var sp: vec3<f32>;
+                    if (gt == 2u) { sp = box_corner(g, c); }
+                    else { sp = support_point(g, n_body); }
+                    let spw = w_pos[i] + rot_mul(w_rot[i], sp);
+                    let rf = rot_mul(face_r, rot_t_mul(w_rot[pb], spw - w_pos[pb]) - face_o);
+                    lo = min(lo, rf.xy);
+                    hi = max(hi, rf.xy);
+                    // The upper bound guards a body approaching from BELOW the
+                    // face against being captured and catapulted through it.
+                    let pen = -dot(spw - p0_w, n_w);
+                    if (pen <= 0.0 || pen > max_depth) { continue; }
+                    if (n_sel < MAX_PTS) { n_sel++; }
+                    else if (pen <= sel_pen[MAX_PTS - 1u]) { continue; }
+                    var k = n_sel - 1u;
+                    loop {
+                        if (k == 0u) { break; }
+                        if (sel_pen[k - 1u] >= pen) { break; }
+                        sel_pen[k] = sel_pen[k - 1u];
+                        sel_g[k] = sel_g[k - 1u];
+                        sel_c[k] = sel_c[k - 1u];
+                        k--;
+                    }
+                    sel_pen[k] = pen;
+                    sel_g[k] = g;
+                    sel_c[k] = c;
+                }
             }
-            let face_lo = vec2<f32>(-cparams.plane_half_x, -cparams.plane_half_y);
-            let face_hi = vec2<f32>(cparams.plane_half_x, cparams.plane_half_y);
+            if (n_sel == 0u) { continue; }
+
+            let face_lo = -face_half;
+            let face_hi = face_half;
             let ov_lo = max(lo, face_lo);
             let ov_hi = min(hi, face_hi);
+            // No overlap at all means nothing is over the face: the shape
+            // genuinely falls.
             if (ov_lo.x > ov_hi.x || ov_lo.y > ov_hi.y) { continue; }
 
-            // Active-point count on the face, for the same within-body load
-            // sharing the ground branch needs.
-            var n_pts_active = 1u;
-            if (cparams.solve_mode == 1u) {
-                var cnt = 0u;
-                for (var cq = 0u; cq < n_pts; cq++) {
-                    var sq: vec3<f32>;
-                    if (gtype == 2u) { sq = box_corner(i, cq); }
-                    else { sq = support_point(i, n_body); }
-                    let d = -dot(w_pos[i] + rot_mul(w_rot[i], sq) - p0_w, n_w);
-                    if (d > 0.0 && d <= cparams.plane_max_depth) { cnt++; }
-                }
-                n_pts_active = max(cnt, 1u);
-            }
+            let n_pts_active = max(n_sel, 1u);
 
-            for (var cpt = 0u; cpt < n_pts; cpt++) {
+            for (var cpt = 0u; cpt < n_sel; cpt++) {
+                let slot_rank = plane_slot[i];
+                if (slot_rank >= MAX_PTS) { break; }
+                plane_slot[i] = slot_rank + 1u;
+
+                let g = sel_g[cpt];
+                let gbase = g * GEOM_STRIDE;
+                let gtype = u32(geometry[gbase]);
+                var pt_scale = 1.0;
+                if (gtype == 2u) { pt_scale = 0.25; }
+
                 var support: vec3<f32>;
-                if (gtype == 2u) { support = box_corner(i, cpt); }
-                else { support = support_point(i, n_body); }
+                if (gtype == 2u) { support = box_corner(g, sel_c[cpt]); }
+                else { support = support_point(g, n_body); }
                 let sup_w0 = w_pos[i] + rot_mul(w_rot[i], support);
                 // Penetration is measured at the shape's own point: that is
                 // where its material is, and the face is planar, so sliding the
                 // application point along the face does not change the depth.
-                let penetration = -dot(sup_w0 - p0_w, n_w);
-                // The upper bound guards a body approaching from BELOW an
-                // infinite plane against being captured and catapulted through.
-                if (penetration <= 0.0 || penetration > cparams.plane_max_depth) {
-                    if (cparams.solve_mode == 1u) {
-                        let dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
-                        contact_state[dead] = 0.0;
-                        contact_state[dead + 1u] = 0.0;
-                        contact_state[dead + 2u] = 0.0;
-                    }
-                    continue;
-                }
+                let penetration = sel_pen[cpt];
 
                 // The contact point in the plane body's own frame, pulled into
                 // the overlap: the force lands where the face has material.
-                var r_p = rot_t_mul(w_rot[pb], sup_w0 - w_pos[pb]);
-                let in_face = clamp(r_p.xy, ov_lo, ov_hi);
-                r_p = vec3<f32>(in_face.x, in_face.y, r_p.z);
+                let rf = rot_mul(face_r, rot_t_mul(w_rot[pb], sup_w0 - w_pos[pb]) - face_o);
+                let in_face = clamp(rf.xy, ov_lo, ov_hi);
+                let r_p = face_o + rot_t_mul(face_r, vec3<f32>(in_face.x, in_face.y, rf.z));
                 let sup_w = w_pos[pb] + rot_mul(w_rot[pb], r_p);
                 // The same world point, as a lever arm on the touching body, so
                 // action and reaction act at one point rather than two.
@@ -1081,7 +1132,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 // the SERIES combination `m_n` already computed above, and the
                 // impulse is applied equal-and-opposite at one shared point.
                 if (cparams.solve_mode == 1u) {
-                    let pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + cpt * 3u;
+                    let pslot = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + slot_rank * 3u;
                     var pf = vec3<f32>(contact_state[pslot], contact_state[pslot + 1u], contact_state[pslot + 2u]);
 
                     let ptang = contact_tangents(n_w);
@@ -1186,6 +1237,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 ext_forces[ef_p + 3u] += f_p.x;
                 ext_forces[ef_p + 4u] += f_p.y;
                 ext_forces[ef_p + 5u] += f_p.z;
+            }
+        }
+    }
+
+    // Plane slots nothing claimed this step carry a stale impulse; drop them
+    // for the same reason the ground branch does.
+    if (cparams.nplanes > 0u && cparams.solve_mode == 1u) {
+        for (var i = 0u; i < nb; i++) {
+            for (var k = plane_slot[i]; k < MAX_PTS; k++) {
+                let dead = (world_idx * nb + i) * CS_STRIDE + CS_PLANE_OFF + k * 3u;
+                contact_state[dead] = 0.0;
+                contact_state[dead + 1u] = 0.0;
+                contact_state[dead + 2u] = 0.0;
             }
         }
     }

@@ -22,11 +22,16 @@ pub(crate) struct ContactParams {
     pub(crate) ground_height: f32,
     pub(crate) dt: f32,
     pub(crate) friction: f32,
-    pub(crate) plane_body: i32,
-    pub(crate) plane_offset: f32,
-    pub(crate) plane_max_depth: f32,
-    pub(crate) plane_half_x: f32,
-    pub(crate) plane_half_y: f32,
+    /// Number of body-attached contact planes (0 = none).
+    pub(crate) nplanes: u32,
+    /// Offset, in floats, of the plane table inside the geometry buffer.
+    /// Plane records are appended after the collision-instance records so
+    /// the pass needs no extra storage binding — the WebGPU baseline allows
+    /// eight per stage and this pass already binds eight.
+    pub(crate) plane_base: u32,
+    pub(crate) _pad_plane0: f32,
+    pub(crate) _pad_plane1: f32,
+    pub(crate) _pad_plane2: f32,
     // Heightfield terrain header; hf_nx == 0 means "flat plane at
     // ground_height", the pre-heightfield behaviour.
     pub(crate) hf_nx: u32,
@@ -61,7 +66,7 @@ impl ContactParams {
         model: &Model,
         nworld: usize,
         contact: &GroundContactParams,
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
         heightfield: Option<&Heightfield>,
     ) -> Self {
         Self {
@@ -71,11 +76,12 @@ impl ContactParams {
             ground_height: contact.ground_height as f32,
             dt: model.dt as f32,
             friction: contact.friction as f32,
-            plane_body: plane.map_or(-1, |p| p.body as i32),
-            plane_offset: plane.map_or(0.0, |p| p.offset as f32),
-            plane_max_depth: plane.map_or(0.0, |p| p.max_depth as f32),
-            plane_half_x: plane.map_or(0.0, |p| p.half_x as f32),
-            plane_half_y: plane.map_or(0.0, |p| p.half_y as f32),
+            nplanes: planes.len() as u32,
+            plane_base: (crate::layout::geometry_instance_count(model) * crate::layout::GEOM_STRIDE)
+                as u32,
+            _pad_plane0: 0.0,
+            _pad_plane1: 0.0,
+            _pad_plane2: 0.0,
             hf_nx: heightfield.map_or(0, |h| h.nx as u32),
             hf_ny: heightfield.map_or(0, |h| h.ny as u32),
             hf_ox: heightfield.map_or(0.0, |h| h.origin.x as f32),
@@ -309,11 +315,23 @@ impl BodyContactGains {
 /// truck, any flat top surface other bodies stand on.
 ///
 /// This is deliberately NOT general body-body contact. The plane is the
-/// body's local `+Z` face at `offset` along local Z, infinite in extent; a
-/// foot only ever meets a deck's top face, and an infinite moving plane
+/// body's local `+Z` face at `offset` along local Z, rectangular; a
+/// foot only ever meets a deck's top face, and a moving plane
 /// captures that at a fraction of a broad phase's cost. Forces are applied
 /// to **both** bodies — the board must feel the rider or it cannot be
 /// kicked out from under one.
+///
+/// # A compound surface is a *set* of these
+///
+/// The contact pass takes a slice of planes, not one. A skateboard's top is
+/// not a single flat face: the kicktail rises at 15 deg beyond the flex
+/// hinge, and on this rig the kicktail is a *separate body*. One untilted
+/// plane on the deck put every pre-tip stance 6 to 25 mm above the surface it
+/// was standing on and on the wrong body (ecto/phyz#82). Two planes — one on
+/// the deck, one on the tail body, each with its own [`Self::tilt`] —
+/// express it. The CPU reference has no plane at all: it collides the foot's
+/// boxes against the deck's boxes through the general narrow phase, and this
+/// is the device's cheap stand-in for that.
 ///
 /// Plane contacts do not appear in [`BodyContactState`] readback: those
 /// slots are per body and already carry the ground result, and a foot
@@ -349,8 +367,67 @@ pub struct BodyPlane {
     pub half_y: f64,
     /// Bodies that never contact the plane (the plane body itself is always
     /// excluded): wheels and hangers under a deck, for instance.
+    ///
+    /// Packed as a per-plane bitmask over body indices, so two planes on the
+    /// same rig can exclude different bodies. Bounded by
+    /// [`crate::layout::MAX_BODIES`], which the contact pass already is.
     pub exclude: Vec<usize>,
+    /// Extra rotation of the face inside the body, body -> face, row-major,
+    /// in the same sense as [`phyz_model::GeomInstance::origin`]'s `rot`.
+    ///
+    /// Identity gives the historical behaviour: the face is the body's own
+    /// local `+Z`. A tilted face — a kicktail on the deck body, a wedge —
+    /// sets this. [`Self::offset`] is measured along the *face's* `+Z`, so
+    /// a tilted plane's offset still means "half-thickness".
+    pub tilt: phyz_math::Mat3,
+    /// In-plane origin of the face inside the body, body coordinates, before
+    /// [`Self::offset`] is applied along the face normal. Zero puts the face
+    /// centre on the body origin, which is where it used to be.
+    pub center: Vec3,
 }
+
+impl BodyPlane {
+    /// A face on the body's own local `+Z`, `offset` above the body origin —
+    /// the shape every caller had before tilted faces existed.
+    pub fn flat(body: usize, offset: f64, max_depth: f64, half_x: f64, half_y: f64) -> Self {
+        Self {
+            body,
+            offset,
+            max_depth,
+            half_x,
+            half_y,
+            exclude: Vec::new(),
+            tilt: phyz_math::Mat3::identity(),
+            center: Vec3::zeros(),
+        }
+    }
+
+    /// Bodies this plane never contacts, as the bitmask the kernels read.
+    fn exclude_mask(&self) -> u32 {
+        let mut mask = 1u32 << (self.body as u32);
+        for &b in &self.exclude {
+            mask |= 1u32 << (b as u32);
+        }
+        mask
+    }
+}
+
+/// Floats per body-attached plane record, appended to the geometry buffer.
+///
+/// ```text
+/// [0]  body index (bitcast u32)
+/// [1]  half_x
+/// [2]  half_y
+/// [3]  max_depth
+/// [4..7] face origin in BODY coordinates (centre + offset along the face normal)
+/// [7..16] face rotation, row-major, body -> face
+/// [16] exclude bitmask over body indices (bitcast u32)
+/// [17..24] reserved
+/// ```
+///
+/// Deliberately the same stride as a geometry record so the two tables share
+/// one buffer and the pass keeps its eight storage bindings.
+pub const PLANE_STRIDE: usize = GEOM_STRIDE;
 
 /// Per-body ground-contact state read back from the GPU.
 ///
@@ -392,7 +469,7 @@ impl ContactPipeline {
             bodies_buffer,
             contact,
             None,
-            None,
+            &[],
             None,
         )
     }
@@ -410,13 +487,13 @@ impl ContactPipeline {
         bodies_buffer: &wgpu::Buffer,
         contact: GroundContactParams,
         body_gains: Option<&[BodyContactGains]>,
-        plane: Option<&BodyPlane>,
+        planes: &[BodyPlane],
         heightfield: Option<&Heightfield>,
     ) -> Result<Self, String> {
         let nworld = state.nworld;
         let (geom_data, collidable_bodies) =
-            pack_contact_geometry(model, &contact, body_gains, plane, heightfield)?;
-        let params = ContactParams::pack(model, nworld, &contact, plane, heightfield);
+            pack_contact_geometry(model, &contact, body_gains, planes, heightfield)?;
+        let params = ContactParams::pack(model, nworld, &contact, planes, heightfield);
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("contact_params"),
@@ -605,13 +682,20 @@ pub(crate) fn pack_contact_geometry(
     model: &Model,
     contact: &GroundContactParams,
     body_gains: Option<&[BodyContactGains]>,
-    plane: Option<&BodyPlane>,
+    planes: &[BodyPlane],
     heightfield: Option<&Heightfield>,
 ) -> Result<(Vec<f32>, usize), String> {
     if let Some(hf) = heightfield {
         validate_heightfield(hf)?;
     }
-    if let Some(p) = plane {
+    if model.nbodies() > crate::layout::MAX_BODIES {
+        return Err(format!(
+            "contact pass supports at most {} bodies, model has {}",
+            crate::layout::MAX_BODIES,
+            model.nbodies()
+        ));
+    }
+    for p in planes {
         if p.body >= model.nbodies() {
             return Err(format!(
                 "plane body {} out of range for a model with {} bodies",
@@ -635,13 +719,34 @@ pub(crate) fn pack_contact_geometry(
         ));
     }
     let (mut geom_data, collidable) = pack_geometries(model, contact, body_gains);
-    if let Some(p) = plane {
-        for &b in p.exclude.iter().chain(std::iter::once(&p.body)) {
-            geom_data[b * GEOM_STRIDE + 7] = 1.0;
-        }
-    }
     if collidable == 0 {
         return Err(no_collidable_geometry_error(model));
+    }
+
+    // Plane records, appended after the instance records; `plane_base` in
+    // ContactParams points here.
+    let base = geom_data.len();
+    geom_data.resize(base + planes.len() * PLANE_STRIDE, 0.0);
+    for (n, p) in planes.iter().enumerate() {
+        let b = base + n * PLANE_STRIDE;
+        geom_data[b] = f32::from_bits(p.body as u32);
+        geom_data[b + 1] = p.half_x as f32;
+        geom_data[b + 2] = p.half_y as f32;
+        geom_data[b + 3] = p.max_depth as f32;
+        // `tilt` is body -> face, so the face's own +Z in body coordinates is
+        // the transpose's third column, i.e. `tilt` row 2. Offset rides along
+        // that, which is what keeps "offset = half-thickness" true under tilt.
+        let nz = Vec3::new(p.tilt[(2, 0)], p.tilt[(2, 1)], p.tilt[(2, 2)]);
+        let origin = p.center + nz * p.offset;
+        geom_data[b + 4] = origin.x as f32;
+        geom_data[b + 5] = origin.y as f32;
+        geom_data[b + 6] = origin.z as f32;
+        for r in 0..3 {
+            for c in 0..3 {
+                geom_data[b + 7 + r * 3 + c] = p.tilt[(r, c)] as f32;
+            }
+        }
+        geom_data[b + 16] = f32::from_bits(p.exclude_mask());
     }
     Ok((geom_data, collidable))
 }
@@ -806,8 +911,11 @@ mod tests {
         assert_eq!(collidable, 1);
         assert_eq!(data[8], 200.0);
         assert_eq!(data[9], 4.0);
-        assert_eq!(data[GEOM_STRIDE], 0.0); // bare body: no geometry
-        assert_eq!(data[GEOM_STRIDE + 8], 50.0);
+        // The table is instance-indexed now: a body with no shapes gets no
+        // record at all, and its range in the body table is empty.
+        assert_eq!(data.len(), GEOM_STRIDE);
+        let ranges = crate::layout::geometry_ranges(&model);
+        assert_eq!(ranges, vec![(0, 1), (1, 0)]);
     }
 
     #[test]
