@@ -35,7 +35,7 @@ use crate::contact_pipeline::{
     BodyContactGains, BodyContactState, BodyPlane, ContactParams, GroundContactParams,
     pack_contact_geometry, validate_heightfield,
 };
-use crate::gpu_batch_simulator::DEFAULT_CONTACT_SWEEPS;
+use crate::gpu_batch_simulator::default_contact_sweeps;
 use crate::layout::{
     self, CONTACT_STATE_STRIDE, MAX_BODIES, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows,
     pack_states, unpack_contacts, unpack_states,
@@ -616,7 +616,7 @@ impl<B: KernelBackend> BatchSim<B> {
             kin: None,
             policy: None,
             history: None,
-            contact_sweeps: DEFAULT_CONTACT_SWEEPS,
+            contact_sweeps: default_contact_sweeps(),
             graph: None,
             graph_epoch: 0,
             fused_enabled: !matches!(

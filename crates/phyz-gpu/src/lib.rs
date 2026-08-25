@@ -29,7 +29,7 @@ pub use contact_pipeline::{
     BodyContactGains, BodyContactState, BodyPlane, ContactPipeline, GroundContactParams,
     PlaneContactPoint, PlaneContactState,
 };
-pub use gpu_batch_simulator::{DEFAULT_CONTACT_SWEEPS, GpuBatchSimulator};
+pub use gpu_batch_simulator::{DEFAULT_CONTACT_SWEEPS, GpuBatchSimulator, default_contact_sweeps};
 pub use gpu_simulator::GpuSimulator;
 pub use gpu_state::GpuState;
 pub use pd_pipeline::{PdDof, PdPipeline};

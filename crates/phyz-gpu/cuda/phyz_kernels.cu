@@ -38,6 +38,10 @@ typedef int i32;
 
 // Mirrors layout.rs.
 #define MAX_BODIES 32u
+/// Velocity-DOF bound for the per-step `U`/`D⁻¹` cache. A model wider than
+/// this still runs — `aba_thread_c` falls back to refactorising, exactly as
+/// it did before the cache existed.
+#define MAX_NV 64u
 #define BODY_STRIDE 36u
 // The geometry table is indexed by COLLISION INSTANCE, not by body: a body's
 // slice is [bf(bodies,i,33), +bf(bodies,i,34)). Mirrors layout.rs / shaders.rs.
@@ -1552,10 +1556,43 @@ typedef struct {
     sv6 c_bias[MAX_BODIES];
     /// `v × (I v)`: the bias force before `ext_forces` is subtracted.
     sv6 p_bias[MAX_BODIES];
+    /// `U = I_a S`, packed by v-slot: `u_pack[(v_off + k) * 6 + r]`.
+    ///
+    /// `U` and `D⁻¹` are functions of `i_a` alone — see `joint_udu`: the only
+    /// sweep-varying term in that routine is `u_vec`, which reads `p_a`.
+    /// `i_a[i]` is final when pass 2 reaches body `i` (pass 2 runs backward
+    /// and never writes `i_a[i]` again afterwards), so pass 3 reads exactly
+    /// the matrix pass 2 factorised, and so does every reusing sweep. Both
+    /// therefore skip the factorisation and recompute `u_vec` only.
+    float u_pack[MAX_NV * 6u];
+    /// `D⁻¹`, packed by v-slot with a fixed row stride of 6 (`ndof <= 6`):
+    /// `dinv_pack[(v_off + r) * 6 + c]`.
+    float dinv_pack[MAX_NV * 6u];
+    /// Per body: did `invert_small` succeed? 0 selects the singular
+    /// "treat the joint as fixed" branch, which has to be carried too or a
+    /// reusing sweep could take the other one.
+    unsigned char udu_ok[MAX_BODIES];
 } aba_cache_t;
 
 #define PHYZ_ABA_BUILD 0u
 #define PHYZ_ABA_REUSE 1u
+
+/// The sweep-varying half of `joint_udu`: `u = tau − c v − Sᵀ p_a`, plus the
+/// explicit joint spring. Same expressions in the same order.
+PHYZ_DEV void joint_uvec(const float* bodies, u32 i, u32 jtype, u32 ndof, v3 axis,
+                         float damping_val, sv6 pa,
+                         const float* ctrl, const float* v, u32 v_slot,
+                         const float* q, u32 q_base, float* u_vec) {
+    for (u32 k = 0; k < ndof; k++) {
+        sv6 s_k = subspace_col(jtype, axis, k);
+        u_vec[k] = ctrl[v_slot + k] - damping_val * v[v_slot + k] - sv_dot(s_k, pa);
+    }
+    float stiffness_val = bf(bodies, i, 30u);
+    if (ndof == 1u && stiffness_val != 0.0f) {
+        float spring_ref = bf(bodies, i, 31u);
+        u_vec[0] += -stiffness_val * (q[q_base + body_qoff(bodies, i)] - spring_ref);
+    }
+}
 
 PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
                            float gx, float gy, float gz,
@@ -1569,6 +1606,14 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
     u32 v_base = world_idx * nv;
 
     bool reuse = mode == PHYZ_ABA_REUSE;
+    // The U/D cache is a fixed-width local array; a model wider than MAX_NV
+    // simply refactorises, as before.
+    bool udu_fits = nv <= MAX_NV;
+    // Pass 2 reads the cache on a reusing sweep and fills it on a building
+    // one; pass 3 reads it either way.
+    bool udu_cached = reuse && udu_fits;
+    bool udu_store = !reuse && udu_fits;
+    bool udu_ready = udu_fits;
     sv6 vel[MAX_BODIES];
     sv6 p_a[MAX_BODIES];
     sv6 acc[MAX_BODIES];
@@ -1666,11 +1711,36 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
         float u_mat[36];
         float d_mat[36];
         float u_vec[6];
-        joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
-                  ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
+        bool d_ok;
+        if (udu_cached) {
+            // `i_a[i]` is what it was when this sweep's BUILD pass factorised
+            // it, so `U` and `D⁻¹` are too. Only `u_vec` moved.
+            joint_uvec(bodies, i, jtype, ndof, axis, damping_val, p_a[i],
+                       ctrl, v, v_base + v_off, q, q_base, u_vec);
+            for (u32 k = 0; k < ndof; k++)
+                for (u32 r = 0; r < 6u; r++)
+                    u_mat[k * 6u + r] = kc->u_pack[(v_off + k) * 6u + r];
+            for (u32 r = 0; r < ndof; r++)
+                for (u32 c = 0; c < ndof; c++)
+                    d_mat[r * ndof + c] = kc->dinv_pack[(v_off + r) * 6u + c];
+            d_ok = kc->udu_ok[i] != 0u;
+        } else {
+            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
+                      ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
+            d_ok = invert_small(d_mat, ndof);
+            if (udu_store) {
+                for (u32 k = 0; k < ndof; k++)
+                    for (u32 r = 0; r < 6u; r++)
+                        kc->u_pack[(v_off + k) * 6u + r] = u_mat[k * 6u + r];
+                for (u32 r = 0; r < ndof; r++)
+                    for (u32 c = 0; c < ndof; c++)
+                        kc->dinv_pack[(v_off + r) * 6u + c] = d_mat[r * ndof + c];
+                kc->udu_ok[i] = d_ok ? 1u : 0u;
+            }
+        }
 
         // Singular articulated inertia: treat the joint as fixed.
-        if (!invert_small(d_mat, ndof)) {
+        if (!d_ok) {
             if (parent >= 0) {
                 u32 pi = (u32)parent;
                 if (!reuse) {
@@ -1741,15 +1811,30 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
         u32 ndof = joint_ndof(jtype);
         if (ndof == 0u) { acc[i] = a_c; continue; }
 
-        // Rebuild U, D, u rather than carrying them from pass 2 (private
-        // storage pressure — same trade the WGSL makes).
+        // U and D⁻¹ come from pass 2 whenever the cache is wide enough for
+        // this model; only `u_vec` has to be rebuilt. (The WGSL still makes
+        // the other trade — rebuild everything — for private-storage room.)
         float u_mat[36];
         float d_mat[36];
         float u_vec[6];
-        joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
-                  ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
+        bool d_ok;
+        if (udu_ready) {
+            joint_uvec(bodies, i, jtype, ndof, axis, damping_val, p_a[i],
+                       ctrl, v, v_base + v_off, q, q_base, u_vec);
+            for (u32 k = 0; k < ndof; k++)
+                for (u32 r = 0; r < 6u; r++)
+                    u_mat[k * 6u + r] = kc->u_pack[(v_off + k) * 6u + r];
+            for (u32 r = 0; r < ndof; r++)
+                for (u32 c = 0; c < ndof; c++)
+                    d_mat[r * ndof + c] = kc->dinv_pack[(v_off + r) * 6u + c];
+            d_ok = kc->udu_ok[i] != 0u;
+        } else {
+            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
+                      ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
+            d_ok = invert_small(d_mat, ndof);
+        }
 
-        if (!invert_small(d_mat, ndof)) {
+        if (!d_ok) {
             acc[i] = a_c;
             for (u32 k = 0; k < ndof; k++) qdd[v_base + v_off + k] = 0.0f;
             continue;
