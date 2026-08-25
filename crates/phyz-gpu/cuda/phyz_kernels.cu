@@ -844,6 +844,24 @@ typedef struct {
     float sel_pen[MAX_BODIES * MAX_PTS];
     u32 sel_g[MAX_BODIES * MAX_PTS];
     u32 sel_c[MAX_BODIES * MAX_PTS];
+    /// The same thing for the body-attached FACE pass — the pooled,
+    /// depth-ranked, Sutherland-Hodgman-clipped manifold each body has
+    /// against every face it can touch.
+    ///
+    /// That search reads `w_rot`, `w_pos` and the geometry table and nothing
+    /// else, so like the ground manifold above it is a function of `q` and
+    /// survives a sweep unchanged. It is also, on a compound surface, by far
+    /// the most expensive thing in a step: ipse's K1 rig collides its bodies
+    /// against 45 deck and kicktail faces, and before this the entire clip
+    /// ran again on every one of the 16 sweeps.
+    ///
+    /// `pl_gpl` packs the instance in the low 16 bits and the face in the
+    /// high 16 — this array is per thread and the footprint is the budget.
+    u32 pl_n[MAX_BODIES];
+    float pl_pen[MAX_BODIES * MAX_PLANE_PTS];
+    float pl_u[MAX_BODIES * MAX_PLANE_PTS];
+    float pl_v[MAX_BODIES * MAX_PLANE_PTS];
+    u32 pl_gpl[MAX_BODIES * MAX_PLANE_PTS];
 } fk_cache_t;
 
 #define PHYZ_FK_PLAIN 0u
@@ -1230,7 +1248,21 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         u32 sel_pl[MAX_PLANE_PTS];
         u32 n_sel = 0u;
 
-        if (gcount > 0u) {
+        // A reusing sweep already has this body's clipped manifold; the
+        // search below is `q`-only and cannot have moved. See `fk_cache_t`.
+        if (fk_mode == PHYZ_FK_REUSE) {
+            n_sel = fc->pl_n[i];
+            for (u32 k = 0; k < n_sel; k++) {
+                u32 s = i * MAX_PLANE_PTS + k;
+                sel_pen[k] = fc->pl_pen[s];
+                sel_u[k] = fc->pl_u[s];
+                sel_v[k] = fc->pl_v[s];
+                sel_g[k] = fc->pl_gpl[s] & 0xffffu;
+                sel_pl[k] = fc->pl_gpl[s] >> 16u;
+            }
+        }
+
+        if (gcount > 0u && fk_mode != PHYZ_FK_REUSE) {
         for (u32 pl = 0; pl < cp.nplanes; pl++) {
             u32 pbase = cp.plane_base + pl * PLANE_STRIDE;
             u32 excl = f_as_u(geometry[pbase + 16u]);
@@ -1369,6 +1401,17 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                 }
             }
         }
+        }
+
+        if (fk_mode == PHYZ_FK_BUILD) {
+            fc->pl_n[i] = n_sel;
+            for (u32 k = 0; k < n_sel; k++) {
+                u32 s = i * MAX_PLANE_PTS + k;
+                fc->pl_pen[s] = sel_pen[k];
+                fc->pl_u[s] = sel_u[k];
+                fc->pl_v[s] = sel_v[k];
+                fc->pl_gpl[s] = (sel_g[k] & 0xffffu) | (sel_pl[k] << 16u);
+            }
         }
 
         // Slots beyond the manifold carry a stale impulse; drop them for the

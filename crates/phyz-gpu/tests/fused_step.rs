@@ -7,6 +7,7 @@
 //! approximation and the states must agree to the bit, not to a tolerance.
 #![cfg(feature = "cuda-host")]
 
+use phyz_gpu::contact_pipeline::BodyPlane;
 use phyz_gpu::cuda::HostBatchSimulator;
 use phyz_gpu::{BodyContactGains, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
@@ -83,12 +84,100 @@ fn pd_dofs(model: &Model) -> Vec<PdDof> {
         .collect()
 }
 
+/// A deck with two faces — one flat, one tilted up at 10 deg like a
+/// kicktail — and a box resting on them. The compound-surface shape whose
+/// clipped manifold the fused step now carries across the sweeps.
+fn deck_rig() -> Model {
+    let deck = Vec3::new(0.4, 0.1, 0.02);
+    let rider = Vec3::new(0.08, 0.08, 0.06);
+    let mut model = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(0.001)
+        .add_body(
+            "deck",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(2.0, deck),
+        )
+        .add_body(
+            "rider",
+            -1,
+            Joint::free(SpatialTransform::identity()),
+            box_inertia(4.0, rider),
+        )
+        .build();
+    model.bodies[0].geometry = Some(phyz_model::Geometry::Box { half_extents: deck });
+    model.bodies[1].geometry = Some(phyz_model::Geometry::Box {
+        half_extents: rider,
+    });
+    model
+}
+
+fn deck_faces() -> Vec<BodyPlane> {
+    let deck = Vec3::new(0.4, 0.1, 0.02);
+    let c = 0.9848f64;
+    let s = 0.1736f64;
+    let tilt = Mat3::from_cols(
+        Vec3::new(c, 0.0, s),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(-s, 0.0, c),
+    );
+    vec![
+        BodyPlane {
+            body: 0,
+            offset: deck.z,
+            max_depth: 0.05,
+            half_x: 0.7 * deck.x,
+            half_y: deck.y,
+            exclude: vec![0],
+            tilt: Mat3::identity(),
+            center: Vec3::zeros(),
+        },
+        BodyPlane {
+            body: 0,
+            offset: deck.z,
+            max_depth: 0.05,
+            half_x: 0.3 * deck.x,
+            half_y: deck.y,
+            exclude: vec![0],
+            tilt,
+            center: Vec3::new(-0.7 * deck.x, 0.0, 0.0),
+        },
+    ]
+}
+
+/// The rider starts just above the flat face, drifting toward the tilted one,
+/// so both faces enter the pooled manifold over the run.
+fn deck_states(model: &Model, n: usize) -> Vec<State> {
+    (0..n)
+        .map(|i| {
+            let mut st = model.default_state();
+            st.q[5] = 0.02;
+            st.q[11] = 0.14 + 0.005 * i as f64;
+            st.q[9] = 0.05 * i as f64;
+            st.v[9] = -0.4 - 0.05 * i as f64;
+            st
+        })
+        .collect()
+}
+
 fn run(fused: bool, model: &Model, init: &[State], steps: usize, chunk: usize) -> Vec<State> {
+    run_with(fused, model, init, steps, chunk, &[])
+}
+
+fn run_with(
+    fused: bool,
+    model: &Model,
+    init: &[State],
+    steps: usize,
+    chunk: usize,
+    planes: &[BodyPlane],
+) -> Vec<State> {
     let mut sim = HostBatchSimulator::new(model.clone(), init.len()).expect("simulator");
     sim.set_fused_step_enabled(fused);
     assert_eq!(sim.fused_step_enabled(), false, "no contact enabled yet");
     let g = BodyContactGains::uniform_frequency(model, 60.0, 1.0);
-    sim.enable_contact_impulse(0.0, 0.7, &g, &[], None).unwrap();
+    sim.enable_contact_impulse(0.0, 0.7, &g, planes, None).unwrap();
     sim.enable_pd_control(&pd_dofs(model)).unwrap();
     sim.set_position_targets(&vec![vec![0.1; pd_dofs(model).len()]; init.len()])
         .unwrap();
@@ -148,4 +237,67 @@ fn the_rig_touches_the_ground() {
             .any(|c| c.touching);
     }
     assert!(touched, "no contact in the fused-step fixture");
+}
+
+/// The same bit-identity, with a compound BODY-ATTACHED SURFACE in the loop.
+///
+/// The face pass is where a rig like ipse's K1 spends its step — 45 deck and
+/// kicktail faces, Sutherland-Hodgman-clipped per body — and the fused step
+/// carries that clipped manifold across the sweeps rather than re-searching
+/// it 16 times. The search reads `w_rot`, `w_pos` and the geometry table, all
+/// of them `q`-only, so this is bit-identity and not a tolerance either.
+#[test]
+fn fused_step_with_body_faces_is_bit_identical() {
+    let model = deck_rig();
+    let init = deck_states(&model, 3);
+    let planes = deck_faces();
+    let plain = run_with(false, &model, &init, 600, 1, &planes);
+    for (label, chunk) in [("fused(1)", 1usize), ("fused(20)", 20)] {
+        let got = run_with(true, &model, &init, 600, chunk, &planes);
+        for (w, (a, b)) in plain.iter().zip(&got).enumerate() {
+            for j in 0..model.nq {
+                assert_eq!(
+                    a.q[j].to_bits(),
+                    b.q[j].to_bits(),
+                    "{label} world {w} q[{j}]: {} vs {}",
+                    a.q[j],
+                    b.q[j]
+                );
+            }
+            for j in 0..model.nv {
+                assert_eq!(
+                    a.v[j].to_bits(),
+                    b.v[j].to_bits(),
+                    "{label} world {w} v[{j}]: {} vs {}",
+                    a.v[j],
+                    b.v[j]
+                );
+            }
+        }
+    }
+}
+
+/// ...and the faces have to actually carry something, or the test above is
+/// two more free-fall trajectories.
+#[test]
+fn the_rig_touches_a_face() {
+    let model = deck_rig();
+    let init = deck_states(&model, 3);
+    let mut sim = HostBatchSimulator::new(model.clone(), init.len()).expect("simulator");
+    let g = BodyContactGains::uniform_frequency(&model, 60.0, 1.0);
+    sim.enable_contact_impulse(0.0, 0.7, &g, &deck_faces(), None)
+        .unwrap();
+    sim.load_states(&init);
+    let mut touched = 0usize;
+    for _ in 0..600 {
+        sim.step();
+        touched += sim
+            .readback_contacts()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|c| c.plane.touching && c.plane.points > 0)
+            .count();
+    }
+    assert!(touched > 0, "no face contact in the fused-step fixture");
 }
