@@ -78,6 +78,17 @@ pub enum ObsOp {
         /// World axis: 0 = x, 1 = y, 2 = z.
         axis: u8,
     },
+    /// Per-world constant `k` — the value `set_policy_world_consts` wrote
+    /// into slot `k` of *this* world's row.
+    ///
+    /// [`ObsOp::Const`] is baked into the op table, which is one table for
+    /// every world and is uploaded with the spec; this reads a row that is
+    /// per-world and writable between control steps, so one batch can carry
+    /// a different command (or a different reference) in every world.
+    WorldSlot(usize),
+    /// `q[i] -` per-world constant `k`. The per-world form of
+    /// [`ObsOp::QMinus`], whose reference is baked into the shared table.
+    QMinusWorld(usize, usize),
     /// The whole-model centre of mass minus a support reference, one axis,
     /// optionally in a body's heading frame.
     ///
@@ -125,6 +136,8 @@ impl ObsOp {
             ObsOp::ComOverSupport {
                 ref support, axis, ..
             } => [8.0, aux_off as f32, support.len() as f32, axis as f32],
+            ObsOp::WorldSlot(k) => [9.0, k as f32, 0.0, 0.0],
+            ObsOp::QMinusWorld(i, k) => [10.0, i as f32, k as f32, 0.0],
         }
     }
 
@@ -154,6 +167,8 @@ impl ObsOp {
     fn check(&self, nq: usize, nv: usize, nb: usize) -> Result<(), String> {
         let ok = match *self {
             ObsOp::Const(_) => true,
+            ObsOp::WorldSlot(_) => true,
+            ObsOp::QMinusWorld(i, _) => i < nq,
             ObsOp::QMinus(i, _) => i < nq,
             ObsOp::V(i) => i < nv,
             ObsOp::BodyPitch(b)
@@ -187,7 +202,18 @@ impl ObsOp {
     /// [`ObsOp::ComOverSupport`] reduces over; every other variant ignores
     /// it.
     pub fn eval(&self, model: &Model, state: &State) -> f64 {
+        self.eval_with(model, state, &[])
+    }
+
+    /// As [`ObsOp::eval`], with this world's per-world constant row
+    /// ([`ObsOp::WorldSlot`], [`ObsOp::QMinusWorld`]). A slot past the end
+    /// of `consts` reads zero, exactly as the kernel does when the row is
+    /// shorter than the slot it is asked for.
+    pub fn eval_with(&self, model: &Model, state: &State, consts: &[f64]) -> f64 {
+        let slot = |k: usize| consts.get(k).copied().unwrap_or(0.0);
         match *self {
+            ObsOp::WorldSlot(k) => slot(k),
+            ObsOp::QMinusWorld(i, k) => state.q[i] - slot(k),
             ObsOp::Const(c) => c,
             ObsOp::QMinus(i, c) => state.q[i] - c,
             ObsOp::V(i) => state.v[i],
@@ -331,6 +357,22 @@ impl PolicySpec {
     /// Output width.
     pub fn n_out(&self) -> usize {
         self.act_slots.len()
+    }
+    /// Width of the per-world constant row: one past the highest slot any
+    /// [`ObsOp::WorldSlot`] / [`ObsOp::QMinusWorld`] reads, and 0 when the
+    /// spec uses neither. This is what
+    /// `BatchSim::set_policy_world_consts` expects per world, and the row
+    /// the buffer is preallocated for — it is fixed by the spec, so the
+    /// buffer never moves while the spec stands.
+    pub fn n_world_consts(&self) -> usize {
+        self.obs
+            .iter()
+            .filter_map(|o| match *o {
+                ObsOp::WorldSlot(k) | ObsOp::QMinusWorld(_, k) => Some(k + 1),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
     }
     /// The applied-action clamp for action `k`.
     pub fn clamp_at(&self, k: usize) -> f64 {
@@ -517,9 +559,21 @@ pub fn policy_reference(
 
 /// The observation row on the host for one state: FK, then the ops.
 pub fn observe_reference(model: &Model, state: &mut State, ops: &[ObsOp]) -> Vec<f64> {
+    observe_reference_with(model, state, ops, &[])
+}
+
+/// [`observe_reference`] with this world's per-world constant row.
+pub fn observe_reference_with(
+    model: &Model,
+    state: &mut State,
+    ops: &[ObsOp],
+    consts: &[f64],
+) -> Vec<f64> {
     let (xforms, _) = forward_kinematics(model, state);
     state.body_xform = xforms;
-    ops.iter().map(|o| o.eval(model, state)).collect()
+    ops.iter()
+        .map(|o| o.eval_with(model, state, consts))
+        .collect()
 }
 
 /// A body's world position from an FK readout row — for hosts that want

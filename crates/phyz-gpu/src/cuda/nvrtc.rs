@@ -8,7 +8,8 @@
 use std::sync::Arc;
 
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaGraph, CudaSlice, CudaStream, LaunchConfig, PushKernelArg, sys,
+    CudaContext, CudaFunction, CudaGraph, CudaSlice, CudaStream, DevicePtr, LaunchConfig,
+    PushKernelArg, sys,
 };
 use cudarc::nvrtc::CompileOptions;
 
@@ -182,6 +183,14 @@ impl KernelBackend for CudaBackend {
         self.stream
             .alloc_zeros::<f32>(len)
             .map_err(err("cuMemAlloc"))
+    }
+
+    fn buffer_addr(&self, buf: &Self::Buffer) -> u64 {
+        // The device pointer a launch would push. The guard cudarc returns
+        // only orders a later free against this stream; the address itself
+        // is what the graph capture bakes in.
+        let (ptr, _guard) = buf.device_ptr(&self.stream);
+        ptr
     }
 
     fn upload(&self, buf: &mut Self::Buffer, data: &[f32]) -> Result<(), String> {
@@ -447,6 +456,7 @@ impl KernelBackend for CudaBackend {
         ops: &Self::Buffer,
         aux: &Self::Buffer,
         com: &Self::Buffer,
+        wconst: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         xforms: &Self::Buffer,
@@ -462,9 +472,11 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.nbodies)
                 .arg(&a.n_in)
                 .arg(&a.obs_off)
+                .arg(&a.n_wc)
                 .arg(ops)
                 .arg(aux)
                 .arg(com)
+                .arg(wconst)
                 .arg(q)
                 .arg(v)
                 .arg(xforms)

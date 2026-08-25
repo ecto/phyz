@@ -19,7 +19,8 @@
 use phyz_gpu::contact_pipeline::BodyPlane;
 use phyz_gpu::cuda::{BatchSim, KernelBackend};
 use phyz_gpu::policy_pipeline::{
-    KernelRng, ObsOp, PolicySpec, XF_STRIDE, observe_reference, policy_reference,
+    KernelRng, ObsOp, PolicySpec, XF_STRIDE, observe_reference, observe_reference_with,
+    policy_reference,
 };
 use phyz_gpu::{BodyContactGains, GpuBatchSimulator, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
@@ -1230,6 +1231,198 @@ fn suite_policy_base_targets<B: KernelBackend>(mk: impl Fn(Model, usize) -> Batc
     }
 }
 
+/// The per-world constants row: `ObsOp::WorldSlot` and
+/// `ObsOp::QMinusWorld` against the CPU reference, with a *different*
+/// constant row in every world.
+///
+/// The point of the row is that it is the one observation input that is
+/// per-world and writable between control steps — a time-varying command,
+/// or a per-world reference posture — so this checks three things:
+///
+/// 1. both ops read this world's row and not world 0's (the rows are
+///    deliberately far apart, and the check that they differ is asserted so
+///    a kernel that ignored `world_idx` could not pass);
+/// 2. the same slot fed the same value everywhere reproduces the baked-in
+///    `Const` / `QMinus` ops exactly, so a single-condition caller keeps its
+///    old numbers;
+/// 3. rewriting the row between control steps — with physics, and therefore
+///    a captured and replayed step span, in between — reaches the next
+///    observation. The buffer is allocated with the spec and written in
+///    place, so a graph that baked in its address stays valid.
+fn suite_policy_world_consts<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let model = free_base_with_limb();
+    let nworld = 4;
+    let limb_q = model.q_offsets[model.bodies[1].joint_idx];
+    let limb_v = model.v_offsets[model.bodies[1].joint_idx];
+    let pd = [PdDof {
+        q_index: limb_q,
+        v_index: limb_v,
+        kp: 20.0,
+        kd: 1.0,
+        max_force: 10.0,
+    }];
+
+    // Slot 0 is a command channel; slot 1 is a per-world q reference.
+    let spec = PolicySpec {
+        obs: vec![
+            ObsOp::WorldSlot(0),
+            ObsOp::QMinusWorld(limb_q, 1),
+            ObsOp::QMinus(limb_q, 0.1),
+            ObsOp::V(limb_v),
+            ObsOp::BodyPosZ(1),
+        ],
+        hidden: 8,
+        act_slots: vec![0],
+        act_clamp: 0.4,
+        act_clamp_slots: None,
+        noise_rho: 0.0,
+        input_noise: vec![0.0; 5],
+        history_steps: 2,
+    };
+    assert_eq!(
+        spec.n_world_consts(),
+        2,
+        "the row width is one past the highest slot the ops read"
+    );
+
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_pd_control(&pd).unwrap();
+    sim.enable_policy(spec.clone()).unwrap();
+    let mut wr = KernelRng(0x5EED_1234);
+    let weights: Vec<f64> = (0..spec.n_weights()).map(|_| 0.3 * wr.normal()).collect();
+    sim.set_policy_weights(&weights).unwrap();
+    sim.set_policy_std(&[1e-9]).unwrap();
+    sim.set_policy_base_targets(&vec![vec![0.0]; nworld])
+        .unwrap();
+    sim.seed_policy(7).unwrap();
+
+    let states: Vec<State> = (0..nworld)
+        .map(|w| {
+            let mut s = model.default_state();
+            let f = w as f64;
+            s.q[5] = 1.0 + 0.1 * f;
+            s.q[limb_q] = 0.4 - 0.2 * f;
+            s.v[limb_v] = 0.7;
+            s
+        })
+        .collect();
+    sim.load_states(&states);
+
+    // A different row per world, and far enough apart that reading the
+    // wrong world's row is unmistakable.
+    let consts: Vec<Vec<f64>> = (0..nworld)
+        .map(|w| vec![0.25 + w as f64, -0.5 - 0.3 * w as f64])
+        .collect();
+    sim.set_policy_world_consts(&consts).unwrap();
+    let addr0 = sim.policy_world_consts_addr().unwrap();
+    sim.run_policy(0).unwrap();
+
+    let check = |sim: &BatchSim<B>, step: usize, consts: &[Vec<f64>], label: &str| {
+        let (obs_h, _) = sim.readback_policy_history(step..step + 1).unwrap();
+        let dev = sim.readback_states();
+        let n_in = spec.n_in();
+        for w in 0..nworld {
+            let mut s = dev[w].clone();
+            let want = observe_reference_with(&model, &mut s, &spec.obs, &consts[w]);
+            for i in 0..n_in {
+                let got = obs_h[w * n_in + i] as f64;
+                let d = (got - want[i]).abs();
+                assert!(
+                    d < 2e-4,
+                    "{label}: world {w} obs[{i}] got {got} want {} diff {d:.2e}",
+                    want[i]
+                );
+            }
+            // The row really did move the observation.
+            assert!(
+                (obs_h[w * n_in] as f64 - consts[w][0]).abs() < 2e-4,
+                "{label}: world {w} slot 0 read {} for a row of {}",
+                obs_h[w * n_in],
+                consts[w][0]
+            );
+        }
+        // Guard the guard: the worlds must not agree, or a kernel that
+        // ignored `world_idx` would pass everything above.
+        assert!(
+            (obs_h[0] - obs_h[spec.n_in()]).abs() > 0.5,
+            "{label}: worlds 0 and 1 read the same constant — the row is not per-world"
+        );
+    };
+    check(&sim, 0, &consts, "first control step");
+
+    // Physics between control steps: the step span may be captured and
+    // replayed, and the constants are rewritten underneath it.
+    for _ in 0..5 {
+        sim.step();
+    }
+    let consts2: Vec<Vec<f64>> = (0..nworld)
+        .map(|w| vec![-1.5 + 0.75 * w as f64, 0.2 + 0.4 * w as f64])
+        .collect();
+    sim.set_policy_world_consts(&consts2).unwrap();
+    // Graph-capture safety, stated directly: the write went in place. A
+    // setter that re-allocated would hand a replayed graph a pointer to a
+    // freed allocation, and the numbers above would still pass on a
+    // backend that never captures.
+    assert_eq!(
+        addr0,
+        sim.policy_world_consts_addr().unwrap(),
+        "the per-world constants buffer moved across a set call — a captured graph would replay a stale address"
+    );
+    for _ in 0..5 {
+        sim.step();
+    }
+    sim.run_policy(1).unwrap();
+    check(&sim, 1, &consts2, "after a rewrite across a replayed span");
+
+    // And the row that the device holds is the row that was written.
+    let back = sim.readback_policy_world_consts().unwrap();
+    for w in 0..nworld {
+        for k in 0..2 {
+            let d = (back[w * 2 + k] as f64 - consts2[w][k]).abs();
+            assert!(
+                d < 1e-6,
+                "world {w} slot {k} read back {} ",
+                back[w * 2 + k]
+            );
+        }
+    }
+
+    // Single condition: one shared row must reproduce the baked-in ops.
+    let shared = vec![vec![0.35, 0.1]; nworld];
+    let baked = PolicySpec {
+        obs: vec![
+            ObsOp::Const(0.35),
+            ObsOp::QMinus(limb_q, 0.1),
+            ObsOp::QMinus(limb_q, 0.1),
+            ObsOp::V(limb_v),
+            ObsOp::BodyPosZ(1),
+        ],
+        ..spec.clone()
+    };
+    let run = |sp: &PolicySpec, consts: &[Vec<f64>]| -> Vec<f32> {
+        let mut sim = mk(model.clone(), nworld);
+        sim.enable_pd_control(&pd).unwrap();
+        sim.enable_policy(sp.clone()).unwrap();
+        sim.set_policy_weights(&weights).unwrap();
+        sim.set_policy_std(&[1e-9]).unwrap();
+        sim.set_policy_base_targets(&vec![vec![0.0]; nworld])
+            .unwrap();
+        sim.seed_policy(7).unwrap();
+        sim.load_states(&states);
+        sim.set_policy_world_consts(consts).unwrap();
+        sim.run_policy(0).unwrap();
+        let (obs, _) = sim.readback_policy_history(0..1).unwrap();
+        let t = sim.readback_targets().unwrap();
+        obs.into_iter().chain(t).collect()
+    };
+    let with_row = run(&spec, &shared);
+    let with_baked = run(&baked, &[]);
+    assert_eq!(
+        with_row, with_baked,
+        "a shared per-world row must be bit-identical to the baked-in constants"
+    );
+}
+
 /// The per-action-slot clamp. Four PD servos on a 6-DOF arm, two of them
 /// actioned with clamps a factor 35 apart: with an action large enough to
 /// saturate both, each slot must sit at `base + ±clamp_k`, not at one
@@ -1719,6 +1912,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_policy(mk);
     suite_policy_base_targets(mk);
     suite_policy_clamp_slots(mk);
+    suite_policy_world_consts(mk);
     suite_policy_support(mk);
     suite_graph_replay(mk);
 }
@@ -1773,6 +1967,10 @@ mod host {
     #[test]
     fn policy_clamps_per_action_slot() {
         suite_policy_clamp_slots(mk);
+    }
+    #[test]
+    fn per_world_consts_match_cpu() {
+        suite_policy_world_consts(mk);
     }
     #[test]
     fn com_over_support_matches_cpu() {
