@@ -157,7 +157,7 @@ fn run<B: KernelBackend>(
         2 + 2 * sim.contact_sweeps
     );
     let gains = BodyContactGains::uniform_frequency(model, 100.0, 1.0);
-    sim.enable_contact_impulse(0.0, 0.8, &gains, None, None)?;
+    sim.enable_contact_impulse(0.0, 0.8, &gains, &[], None)?;
     sim.enable_pd_control(&pd_dofs(model))?;
     sim.set_position_targets(&vec![vec![0.0; pd_dofs(model).len()]; nworld])?;
     sim.set_controls(&vec![vec![0.0; model.nv]; nworld]);

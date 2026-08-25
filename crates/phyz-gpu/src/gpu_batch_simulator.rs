@@ -30,6 +30,23 @@ struct BatchSimParams {
 /// `phyz_contact::GPU_SWEEPS`.
 pub const DEFAULT_CONTACT_SWEEPS: usize = 16;
 
+/// [`DEFAULT_CONTACT_SWEEPS`], overridable at run time by
+/// `PHYZ_CONTACT_SWEEPS`.
+///
+/// The sweep count is the single largest term in an impulse step's cost — it
+/// is dead linear, because a sweep is `[contact, ABA]` and 16 of them is 17
+/// ABA solves. Whether a shorter sweep loop is *physically* the same run is a
+/// question about a particular model and a particular task, which only the
+/// caller's own ruler can answer; this makes it answerable without a rebuild.
+/// Out-of-range or unparseable values are ignored.
+pub fn default_contact_sweeps() -> usize {
+    std::env::var("PHYZ_CONTACT_SWEEPS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1 && *n <= 256)
+        .unwrap_or(DEFAULT_CONTACT_SWEEPS)
+}
+
 /// GPU-accelerated batch simulator for general articulated bodies.
 pub struct GpuBatchSimulator {
     /// The wgpu device.
@@ -275,7 +292,7 @@ impl GpuBatchSimulator {
         });
 
         Ok(Self {
-            contact_sweeps: DEFAULT_CONTACT_SWEEPS,
+            contact_sweeps: default_contact_sweeps(),
             device,
             queue,
             state,
