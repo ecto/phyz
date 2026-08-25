@@ -358,6 +358,54 @@ pub trait KernelBackend {
         false
     }
 
+    /// Whether this backend has the FISSIONED stage passes
+    /// ([`KernelBackend::launch_aba_c`], [`KernelBackend::launch_contact_c`]).
+    fn supports_fission(&self) -> bool {
+        false
+    }
+
+    /// ABA with the per-step cache in a global SoA buffer: `nworld` threads,
+    /// `mode` 0 to build the cache and 1 to reuse it. Same arithmetic in the
+    /// same order as [`KernelBackend::launch_aba`] — a building call IS an
+    /// `launch_aba`, plus the stores.
+    #[allow(clippy::too_many_arguments)]
+    fn launch_aba_c(
+        &self,
+        _args: AbaArgs,
+        _bodies: &Self::Buffer,
+        _q: &Self::Buffer,
+        _v: &Self::Buffer,
+        _ctrl: &Self::Buffer,
+        _qdd: &mut Self::Buffer,
+        _ext_forces: &Self::Buffer,
+        _aba_cache: &mut Self::Buffer,
+        _mode: u32,
+    ) -> Result<(), String> {
+        Err("this backend has no fissioned ABA pass".into())
+    }
+
+    /// The contact pass with the FK/manifold cache in a global SoA buffer:
+    /// `nworld` threads, `fk_mode` 1 to build and 2 to reuse (0 is the
+    /// cacheless [`KernelBackend::launch_contact`]).
+    #[allow(clippy::too_many_arguments)]
+    fn launch_contact_c(
+        &self,
+        _args: ContactArgs,
+        _cparams: &Self::Buffer,
+        _bodies: &Self::Buffer,
+        _geometry: &Self::Buffer,
+        _q: &Self::Buffer,
+        _v: &Self::Buffer,
+        _ext_forces: &mut Self::Buffer,
+        _contact_state: &mut Self::Buffer,
+        _hf_heights: &Self::Buffer,
+        _qdd: &Self::Buffer,
+        _fk_cache: &mut Self::Buffer,
+        _fk_mode: u32,
+    ) -> Result<(), String> {
+        Err("this backend has no fissioned contact pass".into())
+    }
+
     /// The whole impulse-mode step, `nworld` threads: PD, ABA, `sweeps` x
     /// [contact, ABA], integrate, `nsteps` times. Same arithmetic in the
     /// same order as the separate launches, with the ABA factorisation
@@ -541,7 +589,74 @@ pub struct BatchSim<B: KernelBackend> {
     /// [`BatchSim::set_fused_step_enabled`] turn it off — which is how the
     /// parity test gets its unfused reference.
     fused_enabled: bool,
+    /// How an impulse step is issued; see [`StepMode`].
+    step_mode: StepMode,
+    /// Per-world ABA cache for the fissioned path, `[ABA_CACHE_FLOATS][nworld]`
+    /// — world index fastest, so the stage kernels' loads coalesce. Allocated
+    /// once, on the first fissioned step, and graph-stable thereafter.
+    aba_cache: Option<B::Buffer>,
+    /// Per-world FK/manifold cache for the fissioned path,
+    /// `[FK_CACHE_FLOATS][nworld]`.
+    fk_cache: Option<B::Buffer>,
 }
+
+/// How an impulse-mode step reaches the device.
+///
+/// All three run the same sequence — PD, a leading ABA, `sweeps` x
+/// [contact, ABA], integrate — with the same arithmetic in the same order,
+/// and are bit-identical to each other. They differ only in where the two
+/// per-step caches live.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum StepMode {
+    /// One launch per step (per control period under `step_many`), both
+    /// caches on the thread's local stack. 255 registers and a 30 KB frame
+    /// with spills — and, on the humanoid ruler, still the fastest of the
+    /// three. The default. `PHYZ_STEP_MODE=fused`.
+    Fused,
+    /// The stage kernels, with both caches in global structure-of-arrays
+    /// buffers: ~34 launches per step (free under CUDA Graphs) and a frame of
+    /// 2.0–2.9 KB with no spills instead of 30 KB with them.
+    ///
+    /// **Measured slower**, and the reason is the useful part: at 4096 worlds
+    /// a one-thread-per-world grid is 64 blocks over 128 SMs, so occupancy is
+    /// bounded by the GRID, not by the register file — cutting the frame 11x
+    /// buys no extra resident warps, while every sweep now pays a dependent
+    /// global round-trip for the cache. See the roofline table in the PR.
+    /// Kept as an opt-in (`PHYZ_STEP_MODE=fission`) because the SoA cache is
+    /// what a warp-per-world rewrite needs to exist at all.
+    Fission,
+    /// The original per-pass launches with no cache at all: every sweep
+    /// refactorises. The slowest, kept as the reference.
+    /// `PHYZ_STEP_MODE=unfused`.
+    Unfused,
+}
+
+fn default_step_mode() -> StepMode {
+    match std::env::var("PHYZ_STEP_MODE").as_deref() {
+        Ok("fused") => return StepMode::Fused,
+        Ok("fission") => return StepMode::Fission,
+        Ok("unfused") | Ok("legacy") => return StepMode::Unfused,
+        _ => {}
+    }
+    // Back-compat with the flag #84 shipped: `PHYZ_FUSED_STEP=1` pins the
+    // fused kernel, `=0` pins the original unfused sequence.
+    match std::env::var("PHYZ_FUSED_STEP").as_deref() {
+        Ok("0") | Ok("off") => StepMode::Unfused,
+        _ => StepMode::Fused,
+    }
+}
+
+/// `mode` for [`KernelBackend::launch_aba_c`]: build the cache. Mirrors
+/// `PHYZ_ABA_BUILD` in the kernels.
+pub const ABA_MODE_BUILD: u32 = 0;
+/// `mode` for [`KernelBackend::launch_aba_c`]: reuse it. `PHYZ_ABA_REUSE`.
+pub const ABA_MODE_REUSE: u32 = 1;
+/// `fk_mode` for [`KernelBackend::launch_contact_c`]: build the FK and
+/// manifold cache. Mirrors `PHYZ_FK_BUILD`.
+pub const FK_MODE_BUILD: u32 = 1;
+/// `fk_mode` for [`KernelBackend::launch_contact_c`]: reuse it.
+/// `PHYZ_FK_REUSE`.
+pub const FK_MODE_REUSE: u32 = 2;
 
 /// The CUDA batch simulator: [`BatchSim`] on [`CudaBackend`].
 #[cfg(feature = "cuda")]
@@ -623,6 +738,9 @@ impl<B: KernelBackend> BatchSim<B> {
                 std::env::var("PHYZ_FUSED_STEP").as_deref(),
                 Ok("0") | Ok("off")
             ),
+            step_mode: default_step_mode(),
+            aba_cache: None,
+            fk_cache: None,
             graphs_enabled: !matches!(
                 std::env::var("PHYZ_CUDA_GRAPHS").as_deref(),
                 Ok("0") | Ok("off") | Ok("false")
@@ -644,15 +762,57 @@ impl<B: KernelBackend> BatchSim<B> {
     /// Turn the fused impulse step on or off. On by default where the
     /// backend has one; the unfused sequence is the same arithmetic.
     pub fn set_fused_step_enabled(&mut self, on: bool) {
-        if self.fused_enabled != on {
-            self.fused_enabled = on;
+        self.set_step_mode(if on {
+            StepMode::Fused
+        } else {
+            StepMode::Unfused
+        });
+    }
+
+    /// Choose how an impulse step is issued. The three modes are
+    /// bit-identical; this is a performance switch and the A/B the roofline
+    /// example drives. See [`StepMode`].
+    pub fn set_step_mode(&mut self, mode: StepMode) {
+        if self.step_mode != mode {
+            self.step_mode = mode;
+            self.fused_enabled = mode == StepMode::Fused;
             self.invalidate_graph();
         }
     }
 
+    /// The current [`StepMode`].
+    pub fn step_mode(&self) -> StepMode {
+        self.step_mode
+    }
+
+    /// Whether an impulse step currently goes out as the fissioned stage
+    /// kernels with their caches in global memory.
+    pub fn fission_enabled(&self) -> bool {
+        self.step_mode == StepMode::Fission
+            && self.backend.supports_fission()
+            && self.impulse_sweeps() > 0
+    }
+
+    /// Allocate the fissioned path's caches if they are not there yet.
+    /// Called before a capture, never inside one — the allocation would be
+    /// uncaptured work and the addresses have to be stable for the replay.
+    fn ensure_step_caches(&mut self) -> Result<(), String> {
+        if !self.fission_enabled() {
+            return Ok(());
+        }
+        if self.aba_cache.is_none() {
+            self.aba_cache = Some(self.backend.alloc(self.nworld * layout::ABA_CACHE_FLOATS)?);
+            self.fk_cache = Some(self.backend.alloc(self.nworld * layout::FK_CACHE_FLOATS)?);
+            self.invalidate_graph();
+        }
+        Ok(())
+    }
+
     /// Whether an impulse step currently goes out as one fused launch.
     pub fn fused_step_enabled(&self) -> bool {
-        self.fused_enabled && self.backend.supports_fused_step() && self.impulse_sweeps() > 0
+        self.step_mode == StepMode::Fused
+            && self.backend.supports_fused_step()
+            && self.impulse_sweeps() > 0
     }
 
     /// Whether steps are currently replayed from a captured graph.
@@ -948,6 +1108,7 @@ impl<B: KernelBackend> BatchSim<B> {
         if n == 0 {
             return Ok(());
         }
+        self.ensure_step_caches()?;
         if !self.graphs_enabled() {
             if self.fuses(n) {
                 return self.issue_fused(n);
@@ -995,10 +1156,7 @@ impl<B: KernelBackend> BatchSim<B> {
 
     /// Whether `n` steps can go out as one fused launch.
     fn fuses(&self, n: usize) -> bool {
-        self.fused_enabled
-            && self.backend.supports_fused_step()
-            && self.impulse_sweeps() > 0
-            && n <= u32::MAX as usize
+        self.fused_step_enabled() && n <= u32::MAX as usize
     }
 
     /// `n` steps of the impulse sequence in ONE launch — see
@@ -1093,7 +1251,17 @@ impl<B: KernelBackend> BatchSim<B> {
             Some(c) if c.params.solve_mode == 1 => self.contact_sweeps,
             _ => 0,
         };
-        if sweeps > 0 {
+        if sweeps > 0 && self.fission_enabled() {
+            // The fissioned sequence: the same launches, with the ABA
+            // factorisation and the clipped face manifold carried between
+            // them in global SoA buffers instead of a 19.3 KB local frame.
+            self.launch_aba_c(aba_args, ABA_MODE_BUILD)?;
+            for w in 0..sweeps {
+                let fk_mode = if w == 0 { FK_MODE_BUILD } else { FK_MODE_REUSE };
+                self.launch_contact_c(nworld, fk_mode)?;
+                self.launch_aba_c(aba_args, ABA_MODE_REUSE)?;
+            }
+        } else if sweeps > 0 {
             self.launch_aba(aba_args)?;
             for _ in 0..sweeps {
                 self.launch_contact(nworld)?;
@@ -1135,6 +1303,48 @@ impl<B: KernelBackend> BatchSim<B> {
             &mut self.contact_state,
             &c.hf_buf,
             &self.qdd,
+        )
+    }
+
+    fn launch_contact_c(&mut self, nworld: u32, fk_mode: u32) -> Result<(), String> {
+        let Some(c) = &self.contact else {
+            return Ok(());
+        };
+        let cache = self
+            .fk_cache
+            .as_mut()
+            .ok_or("fissioned contact pass without an FK cache")?;
+        self.backend.launch_contact_c(
+            ContactArgs { nworld },
+            &c.params_buf,
+            &self.bodies,
+            &c.geometry,
+            &self.q,
+            &self.v,
+            &mut self.ext_forces,
+            &mut self.contact_state,
+            &c.hf_buf,
+            &self.qdd,
+            cache,
+            fk_mode,
+        )
+    }
+
+    fn launch_aba_c(&mut self, args: AbaArgs, mode: u32) -> Result<(), String> {
+        let cache = self
+            .aba_cache
+            .as_mut()
+            .ok_or("fissioned ABA pass without a cache")?;
+        self.backend.launch_aba_c(
+            args,
+            &self.bodies,
+            &self.q,
+            &self.v,
+            &self.ctrl,
+            &mut self.qdd,
+            &self.ext_forces,
+            cache,
+            mode,
         )
     }
 

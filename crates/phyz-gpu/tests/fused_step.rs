@@ -1,14 +1,21 @@
-//! The fused impulse step is the unfused sequence, bit for bit.
+//! The fused and FISSIONED impulse steps are the unfused sequence, bit for
+//! bit.
 //!
 //! `phyz_step_impulse` runs PD, the leading ABA, `sweeps` x [contact, ABA]
 //! and integrate in one thread per world, carrying the ABA factorisation
 //! across the sweeps of a step. The factorisation is a function of `q`, `v`
 //! and `dt`, none of which move within a step — so reusing it is not an
 //! approximation and the states must agree to the bit, not to a tolerance.
+//!
+//! [`StepMode::Fission`] carries the same two caches in global
+//! structure-of-arrays buffers instead of the thread's local stack, one stage
+//! kernel per pass. Same expressions, same order, same f32 bits through
+//! memory — so it is held to the same bit-identity, and to it with the
+//! compound deck-and-rider surface in the loop.
 #![cfg(feature = "cuda-host")]
 
 use phyz_gpu::contact_pipeline::BodyPlane;
-use phyz_gpu::cuda::HostBatchSimulator;
+use phyz_gpu::cuda::{HostBatchSimulator, StepMode};
 use phyz_gpu::{BodyContactGains, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Joint, JointType, Model, ModelBuilder, State};
@@ -161,12 +168,12 @@ fn deck_states(model: &Model, n: usize) -> Vec<State> {
         .collect()
 }
 
-fn run(fused: bool, model: &Model, init: &[State], steps: usize, chunk: usize) -> Vec<State> {
-    run_with(fused, model, init, steps, chunk, &[])
+fn run(mode: StepMode, model: &Model, init: &[State], steps: usize, chunk: usize) -> Vec<State> {
+    run_with(mode, model, init, steps, chunk, &[])
 }
 
 fn run_with(
-    fused: bool,
+    mode: StepMode,
     model: &Model,
     init: &[State],
     steps: usize,
@@ -174,14 +181,15 @@ fn run_with(
     planes: &[BodyPlane],
 ) -> Vec<State> {
     let mut sim = HostBatchSimulator::new(model.clone(), init.len()).expect("simulator");
-    sim.set_fused_step_enabled(fused);
+    sim.set_step_mode(mode);
     assert_eq!(sim.fused_step_enabled(), false, "no contact enabled yet");
     let g = BodyContactGains::uniform_frequency(model, 60.0, 1.0);
     sim.enable_contact_impulse(0.0, 0.7, &g, planes, None).unwrap();
     sim.enable_pd_control(&pd_dofs(model)).unwrap();
     sim.set_position_targets(&vec![vec![0.1; pd_dofs(model).len()]; init.len()])
         .unwrap();
-    assert_eq!(sim.fused_step_enabled(), fused);
+    assert_eq!(sim.fused_step_enabled(), mode == StepMode::Fused);
+    assert_eq!(sim.fission_enabled(), mode == StepMode::Fission);
     sim.load_states(init);
     for _ in 0..(steps / chunk) {
         sim.step_many(chunk).unwrap();
@@ -193,9 +201,14 @@ fn run_with(
 fn fused_impulse_step_is_bit_identical() {
     let model = rig();
     let init = states(&model, 3);
-    let plain = run(false, &model, &init, 600, 1);
-    for (label, chunk) in [("fused(1)", 1usize), ("fused(20)", 20)] {
-        let got = run(true, &model, &init, 600, chunk);
+    let plain = run(StepMode::Unfused, &model, &init, 600, 1);
+    for (label, mode, chunk) in [
+        ("fused(1)", StepMode::Fused, 1usize),
+        ("fused(20)", StepMode::Fused, 20),
+        ("fission(1)", StepMode::Fission, 1),
+        ("fission(20)", StepMode::Fission, 20),
+    ] {
+        let got = run(mode, &model, &init, 600, chunk);
         for (w, (a, b)) in plain.iter().zip(&got).enumerate() {
             for j in 0..model.nq {
                 assert_eq!(
@@ -251,9 +264,14 @@ fn fused_step_with_body_faces_is_bit_identical() {
     let model = deck_rig();
     let init = deck_states(&model, 3);
     let planes = deck_faces();
-    let plain = run_with(false, &model, &init, 600, 1, &planes);
-    for (label, chunk) in [("fused(1)", 1usize), ("fused(20)", 20)] {
-        let got = run_with(true, &model, &init, 600, chunk, &planes);
+    let plain = run_with(StepMode::Unfused, &model, &init, 600, 1, &planes);
+    for (label, mode, chunk) in [
+        ("fused(1)", StepMode::Fused, 1usize),
+        ("fused(20)", StepMode::Fused, 20),
+        ("fission(1)", StepMode::Fission, 1),
+        ("fission(20)", StepMode::Fission, 20),
+    ] {
+        let got = run_with(mode, &model, &init, 600, chunk, &planes);
         for (w, (a, b)) in plain.iter().zip(&got).enumerate() {
             for j in 0..model.nq {
                 assert_eq!(

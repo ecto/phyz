@@ -189,6 +189,35 @@ pub const PD_DOF_STRIDE: usize = 8;
 /// indexing past the arrays on device.
 pub const MAX_BODIES: usize = 32;
 
+/// Velocity-DOF bound for the per-step `U`/`D⁻¹` cache. Mirrors `MAX_NV` in
+/// `cuda/phyz_kernels.cu`; a wider model refactorises instead of caching.
+pub const MAX_KERNEL_NV: usize = 64;
+
+/// Floats per world in the fissioned step's ABA cache — `x_rot`, `x_pos`,
+/// `i_a`, `c_bias`, `p_bias`, `u_pack`, `dinv_pack`, `udu_ok`, in that order.
+/// Mirrors `ABA_CACHE_FLOATS` in `cuda/phyz_kernels.cu`; the two must agree
+/// or the stage kernels read the wrong field.
+pub const ABA_CACHE_FLOATS: usize = MAX_BODIES * 9
+    + MAX_BODIES * 3
+    + MAX_BODIES * 36
+    + MAX_BODIES * 6
+    + MAX_BODIES * 6
+    + MAX_KERNEL_NV * 6
+    + MAX_KERNEL_NV * 6
+    + MAX_BODIES;
+
+/// Floats per world in the fissioned step's FK/manifold cache — `w_rot`,
+/// `w_pos`, `tree_rot`, `tree_pos`, the ground manifold and the clipped face
+/// manifold. Mirrors `FK_CACHE_FLOATS` in `cuda/phyz_kernels.cu`.
+pub const FK_CACHE_FLOATS: usize = MAX_BODIES * 9
+    + MAX_BODIES * 3
+    + MAX_BODIES * 9
+    + MAX_BODIES * 3
+    + MAX_BODIES
+    + MAX_BODIES * MAX_CONTACT_PTS * 3
+    + MAX_BODIES
+    + MAX_BODIES * MAX_PLANE_CONTACT_PTS * 4;
+
 /// Pack model bodies into a flat f32 array (see [`BODY_STRIDE`]).
 pub fn pack_bodies(model: &Model) -> Vec<f32> {
     let nb = model.nbodies();

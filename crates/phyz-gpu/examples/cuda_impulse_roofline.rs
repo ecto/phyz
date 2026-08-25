@@ -118,12 +118,40 @@ fn main() {
         model.nv,
         model.dt
     );
+    // Which way the step is issued comes from `PHYZ_STEP_MODE`
+    // (fused/fission/unfused) — the A/B this example exists to run. Report
+    // what the sim actually chose rather than what was asked for.
+    match probe_mode(&model) {
+        Ok(m) => println!("step mode: {m:?}"),
+        Err(e) => println!("step mode: unknown ({e})"),
+    }
+    // `ROOFLINE_WORLDS=128,1024,4096,16384` overrides the x4 ladder.
+    let ladder: Option<Vec<usize>> = std::env::var("ROOFLINE_WORLDS").ok().map(|s| {
+        s.split(',')
+            .filter_map(|t| t.trim().parse().ok())
+            .collect()
+    });
+    let sweep_list: Vec<usize> = std::env::var("ROOFLINE_SWEEPS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![16, 8, 4, 1]);
 
-    for sweeps in [16usize, 8, 4, 1] {
+    for sweeps in sweep_list {
         println!("\ncontact_sweeps = {sweeps}");
         println!("  {:>7}  {:>10}  {:>12}  {:>12}", "worlds", "ms/step", "us/world-st", "env-steps/s");
-        let mut n = 32usize;
-        while n <= maxworlds {
+        let worlds: Vec<usize> = match &ladder {
+            Some(l) => l.clone(),
+            None => {
+                let mut v = Vec::new();
+                let mut n = 32usize;
+                while n <= maxworlds {
+                    v.push(n);
+                    n *= 4;
+                }
+                v
+            }
+        };
+        for n in worlds {
             match row(&model, n, sweeps, reps) {
                 Ok(s) => println!(
                     "  {n:>7}  {:>10.4}  {:>12.3}  {:>12.3e}",
@@ -133,7 +161,14 @@ fn main() {
                 ),
                 Err(e) => println!("  {n:>7}  error: {e}"),
             }
-            n *= 4;
         }
     }
+}
+
+/// The [`StepMode`] a sim of this model would run under, as configured.
+fn probe_mode(model: &Model) -> Result<phyz_gpu::cuda::StepMode, String> {
+    let mut sim = CudaBatchSimulator::new(model.clone(), 1)?;
+    let gains = BodyContactGains::uniform_frequency(model, 100.0, 1.0);
+    sim.enable_contact_impulse(0.0, 0.8, &gains, &[], None)?;
+    Ok(sim.step_mode())
 }

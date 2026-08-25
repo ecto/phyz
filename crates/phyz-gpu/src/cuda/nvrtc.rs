@@ -27,6 +27,10 @@ pub struct CudaBackend {
     aba: CudaFunction,
     integrate: CudaFunction,
     step_impulse: CudaFunction,
+    aba_c_build: CudaFunction,
+    aba_c_reuse: CudaFunction,
+    contact_c_build: CudaFunction,
+    contact_c_reuse: CudaFunction,
     fk: CudaFunction,
     obs: CudaFunction,
     policy: CudaFunction,
@@ -102,6 +106,10 @@ impl CudaBackend {
             aba: load("phyz_aba")?,
             integrate: load("phyz_integrate")?,
             step_impulse: load("phyz_step_impulse")?,
+            aba_c_build: load("phyz_aba_c_build")?,
+            aba_c_reuse: load("phyz_aba_c_reuse")?,
+            contact_c_build: load("phyz_contact_c_build")?,
+            contact_c_reuse: load("phyz_contact_c_reuse")?,
             fk: load("phyz_fk")?,
             obs: load("phyz_obs")?,
             policy: load("phyz_policy")?,
@@ -375,6 +383,96 @@ impl KernelBackend for CudaBackend {
 
     fn supports_fused_step(&self) -> bool {
         true
+    }
+
+    fn supports_fission(&self) -> bool {
+        true
+    }
+
+    fn launch_aba_c(
+        &self,
+        a: AbaArgs,
+        bodies: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        ctrl: &Self::Buffer,
+        qdd: &mut Self::Buffer,
+        ext_forces: &Self::Buffer,
+        aba_cache: &mut Self::Buffer,
+        mode: u32,
+    ) -> Result<(), String> {
+        // One entry point per mode: with the mode a template constant rather
+        // than a kernel argument, the reusing kernel — `sweeps` launches a
+        // step against the building one's single launch — does not have to
+        // carry the building path's register budget.
+        let f = if mode == super::ABA_MODE_REUSE {
+            &self.aba_c_reuse
+        } else {
+            &self.aba_c_build
+        };
+        // SAFETY: as in launch_pd, against `phyz_aba_c_{build,reuse}`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(f)
+                .arg(&a.nworld)
+                .arg(&a.nv)
+                .arg(&a.dt)
+                .arg(&a.nbodies)
+                .arg(&a.gx)
+                .arg(&a.gy)
+                .arg(&a.gz)
+                .arg(bodies)
+                .arg(q)
+                .arg(v)
+                .arg(ctrl)
+                .arg(qdd)
+                .arg(ext_forces)
+                .arg(aba_cache)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_aba_c"))
+    }
+
+    fn launch_contact_c(
+        &self,
+        a: ContactArgs,
+        cparams: &Self::Buffer,
+        bodies: &Self::Buffer,
+        geometry: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        ext_forces: &mut Self::Buffer,
+        contact_state: &mut Self::Buffer,
+        hf_heights: &Self::Buffer,
+        qdd: &Self::Buffer,
+        fk_cache: &mut Self::Buffer,
+        fk_mode: u32,
+    ) -> Result<(), String> {
+        // As in launch_aba_c: the reusing entry skips the whole clipped
+        // manifold search, and only gets that off its budget as a constant.
+        let f = if fk_mode == super::FK_MODE_REUSE {
+            &self.contact_c_reuse
+        } else {
+            &self.contact_c_build
+        };
+        // SAFETY: as in launch_pd, against `phyz_contact_c_{build,reuse}`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(f)
+                .arg(&a.nworld)
+                .arg(cparams)
+                .arg(bodies)
+                .arg(geometry)
+                .arg(q)
+                .arg(v)
+                .arg(ext_forces)
+                .arg(contact_state)
+                .arg(hf_heights)
+                .arg(qdd)
+                .arg(fk_cache)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_contact_c"))
     }
 
     fn launch_step_impulse(
