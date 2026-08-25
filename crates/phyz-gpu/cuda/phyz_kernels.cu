@@ -2491,33 +2491,39 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
 // held in the frame. `tests/fission_step.rs` asserts that on the bits.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// `MODE` is a template constant, not a kernel argument, on purpose: with it
+// folded the reusing entry — the one that runs `sweeps` times a step against
+// the building entry's once — drops the rigid inertias, the joint transforms
+// and the congruence products from its register budget entirely.
+template <u32 MODE>
 PHYZ_DEV void aba_g_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
                            float gx, float gy, float gz,
                            const float* bodies, const float* q, const float* v,
                            const float* ctrl, float* qdd, const float* ext_forces,
-                           float* aba_cache, u32 mode) {
+                           float* aba_cache) {
     if (world_idx >= nworld) return;
     aba_cache_g kc;
     kc.p = aba_cache;
     kc.w = world_idx;
     kc.nworld = nworld;
     aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
-                 bodies, q, v, ctrl, qdd, ext_forces, &kc, mode);
+                 bodies, q, v, ctrl, qdd, ext_forces, &kc, MODE);
 }
 
+template <u32 FK_MODE>
 PHYZ_DEV void contact_g_thread(u32 world_idx, u32 nworld, const float* cparams,
                                const float* bodies, const float* geometry,
                                const float* q, const float* v,
                                float* ext_forces, float* contact_state,
                                const float* hf_heights, const float* qdd,
-                               float* fk_cache, u32 fk_mode) {
+                               float* fk_cache) {
     if (world_idx >= nworld) return;
     fk_cache_g fc;
     fc.p = fk_cache;
     fc.w = world_idx;
     fc.nworld = nworld;
     contact_thread_c(world_idx, cparams, bodies, geometry, q, v, ext_forces,
-                     contact_state, hf_heights, qdd, &fc, fk_mode);
+                     contact_state, hf_heights, qdd, &fc, FK_MODE);
 }
 
 /// The contact pass with a fresh FK chain — the standalone pass.
@@ -2575,25 +2581,35 @@ extern "C" __global__ void phyz_step_impulse(u32 nworld, u32 nq, u32 nv, u32 n_d
                         q, v, ctrl, qdd, ext_forces, contact_state);
 }
 
-extern "C" __global__ void phyz_aba_c(u32 nworld, u32 nv, float dt, u32 nbodies,
-                                      float gx, float gy, float gz,
-                                      const float* bodies, const float* q, const float* v,
-                                      const float* ctrl, float* qdd, const float* ext_forces,
-                                      float* aba_cache, u32 mode) {
-    aba_g_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv, dt, nbodies,
-                 gx, gy, gz, bodies, q, v, ctrl, qdd, ext_forces, aba_cache, mode);
-}
+#define PHYZ_ABA_ENTRY(NAME, MODE)                                              \
+    extern "C" __global__ void NAME(u32 nworld, u32 nv, float dt, u32 nbodies,  \
+                                    float gx, float gy, float gz,               \
+                                    const float* bodies, const float* q,        \
+                                    const float* v, const float* ctrl,          \
+                                    float* qdd, const float* ext_forces,        \
+                                    float* aba_cache) {                         \
+        aba_g_thread<MODE>(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv,   \
+                           dt, nbodies, gx, gy, gz, bodies, q, v, ctrl, qdd,    \
+                           ext_forces, aba_cache);                              \
+    }
 
-extern "C" __global__ void phyz_contact_c(u32 nworld, const float* cparams,
-                                          const float* bodies, const float* geometry,
-                                          const float* q, const float* v,
-                                          float* ext_forces, float* contact_state,
-                                          const float* hf_heights, const float* qdd,
-                                          float* fk_cache, u32 fk_mode) {
-    contact_g_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, cparams,
-                     bodies, geometry, q, v, ext_forces, contact_state,
-                     hf_heights, qdd, fk_cache, fk_mode);
-}
+PHYZ_ABA_ENTRY(phyz_aba_c_build, PHYZ_ABA_BUILD)
+PHYZ_ABA_ENTRY(phyz_aba_c_reuse, PHYZ_ABA_REUSE)
+
+#define PHYZ_CONTACT_ENTRY(NAME, MODE)                                          \
+    extern "C" __global__ void NAME(u32 nworld, const float* cparams,           \
+                                    const float* bodies, const float* geometry, \
+                                    const float* q, const float* v,             \
+                                    float* ext_forces, float* contact_state,    \
+                                    const float* hf_heights, const float* qdd,  \
+                                    float* fk_cache) {                          \
+        contact_g_thread<MODE>(blockIdx.x * blockDim.x + threadIdx.x, nworld,   \
+                               cparams, bodies, geometry, q, v, ext_forces,     \
+                               contact_state, hf_heights, qdd, fk_cache);       \
+    }
+
+PHYZ_CONTACT_ENTRY(phyz_contact_c_build, PHYZ_FK_BUILD)
+PHYZ_CONTACT_ENTRY(phyz_contact_c_reuse, PHYZ_FK_REUSE)
 
 extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
                                    const float* bodies, const float* q, const float* v, float* xforms) {
@@ -2675,9 +2691,14 @@ extern "C" void phyz_host_aba_c(u32 n_threads, u32 nworld, u32 nv, float dt, u32
                                 const float* bodies, const float* q, const float* v,
                                 const float* ctrl, float* qdd, const float* ext_forces,
                                 float* aba_cache, u32 mode) {
-    for (u32 t = 0; t < n_threads; t++)
-        aba_g_thread(t, nworld, nv, dt, nbodies, gx, gy, gz, bodies, q, v, ctrl,
-                     qdd, ext_forces, aba_cache, mode);
+    for (u32 t = 0; t < n_threads; t++) {
+        if (mode == PHYZ_ABA_REUSE)
+            aba_g_thread<PHYZ_ABA_REUSE>(t, nworld, nv, dt, nbodies, gx, gy, gz,
+                                         bodies, q, v, ctrl, qdd, ext_forces, aba_cache);
+        else
+            aba_g_thread<PHYZ_ABA_BUILD>(t, nworld, nv, dt, nbodies, gx, gy, gz,
+                                         bodies, q, v, ctrl, qdd, ext_forces, aba_cache);
+    }
 }
 
 extern "C" void phyz_host_contact_c(u32 n_threads, u32 nworld, const float* cparams,
@@ -2686,9 +2707,14 @@ extern "C" void phyz_host_contact_c(u32 n_threads, u32 nworld, const float* cpar
                                     float* ext_forces, float* contact_state,
                                     const float* hf_heights, const float* qdd,
                                     float* fk_cache, u32 fk_mode) {
-    for (u32 t = 0; t < n_threads; t++)
-        contact_g_thread(t, nworld, cparams, bodies, geometry, q, v, ext_forces,
-                         contact_state, hf_heights, qdd, fk_cache, fk_mode);
+    for (u32 t = 0; t < n_threads; t++) {
+        if (fk_mode == PHYZ_FK_REUSE)
+            contact_g_thread<PHYZ_FK_REUSE>(t, nworld, cparams, bodies, geometry, q, v,
+                                            ext_forces, contact_state, hf_heights, qdd, fk_cache);
+        else
+            contact_g_thread<PHYZ_FK_BUILD>(t, nworld, cparams, bodies, geometry, q, v,
+                                            ext_forces, contact_state, hf_heights, qdd, fk_cache);
+    }
 }
 
 extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,
