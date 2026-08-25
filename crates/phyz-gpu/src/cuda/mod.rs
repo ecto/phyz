@@ -609,12 +609,21 @@ pub struct BatchSim<B: KernelBackend> {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum StepMode {
     /// One launch per step (per control period under `step_many`), both
-    /// caches on the thread's local stack. 255 registers and a 19.3 KB frame:
-    /// fewest launches, worst occupancy. `PHYZ_STEP_MODE=fused`.
+    /// caches on the thread's local stack. 255 registers and a 30 KB frame
+    /// with spills — and, on the humanoid ruler, still the fastest of the
+    /// three. The default. `PHYZ_STEP_MODE=fused`.
     Fused,
     /// The stage kernels, with both caches in global structure-of-arrays
-    /// buffers. ~34 launches per step — free under CUDA Graphs — and a frame
-    /// small enough for the kernels to actually be resident. The default.
+    /// buffers: ~34 launches per step (free under CUDA Graphs) and a frame of
+    /// 2.0–2.9 KB with no spills instead of 30 KB with them.
+    ///
+    /// **Measured slower**, and the reason is the useful part: at 4096 worlds
+    /// a one-thread-per-world grid is 64 blocks over 128 SMs, so occupancy is
+    /// bounded by the GRID, not by the register file — cutting the frame 11x
+    /// buys no extra resident warps, while every sweep now pays a dependent
+    /// global round-trip for the cache. See the roofline table in the PR.
+    /// Kept as an opt-in (`PHYZ_STEP_MODE=fission`) because the SoA cache is
+    /// what a warp-per-world rewrite needs to exist at all.
     Fission,
     /// The original per-pass launches with no cache at all: every sweep
     /// refactorises. The slowest, kept as the reference.
@@ -632,9 +641,8 @@ fn default_step_mode() -> StepMode {
     // Back-compat with the flag #84 shipped: `PHYZ_FUSED_STEP=1` pins the
     // fused kernel, `=0` pins the original unfused sequence.
     match std::env::var("PHYZ_FUSED_STEP").as_deref() {
-        Ok("1") | Ok("on") => StepMode::Fused,
         Ok("0") | Ok("off") => StepMode::Unfused,
-        _ => StepMode::Fission,
+        _ => StepMode::Fused,
     }
 }
 
