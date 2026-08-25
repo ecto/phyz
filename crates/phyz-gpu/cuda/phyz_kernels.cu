@@ -1937,7 +1937,16 @@ PHYZ_DEV void fk_thread(u32 world_idx, u32 nworld, u32 nv, u32 nbodies,
 //   7 BodyPos(a, b)       body origin, world, on axis b (0 x, 1 y, 2 z)
 //   8 ComOverSupport      com - mean(support points), axis c, aux window
 //                         (a, b) = (offset, n_support) into `aux`
+//   9 WorldSlot(a)        wconst[world*n_wc + a]
+//  10 QMinusWorld(a, b)   q[a] - wconst[world*n_wc + b]
 // Writes obs[obs_off + world*n_in + k].
+//
+// Kinds 9 and 10 read the *per-world* constant row `wconst` (n_wc floats
+// per world) instead of the op table's shared `c`: one batch can then carry
+// a different command, or a different reference posture, in every world.
+// The row is written between control steps and its address never moves, so
+// a captured graph stays valid. A slot at or past n_wc reads zero, matching
+// `ObsOp::eval_with`.
 //
 // Kind 8 is the one op that reduces: over every body with mass (the
 // `com` table, [mass, cx, cy, cz] per body, uploaded once with the spec)
@@ -1967,13 +1976,15 @@ PHYZ_DEV void obs_point_world(const float* xf, float ox, float oy, float oz,
 }
 
 PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
-                         u32 n_in, u32 obs_off,
+                         u32 n_in, u32 obs_off, u32 n_wc,
                          const float* ops, const float* aux, const float* com,
+                         const float* wconst,
                          const float* q, const float* v,
                          const float* xforms, float* obs) {
     if (world_idx >= nworld) return;
     u32 qb = world_idx * nq;
     u32 vb = world_idx * nv;
+    u32 wcb = world_idx * n_wc;
     for (u32 k = 0; k < n_in; k++) {
         u32 kind = (u32)ops[k * OBS_OP_STRIDE];
         u32 a = (u32)ops[k * OBS_OP_STRIDE + 1u];
@@ -1994,6 +2005,10 @@ PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
             else if (kind == 4u) val = atan2f(r12, r22);
             else if (kind == 5u) val = wrap_pi(c - atan2f(r01, r00));
             else val = xforms[xb + 11u];
+        } else if (kind == 9u) {
+            val = (a < n_wc) ? wconst[wcb + a] : 0.0f;
+        } else if (kind == 10u) {
+            val = q[qb + a] - ((b < n_wc) ? wconst[wcb + b] : 0.0f);
         } else if (kind == 7u) {
             u32 xb = (world_idx * nbodies + a) * XF_STRIDE;
             val = xforms[xb + 9u + (b > 2u ? 2u : b)];
@@ -2249,11 +2264,13 @@ extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
 }
 
 extern "C" __global__ void phyz_obs(u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
+                                    u32 n_wc,
                                     const float* ops, const float* aux, const float* com,
+                                    const float* wconst,
                                     const float* q, const float* v,
                                     const float* xforms, float* obs) {
     obs_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, nbodies, n_in, obs_off,
-               ops, aux, com, q, v, xforms, obs);
+               n_wc, ops, aux, com, wconst, q, v, xforms, obs);
 }
 
 extern "C" __global__ void phyz_policy(u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
@@ -2323,11 +2340,14 @@ extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,
 }
 
 extern "C" void phyz_host_obs(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 nbodies, u32 n_in, u32 obs_off,
+                              u32 n_wc,
                               const float* ops, const float* aux, const float* com,
+                              const float* wconst,
                               const float* q, const float* v,
                               const float* xforms, float* obs) {
     for (u32 t = 0; t < n_threads; t++)
-        obs_thread(t, nworld, nq, nv, nbodies, n_in, obs_off, ops, aux, com, q, v, xforms, obs);
+        obs_thread(t, nworld, nq, nv, nbodies, n_in, obs_off, n_wc, ops, aux, com, wconst,
+                   q, v, xforms, obs);
 }
 
 extern "C" void phyz_host_policy(u32 n_threads, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,

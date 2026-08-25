@@ -108,9 +108,11 @@ unsafe extern "C" {
         nbodies: u32,
         n_in: u32,
         obs_off: u32,
+        n_wc: u32,
         ops: *const f32,
         aux: *const f32,
         com: *const f32,
+        wconst: *const f32,
         q: *const f32,
         v: *const f32,
         xforms: *const f32,
@@ -159,6 +161,10 @@ impl KernelBackend for HostBackend {
 
     fn alloc(&self, len: usize) -> Result<Vec<f32>, String> {
         Ok(vec![0.0; len])
+    }
+
+    fn buffer_addr(&self, buf: &Vec<f32>) -> u64 {
+        buf.as_ptr() as u64
     }
 
     fn upload(&self, buf: &mut Vec<f32>, data: &[f32]) -> Result<(), String> {
@@ -404,6 +410,7 @@ impl KernelBackend for HostBackend {
         ops: &Vec<f32>,
         aux: &Vec<f32>,
         com: &Vec<f32>,
+        wconst: &Vec<f32>,
         q: &Vec<f32>,
         v: &Vec<f32>,
         xforms: &Vec<f32>,
@@ -419,9 +426,11 @@ impl KernelBackend for HostBackend {
                 a.nbodies,
                 a.n_in,
                 a.obs_off,
+                a.n_wc,
                 ops.as_ptr(),
                 aux.as_ptr(),
                 com.as_ptr(),
+                wconst.as_ptr(),
                 q.as_ptr(),
                 v.as_ptr(),
                 xforms.as_ptr(),

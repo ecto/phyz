@@ -187,6 +187,9 @@ pub struct ObsArgs {
     pub n_in: u32,
     /// Float offset of this step's rows in the observation history.
     pub obs_off: u32,
+    /// Per-world constants per world (the `wconst` row width); 0 when the
+    /// spec reads none.
+    pub n_wc: u32,
 }
 
 /// Scalar arguments of the policy pass.
@@ -272,6 +275,12 @@ pub trait KernelBackend {
     fn upload(&self, buf: &mut Self::Buffer, data: &[f32]) -> Result<(), String>;
     /// Copy the whole of `buf` back to the host.
     fn download(&self, buf: &Self::Buffer) -> Result<Vec<f32>, String>;
+    /// The address a launch would pass for `buf` — the device pointer on
+    /// CUDA, the host pointer on the C mirror. Only a graph-safety
+    /// assertion needs this: a buffer written between control steps has to
+    /// keep the address a captured graph baked in, and the address is the
+    /// only direct evidence of that.
+    fn buffer_addr(&self, buf: &Self::Buffer) -> u64;
     /// Block until every launch so far has completed.
     fn synchronize(&self) -> Result<(), String>;
     /// Copy `len` floats of `buf` starting at `start` back to the host.
@@ -391,6 +400,7 @@ pub trait KernelBackend {
         ops: &Self::Buffer,
         aux: &Self::Buffer,
         com: &Self::Buffer,
+        wconst: &Self::Buffer,
         q: &Self::Buffer,
         v: &Self::Buffer,
         xforms: &Self::Buffer,
@@ -441,6 +451,12 @@ struct PolicyPass<B: KernelBackend> {
     /// `[mass, com.x, com.y, com.z]` per body — the mass distribution
     /// `ObsOp::ComOverSupport` reduces over, uploaded once with the spec.
     com: B::Buffer,
+    /// `[nworld][spec.n_world_consts()]`, the per-world constant row
+    /// `ObsOp::WorldSlot` / `ObsOp::QMinusWorld` read. Allocated once with
+    /// the spec and never re-allocated while the spec stands, so its
+    /// address survives a graph capture; `set_policy_world_consts` writes
+    /// it between control steps.
+    world_consts: B::Buffer,
     weights: B::Buffer,
     stdv: B::Buffer,
     in_noise: B::Buffer,
@@ -1252,13 +1268,15 @@ impl<B: KernelBackend> BatchSim<B> {
                 .collect::<Vec<_>>(),
         )?;
 
+        let n_wc = spec.n_world_consts();
         let reuse = self.policy.take().filter(|p| {
             p.spec.n_in() == n_in
                 && p.spec.hidden == spec.hidden
                 && p.spec.n_out() == n_out
                 && p.spec.history_steps == spec.history_steps
+                && p.spec.n_world_consts() == n_wc
         });
-        let (weights, stdv, rng, z, base_targets, obs_hist, out_hist) = match reuse {
+        let (weights, stdv, rng, z, base_targets, obs_hist, out_hist, world_consts) = match reuse {
             Some(p) => (
                 p.weights,
                 p.stdv,
@@ -1267,6 +1285,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 p.base_targets,
                 p.obs_hist,
                 p.out_hist,
+                p.world_consts,
             ),
             None => (
                 self.backend.alloc(spec.n_weights())?,
@@ -1277,6 +1296,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 self.backend.alloc(spec.history_steps * nworld * n_in)?,
                 self.backend
                     .alloc(spec.history_steps * nworld * (n_out + 1))?,
+                self.backend.alloc((nworld * n_wc).max(1))?,
             ),
         };
         self.policy = Some(PolicyPass {
@@ -1294,6 +1314,7 @@ impl<B: KernelBackend> BatchSim<B> {
             base_targets,
             obs_hist,
             out_hist,
+            world_consts,
         });
         Ok(())
     }
@@ -1345,6 +1366,52 @@ impl<B: KernelBackend> BatchSim<B> {
         backend.upload(&mut p.base_targets, &data)
     }
 
+    /// Write the per-world constant rows the observation ops
+    /// [`crate::policy_pipeline::ObsOp::WorldSlot`] and
+    /// [`crate::policy_pipeline::ObsOp::QMinusWorld`] read: one row of
+    /// [`PolicySpec::n_world_consts`] values per world, in world order.
+    ///
+    /// This is the one per-world table that is *meant* to change between
+    /// control steps — a time-varying command, a per-world reference
+    /// posture — so the buffer is allocated with the spec and written in
+    /// place. The address never moves while the spec stands, which is what
+    /// makes it safe to write inside a captured step span: the graph baked
+    /// in the pointer, not the contents.
+    ///
+    /// Rows shorter than the spec's width are zero-filled and longer ones
+    /// are truncated, as in
+    /// [`BatchSim::set_policy_base_targets`]; a spec that reads no
+    /// per-world constant accepts any rows and stores nothing.
+    pub fn set_policy_world_consts(&mut self, rows: &[Vec<f64>]) -> Result<(), String> {
+        let nworld = self.nworld;
+        let (backend, p) = self.policy_parts()?;
+        let n_wc = p.spec.n_world_consts();
+        if n_wc == 0 {
+            return Ok(());
+        }
+        let data = pack_rows(rows, nworld, n_wc);
+        backend.upload(&mut p.world_consts, &data)
+    }
+
+    /// The address of the per-world constants buffer — what a captured
+    /// graph bakes into its `phyz_obs` node. It must not change across
+    /// [`BatchSim::set_policy_world_consts`] calls, or a replay would read
+    /// a freed allocation; the tests assert exactly that.
+    pub fn policy_world_consts_addr(&self) -> Result<u64, String> {
+        let p = self.policy.as_ref().ok_or("policy pass not enabled")?;
+        Ok(self.backend.buffer_addr(&p.world_consts))
+    }
+
+    /// The per-world constant rows, downloaded (`[world][slot]`).
+    pub fn readback_policy_world_consts(&self) -> Result<Vec<f32>, String> {
+        let p = self.policy.as_ref().ok_or("policy pass not enabled")?;
+        let n_wc = p.spec.n_world_consts();
+        if n_wc == 0 {
+            return Ok(Vec::new());
+        }
+        self.backend.download(&p.world_consts)
+    }
+
     /// Seed every world's random stream (see
     /// [`crate::policy_pipeline::world_seed`]) and reset the AR(1) noise
     /// state. Same seed, same device, same actions.
@@ -1394,10 +1461,12 @@ impl<B: KernelBackend> BatchSim<B> {
                 nbodies: nb as u32,
                 n_in: n_in as u32,
                 obs_off: obs_off as u32,
+                n_wc: p.spec.n_world_consts() as u32,
             },
             &p.ops,
             &p.obs_aux,
             &p.com,
+            &p.world_consts,
             &self.q,
             &self.v,
             kin,
