@@ -5,11 +5,12 @@
 //! crate links and runs on machines without CUDA, and [`CudaBackend::new`]
 //! reports the missing driver as an `Err`.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaGraph, CudaSlice, CudaStream, DevicePtr, LaunchConfig,
-    PushKernelArg, sys,
+    PinnedHostSlice, PushKernelArg, sys,
 };
 use cudarc::nvrtc::CompileOptions;
 
@@ -37,6 +38,59 @@ pub struct CudaBackend {
     /// False when the context could not give us a capturable stream and we
     /// fell back to the legacy default stream, which cannot be captured.
     capturable: bool,
+    /// Page-locked host staging slots for [`KernelBackend::upload`], grown
+    /// on demand and reused round-robin. See [`CudaBackend::pinned_upload`].
+    staging: Mutex<Staging>,
+}
+
+/// The pinned host staging pool: one ring of slots per copy length.
+///
+/// A ring rather than a single buffer, because one slot would be correct and
+/// useless. `cudarc` records an event on a `PinnedHostSlice` after each copy
+/// it feeds, and `as_mut_slice` — the only way to write the slot again —
+/// calls `event.synchronize()`. Writing a single reused slot would therefore
+/// block the host on the previous copy, i.e. on every launch queued ahead of
+/// it: the exact drain we came here to remove, merely deferred by one step.
+/// A ring hands each upload a slot last used `slots` uploads ago, whose copy
+/// has long since retired, so the wait is satisfied without blocking.
+///
+/// A ring *per length* because `CudaStream::memcpy_htod` copies `src.len()`
+/// elements, so a slot has to match the request exactly; a slot cannot be
+/// sub-sliced. The distinct lengths in a run are the few constant tables the
+/// step loop rewrites, so the map stays tiny.
+///
+/// The host cannot run arbitrarily far ahead of the device — the driver's
+/// pending-launch queue backpressures the launch call itself — so a shallow
+/// ring covers the real depth. `PHYZ_PINNED_SLOTS` overrides the count and
+/// `PHYZ_PINNED_MAX` the per-slot ceiling (in floats); a `0` slot count
+/// disables staging entirely and restores the pageable path, which is the
+/// escape hatch if a machine cannot spare the locked pages.
+struct Staging {
+    rings: HashMap<usize, LenRing>,
+    /// Ring depth, and the largest copy worth a slot.
+    slots: usize,
+    max_len: usize,
+}
+
+/// The slots for one copy length, handed out round-robin.
+#[derive(Default)]
+struct LenRing {
+    slots: Vec<PinnedHostSlice<f32>>,
+    /// Slot handed to the next upload of this length.
+    next: usize,
+}
+
+/// Ring depth and per-slot ceiling, unless the environment says otherwise.
+/// Four slots is enough to outrun the driver's own queue depth, and the
+/// 4 Mfloat ceiling keeps a stray large copy from locking 16 MB per slot.
+const PINNED_SLOTS: usize = 4;
+const PINNED_MAX_LEN: usize = 1 << 22;
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
@@ -116,7 +170,55 @@ impl CudaBackend {
             ctx,
             stream,
             capturable,
+            staging: Mutex::new(Staging {
+                rings: HashMap::new(),
+                slots: env_usize("PHYZ_PINNED_SLOTS", PINNED_SLOTS),
+                max_len: env_usize("PHYZ_PINNED_MAX", PINNED_MAX_LEN),
+            }),
         })
+    }
+
+    /// Copy `data` to `buf` through a page-locked staging slot.
+    ///
+    /// Returns `Ok(false)` when the copy does not qualify — staging is
+    /// disabled, the copy is empty, or it exceeds the per-slot ceiling — and
+    /// the caller should fall through to the pageable path. Allocating a
+    /// slot is best-effort for the same reason: a machine out of locked
+    /// pages should get a slow upload, not a failed step.
+    fn pinned_upload(&self, buf: &mut CudaSlice<f32>, data: &[f32]) -> Result<bool, String> {
+        let mut staging = match self.staging.lock() {
+            Ok(s) => s,
+            // A panic in another thread's upload should not disable copies.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if staging.slots == 0 || data.is_empty() || data.len() > staging.max_len {
+            return Ok(false);
+        }
+        let depth = staging.slots;
+        let ring = staging.rings.entry(data.len()).or_default();
+        let idx = if ring.slots.len() < depth {
+            // Still filling the ring: a fresh slot has no event to wait on.
+            match unsafe { self.ctx.alloc_pinned::<f32>(data.len()) } {
+                Ok(slot) => ring.slots.push(slot),
+                Err(_) => return Ok(false),
+            }
+            ring.slots.len() - 1
+        } else {
+            let idx = ring.next;
+            ring.next = (ring.next + 1) % depth;
+            idx
+        };
+        let slot = &mut ring.slots[idx];
+        // Blocks only on this slot's own last copy, `depth` uploads back.
+        slot.as_mut_slice()
+            .map_err(err("map pinned staging slot"))?
+            .copy_from_slice(data);
+        let slot = &ring.slots[idx];
+        let mut view = buf.slice_mut(0..data.len());
+        self.stream
+            .memcpy_htod(slot, &mut view)
+            .map_err(err("pinned upload to device"))?;
+        Ok(true)
     }
 
     /// The underlying context, for callers that want to share the device.
@@ -208,6 +310,23 @@ impl KernelBackend for CudaBackend {
                 data.len(),
                 buf.len()
             ));
+        }
+        // Stage through page-locked host memory when the copy is small
+        // enough to be worth a pinned slot. `cuMemcpyHtoDAsync` out of
+        // PAGEABLE memory is asynchronous in name only: past ~64 kB the
+        // driver has to bounce the bytes through its own staging buffer and
+        // blocks the calling thread until the copy retires — which means
+        // waiting for everything already queued on this stream. In an RL
+        // collect that is catastrophic. The per-world constants row is
+        // rewritten every control step (`set_policy_world_consts`), and at
+        // 16384 worlds each rewrite drained a queue holding hundreds of
+        // milliseconds of issued work: measured at 331 s of a 333 s issue
+        // total over 1147 uploads in one 414 s collect. Out of pinned
+        // memory the same call is a true DMA — enqueued on the stream and
+        // returned from immediately, with ordering still supplied by the
+        // stream, so no caller has to change.
+        if self.pinned_upload(buf, data)? {
+            return Ok(());
         }
         let mut view = buf.slice_mut(0..data.len());
         self.stream

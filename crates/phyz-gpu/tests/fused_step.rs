@@ -184,7 +184,8 @@ fn run_with(
     sim.set_step_mode(mode);
     assert_eq!(sim.fused_step_enabled(), false, "no contact enabled yet");
     let g = BodyContactGains::uniform_frequency(model, 60.0, 1.0);
-    sim.enable_contact_impulse(0.0, 0.7, &g, planes, None).unwrap();
+    sim.enable_contact_impulse(0.0, 0.7, &g, planes, None)
+        .unwrap();
     sim.enable_pd_control(&pd_dofs(model)).unwrap();
     sim.set_position_targets(&vec![vec![0.1; pd_dofs(model).len()]; init.len()])
         .unwrap();
