@@ -52,6 +52,39 @@ unsafe extern "C" {
         qdd: *mut f32,
         ext_forces: *const f32,
     );
+    fn phyz_host_aba_c(
+        n_threads: u32,
+        nworld: u32,
+        nv: u32,
+        dt: f32,
+        nbodies: u32,
+        gx: f32,
+        gy: f32,
+        gz: f32,
+        bodies: *const f32,
+        q: *const f32,
+        v: *const f32,
+        ctrl: *const f32,
+        qdd: *mut f32,
+        ext_forces: *const f32,
+        aba_cache: *mut f32,
+        mode: u32,
+    );
+    fn phyz_host_contact_c(
+        n_threads: u32,
+        nworld: u32,
+        cparams: *const f32,
+        bodies: *const f32,
+        geometry: *const f32,
+        q: *const f32,
+        v: *const f32,
+        ext_forces: *mut f32,
+        contact_state: *mut f32,
+        hf_heights: *const f32,
+        qdd: *const f32,
+        fk_cache: *mut f32,
+        fk_mode: u32,
+    );
     fn phyz_host_integrate(
         n_threads: u32,
         nworld: u32,
@@ -328,6 +361,84 @@ impl KernelBackend for HostBackend {
 
     fn supports_fused_step(&self) -> bool {
         true
+    }
+
+    fn supports_fission(&self) -> bool {
+        true
+    }
+
+    #[allow(clippy::ptr_arg)]
+    fn launch_aba_c(
+        &self,
+        a: AbaArgs,
+        bodies: &Vec<f32>,
+        q: &Vec<f32>,
+        v: &Vec<f32>,
+        ctrl: &Vec<f32>,
+        qdd: &mut Vec<f32>,
+        ext_forces: &Vec<f32>,
+        aba_cache: &mut Vec<f32>,
+        mode: u32,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_host_aba_c`.
+        unsafe {
+            phyz_host_aba_c(
+                a.nworld,
+                a.nworld,
+                a.nv,
+                a.dt,
+                a.nbodies,
+                a.gx,
+                a.gy,
+                a.gz,
+                bodies.as_ptr(),
+                q.as_ptr(),
+                v.as_ptr(),
+                ctrl.as_ptr(),
+                qdd.as_mut_ptr(),
+                ext_forces.as_ptr(),
+                aba_cache.as_mut_ptr(),
+                mode,
+            );
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::ptr_arg)]
+    fn launch_contact_c(
+        &self,
+        a: ContactArgs,
+        cparams: &Vec<f32>,
+        bodies: &Vec<f32>,
+        geometry: &Vec<f32>,
+        q: &Vec<f32>,
+        v: &Vec<f32>,
+        ext_forces: &mut Vec<f32>,
+        contact_state: &mut Vec<f32>,
+        hf_heights: &Vec<f32>,
+        qdd: &Vec<f32>,
+        fk_cache: &mut Vec<f32>,
+        fk_mode: u32,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_host_contact_c`.
+        unsafe {
+            phyz_host_contact_c(
+                a.nworld,
+                a.nworld,
+                cparams.as_ptr(),
+                bodies.as_ptr(),
+                geometry.as_ptr(),
+                q.as_ptr(),
+                v.as_ptr(),
+                ext_forces.as_mut_ptr(),
+                contact_state.as_mut_ptr(),
+                hf_heights.as_ptr(),
+                qdd.as_ptr(),
+                fk_cache.as_mut_ptr(),
+                fk_mode,
+            );
+        }
+        Ok(())
     }
 
     #[allow(clippy::ptr_arg)]

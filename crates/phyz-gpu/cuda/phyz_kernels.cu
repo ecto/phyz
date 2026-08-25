@@ -26,11 +26,14 @@
 #if defined(__CUDACC__) || defined(__CUDACC_RTC__)
 #define PHYZ_ON_DEVICE 1
 #define PHYZ_DEV __device__ __forceinline__
+/// Same as `PHYZ_DEV`, for a struct member function where `static` is illegal.
+#define PHYZ_M __device__ __forceinline__
 #else
 #define PHYZ_ON_DEVICE 0
 #include <math.h>
 #include <string.h>
 #define PHYZ_DEV static inline
+#define PHYZ_M inline
 #endif
 
 typedef unsigned int u32;
@@ -69,6 +72,16 @@ PHYZ_DEV i32 f_as_i(float f) {
     i32 i;
     memcpy(&i, &f, 4);
     return i;
+#endif
+}
+
+PHYZ_DEV float u_as_f(u32 u) {
+#if PHYZ_ON_DEVICE
+    return __uint_as_float(u);
+#else
+    float f;
+    memcpy(&f, &u, 4);
+    return f;
 #endif
 }
 
@@ -832,47 +845,122 @@ PHYZ_DEV void add_ext(float* ext_forces, u32 ef_base, v3 torque, v3 force) {
 // velocities alone, so the body-to-world rotations and origins — and the
 // joint transforms they are built from — are the same for every sweep of a
 // step. Same argument as `aba_cache_t`, same bit-identity.
-typedef struct {
-    r9 w_rot[MAX_BODIES];
-    v3 w_pos[MAX_BODIES];
-    r9 tree_rot[MAX_BODIES];
-    v3 tree_pos[MAX_BODIES];
-    /// The manifold each body ended up with: how many points, which
-    /// (instance, corner) they are and how deep. Ranking candidates by depth
-    /// is a function of `q` alone, so it too survives a sweep.
-    u32 n_sel[MAX_BODIES];
-    float sel_pen[MAX_BODIES * MAX_PTS];
-    u32 sel_g[MAX_BODIES * MAX_PTS];
-    u32 sel_c[MAX_BODIES * MAX_PTS];
-    /// The same thing for the body-attached FACE pass — the pooled,
-    /// depth-ranked, Sutherland-Hodgman-clipped manifold each body has
-    /// against every face it can touch.
-    ///
-    /// That search reads `w_rot`, `w_pos` and the geometry table and nothing
-    /// else, so like the ground manifold above it is a function of `q` and
-    /// survives a sweep unchanged. It is also, on a compound surface, by far
-    /// the most expensive thing in a step: ipse's K1 rig collides its bodies
-    /// against 45 deck and kicktail faces, and before this the entire clip
-    /// ran again on every one of the 16 sweeps.
-    ///
-    /// `pl_gpl` packs the instance in the low 16 bits and the face in the
-    /// high 16 — this array is per thread and the footprint is the budget.
-    u32 pl_n[MAX_BODIES];
-    float pl_pen[MAX_BODIES * MAX_PLANE_PTS];
-    float pl_u[MAX_BODIES * MAX_PLANE_PTS];
-    float pl_v[MAX_BODIES * MAX_PLANE_PTS];
-    u32 pl_gpl[MAX_BODIES * MAX_PLANE_PTS];
-} fk_cache_t;
+// The cache is reached through METHODS, not members, so the same code can
+// carry it in two places: on the thread's local stack (`fk_cache_t`, what the
+// fused kernel uses) or in a global structure-of-arrays buffer
+// (`fk_cache_g`, what the fissioned stage kernels use, world index fastest so
+// the loads coalesce across worlds). Same values, same order, same bits.
+//
+// Field offsets, in floats per world, for the SoA layout.
+#define FKC_W_ROT    0u
+#define FKC_W_POS    (FKC_W_ROT    + MAX_BODIES * 9u)
+#define FKC_TREE_ROT (FKC_W_POS    + MAX_BODIES * 3u)
+#define FKC_TREE_POS (FKC_TREE_ROT + MAX_BODIES * 9u)
+#define FKC_N_SEL    (FKC_TREE_POS + MAX_BODIES * 3u)
+#define FKC_SEL_PEN  (FKC_N_SEL    + MAX_BODIES)
+#define FKC_SEL_G    (FKC_SEL_PEN  + MAX_BODIES * MAX_PTS)
+#define FKC_SEL_C    (FKC_SEL_G    + MAX_BODIES * MAX_PTS)
+#define FKC_PL_N     (FKC_SEL_C    + MAX_BODIES * MAX_PTS)
+#define FKC_PL_PEN   (FKC_PL_N     + MAX_BODIES)
+#define FKC_PL_U     (FKC_PL_PEN   + MAX_BODIES * MAX_PLANE_PTS)
+#define FKC_PL_V     (FKC_PL_U     + MAX_BODIES * MAX_PLANE_PTS)
+#define FKC_PL_GPL   (FKC_PL_V     + MAX_BODIES * MAX_PLANE_PTS)
+/// Floats per world. Mirrored by `layout::FK_CACHE_FLOATS`.
+#define FK_CACHE_FLOATS (FKC_PL_GPL + MAX_BODIES * MAX_PLANE_PTS)
+
+struct fk_cache_t {
+    r9 w_rot_[MAX_BODIES];
+    v3 w_pos_[MAX_BODIES];
+    r9 tree_rot_[MAX_BODIES];
+    v3 tree_pos_[MAX_BODIES];
+    u32 n_sel_[MAX_BODIES];
+    float sel_pen_[MAX_BODIES * MAX_PTS];
+    u32 sel_g_[MAX_BODIES * MAX_PTS];
+    u32 sel_c_[MAX_BODIES * MAX_PTS];
+    u32 pl_n_[MAX_BODIES];
+    float pl_pen_[MAX_BODIES * MAX_PLANE_PTS];
+    float pl_u_[MAX_BODIES * MAX_PLANE_PTS];
+    float pl_v_[MAX_BODIES * MAX_PLANE_PTS];
+    u32 pl_gpl_[MAX_BODIES * MAX_PLANE_PTS];
+
+    PHYZ_M r9 w_rot(u32 i) const { return w_rot_[i]; }
+    PHYZ_M void set_w_rot(u32 i, r9 x) { w_rot_[i] = x; }
+    PHYZ_M v3 w_pos(u32 i) const { return w_pos_[i]; }
+    PHYZ_M void set_w_pos(u32 i, v3 x) { w_pos_[i] = x; }
+    PHYZ_M r9 tree_rot(u32 i) const { return tree_rot_[i]; }
+    PHYZ_M void set_tree_rot(u32 i, r9 x) { tree_rot_[i] = x; }
+    PHYZ_M v3 tree_pos(u32 i) const { return tree_pos_[i]; }
+    PHYZ_M void set_tree_pos(u32 i, v3 x) { tree_pos_[i] = x; }
+    PHYZ_M u32 n_sel(u32 i) const { return n_sel_[i]; }
+    PHYZ_M void set_n_sel(u32 i, u32 x) { n_sel_[i] = x; }
+    PHYZ_M float sel_pen(u32 k) const { return sel_pen_[k]; }
+    PHYZ_M void set_sel_pen(u32 k, float x) { sel_pen_[k] = x; }
+    PHYZ_M u32 sel_g(u32 k) const { return sel_g_[k]; }
+    PHYZ_M void set_sel_g(u32 k, u32 x) { sel_g_[k] = x; }
+    PHYZ_M u32 sel_c(u32 k) const { return sel_c_[k]; }
+    PHYZ_M void set_sel_c(u32 k, u32 x) { sel_c_[k] = x; }
+    PHYZ_M u32 pl_n(u32 i) const { return pl_n_[i]; }
+    PHYZ_M void set_pl_n(u32 i, u32 x) { pl_n_[i] = x; }
+    PHYZ_M float pl_pen(u32 k) const { return pl_pen_[k]; }
+    PHYZ_M void set_pl_pen(u32 k, float x) { pl_pen_[k] = x; }
+    PHYZ_M float pl_u(u32 k) const { return pl_u_[k]; }
+    PHYZ_M void set_pl_u(u32 k, float x) { pl_u_[k] = x; }
+    PHYZ_M float pl_v(u32 k) const { return pl_v_[k]; }
+    PHYZ_M void set_pl_v(u32 k, float x) { pl_v_[k] = x; }
+    PHYZ_M u32 pl_gpl(u32 k) const { return pl_gpl_[k]; }
+    PHYZ_M void set_pl_gpl(u32 k, u32 x) { pl_gpl_[k] = x; }
+};
+
+/// The same cache in a global SoA buffer: element `e` of world `w` lives at
+/// `p[e * nworld + w]`, so a warp's 32 worlds read 32 adjacent floats.
+struct fk_cache_g {
+    float* p;
+    u32 w;
+    u32 nworld;
+
+    PHYZ_M float ldf(u32 o) const { return p[o * nworld + w]; }
+    PHYZ_M void stf(u32 o, float x) { p[o * nworld + w] = x; }
+    PHYZ_M u32 ldu(u32 o) const { return f_as_u(ldf(o)); }
+    PHYZ_M void stu(u32 o, u32 x) { stf(o, u_as_f(x)); }
+
+    PHYZ_M r9 w_rot(u32 i) const { r9 r; for (u32 k = 0; k < 9u; k++) r.r[k] = ldf(FKC_W_ROT + i * 9u + k); return r; }
+    PHYZ_M void set_w_rot(u32 i, r9 x) { for (u32 k = 0; k < 9u; k++) stf(FKC_W_ROT + i * 9u + k, x.r[k]); }
+    PHYZ_M v3 w_pos(u32 i) const { u32 o = FKC_W_POS + i * 3u; return v3_(ldf(o), ldf(o + 1u), ldf(o + 2u)); }
+    PHYZ_M void set_w_pos(u32 i, v3 x) { u32 o = FKC_W_POS + i * 3u; stf(o, x.x); stf(o + 1u, x.y); stf(o + 2u, x.z); }
+    PHYZ_M r9 tree_rot(u32 i) const { r9 r; for (u32 k = 0; k < 9u; k++) r.r[k] = ldf(FKC_TREE_ROT + i * 9u + k); return r; }
+    PHYZ_M void set_tree_rot(u32 i, r9 x) { for (u32 k = 0; k < 9u; k++) stf(FKC_TREE_ROT + i * 9u + k, x.r[k]); }
+    PHYZ_M v3 tree_pos(u32 i) const { u32 o = FKC_TREE_POS + i * 3u; return v3_(ldf(o), ldf(o + 1u), ldf(o + 2u)); }
+    PHYZ_M void set_tree_pos(u32 i, v3 x) { u32 o = FKC_TREE_POS + i * 3u; stf(o, x.x); stf(o + 1u, x.y); stf(o + 2u, x.z); }
+    PHYZ_M u32 n_sel(u32 i) const { return ldu(FKC_N_SEL + i); }
+    PHYZ_M void set_n_sel(u32 i, u32 x) { stu(FKC_N_SEL + i, x); }
+    PHYZ_M float sel_pen(u32 k) const { return ldf(FKC_SEL_PEN + k); }
+    PHYZ_M void set_sel_pen(u32 k, float x) { stf(FKC_SEL_PEN + k, x); }
+    PHYZ_M u32 sel_g(u32 k) const { return ldu(FKC_SEL_G + k); }
+    PHYZ_M void set_sel_g(u32 k, u32 x) { stu(FKC_SEL_G + k, x); }
+    PHYZ_M u32 sel_c(u32 k) const { return ldu(FKC_SEL_C + k); }
+    PHYZ_M void set_sel_c(u32 k, u32 x) { stu(FKC_SEL_C + k, x); }
+    PHYZ_M u32 pl_n(u32 i) const { return ldu(FKC_PL_N + i); }
+    PHYZ_M void set_pl_n(u32 i, u32 x) { stu(FKC_PL_N + i, x); }
+    PHYZ_M float pl_pen(u32 k) const { return ldf(FKC_PL_PEN + k); }
+    PHYZ_M void set_pl_pen(u32 k, float x) { stf(FKC_PL_PEN + k, x); }
+    PHYZ_M float pl_u(u32 k) const { return ldf(FKC_PL_U + k); }
+    PHYZ_M void set_pl_u(u32 k, float x) { stf(FKC_PL_U + k, x); }
+    PHYZ_M float pl_v(u32 k) const { return ldf(FKC_PL_V + k); }
+    PHYZ_M void set_pl_v(u32 k, float x) { stf(FKC_PL_V + k, x); }
+    PHYZ_M u32 pl_gpl(u32 k) const { return ldu(FKC_PL_GPL + k); }
+    PHYZ_M void set_pl_gpl(u32 k, u32 x) { stu(FKC_PL_GPL + k, x); }
+};
 
 #define PHYZ_FK_PLAIN 0u
 #define PHYZ_FK_BUILD 1u
 #define PHYZ_FK_REUSE 2u
 
+template <class FC>
 PHYZ_DEV void fk_world_c(const float* bodies, u32 nb, u32 nv,
                          const float* q, u32 q_base, const float* v, u32 v_base,
                          const float* qdd, float dt, bool use_free,
                          r9* w_rot, v3* w_pos, v3* w_omega, v3* w_lin,
-                         fk_cache_t* fc, u32 fk_mode) {
+                         FC* fc, u32 fk_mode) {
     bool fk_reuse = fk_mode == PHYZ_FK_REUSE;
     for (u32 i = 0; i < nb; i++) {
         if (fk_reuse) {
@@ -899,15 +987,15 @@ PHYZ_DEV void fk_world_c(const float* bodies, u32 nb, u32 nv,
                 jo = v3_(vv_r[0], vv_r[1], vv_r[2]);
                 jl = v3_(vv_r[3], vv_r[4], vv_r[5]);
             }
-            w_rot[i] = fc->w_rot[i];
-            w_pos[i] = fc->w_pos[i];
+            w_rot[i] = fc->w_rot(i);
+            w_pos[i] = fc->w_pos(i);
             if (parent_r < 0) {
                 w_omega[i] = jo;
                 w_lin[i] = jl;
             } else {
                 u32 pi = (u32)parent_r;
-                r9 tr = fc->tree_rot[i];
-                v3 tp = fc->tree_pos[i];
+                r9 tr = fc->tree_rot(i);
+                v3 tp = fc->tree_pos(i);
                 v3 pw = rot_mul(tr, w_omega[pi]);
                 v3 pv = v3_sub(rot_mul(tr, w_lin[pi]),
                                rot_mul(tr, cross3(tp, w_omega[pi])));
@@ -949,8 +1037,8 @@ PHYZ_DEV void fk_world_c(const float* bodies, u32 nb, u32 nv,
         v3 tree_pos = v3_add(ptj_pos, rot_tmul(ptj_rot, j.pos));
         r9 tree_rt = transpose_rot(tree_rot);
         if (fk_mode == PHYZ_FK_BUILD) {
-            fc->tree_rot[i] = tree_rot;
-            fc->tree_pos[i] = tree_pos;
+            fc->set_tree_rot(i, tree_rot);
+            fc->set_tree_pos(i, tree_pos);
         }
         if (parent < 0) {
             w_rot[i] = tree_rt;
@@ -969,8 +1057,8 @@ PHYZ_DEV void fk_world_c(const float* bodies, u32 nb, u32 nv,
             w_lin[i] = v3_add(pv, j_lin);
         }
         if (fk_mode == PHYZ_FK_BUILD) {
-            fc->w_rot[i] = w_rot[i];
-            fc->w_pos[i] = w_pos[i];
+            fc->set_w_rot(i, w_rot[i]);
+            fc->set_w_pos(i, w_pos[i]);
         }
     }
 }
@@ -984,12 +1072,13 @@ PHYZ_DEV void fk_world(const float* bodies, u32 nb, u32 nv,
                w_rot, w_pos, w_omega, w_lin, (fk_cache_t*)0, PHYZ_FK_PLAIN);
 }
 
+template <class FC>
 PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
                                const float* bodies, const float* geometry,
                                const float* q, const float* v,
                                float* ext_forces, float* contact_state,
                                const float* hf_heights, const float* qdd,
-                               fk_cache_t* fc, u32 fk_mode) {
+                               FC* fc, u32 fk_mode) {
     cparams_t cp = decode_cparams(cparams);
     if (world_idx >= cp.nworld) return;
 
@@ -1041,11 +1130,11 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         u32 sel_c[MAX_PTS];
         u32 n_sel = 0u;
         if (fk_mode == PHYZ_FK_REUSE) {
-            n_sel = fc->n_sel[i];
+            n_sel = fc->n_sel(i);
             for (u32 k = 0; k < n_sel; k++) {
-                sel_pen[k] = fc->sel_pen[i * MAX_PTS + k];
-                sel_g[k] = fc->sel_g[i * MAX_PTS + k];
-                sel_c[k] = fc->sel_c[i * MAX_PTS + k];
+                sel_pen[k] = fc->sel_pen(i * MAX_PTS + k);
+                sel_g[k] = fc->sel_g(i * MAX_PTS + k);
+                sel_c[k] = fc->sel_c(i * MAX_PTS + k);
             }
         }
         for (u32 g = gbegin; fk_mode != PHYZ_FK_REUSE && g < gbegin + gcount; g++) {
@@ -1075,11 +1164,11 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         }
 
         if (fk_mode == PHYZ_FK_BUILD) {
-            fc->n_sel[i] = n_sel;
+            fc->set_n_sel(i, n_sel);
             for (u32 k = 0; k < n_sel; k++) {
-                fc->sel_pen[i * MAX_PTS + k] = sel_pen[k];
-                fc->sel_g[i * MAX_PTS + k] = sel_g[k];
-                fc->sel_c[i * MAX_PTS + k] = sel_c[k];
+                fc->set_sel_pen(i * MAX_PTS + k, sel_pen[k]);
+                fc->set_sel_g(i * MAX_PTS + k, sel_g[k]);
+                fc->set_sel_c(i * MAX_PTS + k, sel_c[k]);
             }
         }
 
@@ -1251,14 +1340,15 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         // A reusing sweep already has this body's clipped manifold; the
         // search below is `q`-only and cannot have moved. See `fk_cache_t`.
         if (fk_mode == PHYZ_FK_REUSE) {
-            n_sel = fc->pl_n[i];
+            n_sel = fc->pl_n(i);
             for (u32 k = 0; k < n_sel; k++) {
                 u32 s = i * MAX_PLANE_PTS + k;
-                sel_pen[k] = fc->pl_pen[s];
-                sel_u[k] = fc->pl_u[s];
-                sel_v[k] = fc->pl_v[s];
-                sel_g[k] = fc->pl_gpl[s] & 0xffffu;
-                sel_pl[k] = fc->pl_gpl[s] >> 16u;
+                sel_pen[k] = fc->pl_pen(s);
+                sel_u[k] = fc->pl_u(s);
+                sel_v[k] = fc->pl_v(s);
+                u32 gpl = fc->pl_gpl(s);
+                sel_g[k] = gpl & 0xffffu;
+                sel_pl[k] = gpl >> 16u;
             }
         }
 
@@ -1404,13 +1494,13 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         }
 
         if (fk_mode == PHYZ_FK_BUILD) {
-            fc->pl_n[i] = n_sel;
+            fc->set_pl_n(i, n_sel);
             for (u32 k = 0; k < n_sel; k++) {
                 u32 s = i * MAX_PLANE_PTS + k;
-                fc->pl_pen[s] = sel_pen[k];
-                fc->pl_u[s] = sel_u[k];
-                fc->pl_v[s] = sel_v[k];
-                fc->pl_gpl[s] = (sel_g[k] & 0xffffu) | (sel_pl[k] << 16u);
+                fc->set_pl_pen(s, sel_pen[k]);
+                fc->set_pl_u(s, sel_u[k]);
+                fc->set_pl_v(s, sel_v[k]);
+                fc->set_pl_gpl(s, (sel_g[k] & 0xffffu) | (sel_pl[k] << 16u));
             }
         }
 
@@ -1590,32 +1680,86 @@ PHYZ_DEV void joint_udu(const float* bodies, u32 i, u32 jtype, u32 ndof, v3 axis
 // changes `ext_forces` and nothing else. Carrying it across the sweeps of a
 // step is what `PHYZ_ABA_REUSE` below buys; the values are bit-identical to
 // recomputing them, since the inputs are bit-identical.
-typedef struct {
-    r9 x_rot[MAX_BODIES];
-    v3 x_pos[MAX_BODIES];
+// Reached through METHODS, not members, for the same reason as `fk_cache_t`:
+// the fused kernel keeps it on the local stack, the fissioned stage kernels
+// keep it in a global SoA buffer with the world index fastest-varying.
+//
+// Field offsets, in floats per world.
+#define ABC_X_ROT  0u
+#define ABC_X_POS  (ABC_X_ROT  + MAX_BODIES * 9u)
+#define ABC_I_A    (ABC_X_POS  + MAX_BODIES * 3u)
+#define ABC_C_BIAS (ABC_I_A    + MAX_BODIES * 36u)
+#define ABC_P_BIAS (ABC_C_BIAS + MAX_BODIES * 6u)
+#define ABC_U_PACK (ABC_P_BIAS + MAX_BODIES * 6u)
+#define ABC_DINV   (ABC_U_PACK + MAX_NV * 6u)
+#define ABC_UDU_OK (ABC_DINV   + MAX_NV * 6u)
+/// Floats per world. Mirrored by `layout::ABA_CACHE_FLOATS`.
+#define ABA_CACHE_FLOATS (ABC_UDU_OK + MAX_BODIES)
+
+struct aba_cache_t {
+    r9 x_rot_[MAX_BODIES];
+    v3 x_pos_[MAX_BODIES];
     /// Articulated inertia AFTER pass 2's child propagation, before this
     /// body's own `-W Uᵀ` — exactly what pass 2 and pass 3 read.
-    m66 i_a[MAX_BODIES];
-    sv6 c_bias[MAX_BODIES];
+    m66 i_a_[MAX_BODIES];
+    sv6 c_bias_[MAX_BODIES];
     /// `v × (I v)`: the bias force before `ext_forces` is subtracted.
-    sv6 p_bias[MAX_BODIES];
-    /// `U = I_a S`, packed by v-slot: `u_pack[(v_off + k) * 6 + r]`.
-    ///
-    /// `U` and `D⁻¹` are functions of `i_a` alone — see `joint_udu`: the only
-    /// sweep-varying term in that routine is `u_vec`, which reads `p_a`.
-    /// `i_a[i]` is final when pass 2 reaches body `i` (pass 2 runs backward
-    /// and never writes `i_a[i]` again afterwards), so pass 3 reads exactly
-    /// the matrix pass 2 factorised, and so does every reusing sweep. Both
-    /// therefore skip the factorisation and recompute `u_vec` only.
-    float u_pack[MAX_NV * 6u];
-    /// `D⁻¹`, packed by v-slot with a fixed row stride of 6 (`ndof <= 6`):
-    /// `dinv_pack[(v_off + r) * 6 + c]`.
-    float dinv_pack[MAX_NV * 6u];
+    sv6 p_bias_[MAX_BODIES];
+    /// `U = I_a S`, packed by v-slot; `D⁻¹` likewise with a fixed row stride
+    /// of 6. Both are functions of `i_a` alone (see `joint_udu`: the only
+    /// sweep-varying term is `u_vec`, which reads `p_a`), and `i_a[i]` is
+    /// final when pass 2 reaches body `i` — so every reusing sweep reads
+    /// exactly the matrix pass 2 factorised.
+    float u_pack_[MAX_NV * 6u];
+    float dinv_pack_[MAX_NV * 6u];
     /// Per body: did `invert_small` succeed? 0 selects the singular
-    /// "treat the joint as fixed" branch, which has to be carried too or a
-    /// reusing sweep could take the other one.
-    unsigned char udu_ok[MAX_BODIES];
-} aba_cache_t;
+    /// "treat the joint as fixed" branch, which has to be carried too.
+    unsigned char udu_ok_[MAX_BODIES];
+
+    PHYZ_M r9 x_rot(u32 i) const { return x_rot_[i]; }
+    PHYZ_M void set_x_rot(u32 i, r9 x) { x_rot_[i] = x; }
+    PHYZ_M v3 x_pos(u32 i) const { return x_pos_[i]; }
+    PHYZ_M void set_x_pos(u32 i, v3 x) { x_pos_[i] = x; }
+    PHYZ_M m66 i_a(u32 i) const { return i_a_[i]; }
+    PHYZ_M void set_i_a(u32 i, const m66& x) { i_a_[i] = x; }
+    PHYZ_M sv6 c_bias(u32 i) const { return c_bias_[i]; }
+    PHYZ_M void set_c_bias(u32 i, sv6 x) { c_bias_[i] = x; }
+    PHYZ_M sv6 p_bias(u32 i) const { return p_bias_[i]; }
+    PHYZ_M void set_p_bias(u32 i, sv6 x) { p_bias_[i] = x; }
+    PHYZ_M float u_pack(u32 k) const { return u_pack_[k]; }
+    PHYZ_M void set_u_pack(u32 k, float x) { u_pack_[k] = x; }
+    PHYZ_M float dinv_pack(u32 k) const { return dinv_pack_[k]; }
+    PHYZ_M void set_dinv_pack(u32 k, float x) { dinv_pack_[k] = x; }
+    PHYZ_M bool udu_ok(u32 i) const { return udu_ok_[i] != 0u; }
+    PHYZ_M void set_udu_ok(u32 i, bool x) { udu_ok_[i] = x ? 1u : 0u; }
+};
+
+/// The same cache in a global SoA buffer; see `fk_cache_g`.
+struct aba_cache_g {
+    float* p;
+    u32 w;
+    u32 nworld;
+
+    PHYZ_M float ldf(u32 o) const { return p[o * nworld + w]; }
+    PHYZ_M void stf(u32 o, float x) { p[o * nworld + w] = x; }
+
+    PHYZ_M r9 x_rot(u32 i) const { r9 r; for (u32 k = 0; k < 9u; k++) r.r[k] = ldf(ABC_X_ROT + i * 9u + k); return r; }
+    PHYZ_M void set_x_rot(u32 i, r9 x) { for (u32 k = 0; k < 9u; k++) stf(ABC_X_ROT + i * 9u + k, x.r[k]); }
+    PHYZ_M v3 x_pos(u32 i) const { u32 o = ABC_X_POS + i * 3u; return v3_(ldf(o), ldf(o + 1u), ldf(o + 2u)); }
+    PHYZ_M void set_x_pos(u32 i, v3 x) { u32 o = ABC_X_POS + i * 3u; stf(o, x.x); stf(o + 1u, x.y); stf(o + 2u, x.z); }
+    PHYZ_M m66 i_a(u32 i) const { m66 r; for (u32 k = 0; k < 36u; k++) r.m[k] = ldf(ABC_I_A + i * 36u + k); return r; }
+    PHYZ_M void set_i_a(u32 i, const m66& x) { for (u32 k = 0; k < 36u; k++) stf(ABC_I_A + i * 36u + k, x.m[k]); }
+    PHYZ_M sv6 c_bias(u32 i) const { sv6 r; for (u32 k = 0; k < 6u; k++) r.a[k] = ldf(ABC_C_BIAS + i * 6u + k); return r; }
+    PHYZ_M void set_c_bias(u32 i, sv6 x) { for (u32 k = 0; k < 6u; k++) stf(ABC_C_BIAS + i * 6u + k, x.a[k]); }
+    PHYZ_M sv6 p_bias(u32 i) const { sv6 r; for (u32 k = 0; k < 6u; k++) r.a[k] = ldf(ABC_P_BIAS + i * 6u + k); return r; }
+    PHYZ_M void set_p_bias(u32 i, sv6 x) { for (u32 k = 0; k < 6u; k++) stf(ABC_P_BIAS + i * 6u + k, x.a[k]); }
+    PHYZ_M float u_pack(u32 k) const { return ldf(ABC_U_PACK + k); }
+    PHYZ_M void set_u_pack(u32 k, float x) { stf(ABC_U_PACK + k, x); }
+    PHYZ_M float dinv_pack(u32 k) const { return ldf(ABC_DINV + k); }
+    PHYZ_M void set_dinv_pack(u32 k, float x) { stf(ABC_DINV + k, x); }
+    PHYZ_M bool udu_ok(u32 i) const { return f_as_u(ldf(ABC_UDU_OK + i)) != 0u; }
+    PHYZ_M void set_udu_ok(u32 i, bool x) { stf(ABC_UDU_OK + i, u_as_f(x ? 1u : 0u)); }
+};
 
 #define PHYZ_ABA_BUILD 0u
 #define PHYZ_ABA_REUSE 1u
@@ -1637,11 +1781,12 @@ PHYZ_DEV void joint_uvec(const float* bodies, u32 i, u32 jtype, u32 ndof, v3 axi
     }
 }
 
+template <class KC>
 PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
                            float gx, float gy, float gz,
                            const float* bodies, const float* q, const float* v,
                            const float* ctrl, float* qdd, const float* ext_forces,
-                           aba_cache_t* kc, u32 mode) {
+                           KC* kc, u32 mode) {
     if (world_idx >= nworld) return;
 
     u32 nb = nbodies;
@@ -1660,10 +1805,6 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
     sv6 vel[MAX_BODIES];
     sv6 p_a[MAX_BODIES];
     sv6 acc[MAX_BODIES];
-    r9* x_rot = kc->x_rot;
-    v3* x_pos = kc->x_pos;
-    m66* i_a = kc->i_a;
-    sv6* c_bias = kc->c_bias;
 
     // Gravity as base acceleration: a0 = [0; -g]
     sv6 a0 = sv_(0.0f, 0.0f, 0.0f, -gx, -gy, -gz);
@@ -1676,7 +1817,7 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
         u32 ef_base = (world_idx * nb + i) * 6u;
         sv6 ef;
         for (u32 kk = 0; kk < 6u; kk++) ef.a[kk] = ext_forces[ef_base + kk];
-        p_a[i] = sv_sub(kc->p_bias[i], ef);
+        p_a[i] = sv_sub(kc->p_bias(i), ef);
     }
     for (u32 i = 0; !reuse && i < nb; i++) {
         i32 parent = body_parent(bodies, i);
@@ -1693,8 +1834,8 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
 
         xf j = joint_transform(bodies, i, q, q_base);
         xf composed = compose_transform(j.rot, j.pos, ptj_rot, ptj_pos);
-        x_rot[i] = composed.rot;
-        x_pos[i] = composed.pos;
+        kc->set_x_rot(i, composed.rot);
+        kc->set_x_pos(i, composed.pos);
 
         u32 ndof = joint_ndof(jtype);
         sv6 v_joint = sv_zero();
@@ -1703,19 +1844,20 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
 
         if (parent < 0) {
             vel[i] = v_joint;
-            c_bias[i] = sv_zero();
+            kc->set_c_bias(i, sv_zero());
         } else {
             u32 pi = (u32)parent;
-            sv6 v_parent = apply_motion(x_rot[i], x_pos[i], vel[pi]);
+            sv6 v_parent = apply_motion(composed.rot, composed.pos, vel[pi]);
             vel[i] = sv_add(v_parent, v_joint);
-            c_bias[i] = sv_cross_motion(vel[i], v_joint);
+            kc->set_c_bias(i, sv_cross_motion(vel[i], v_joint));
         }
 
-        i_a[i] = rigid_inertia_to_m6(mass, com, inertia);
+        m66 ia_i = rigid_inertia_to_m6(mass, com, inertia);
+        kc->set_i_a(i, ia_i);
 
-        sv6 iv = m6_mul_vec(&i_a[i], vel[i]);
+        sv6 iv = m6_mul_vec(&ia_i, vel[i]);
         p_a[i] = sv_cross_force(vel[i], iv);
-        kc->p_bias[i] = p_a[i];
+        kc->set_p_bias(i, p_a[i]);
 
         u32 ef_base = (world_idx * nb + i) * 6u;
         sv6 ef;
@@ -1731,6 +1873,8 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
         u32 v_off = body_voff(bodies, i);
         v3 axis = body_axis(bodies, i);
         float damping_val = bf(bodies, i, 29u);
+        r9 xr = kc->x_rot(i);
+        v3 xp = kc->x_pos(i);
 
         if (jtype == 2u) {
             if (parent >= 0) {
@@ -1739,12 +1883,14 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
                 // sweep already has the articulated `i_a` and must NOT add
                 // the child in a second time.
                 if (!reuse) {
-                    m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
+                    m66 x_mot = build_motion_transform(xr, xp);
                     m66 x_mot_t = transpose6(&x_mot);
-                    m66 ia_parent = m6_XtAX(&x_mot_t, &i_a[i], &x_mot);
-                    i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                    m66 ia_i = kc->i_a(i);
+                    m66 ia_parent = m6_XtAX(&x_mot_t, &ia_i, &x_mot);
+                    m66 ia_p = kc->i_a(pi);
+                    kc->set_i_a(pi, m6_add(&ia_p, &ia_parent));
                 }
-                sv6 p_parent = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
+                sv6 p_parent = inv_apply_force(xr, xp, p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_parent);
             }
             continue;
@@ -1762,23 +1908,24 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
                        ctrl, v, v_base + v_off, q, q_base, u_vec);
             for (u32 k = 0; k < ndof; k++)
                 for (u32 r = 0; r < 6u; r++)
-                    u_mat[k * 6u + r] = kc->u_pack[(v_off + k) * 6u + r];
+                    u_mat[k * 6u + r] = kc->u_pack((v_off + k) * 6u + r);
             for (u32 r = 0; r < ndof; r++)
                 for (u32 c = 0; c < ndof; c++)
-                    d_mat[r * ndof + c] = kc->dinv_pack[(v_off + r) * 6u + c];
-            d_ok = kc->udu_ok[i] != 0u;
+                    d_mat[r * ndof + c] = kc->dinv_pack((v_off + r) * 6u + c);
+            d_ok = kc->udu_ok(i);
         } else {
-            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
+            m66 ia_i = kc->i_a(i);
+            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &ia_i, p_a[i],
                       ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
             d_ok = invert_small(d_mat, ndof);
             if (udu_store) {
                 for (u32 k = 0; k < ndof; k++)
                     for (u32 r = 0; r < 6u; r++)
-                        kc->u_pack[(v_off + k) * 6u + r] = u_mat[k * 6u + r];
+                        kc->set_u_pack((v_off + k) * 6u + r, u_mat[k * 6u + r]);
                 for (u32 r = 0; r < ndof; r++)
                     for (u32 c = 0; c < ndof; c++)
-                        kc->dinv_pack[(v_off + r) * 6u + c] = d_mat[r * ndof + c];
-                kc->udu_ok[i] = d_ok ? 1u : 0u;
+                        kc->set_dinv_pack((v_off + r) * 6u + c, d_mat[r * ndof + c]);
+                kc->set_udu_ok(i, d_ok);
             }
         }
 
@@ -1787,12 +1934,14 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
             if (parent >= 0) {
                 u32 pi = (u32)parent;
                 if (!reuse) {
-                    m66 x_mot_s = build_motion_transform(x_rot[i], x_pos[i]);
+                    m66 x_mot_s = build_motion_transform(xr, xp);
                     m66 x_mot_st = transpose6(&x_mot_s);
-                    m66 ia_par_s = m6_XtAX(&x_mot_st, &i_a[i], &x_mot_s);
-                    i_a[pi] = m6_add(&i_a[pi], &ia_par_s);
+                    m66 ia_i2 = kc->i_a(i);
+                    m66 ia_par_s = m6_XtAX(&x_mot_st, &ia_i2, &x_mot_s);
+                    m66 ia_p = kc->i_a(pi);
+                    kc->set_i_a(pi, m6_add(&ia_p, &ia_par_s));
                 }
-                sv6 p_par_s = inv_apply_force(x_rot[i], x_pos[i], p_a[i]);
+                sv6 p_par_s = inv_apply_force(xr, xp, p_a[i]);
                 p_a[pi] = sv_add(p_a[pi], p_par_s);
             }
             continue;
@@ -1811,7 +1960,7 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
                 }
 
             // I_a^A = I_A − W Uᵀ
-            m66 ia_new = i_a[i];
+            m66 ia_new = kc->i_a(i);
             for (u32 c = 0; c < ndof; c++) {
                 sv6 wc, uc;
                 for (u32 r = 0; r < 6u; r++) { wc.a[r] = w_mat[c * 6u + r]; uc.a[r] = u_mat[c * 6u + r]; }
@@ -1820,20 +1969,21 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
             }
 
             // p_a^A = p_A + I_a^A c + W u
-            sv6 ia_c = m6_mul_vec(&ia_new, c_bias[i]);
+            sv6 ia_c = m6_mul_vec(&ia_new, kc->c_bias(i));
             sv6 wu = sv_zero();
             for (u32 c = 0; c < ndof; c++)
                 for (u32 r = 0; r < 6u; r++) wu.a[r] += w_mat[c * 6u + r] * u_vec[c];
             sv6 p_new = sv_add(sv_add(p_a[i], ia_c), wu);
 
             if (!reuse) {
-                m66 x_mot = build_motion_transform(x_rot[i], x_pos[i]);
+                m66 x_mot = build_motion_transform(xr, xp);
                 m66 x_mot_t = transpose6(&x_mot);
                 m66 ia_parent = m6_XtAX(&x_mot_t, &ia_new, &x_mot);
-                i_a[pi] = m6_add(&i_a[pi], &ia_parent);
+                m66 ia_p = kc->i_a(pi);
+                kc->set_i_a(pi, m6_add(&ia_p, &ia_parent));
             }
 
-            sv6 p_parent = inv_apply_force(x_rot[i], x_pos[i], p_new);
+            sv6 p_parent = inv_apply_force(xr, xp, p_new);
             p_a[pi] = sv_add(p_a[pi], p_parent);
         }
     }
@@ -1846,11 +1996,13 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
         v3 axis = body_axis(bodies, i);
         float damping_val = bf(bodies, i, 29u);
 
+        r9 xr = kc->x_rot(i);
+        v3 xp = kc->x_pos(i);
         sv6 a_parent;
-        if (parent < 0) a_parent = apply_motion(x_rot[i], x_pos[i], a0);
-        else            a_parent = apply_motion(x_rot[i], x_pos[i], acc[(u32)parent]);
+        if (parent < 0) a_parent = apply_motion(xr, xp, a0);
+        else            a_parent = apply_motion(xr, xp, acc[(u32)parent]);
 
-        sv6 a_c = sv_add(a_parent, c_bias[i]);
+        sv6 a_c = sv_add(a_parent, kc->c_bias(i));
         u32 ndof = joint_ndof(jtype);
         if (ndof == 0u) { acc[i] = a_c; continue; }
 
@@ -1866,13 +2018,14 @@ PHYZ_DEV void aba_thread_c(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbod
                        ctrl, v, v_base + v_off, q, q_base, u_vec);
             for (u32 k = 0; k < ndof; k++)
                 for (u32 r = 0; r < 6u; r++)
-                    u_mat[k * 6u + r] = kc->u_pack[(v_off + k) * 6u + r];
+                    u_mat[k * 6u + r] = kc->u_pack((v_off + k) * 6u + r);
             for (u32 r = 0; r < ndof; r++)
                 for (u32 c = 0; c < ndof; c++)
-                    d_mat[r * ndof + c] = kc->dinv_pack[(v_off + r) * 6u + c];
-            d_ok = kc->udu_ok[i] != 0u;
+                    d_mat[r * ndof + c] = kc->dinv_pack((v_off + r) * 6u + c);
+            d_ok = kc->udu_ok(i);
         } else {
-            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &i_a[i], p_a[i],
+            m66 ia_i = kc->i_a(i);
+            joint_udu(bodies, i, jtype, ndof, axis, damping_val, dt, &ia_i, p_a[i],
                       ctrl, v, v_base + v_off, q, q_base, u_mat, d_mat, u_vec);
             d_ok = invert_small(d_mat, ndof);
         }
@@ -2210,16 +2363,6 @@ PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
 #define POLICY_MAX_H 256u
 #define POLICY_MAX_OUT 32u
 
-PHYZ_DEV float u_as_f(u32 u) {
-#if PHYZ_ON_DEVICE
-    return __uint_as_float(u);
-#else
-    float f;
-    memcpy(&f, &u, 4);
-    return f;
-#endif
-}
-
 struct rng64 { u32 lo, hi; };
 
 PHYZ_DEV u32 rng_next_hi53(rng64* r, u32* lo_out) {
@@ -2331,6 +2474,52 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
 // Entry points
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The FISSIONED stage passes.
+//
+// Same sequence as the unfused one — PD, ABA, `sweeps` x [contact, ABA],
+// integrate — but with the two per-step caches carried between the launches
+// in GLOBAL structure-of-arrays buffers instead of on a thread's local stack.
+// That is the whole trade: the fused kernel keeps `aba_cache_t` and
+// `fk_cache_t` in its frame (19.3 KB, 255 registers, ~2% occupancy on a
+// 4090), while each stage kernel here carries only its own temporaries and
+// reads the cache through coalesced loads — element `e` of world `w` at
+// `cache[e * nworld + w]`, so a warp's 32 worlds hit 32 adjacent floats.
+//
+// The arithmetic is the fused kernel's, unchanged and in the same order: the
+// cache round-trips through memory as the same f32/u32 bits it would have
+// held in the frame. `tests/fission_step.rs` asserts that on the bits.
+// ═══════════════════════════════════════════════════════════════════════════
+
+PHYZ_DEV void aba_g_thread(u32 world_idx, u32 nworld, u32 nv, float dt, u32 nbodies,
+                           float gx, float gy, float gz,
+                           const float* bodies, const float* q, const float* v,
+                           const float* ctrl, float* qdd, const float* ext_forces,
+                           float* aba_cache, u32 mode) {
+    if (world_idx >= nworld) return;
+    aba_cache_g kc;
+    kc.p = aba_cache;
+    kc.w = world_idx;
+    kc.nworld = nworld;
+    aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
+                 bodies, q, v, ctrl, qdd, ext_forces, &kc, mode);
+}
+
+PHYZ_DEV void contact_g_thread(u32 world_idx, u32 nworld, const float* cparams,
+                               const float* bodies, const float* geometry,
+                               const float* q, const float* v,
+                               float* ext_forces, float* contact_state,
+                               const float* hf_heights, const float* qdd,
+                               float* fk_cache, u32 fk_mode) {
+    if (world_idx >= nworld) return;
+    fk_cache_g fc;
+    fc.p = fk_cache;
+    fc.w = world_idx;
+    fc.nworld = nworld;
+    contact_thread_c(world_idx, cparams, bodies, geometry, q, v, ext_forces,
+                     contact_state, hf_heights, qdd, &fc, fk_mode);
+}
+
 /// The contact pass with a fresh FK chain — the standalone pass.
 PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
                              const float* bodies, const float* geometry,
@@ -2384,6 +2573,26 @@ extern "C" __global__ void phyz_step_impulse(u32 nworld, u32 nq, u32 nv, u32 n_d
                         has_pd, dt, nbodies, gx, gy, gz, sweeps, nsteps,
                         pd_dofs, targets, cparams, bodies, geometry, hf_heights,
                         q, v, ctrl, qdd, ext_forces, contact_state);
+}
+
+extern "C" __global__ void phyz_aba_c(u32 nworld, u32 nv, float dt, u32 nbodies,
+                                      float gx, float gy, float gz,
+                                      const float* bodies, const float* q, const float* v,
+                                      const float* ctrl, float* qdd, const float* ext_forces,
+                                      float* aba_cache, u32 mode) {
+    aba_g_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nv, dt, nbodies,
+                 gx, gy, gz, bodies, q, v, ctrl, qdd, ext_forces, aba_cache, mode);
+}
+
+extern "C" __global__ void phyz_contact_c(u32 nworld, const float* cparams,
+                                          const float* bodies, const float* geometry,
+                                          const float* q, const float* v,
+                                          float* ext_forces, float* contact_state,
+                                          const float* hf_heights, const float* qdd,
+                                          float* fk_cache, u32 fk_mode) {
+    contact_g_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, cparams,
+                     bodies, geometry, q, v, ext_forces, contact_state,
+                     hf_heights, qdd, fk_cache, fk_mode);
 }
 
 extern "C" __global__ void phyz_fk(u32 nworld, u32 nv, u32 nbodies,
@@ -2459,6 +2668,27 @@ extern "C" void phyz_host_step_impulse(u32 n_threads, u32 nworld, u32 nq, u32 nv
         step_impulse_thread(t, nworld, nq, nv, n_dofs, has_pd, dt, nbodies, gx, gy, gz,
                             sweeps, nsteps, pd_dofs, targets, cparams, bodies, geometry,
                             hf_heights, q, v, ctrl, qdd, ext_forces, contact_state);
+}
+
+extern "C" void phyz_host_aba_c(u32 n_threads, u32 nworld, u32 nv, float dt, u32 nbodies,
+                                float gx, float gy, float gz,
+                                const float* bodies, const float* q, const float* v,
+                                const float* ctrl, float* qdd, const float* ext_forces,
+                                float* aba_cache, u32 mode) {
+    for (u32 t = 0; t < n_threads; t++)
+        aba_g_thread(t, nworld, nv, dt, nbodies, gx, gy, gz, bodies, q, v, ctrl,
+                     qdd, ext_forces, aba_cache, mode);
+}
+
+extern "C" void phyz_host_contact_c(u32 n_threads, u32 nworld, const float* cparams,
+                                    const float* bodies, const float* geometry,
+                                    const float* q, const float* v,
+                                    float* ext_forces, float* contact_state,
+                                    const float* hf_heights, const float* qdd,
+                                    float* fk_cache, u32 fk_mode) {
+    for (u32 t = 0; t < n_threads; t++)
+        contact_g_thread(t, nworld, cparams, bodies, geometry, q, v, ext_forces,
+                         contact_state, hf_heights, qdd, fk_cache, fk_mode);
 }
 
 extern "C" void phyz_host_fk(u32 n_threads, u32 nworld, u32 nv, u32 nbodies,

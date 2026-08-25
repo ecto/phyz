@@ -27,6 +27,8 @@ pub struct CudaBackend {
     aba: CudaFunction,
     integrate: CudaFunction,
     step_impulse: CudaFunction,
+    aba_c: CudaFunction,
+    contact_c: CudaFunction,
     fk: CudaFunction,
     obs: CudaFunction,
     policy: CudaFunction,
@@ -102,6 +104,8 @@ impl CudaBackend {
             aba: load("phyz_aba")?,
             integrate: load("phyz_integrate")?,
             step_impulse: load("phyz_step_impulse")?,
+            aba_c: load("phyz_aba_c")?,
+            contact_c: load("phyz_contact_c")?,
             fk: load("phyz_fk")?,
             obs: load("phyz_obs")?,
             policy: load("phyz_policy")?,
@@ -375,6 +379,82 @@ impl KernelBackend for CudaBackend {
 
     fn supports_fused_step(&self) -> bool {
         true
+    }
+
+    fn supports_fission(&self) -> bool {
+        true
+    }
+
+    fn launch_aba_c(
+        &self,
+        a: AbaArgs,
+        bodies: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        ctrl: &Self::Buffer,
+        qdd: &mut Self::Buffer,
+        ext_forces: &Self::Buffer,
+        aba_cache: &mut Self::Buffer,
+        mode: u32,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_aba_c`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.aba_c)
+                .arg(&a.nworld)
+                .arg(&a.nv)
+                .arg(&a.dt)
+                .arg(&a.nbodies)
+                .arg(&a.gx)
+                .arg(&a.gy)
+                .arg(&a.gz)
+                .arg(bodies)
+                .arg(q)
+                .arg(v)
+                .arg(ctrl)
+                .arg(qdd)
+                .arg(ext_forces)
+                .arg(aba_cache)
+                .arg(&mode)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_aba_c"))
+    }
+
+    fn launch_contact_c(
+        &self,
+        a: ContactArgs,
+        cparams: &Self::Buffer,
+        bodies: &Self::Buffer,
+        geometry: &Self::Buffer,
+        q: &Self::Buffer,
+        v: &Self::Buffer,
+        ext_forces: &mut Self::Buffer,
+        contact_state: &mut Self::Buffer,
+        hf_heights: &Self::Buffer,
+        qdd: &Self::Buffer,
+        fk_cache: &mut Self::Buffer,
+        fk_mode: u32,
+    ) -> Result<(), String> {
+        // SAFETY: as in launch_pd, against `phyz_contact_c`.
+        let r = unsafe {
+            self.stream
+                .launch_builder(&self.contact_c)
+                .arg(&a.nworld)
+                .arg(cparams)
+                .arg(bodies)
+                .arg(geometry)
+                .arg(q)
+                .arg(v)
+                .arg(ext_forces)
+                .arg(contact_state)
+                .arg(hf_heights)
+                .arg(qdd)
+                .arg(fk_cache)
+                .arg(&fk_mode)
+                .launch(cfg(a.nworld))
+        };
+        r.map(|_| ()).map_err(err("launch phyz_contact_c"))
     }
 
     fn launch_step_impulse(
