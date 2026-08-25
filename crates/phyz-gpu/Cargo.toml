@@ -67,3 +67,7 @@ required-features = ["cuda-host"]
 [[example]]
 name = "cuda_graph_bench"
 required-features = ["cuda"]
+
+[[example]]
+name = "cuda_impulse_roofline"
+required-features = ["cuda"]
