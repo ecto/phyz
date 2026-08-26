@@ -22,8 +22,8 @@
 
 use std::time::Instant;
 
-use phyz_gpu::cuda::{BatchSim, KernelBackend};
 use phyz_gpu::CudaBatchSimulator;
+use phyz_gpu::cuda::{BatchSim, KernelBackend};
 use phyz_gpu::{BodyContactGains, PdDof};
 use phyz_math::{GRAVITY, Vec3};
 use phyz_model::{Model, State};
@@ -126,11 +126,9 @@ fn main() {
         Err(e) => println!("step mode: unknown ({e})"),
     }
     // `ROOFLINE_WORLDS=128,1024,4096,16384` overrides the x4 ladder.
-    let ladder: Option<Vec<usize>> = std::env::var("ROOFLINE_WORLDS").ok().map(|s| {
-        s.split(',')
-            .filter_map(|t| t.trim().parse().ok())
-            .collect()
-    });
+    let ladder: Option<Vec<usize>> = std::env::var("ROOFLINE_WORLDS")
+        .ok()
+        .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect());
     let sweep_list: Vec<usize> = std::env::var("ROOFLINE_SWEEPS")
         .ok()
         .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
@@ -138,7 +136,10 @@ fn main() {
 
     for sweeps in sweep_list {
         println!("\ncontact_sweeps = {sweeps}");
-        println!("  {:>7}  {:>10}  {:>12}  {:>12}", "worlds", "ms/step", "us/world-st", "env-steps/s");
+        println!(
+            "  {:>7}  {:>10}  {:>12}  {:>12}",
+            "worlds", "ms/step", "us/world-st", "env-steps/s"
+        );
         let worlds: Vec<usize> = match &ladder {
             Some(l) => l.clone(),
             None => {
