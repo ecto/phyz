@@ -389,6 +389,7 @@ impl KernelBackend for CudaBackend {
         q: &Self::Buffer,
         v: &Self::Buffer,
         targets: &Self::Buffer,
+        tau_ff: &Self::Buffer,
         ctrl: &mut Self::Buffer,
     ) -> Result<(), String> {
         let n = a.nworld * a.n_dofs;
@@ -405,6 +406,8 @@ impl KernelBackend for CudaBackend {
                 .arg(q)
                 .arg(v)
                 .arg(targets)
+                .arg(tau_ff)
+                .arg(&a.has_tau)
                 .arg(ctrl)
                 .launch(cfg(n))
         };
@@ -599,6 +602,7 @@ impl KernelBackend for CudaBackend {
         a: super::StepImpulseArgs,
         pd_dofs: &Self::Buffer,
         targets: &Self::Buffer,
+        tau_ff: &Self::Buffer,
         cparams: &Self::Buffer,
         bodies: &Self::Buffer,
         geometry: &Self::Buffer,
@@ -628,6 +632,8 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.nsteps)
                 .arg(pd_dofs)
                 .arg(targets)
+                .arg(tau_ff)
+                .arg(&a.has_tau)
                 .arg(cparams)
                 .arg(bodies)
                 .arg(geometry)
@@ -714,8 +720,11 @@ impl KernelBackend for CudaBackend {
         z: &mut Self::Buffer,
         act_slots: &Self::Buffer,
         act_clamp_slots: &Self::Buffer,
+        tau_slots: &Self::Buffer,
+        tau_scale: &Self::Buffer,
         base_targets: &Self::Buffer,
         targets: &mut Self::Buffer,
+        tau_ff: &mut Self::Buffer,
         out: &mut Self::Buffer,
     ) -> Result<(), String> {
         // SAFETY: as in launch_pd, against `phyz_policy`.
@@ -727,6 +736,7 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.n_h)
                 .arg(&a.n_out)
                 .arg(&a.n_dofs)
+                .arg(&a.n_pos)
                 .arg(&a.act_clamp)
                 .arg(&a.has_clamp_slots)
                 .arg(&a.rho)
@@ -740,8 +750,11 @@ impl KernelBackend for CudaBackend {
                 .arg(z)
                 .arg(act_slots)
                 .arg(act_clamp_slots)
+                .arg(tau_slots)
+                .arg(tau_scale)
                 .arg(base_targets)
                 .arg(targets)
+                .arg(tau_ff)
                 .arg(out)
                 .launch(cfg(a.nworld))
         };

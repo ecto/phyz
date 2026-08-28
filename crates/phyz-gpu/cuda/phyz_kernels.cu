@@ -488,12 +488,22 @@ PHYZ_DEV xf joint_transform(const float* bodies, u32 bi, const float* q, u32 q_b
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Pass -1: PD position servo. One thread per (world, servoed DOF).
-// tau = clamp(kp*(target - q) - kd*v, ±max_force) → ctrl
+// tau = clamp(kp*(target - q) - kd*v + tau_ff, ±max_force) → ctrl
+//
+// `tau_ff` is the FEEDFORWARD torque row the policy pass wrote for this
+// world (`nworld * n_dofs` newton-metres, PD registration order), and it is
+// summed with the servo term BEFORE the effort clamp on purpose: the joint's
+// rating is a property of the motor, not of which channel asked for the
+// torque, and clamping the two separately would let a saturated pair command
+// twice the rated torque. `has_tau` is 0 whenever no policy declared a
+// torque channel, and then `tau_ff` is never dereferenced and the arithmetic
+// below is exactly what it was.
 // ═══════════════════════════════════════════════════════════════════════════
 
 PHYZ_DEV void pd_thread(u32 idx, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
                         const float* dofs, const float* q, const float* v,
-                        const float* targets, float* ctrl) {
+                        const float* targets, const float* tau_ff, u32 has_tau,
+                        float* ctrl) {
     u32 total = nworld * n_dofs;
     if (idx >= total) return;
     u32 world = idx / n_dofs;
@@ -509,6 +519,7 @@ PHYZ_DEV void pd_thread(u32 idx, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
     float vj = v[world * nv + v_index];
     float tgt = targets[world * n_dofs + d];
     float tau = kp * (tgt - qj) - kd * vj;
+    if (has_tau) tau += tau_ff[world * n_dofs + d];
     ctrl[world * nv + v_index] = fclamp(tau, -max_force, max_force);
 }
 
@@ -2142,6 +2153,7 @@ PHYZ_DEV void step_impulse_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv,
                                   float gx, float gy, float gz,
                                   u32 sweeps, u32 nsteps,
                                   const float* pd_dofs, const float* targets,
+                                  const float* tau_ff, u32 has_tau,
                                   const float* cparams, const float* bodies,
                                   const float* geometry, const float* hf_heights,
                                   float* q, float* v, float* ctrl, float* qdd,
@@ -2153,7 +2165,7 @@ PHYZ_DEV void step_impulse_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv,
         if (has_pd != 0u)
             for (u32 d = 0; d < n_dofs; d++)
                 pd_thread(world_idx * n_dofs + d, nworld, nq, nv, n_dofs,
-                          pd_dofs, q, v, targets, ctrl);
+                          pd_dofs, q, v, targets, tau_ff, has_tau, ctrl);
 
         aba_thread_c(world_idx, nworld, nv, dt, nbodies, gx, gy, gz,
                      bodies, q, v, ctrl, qdd, ext_forces, &kc, PHYZ_ABA_BUILD);
@@ -2361,7 +2373,7 @@ PHYZ_DEV void obs_thread(u32 world_idx, u32 nworld, u32 nq, u32 nv, u32 nbodies,
 
 #define POLICY_MAX_IN 128u
 #define POLICY_MAX_H 256u
-#define POLICY_MAX_OUT 32u
+#define POLICY_MAX_OUT 64u
 
 struct rng64 { u32 lo, hi; };
 
@@ -2396,12 +2408,14 @@ PHYZ_DEV double rng_normal(rng64* r) {
 }
 
 PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                            u32 n_pos,
                             float act_clamp, u32 has_clamp_slots, float rho, u32 obs_off, u32 out_off,
                             const float* weights, const float* stdv, const float* in_noise,
                             float* obs, float* rng, float* z,
                             const float* act_slots, const float* act_clamp_slots,
+                            const float* tau_slots, const float* tau_scale,
                             const float* base_targets,
-                            float* targets, float* out) {
+                            float* targets, float* tau_ff, float* out) {
     if (world_idx >= nworld) return;
     if (n_in > POLICY_MAX_IN || n_h > POLICY_MAX_H || n_out > POLICY_MAX_OUT) return;
 
@@ -2446,6 +2460,13 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
     for (u32 j = 0; j < n_dofs; j++)
         targets[world_idx * n_dofs + j] = base_targets[world_idx * n_dofs + j];
 
+    // The feedforward-torque row, same argument as the base targets above:
+    // a DOF the actor is not commanding torque on this step must read zero,
+    // not whatever the buffer happened to hold. Skipped entirely — with the
+    // buffer never dereferenced — when the spec declared no torque channel.
+    if (n_pos < n_out)
+        for (u32 j = 0; j < n_dofs; j++) tau_ff[world_idx * n_dofs + j] = 0.0f;
+
     float keep = sqrtf(fmax_(0.0f, 1.0f - rho * rho));
     const float LN_2PI = 1.8378770664093453f;
     float logp = 0.0f;
@@ -2459,10 +2480,19 @@ PHYZ_DEV void policy_thread(u32 world_idx, u32 nworld, u32 n_in, u32 n_h, u32 n_
         float zi = (a - m) / sd;
         logp += -0.5f * zi * zi - logf(sd) - 0.5f * LN_2PI;
         out[out_off + world_idx * (n_out + 1u) + k] = a;
-        u32 slot = (u32)act_slots[k];
         float lim = has_clamp_slots ? act_clamp_slots[k] : act_clamp;
         float applied = fclamp(a, -lim, lim);
-        targets[world_idx * n_dofs + slot] = base_targets[world_idx * n_dofs + slot] + applied;
+        if (k < n_pos) {
+            u32 slot = (u32)act_slots[k];
+            targets[world_idx * n_dofs + slot] = base_targets[world_idx * n_dofs + slot] + applied;
+        } else {
+            // A torque output. `applied` is normalized (its clamp is 1.0 by
+            // convention); `tau_scale` turns it into newton-metres. The PD
+            // pass sums it inside the effort clamp — see `pd_thread`.
+            u32 t = k - n_pos;
+            u32 slot = (u32)tau_slots[t];
+            tau_ff[world_idx * n_dofs + slot] = applied * tau_scale[t];
+        }
     }
     out[out_off + world_idx * (n_out + 1u) + n_out] = logp;
 
@@ -2540,8 +2570,10 @@ PHYZ_DEV void contact_thread(u32 world_idx, const float* cparams,
 
 extern "C" __global__ void phyz_pd(u32 nworld, u32 nq, u32 nv, u32 n_dofs,
                                    const float* dofs, const float* q, const float* v,
-                                   const float* targets, float* ctrl) {
-    pd_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, n_dofs, dofs, q, v, targets, ctrl);
+                                   const float* targets, const float* tau_ff, u32 has_tau,
+                                   float* ctrl) {
+    pd_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, n_dofs, dofs, q, v,
+              targets, tau_ff, has_tau, ctrl);
 }
 
 extern "C" __global__ void phyz_contact(const float* cparams,
@@ -2571,14 +2603,15 @@ extern "C" __global__ void phyz_step_impulse(u32 nworld, u32 nq, u32 nv, u32 n_d
                                             float gx, float gy, float gz,
                                             u32 sweeps, u32 nsteps,
                                             const float* pd_dofs, const float* targets,
+                                            const float* tau_ff, u32 has_tau,
                                             const float* cparams, const float* bodies,
                                             const float* geometry, const float* hf_heights,
                                             float* q, float* v, float* ctrl, float* qdd,
                                             float* ext_forces, float* contact_state) {
     step_impulse_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, nq, nv, n_dofs,
                         has_pd, dt, nbodies, gx, gy, gz, sweeps, nsteps,
-                        pd_dofs, targets, cparams, bodies, geometry, hf_heights,
-                        q, v, ctrl, qdd, ext_forces, contact_state);
+                        pd_dofs, targets, tau_ff, has_tau, cparams, bodies, geometry,
+                        hf_heights, q, v, ctrl, qdd, ext_forces, contact_state);
 }
 
 #define PHYZ_ABA_ENTRY(NAME, MODE)                                              \
@@ -2627,25 +2660,29 @@ extern "C" __global__ void phyz_obs(u32 nworld, u32 nq, u32 nv, u32 nbodies, u32
 }
 
 extern "C" __global__ void phyz_policy(u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                                       u32 n_pos,
                                        float act_clamp, u32 has_clamp_slots, float rho,
                                        u32 obs_off, u32 out_off,
                                        const float* weights, const float* stdv, const float* in_noise,
                                        float* obs, float* rng, float* z,
                                        const float* act_slots, const float* act_clamp_slots,
+                                       const float* tau_slots, const float* tau_scale,
                                        const float* base_targets,
-                                       float* targets, float* out) {
+                                       float* targets, float* tau_ff, float* out) {
     policy_thread(blockIdx.x * blockDim.x + threadIdx.x, nworld, n_in, n_h, n_out, n_dofs,
-                  act_clamp, has_clamp_slots, rho, obs_off, out_off, weights, stdv, in_noise,
-                  obs, rng, z, act_slots, act_clamp_slots, base_targets, targets, out);
+                  n_pos, act_clamp, has_clamp_slots, rho, obs_off, out_off, weights, stdv,
+                  in_noise, obs, rng, z, act_slots, act_clamp_slots, tau_slots, tau_scale,
+                  base_targets, targets, tau_ff, out);
 }
 
 #else  // host: walk the grid serially
 
 extern "C" void phyz_host_pd(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 n_dofs,
                              const float* dofs, const float* q, const float* v,
-                             const float* targets, float* ctrl) {
+                             const float* targets, const float* tau_ff, u32 has_tau,
+                             float* ctrl) {
     for (u32 t = 0; t < n_threads; t++)
-        pd_thread(t, nworld, nq, nv, n_dofs, dofs, q, v, targets, ctrl);
+        pd_thread(t, nworld, nq, nv, n_dofs, dofs, q, v, targets, tau_ff, has_tau, ctrl);
 }
 
 extern "C" void phyz_host_contact(u32 n_threads, const float* cparams,
@@ -2676,14 +2713,16 @@ extern "C" void phyz_host_step_impulse(u32 n_threads, u32 nworld, u32 nq, u32 nv
                                       float gx, float gy, float gz,
                                       u32 sweeps, u32 nsteps,
                                       const float* pd_dofs, const float* targets,
+                                      const float* tau_ff, u32 has_tau,
                                       const float* cparams, const float* bodies,
                                       const float* geometry, const float* hf_heights,
                                       float* q, float* v, float* ctrl, float* qdd,
                                       float* ext_forces, float* contact_state) {
     for (u32 t = 0; t < n_threads; t++)
         step_impulse_thread(t, nworld, nq, nv, n_dofs, has_pd, dt, nbodies, gx, gy, gz,
-                            sweeps, nsteps, pd_dofs, targets, cparams, bodies, geometry,
-                            hf_heights, q, v, ctrl, qdd, ext_forces, contact_state);
+                            sweeps, nsteps, pd_dofs, targets, tau_ff, has_tau, cparams,
+                            bodies, geometry, hf_heights, q, v, ctrl, qdd, ext_forces,
+                            contact_state);
 }
 
 extern "C" void phyz_host_aba_c(u32 n_threads, u32 nworld, u32 nv, float dt, u32 nbodies,
@@ -2735,17 +2774,20 @@ extern "C" void phyz_host_obs(u32 n_threads, u32 nworld, u32 nq, u32 nv, u32 nbo
 }
 
 extern "C" void phyz_host_policy(u32 n_threads, u32 nworld, u32 n_in, u32 n_h, u32 n_out, u32 n_dofs,
+                                 u32 n_pos,
                                  float act_clamp, u32 has_clamp_slots, float rho,
                                  u32 obs_off, u32 out_off,
                                  const float* weights, const float* stdv, const float* in_noise,
                                  float* obs, float* rng, float* z,
                                  const float* act_slots, const float* act_clamp_slots,
+                                 const float* tau_slots, const float* tau_scale,
                                  const float* base_targets,
-                                 float* targets, float* out) {
+                                 float* targets, float* tau_ff, float* out) {
     for (u32 t = 0; t < n_threads; t++)
-        policy_thread(t, nworld, n_in, n_h, n_out, n_dofs, act_clamp, has_clamp_slots, rho,
-                      obs_off, out_off, weights, stdv, in_noise, obs, rng, z,
-                      act_slots, act_clamp_slots, base_targets, targets, out);
+        policy_thread(t, nworld, n_in, n_h, n_out, n_dofs, n_pos, act_clamp, has_clamp_slots,
+                      rho, obs_off, out_off, weights, stdv, in_noise, obs, rng, z,
+                      act_slots, act_clamp_slots, tau_slots, tau_scale, base_targets,
+                      targets, tau_ff, out);
 }
 
 #endif

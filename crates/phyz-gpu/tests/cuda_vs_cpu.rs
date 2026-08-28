@@ -19,8 +19,8 @@
 use phyz_gpu::contact_pipeline::BodyPlane;
 use phyz_gpu::cuda::{BatchSim, KernelBackend};
 use phyz_gpu::policy_pipeline::{
-    KernelRng, ObsOp, PolicySpec, XF_STRIDE, observe_reference, observe_reference_with,
-    policy_reference,
+    KernelRng, ObsOp, PolicySpec, TauChannel, XF_STRIDE, observe_reference, observe_reference_with,
+    policy_reference, policy_reference_tau,
 };
 use phyz_gpu::{BodyContactGains, GpuBatchSimulator, PdDof};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
@@ -947,6 +947,7 @@ fn suite_policy<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
     .unwrap();
 
     let spec = PolicySpec {
+        tau: None,
         obs: vec![
             ObsOp::BodyPitch(0),
             ObsOp::BodyRoll(0),
@@ -1193,6 +1194,7 @@ fn suite_policy_base_targets<B: KernelBackend>(mk: impl Fn(Model, usize) -> Batc
         })
         .collect();
     let spec = PolicySpec {
+        tau: None,
         obs: vec![ObsOp::Const(1.0), ObsOp::QMinus(0, 0.0), ObsOp::V(0)],
         hidden: 8,
         act_slots: vec![0, 2],
@@ -1264,6 +1266,7 @@ fn suite_policy_world_consts<B: KernelBackend>(mk: impl Fn(Model, usize) -> Batc
 
     // Slot 0 is a command channel; slot 1 is a per-world q reference.
     let spec = PolicySpec {
+        tau: None,
         obs: vec![
             ObsOp::WorldSlot(0),
             ObsOp::QMinusWorld(limb_q, 1),
@@ -1441,6 +1444,7 @@ fn suite_policy_clamp_slots<B: KernelBackend>(mk: impl Fn(Model, usize) -> Batch
         })
         .collect();
     let spec = PolicySpec {
+        tau: None,
         obs: vec![ObsOp::Const(1.0), ObsOp::QMinus(0, 0.0), ObsOp::V(0)],
         hidden: 8,
         act_slots: vec![0, 2],
@@ -1774,6 +1778,7 @@ fn suite_policy_support<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<
     ])
     .unwrap();
     let spec = PolicySpec {
+        tau: None,
         obs: obs.clone(),
         hidden: 8,
         act_slots: vec![0, 1],
@@ -1900,6 +1905,195 @@ fn suite_policy_support<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<
     );
 }
 
+/// The **feedforward-torque channel** (`PolicySpec::tau`), end to end.
+///
+/// The spec gives the single servoed DOF both a position output and a torque
+/// output, which is the interesting wiring: the two land on the SAME joint,
+/// so the test can witness the property that motivates the whole design —
+/// the servo term and the feedforward torque are summed *before* the effort
+/// clamp, and the joint can never be commanded past its rating however the
+/// two channels split the demand.
+///
+/// Three things are checked, per world, per control step:
+///
+/// 1. the torque row the policy pass wrote, against `policy_reference_tau`;
+/// 2. the PD target row, which the extra output must NOT have disturbed;
+/// 3. `ctrl` after the PD pass, against `clamp(kp*(tgt-q) - kd*v + tau, ±F)`
+///    recomputed on the host from the device's own `q`/`v` — the only
+///    readout that can tell "summed inside the clamp" from "clamped, then
+///    summed", which is what the GPU host loop does and what this replaces.
+///
+/// The gains are deliberately weak (`max_force` 10 N·m) against a torque
+/// scale of 30, so a saturated output drives `ctrl` onto the clamp and the
+/// assertion below checks it actually did — otherwise the third check would
+/// agree with both laws and prove nothing.
+fn suite_policy_tau<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    let model = free_base_with_limb();
+    let nworld = 4;
+    let limb_q = model.q_offsets[model.bodies[1].joint_idx];
+    let limb_v = model.v_offsets[model.bodies[1].joint_idx];
+    let (kp, kd, max_force) = (20.0f64, 1.0f64, 10.0f64);
+
+    let mut sim = mk(model.clone(), nworld);
+    sim.enable_pd_control(&[PdDof {
+        q_index: limb_q,
+        v_index: limb_v,
+        kp,
+        kd,
+        max_force,
+    }])
+    .unwrap();
+
+    let spec = PolicySpec {
+        obs: vec![
+            ObsOp::BodyPitch(0),
+            ObsOp::V(0),
+            ObsOp::QMinus(limb_q, 0.1),
+            ObsOp::V(limb_v),
+            ObsOp::BodyPosZ(1),
+        ],
+        hidden: 12,
+        act_slots: vec![0],
+        // One torque output, onto the same servo slot, at 30 N·m per unit.
+        tau: Some(TauChannel {
+            slots: vec![0],
+            scale: vec![30.0],
+        }),
+        act_clamp: 0.4,
+        // The convention the torque channel is written for: the position
+        // slot's clamp is radians, the torque slot's is 1.0 and its physical
+        // ceiling lives in `scale`.
+        act_clamp_slots: Some(vec![0.4, 1.0]),
+        noise_rho: 0.3,
+        input_noise: vec![0.01, 0.0, 0.02, 0.0, 0.0],
+        history_steps: 3,
+    };
+    assert_eq!(spec.n_out(), 2, "one position output and one torque one");
+    assert_eq!(spec.n_pos(), 1);
+    sim.enable_policy(spec.clone()).unwrap();
+
+    let mut wr = KernelRng(0xBEEF_1234);
+    let weights: Vec<f64> = (0..spec.n_weights()).map(|_| 0.6 * wr.normal()).collect();
+    // A wide std on the torque output so the draws reach the ±1 clamp.
+    let std = vec![0.2, 0.9];
+    let base: Vec<Vec<f64>> = (0..nworld).map(|w| vec![0.05 * w as f64]).collect();
+    sim.set_policy_weights(&weights).unwrap();
+    sim.set_policy_std(&std).unwrap();
+    sim.set_policy_base_targets(&base).unwrap();
+    let seed = 4242u64;
+    sim.seed_policy(seed).unwrap();
+
+    let states: Vec<State> = (0..nworld)
+        .map(|w| {
+            let mut s = model.default_state();
+            let f = w as f64;
+            s.q[2] = 0.3 * f;
+            s.q[5] = 1.0 + 0.1 * f;
+            s.q[limb_q] = 0.4 - 0.2 * f;
+            s.v[limb_v] = 0.7 - 0.3 * f;
+            s
+        })
+        .collect();
+    sim.load_states(&states);
+
+    let mut rngs: Vec<KernelRng> = (0..nworld).map(|w| KernelRng::for_world(seed, w)).collect();
+    let mut zs = vec![vec![0.0f64; spec.n_out()]; nworld];
+    let mut want_targets: Vec<Vec<f64>> = vec![vec![0.0; 1]; nworld];
+    let mut want_tau: Vec<Vec<f64>> = vec![vec![0.0; 1]; nworld];
+    let mut saturated = 0usize;
+
+    for step in 0..3 {
+        sim.run_policy(step).unwrap();
+        let dev_states = sim.readback_states();
+        for w in 0..nworld {
+            let mut s = dev_states[w].clone();
+            let mut obs = observe_reference(&model, &mut s, &spec.obs);
+            policy_reference_tau(
+                &spec,
+                &weights,
+                &std,
+                &mut rngs[w],
+                &mut obs,
+                &mut zs[w],
+                &base[w],
+                &mut want_targets[w],
+                &mut want_tau[w],
+            );
+        }
+        let got_t = sim.readback_targets().unwrap();
+        let got_tau = sim.readback_tau_ff().unwrap();
+        for w in 0..nworld {
+            let d = (got_t[w] as f64 - want_targets[w][0]).abs();
+            assert!(
+                d < 2e-4,
+                "step {step} world {w}: target got {} want {} diff {d:.2e}",
+                got_t[w],
+                want_targets[w][0]
+            );
+            // The torque row is in newton-metres, so the tolerance carries
+            // the 30 N·m the normalized output is multiplied by.
+            let d = (got_tau[w] as f64 - want_tau[w][0]).abs();
+            assert!(
+                d < 6e-3,
+                "step {step} world {w}: tau got {} want {} diff {d:.2e}",
+                got_tau[w],
+                want_tau[w][0]
+            );
+        }
+
+        // One physics step, then `ctrl` against the summed-then-clamped law.
+        let pre = sim.readback_states();
+        sim.step();
+        let ctrl = sim.readback_ctrl().unwrap();
+        for w in 0..nworld {
+            let raw = kp * (want_targets[w][0] - pre[w].q[limb_q]) - kd * pre[w].v[limb_v]
+                + want_tau[w][0];
+            if raw.abs() >= max_force {
+                saturated += 1;
+            }
+            let want = raw.clamp(-max_force, max_force);
+            let got = ctrl[w * model.nv + limb_v] as f64;
+            assert!(
+                (got - want).abs() < 6e-3,
+                "step {step} world {w}: ctrl got {got} want {want} (raw {raw})"
+            );
+            assert!(
+                got.abs() <= max_force + 1e-3,
+                "step {step} world {w}: ctrl {got} broke the {max_force} N·m effort clamp"
+            );
+        }
+        for _ in 0..4 {
+            sim.step();
+        }
+    }
+    assert!(
+        saturated > 0,
+        "no world ever saturated the effort clamp — the ctrl check cannot \
+         tell `clamp(pd + tau)` from `clamp(pd) + tau`"
+    );
+
+    // And the switch turns off: re-enabling a spec with no channel must stop
+    // the summand, whatever the torque buffer still holds.
+    let mut plain = spec.clone();
+    plain.tau = None;
+    plain.act_clamp_slots = Some(vec![0.4]);
+    sim.enable_policy(plain).unwrap();
+    let cur = sim.readback_states();
+    let _ = sim.set_position_targets(&(0..nworld).map(|_| vec![0.0]).collect::<Vec<_>>());
+    sim.step();
+    let ctrl = sim.readback_ctrl().unwrap();
+    for w in 0..nworld {
+        let want =
+            (kp * (0.0 - cur[w].q[limb_q]) - kd * cur[w].v[limb_v]).clamp(-max_force, max_force);
+        let got = ctrl[w * model.nv + limb_v] as f64;
+        assert!(
+            (got - want).abs() < 6e-3,
+            "after `tau: None` world {w}: ctrl got {got} want {want} — the \
+             torque summand did not turn off"
+        );
+    }
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -1912,6 +2106,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_policy(mk);
     suite_policy_base_targets(mk);
     suite_policy_clamp_slots(mk);
+    suite_policy_tau(mk);
     suite_policy_world_consts(mk);
     suite_policy_support(mk);
     suite_graph_replay(mk);
@@ -1967,6 +2162,10 @@ mod host {
     #[test]
     fn policy_clamps_per_action_slot() {
         suite_policy_clamp_slots(mk);
+    }
+    #[test]
+    fn feedforward_torque_lands_inside_the_effort_clamp() {
+        suite_policy_tau(mk);
     }
     #[test]
     fn per_world_consts_match_cpu() {

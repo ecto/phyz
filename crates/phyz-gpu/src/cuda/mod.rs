@@ -85,6 +85,10 @@ pub struct PdArgs {
     pub nv: u32,
     /// Servoed DOFs per world.
     pub n_dofs: u32,
+    /// Non-zero when the pass should sum the policy's feedforward-torque
+    /// row into the servo term before the effort clamp. 0 leaves the
+    /// `tau_ff` buffer untouched and the arithmetic exactly as it was.
+    pub has_tau: u32,
 }
 
 /// Scalar arguments of the contact pass. Everything else the pass needs
@@ -132,6 +136,8 @@ pub struct StepImpulseArgs {
     pub n_dofs: u32,
     /// Whether to run the PD pass at all.
     pub has_pd: u32,
+    /// As [`PdArgs::has_tau`], for the PD pass this fused step runs.
+    pub has_tau: u32,
     /// Timestep.
     pub dt: f32,
     /// Bodies per world.
@@ -205,6 +211,11 @@ pub struct PolicyArgs {
     pub n_out: u32,
     /// Servoed DOFs per world (the PD target row width).
     pub n_dofs: u32,
+    /// How many of the `n_out` outputs are PD-target offsets. The rest —
+    /// `n_out - n_pos` of them — are feedforward torques. Equal to `n_out`
+    /// for a spec with no torque channel, and then nothing in the kernel
+    /// past the position branch executes.
+    pub n_pos: u32,
     /// Applied-action clamp, used when `has_clamp_slots` is 0.
     pub act_clamp: f32,
     /// Non-zero when the kernel should read the per-action-slot clamp
@@ -300,6 +311,7 @@ pub trait KernelBackend {
     ) -> Result<(), String>;
 
     /// PD servo pass: `nworld * n_dofs` threads.
+    #[allow(clippy::too_many_arguments)]
     fn launch_pd(
         &self,
         args: PdArgs,
@@ -307,6 +319,7 @@ pub trait KernelBackend {
         q: &Self::Buffer,
         v: &Self::Buffer,
         targets: &Self::Buffer,
+        tau_ff: &Self::Buffer,
         ctrl: &mut Self::Buffer,
     ) -> Result<(), String>;
 
@@ -416,6 +429,7 @@ pub trait KernelBackend {
         _args: StepImpulseArgs,
         _pd_dofs: &Self::Buffer,
         _targets: &Self::Buffer,
+        _tau_ff: &Self::Buffer,
         _cparams: &Self::Buffer,
         _bodies: &Self::Buffer,
         _geometry: &Self::Buffer,
@@ -468,8 +482,11 @@ pub trait KernelBackend {
         z: &mut Self::Buffer,
         act_slots: &Self::Buffer,
         act_clamp_slots: &Self::Buffer,
+        tau_slots: &Self::Buffer,
+        tau_scale: &Self::Buffer,
         base_targets: &Self::Buffer,
         targets: &mut Self::Buffer,
+        tau_ff: &mut Self::Buffer,
         out: &mut Self::Buffer,
     ) -> Result<(), String>;
 }
@@ -487,7 +504,16 @@ struct ContactPass<B: KernelBackend> {
 struct PdPass<B: KernelBackend> {
     dofs: B::Buffer,
     targets: B::Buffer,
+    /// The feedforward-torque row the policy pass writes and the PD pass
+    /// sums inside the effort clamp: `nworld * n_dofs` newton-metres in
+    /// registration order. Allocated with the pass and zeroed, so a spec
+    /// with no torque channel hands the kernels a live pointer they never
+    /// read (`has_tau` is 0) rather than a null one.
+    tau_ff: B::Buffer,
     n_dofs: usize,
+    /// Set by `enable_policy` when the spec declares a torque channel.
+    /// Nothing else writes `tau_ff`, so it is the single switch.
+    has_tau: bool,
 }
 
 struct PolicyPass<B: KernelBackend> {
@@ -512,6 +538,11 @@ struct PolicyPass<B: KernelBackend> {
     z: B::Buffer,
     act_slots: B::Buffer,
     act_clamp_slots: B::Buffer,
+    /// The torque channel's PD slot per torque output, and the newton-metres
+    /// one unit of it commands. Length-1 placeholders when the spec declares
+    /// no channel (`PolicyArgs::n_pos == n_out`, so neither is read).
+    tau_slots: B::Buffer,
+    tau_scale: B::Buffer,
     base_targets: B::Buffer,
     /// `[history_steps][nworld][n_in]`, written by the observation pass and
     /// noised in place by the policy pass.
@@ -1032,14 +1063,25 @@ impl<B: KernelBackend> BatchSim<B> {
         // Re-enabling with the same servo count (a gain re-draw) keeps the
         // target buffer — the policy pass holds no reference to it, but the
         // last targets stay valid across the swap.
-        let targets = match self.pd.take() {
-            Some(old) if old.n_dofs == dofs.len() => old.targets,
-            _ => self.backend.alloc((self.nworld * dofs.len()).max(1))?,
+        let n = (self.nworld * dofs.len()).max(1);
+        let (targets, tau_ff, has_tau) = match self.pd.take() {
+            Some(old) if old.n_dofs == dofs.len() => (old.targets, old.tau_ff, old.has_tau),
+            _ => {
+                // Zeroed on allocation, not merely on the first policy step:
+                // a caller may drive the servos directly with
+                // `set_position_targets` while a torque-channel policy is
+                // enabled, and that path must read a defined row.
+                let mut t = self.backend.alloc(n)?;
+                self.backend.upload(&mut t, &vec![0.0f32; n])?;
+                (self.backend.alloc(n)?, t, false)
+            }
         };
         self.pd = Some(PdPass {
             dofs: dof_buf,
             targets,
+            tau_ff,
             n_dofs: dofs.len(),
+            has_tau,
         });
         // A fresh DOF buffer, and the PD pass may not have been in the
         // sequence at all before.
@@ -1165,9 +1207,9 @@ impl<B: KernelBackend> BatchSim<B> {
     /// across the sweeps of each step.
     fn issue_fused(&mut self, n: usize) -> Result<(), String> {
         let m = &self.model;
-        let (n_dofs, has_pd) = match &self.pd {
-            Some(pd) => (pd.n_dofs as u32, 1u32),
-            None => (0, 0),
+        let (n_dofs, has_pd, has_tau) = match &self.pd {
+            Some(pd) => (pd.n_dofs as u32, 1u32, u32::from(pd.has_tau)),
+            None => (0, 0, 0),
         };
         let args = StepImpulseArgs {
             nworld: self.nworld as u32,
@@ -1175,6 +1217,7 @@ impl<B: KernelBackend> BatchSim<B> {
             nv: m.nv as u32,
             n_dofs,
             has_pd,
+            has_tau,
             dt: m.dt as f32,
             nbodies: m.nbodies() as u32,
             gx: m.gravity.x as f32,
@@ -1187,14 +1230,15 @@ impl<B: KernelBackend> BatchSim<B> {
         // Unused when `has_pd` is 0; the kernel never reads them, and the
         // bodies table is the one buffer guaranteed to exist and to be
         // borrowed immutably here.
-        let (pd_dofs, targets) = match &self.pd {
-            Some(pd) => (&pd.dofs, &pd.targets),
-            None => (&self.bodies, &self.bodies),
+        let (pd_dofs, targets, tau_ff) = match &self.pd {
+            Some(pd) => (&pd.dofs, &pd.targets, &pd.tau_ff),
+            None => (&self.bodies, &self.bodies, &self.bodies),
         };
         self.backend.launch_step_impulse(
             args,
             pd_dofs,
             targets,
+            tau_ff,
             &c.params_buf,
             &self.bodies,
             &c.geometry,
@@ -1224,11 +1268,13 @@ impl<B: KernelBackend> BatchSim<B> {
                     nq: m.nq as u32,
                     nv,
                     n_dofs: pd.n_dofs as u32,
+                    has_tau: u32::from(pd.has_tau),
                 },
                 &pd.dofs,
                 &self.q,
                 &self.v,
                 &pd.targets,
+                &pd.tau_ff,
                 &mut self.ctrl,
             )?;
         }
@@ -1478,6 +1524,28 @@ impl<B: KernelBackend> BatchSim<B> {
                 .collect::<Vec<_>>(),
         )?;
 
+        // The torque channel's two rows. Allocated at length 1 and never
+        // read when the spec declares no channel, so the pointers the
+        // kernel is handed are always live.
+        let n_tau = spec.n_tau();
+        let mut tau_slots = self.backend.alloc(n_tau.max(1))?;
+        let mut tau_scale = self.backend.alloc(n_tau.max(1))?;
+        if let Some(t) = &spec.tau {
+            self.backend.upload(
+                &mut tau_slots,
+                &t.slots.iter().map(|&s| s as f32).collect::<Vec<_>>(),
+            )?;
+            self.backend.upload(
+                &mut tau_scale,
+                &t.scale.iter().map(|&s| s as f32).collect::<Vec<_>>(),
+            )?;
+        }
+        // The one switch the PD pass reads. Set here rather than in
+        // `enable_pd_control` because it is a property of the POLICY, and a
+        // spec swapped from a torque one back to a position one must turn
+        // the summand off again.
+        self.pd.as_mut().expect("PD pass checked above").has_tau = n_tau > 0;
+
         let n_wc = spec.n_world_consts();
         let reuse = self.policy.take().filter(|p| {
             p.spec.n_in() == n_in
@@ -1521,6 +1589,8 @@ impl<B: KernelBackend> BatchSim<B> {
             z,
             act_slots,
             act_clamp_slots,
+            tau_slots,
+            tau_scale,
             base_targets,
             obs_hist,
             out_hist,
@@ -1689,6 +1759,7 @@ impl<B: KernelBackend> BatchSim<B> {
                 n_h: n_h as u32,
                 n_out: n_out as u32,
                 n_dofs: pd.n_dofs as u32,
+                n_pos: p.spec.n_pos() as u32,
                 act_clamp: p.spec.act_clamp as f32,
                 has_clamp_slots: u32::from(p.spec.act_clamp_slots.is_some()),
                 rho: p.spec.noise_rho as f32,
@@ -1703,8 +1774,11 @@ impl<B: KernelBackend> BatchSim<B> {
             &mut p.z,
             &p.act_slots,
             &p.act_clamp_slots,
+            &p.tau_slots,
+            &p.tau_scale,
             &p.base_targets,
             &mut pd.targets,
+            &mut pd.tau_ff,
             &mut p.out_hist,
         )
     }
@@ -1745,6 +1819,24 @@ impl<B: KernelBackend> BatchSim<B> {
         let pd = self.pd.as_ref().ok_or("PD control not enabled")?;
         self.backend.synchronize()?;
         self.backend.download(&pd.targets)
+    }
+
+    /// The feedforward-torque rows the policy pass wrote, downloaded
+    /// (`[world][slot]`, newton-metres, PD registration order). All zero
+    /// unless the enabled spec declared a
+    /// [`crate::policy_pipeline::TauChannel`].
+    pub fn readback_tau_ff(&self) -> Result<Vec<f32>, String> {
+        let pd = self.pd.as_ref().ok_or("PD control not enabled")?;
+        self.backend.synchronize()?;
+        self.backend.download(&pd.tau_ff)
+    }
+
+    /// The generalized force the last step's PD pass wrote, downloaded
+    /// (`[world][nv]`). This is what ABA integrated, torque channel and
+    /// effort clamp included — the only readout that can witness the clamp.
+    pub fn readback_ctrl(&self) -> Result<Vec<f32>, String> {
+        self.backend.synchronize()?;
+        self.backend.download(&self.ctrl)
     }
 
     // ── State history ─────────────────────────────────────────────────────

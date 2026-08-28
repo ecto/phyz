@@ -39,7 +39,7 @@ pub const POLICY_MAX_IN: usize = 128;
 /// See [`POLICY_MAX_IN`].
 pub const POLICY_MAX_H: usize = 256;
 /// See [`POLICY_MAX_IN`].
-pub const POLICY_MAX_OUT: usize = 32;
+pub const POLICY_MAX_OUT: usize = 64;
 
 /// Floats per `ObsOp::ComOverSupport` support point in the aux buffer:
 /// body index then the body-frame offset.
@@ -322,6 +322,31 @@ pub fn pack_obs_ops(ops: &[ObsOp]) -> (Vec<f32>, Vec<f32>) {
     (table, aux)
 }
 
+/// The **feedforward-torque channel**: the outputs past the PD-target ones.
+///
+/// A robot whose only actuation seam is a position servo is limited by the
+/// servo, not by its motors — a commanded target reaches the joint through
+/// `kp`, and a fast move needs a target the tracker can never be far enough
+/// from. The channel adds a second seam: outputs `act_slots.len()..n_out`
+/// are torques in **normalized** units, scaled by [`TauChannel::scale`] into
+/// newton-metres and summed with the servo term *inside* the effort clamp,
+/// so a joint can never be commanded past its rating however the two
+/// channels split the demand.
+///
+/// `slots` and `scale` are parallel and index the PD registration order, as
+/// [`PolicySpec::act_slots`] does. A spec without this field is what it
+/// always was: `n_out == act_slots.len()`, and no line of the torque path
+/// executes on either the host or the device.
+#[derive(Debug, Clone)]
+pub struct TauChannel {
+    /// The PD servo slot each torque output drives, in output order.
+    pub slots: Vec<usize>,
+    /// Newton-metres per unit of the (clamped) output, in output order —
+    /// the joint's own effort limit is the honest default, because then a
+    /// saturated output asks for exactly the torque the motor is rated for.
+    pub scale: Vec<f64>,
+}
+
 /// What the policy pass runs: observation table, MLP shape, action wiring.
 #[derive(Debug, Clone)]
 pub struct PolicySpec {
@@ -329,10 +354,14 @@ pub struct PolicySpec {
     pub obs: Vec<ObsOp>,
     /// Hidden width of both hidden layers.
     pub hidden: usize,
-    /// For each action `k`, the PD servo slot (registration order, as in
-    /// `set_position_targets`) that receives `base + clamp(action_k)`.
-    /// Its length is the MLP output width.
+    /// For each POSITION action `k`, the PD servo slot (registration
+    /// order, as in `set_position_targets`) that receives
+    /// `base + clamp(action_k)`. Its length is the MLP output width unless
+    /// [`PolicySpec::tau`] adds a torque channel on the end.
     pub act_slots: Vec<usize>,
+    /// The feedforward-torque outputs, appended after the position ones.
+    /// `None` — the default — is a pure position policy, byte for byte.
+    pub tau: Option<TauChannel>,
     /// Applied-action clamp, one value for every action slot.
     pub act_clamp: f64,
     /// Per-action-slot applied-action clamp. When `Some`, action `k` is
@@ -354,9 +383,17 @@ impl PolicySpec {
     pub fn n_in(&self) -> usize {
         self.obs.len()
     }
-    /// Output width.
+    /// Output width: the position slots, then the torque ones.
     pub fn n_out(&self) -> usize {
+        self.act_slots.len() + self.n_tau()
+    }
+    /// How many outputs are PD-target offsets — the first `n_pos` of them.
+    pub fn n_pos(&self) -> usize {
         self.act_slots.len()
+    }
+    /// How many outputs are feedforward torques, 0 without a channel.
+    pub fn n_tau(&self) -> usize {
+        self.tau.as_ref().map_or(0, |t| t.slots.len())
     }
     /// Width of the per-world constant row: one past the highest slot any
     /// [`ObsOp::WorldSlot`] / [`ObsOp::QMinusWorld`] reads, and 0 when the
@@ -450,6 +487,27 @@ impl PolicySpec {
                 ));
             }
         }
+        if let Some(t) = &self.tau {
+            if t.slots.len() != t.scale.len() {
+                return Err(format!(
+                    "torque channel has {} slots and {} scales",
+                    t.slots.len(),
+                    t.scale.len()
+                ));
+            }
+            if t.slots.is_empty() {
+                return Err(
+                    "an empty torque channel is not a policy without one — use `tau: None`".into(),
+                );
+            }
+            for &s in &t.slots {
+                if s >= n_pd_dofs {
+                    return Err(format!(
+                        "torque slot {s} exceeds the {n_pd_dofs} registered PD servos"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -533,12 +591,45 @@ pub fn policy_reference(
     base_targets: &[f64],
     targets: &mut [f64],
 ) -> (Vec<f64>, f64) {
+    let mut tau = vec![0.0; targets.len()];
+    policy_reference_tau(
+        spec,
+        weights,
+        std,
+        rng,
+        obs,
+        z,
+        base_targets,
+        targets,
+        &mut tau,
+    )
+}
+
+/// [`policy_reference`], also filling this world's feedforward-torque row —
+/// the reference for the [`TauChannel`] half of `policy_thread`. `tau_ff` is
+/// the PD target row's width and is fully rewritten (zeros on every slot the
+/// channel does not drive), exactly as the kernel rewrites it.
+#[allow(clippy::too_many_arguments)]
+pub fn policy_reference_tau(
+    spec: &PolicySpec,
+    weights: &[f64],
+    std: &[f64],
+    rng: &mut KernelRng,
+    obs: &mut [f64],
+    z: &mut [f64],
+    base_targets: &[f64],
+    targets: &mut [f64],
+    tau_ff: &mut [f64],
+) -> (Vec<f64>, f64) {
     for (i, o) in obs.iter_mut().enumerate() {
         if spec.input_noise[i] != 0.0 {
             *o += spec.input_noise[i] * rng.normal();
         }
     }
     targets.copy_from_slice(base_targets);
+    if spec.tau.is_some() {
+        tau_ff.fill(0.0);
+    }
     let mean = mlp_forward(spec.n_in(), spec.hidden, spec.n_out(), weights, obs);
     let rho = spec.noise_rho;
     let keep = (1.0 - rho * rho).max(0.0).sqrt();
@@ -549,9 +640,16 @@ pub fn policy_reference(
         let a = mean[k] + std[k] * z[k];
         let zi = (a - mean[k]) / std[k];
         logp += -0.5 * zi * zi - std[k].ln() - 0.5 * (2.0 * std::f64::consts::PI).ln();
-        let slot = spec.act_slots[k];
         let lim = spec.clamp_at(k);
-        targets[slot] = base_targets[slot] + a.clamp(-lim, lim);
+        let applied = a.clamp(-lim, lim);
+        if k < spec.n_pos() {
+            let slot = spec.act_slots[k];
+            targets[slot] = base_targets[slot] + applied;
+        } else {
+            let t = spec.tau.as_ref().expect("n_out past n_pos needs a channel");
+            let j = k - spec.n_pos();
+            tau_ff[t.slots[j]] = applied * t.scale[j];
+        }
         act.push(a);
     }
     (act, logp)
