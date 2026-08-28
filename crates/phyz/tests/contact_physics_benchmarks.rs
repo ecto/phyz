@@ -376,38 +376,49 @@ fn five_box_stack_is_stable() {
     );
 }
 
-/// §6.3's heavy-on-light variant. It does **not** degrade gracefully: past a
-/// mass ratio of about 5 the stack falls over, and it does so *non-monotonically*.
+/// §6.3's heavy-on-light variant. It used to fall over past a mass ratio of
+/// about 5, and *non-monotonically*; it does not any more, and the reason is
+/// worth stating because it was never a solver problem.
 ///
 /// Three unit boxes carrying one heavy box, tilt after 10 s of settled
-/// simulation:
+/// simulation, on this host:
 ///
-/// | mass ratio | max tilt | penetration |
-/// |---|---|---|
-/// | 1 | 0.01° | 2.7e-4 m |
-/// | 2 | 0.00° | 3.4e-4 m |
-/// | 5 | 0.89° | 5.0e-4 m |
-/// | 10 | **40.85°** | 2.4e-2 m |
-/// | 20 | 0.00° | 9.8e-4 m |
-/// | 50 | **180.36°** | 1.6e-1 m |
-/// | 100 | **190.40°** | 1.9e-1 m |
+/// | mass ratio | tilt (legacy clip) | penetration | tilt (now) | penetration |
+/// |---|---|---|---|---|
+/// | 1 | 0.00° | 2.7e-4 m | 0.00° | 2.7e-4 m |
+/// | 2 | 2.87° | 3.4e-4 m | 0.00° | 3.4e-4 m |
+/// | 5 | 10.27° | 1.1e-3 m | 0.00° | 5.0e-4 m |
+/// | 10 | 11.16° | 1.8e-3 m | 0.00° | 6.7e-4 m |
+/// | 20 | **101.89°** | 1.2e-1 m | 0.00° | 9.8e-4 m |
+/// | 50 | **145.82°** | 1.7e-1 m | 0.00° | 2.3e-3 m |
+/// | 100 | **139.86°** | 1.4e-1 m | 0.00° | 4.5e-3 m |
 ///
+/// The `PHYZ_LEGACY_CLIP=1` column is the old one and reproduces on demand.
 /// The design doc anticipated degradation here and asked for "a degraded but
-/// bounded result, documented rather than tuned until it looks good". The
-/// honest reading of the table is that there is no bound to document: 20:1 is
-/// *perfect* while 10:1 has fallen flat, so this is not soft contact gracefully
-/// losing accuracy with mass ratio — it is an instability whose onset is not
-/// monotone in the parameter, which is a different and more serious thing. A
-/// smooth degradation could be budgeted for; this cannot.
+/// bounded result, documented rather than tuned until it looks good"; the
+/// honest reading of the old table was that there was no bound to document,
+/// because the onset was not monotone in the parameter. That is what a
+/// *discrete* fault looks like from the outside.
 ///
-/// §7.4's tradeoff table claims "stacking robustness: good, worse than TGS at
-/// high mass ratio" for phyz. On this evidence that row is too generous, and it
-/// is now marked as such in the design doc's §8.
+/// It was one: `phyz_collision::manifold::clip_faces` measured a clipped
+/// vertex's separation along the contact normal rather than along the
+/// reference face's own normal, and always took the reference face from shape
+/// `A` whether or not it was the better-aligned one. A stack that settles even
+/// slightly out of parallel then has its entire clipped polygon rejected, and
+/// the pair falls back to a **single** support vertex chosen by the sign of a
+/// cancelled float — one point has no resistance to tipping, and a heavier top
+/// box tips faster. Restoring the face manifold restores the resistance, and
+/// what is left is soft contact degrading exactly as §7.4 said it should:
+/// penetration rises smoothly with load (2.7e-4 m at 1:1 to 4.5e-3 m at 100:1)
+/// and the stack stays up.
 ///
-/// The test asserts the *equal-mass* end holds and pins 10:1 as a known
-/// collapse, so a genuine fix breaks it loudly and gets the table updated.
+/// So §7.4's "stacking robustness: good, worse than TGS at high mass ratio"
+/// row is no longer too generous, and §8's mark against it is discharged.
+///
+/// The test pins both ends: the equal-mass stack stands, and 100:1 — five
+/// times past the ratio that used to lie flat — stands too.
 #[test]
-fn heavy_on_light_stack_collapses_non_monotonically() {
+fn heavy_on_light_stacks_stand_to_a_hundred_to_one() {
     let half = 0.05;
 
     let ok = run_stack(&[1.0, 1.0, 1.0, 2.0], half);
@@ -429,17 +440,26 @@ fn heavy_on_light_stack_collapses_non_monotonically() {
         ok.max_tilt.to_degrees()
     );
 
-    let bad = run_stack(&[1.0, 1.0, 1.0, 10.0], half);
+    let heavy = run_stack(&[1.0, 1.0, 1.0, 100.0], half);
     eprintln!(
-        "10:1 stack: drift {:.3e} m, tilt {:.2} deg",
-        bad.lateral_drift,
-        bad.max_tilt.to_degrees()
+        "100:1 stack: drift {:.3e} m, tilt {:.2} deg, penetration {:.1e} m",
+        heavy.lateral_drift,
+        heavy.max_tilt.to_degrees(),
+        heavy.max_penetration
     );
     assert!(
-        bad.max_tilt > 10f64.to_radians(),
-        "10:1 was a documented collapse (40.85 deg) and now tilts only {:.2} \
-         deg — if this is a fix, update the table in this test's docs, the \
-         design doc §8, and §7.4's stacking claim together",
-        bad.max_tilt.to_degrees()
+        heavy.max_tilt < 10f64.to_radians(),
+        "a 100:1 stack must stay up; tilt {:.2} deg. This used to be a \
+         documented collapse and is now pinned as a fix — if it regresses, \
+         check `PHYZ_LEGACY_CLIP` is unset, and see \
+         `phyz_collision::manifold::clip_faces`",
+        heavy.max_tilt.to_degrees()
+    );
+    // Soft contact still pays for the load, and that is the part that is
+    // allowed to degrade: 4.5e-3 m here against 2.7e-4 m at equal mass.
+    assert!(
+        heavy.max_penetration < 1e-2,
+        "penetration {:.3e} m at 100:1 exceeds 1 cm",
+        heavy.max_penetration
     );
 }

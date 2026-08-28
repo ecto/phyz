@@ -1032,7 +1032,7 @@ number rather than checking physics.
 |---|---|---|---|
 | §6.1 C sliding acceleration, box on a 40° slope | within 1% | **16% excess** (`a = 2.0838` vs `1.7968`; effective `mu` `0.5618` vs `0.600`) | [#63] |
 | §6.2 restitution, dropped sphere | `h1/h0 = e²` within 2% | **81% of nominal `e` from 20 cm, 92% from 80 cm** (8–19% energy shortfall); no measurable rebound at all from 5 cm at any `e` | [#64] |
-| §6.3 stacking at high mass ratio | degraded but bounded | **no bound exists** — tilt after settling is 0.01° / 0.00° / 0.89° / **40.85°** / 0.00° / **180.36°** / **190.40°** at ratios 1 / 2 / 5 / 10 / 20 / 50 / 100 | [#65] |
+| §6.3 stacking at high mass ratio | degraded but bounded | **met, after `fix/clip-faces-manifolds`** — tilt after settling is 0.00° at every ratio from 1 to 100, with penetration rising smoothly 2.7e-4 m → 4.5e-3 m. Was 0.00° / 2.87° / 10.27° / 11.16° / **101.89°** / **145.82°** / **139.86°**; `PHYZ_LEGACY_CLIP=1` reproduces that | [#65] |
 
 The friction one is the most surprising, because three natural explanations are
 ruled out by measurement: it is not the solver preset, not the impedance
@@ -1040,13 +1040,26 @@ regularizer (sweeping `solimp` over `0.9`…`0.9999` changes nothing), and not t
 box rotating (final pitch `4.2e-4 rad`). It is something the multi-point path
 does that the single-contact benchmark cannot see.
 
-The stacking one has a consequence for what this document claims. §7.4's table
-gives phyz *"stacking robustness: good, worse than TGS at high mass ratio"*.
-That reads as graceful degradation. A 20:1 stack standing perfectly while a 10:1
-stack falls flat is not degradation, it is an instability with a non-monotone
-onset, and **that row should not be published in its current form.** The
-equal-mass case genuinely is good — five boxes drift 5.8 µm and tilt 6.8e-5 rad
-over 10 s — and that is what the row should say.
+The stacking one **is closed, and it was never the solver.** §7.4's table gives
+phyz *"stacking robustness: good, worse than TGS at high mass ratio"*, which
+reads as graceful degradation; a 20:1 stack standing perfectly while a 10:1
+stack fell flat was not degradation but an instability with a non-monotone
+onset, and a non-monotone onset is the signature of a *discrete* fault rather
+than a numerical one.
+
+It was one. `phyz_collision::manifold::clip_faces` measured each clipped
+vertex's separation along the **contact** normal rather than along the
+reference face's own normal, and always took the reference face from shape `A`
+whether or not that was the better-aligned one. A stack that settles even
+slightly out of parallel then reads its whole clipped polygon as metres-scale
+separation, rejects it, and falls back to a single support vertex chosen by the
+sign of a cancelled float. One point has no resistance to tipping — which is
+what §1 of `manifold.rs` says a manifold exists to provide — and a heavier top
+box tips faster. Measuring against the reference plane's own normal, and
+letting the better-aligned face be the reference, restores the manifold. What
+is left at 100:1 is soft contact degrading exactly as §7.4 describes:
+penetration grows with load, and the stack stays up. The row stands as
+written.
 
 What *does* meet spec, measured the same way: §6.1 A/B/D (stiction, the
 transition angle, isotropy to `1e-9`), §6.2's settling test (a bouncy sphere

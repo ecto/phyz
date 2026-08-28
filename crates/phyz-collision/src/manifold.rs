@@ -31,19 +31,36 @@
 //! functions of the configuration. This is the same approximation MuJoCo and
 //! Dojo make; see `docs/design/differentiable-contact.md` §4.4.
 //!
-//! That paragraph was true of the *clipped* path and false of the fallback.
-//! When step 3 fails — and on a humanoid standing on a skateboard it fails for
-//! 7 of the 8 body-body pairs, because the incident face's vertices sit 3–44 mm
-//! beyond the reference plane while GJK reports a 0.5 mm gap — the manifold
-//! falls back to [`single_point`], built from `Geometry::support`. That
-//! function picks a box corner by the **sign of each component** of the
-//! direction in the box's local frame, and along a face normal those in-plane
-//! components are exact-cancellation noise. Their signs are decided by the last
-//! bits of the pose, so the witness point walks between corners of the box —
-//! measured at up to 24 cm — while the normal and the depth stay bit-identical.
-//! [`stable_witness`] makes that fallback report the supporting *feature's*
-//! centroid instead, which is a function of the geometry at millimetre scale
-//! rather than of the 16th digit.
+//! That paragraph was true of the *clipped* path and false of the fallback,
+//! and until `fix/clip-faces-manifolds` the fallback was where 80 % of the
+//! body-body pairs of a humanoid standing on a skateboard ended up.
+//!
+//! Step 3 rejected its whole clipped polygon because of two things it got
+//! wrong about the reference face:
+//!
+//! - **It always took the reference from `A`.** The separating normal is a
+//!   face normal of at most one of the two boxes; the other touches on an edge
+//!   or a corner, and its "support face" is tilted away from `n` by whatever
+//!   the relative orientation is. Whichever face is better aligned with `n` is
+//!   the one the manifold should be measured against.
+//! - **It measured separation along `n`, not along the reference face's own
+//!   normal.** The only direction that measures a distance from a plane is
+//!   that plane's normal. Measuring along `n` charges every incident vertex
+//!   for the reference face's own extent along `n` — on the K1 skate stance,
+//!   up to 45 mm. GJK reported a 0.5 mm gap; `clip_faces` read 3–44 mm,
+//!   `sep > margin` rejected every vertex, and the pair fell through.
+//!
+//! Downstream that mattered because [`single_point`] picks a box corner by the
+//! **sign of each component** of the direction in the box's local frame, and
+//! along a face normal those in-plane components are exact-cancellation noise.
+//! Their signs are decided by the last bits of the pose, so the witness point
+//! walked between corners of the box — measured at up to 24 cm — while the
+//! normal and the depth stayed bit-identical. [`stable_witness`] makes that
+//! fallback report the supporting *feature's* centroid instead; it is still
+//! there, still off by default, and no longer the thing standing between this
+//! module and a differentiable contact.
+//!
+//! [`legacy_clip`] restores both old behaviours together.
 
 use crate::geometry::Geometry;
 use crate::gjk::GjkOutcome;
@@ -67,17 +84,24 @@ use std::sync::OnceLock;
 /// the box, a whole half-extent away.
 ///
 /// Measured on the K1 skate stance (13 contacts, two soles on grip tape, four
-/// wheels, the deck joint): the face-clip path fails for 7 of the 8 body-body
-/// pairs — the incident face's vertices sit 3–44 mm beyond the reference
-/// plane while GJK reports a 0.5 mm gap — so nearly every body-body contact
-/// takes this fallback. Perturbing one torque lane by `1e-9 N·m` moved witness
-/// points by up to **24 cm** while the normal and the depth stayed
-/// bit-identical, which is the signature exactly: the physics of the contact
-/// did not move, the *choice of vertex* did. Downstream that is a different
-/// moment arm, a `4.2e-2` change in the solved impulses, and a trunk position
-/// that jumps `6.3e-6 m` in one 0.5 ms step — an amplification of `~1e9` that
-/// makes two consecutive contacted steps non-differentiable even though one
-/// step on its own matches central differences to every digit.
+/// wheels, the deck joint) **before** `fix/clip-faces-manifolds`: the face-clip
+/// path failed for 80 % of body-body pairs — the incident face's vertices read
+/// 3–44 mm beyond the reference plane while GJK reported a 0.5 mm gap — so
+/// nearly every body-body contact took this fallback. Perturbing one torque
+/// lane by `1e-9 N·m` moved witness points by up to **24 cm** while the normal
+/// and the depth stayed bit-identical, which is the signature exactly: the
+/// physics of the contact did not move, the *choice of vertex* did. Downstream
+/// that was a different moment arm, a `4.2e-2` change in the solved impulses,
+/// and a trunk position that jumped `6.3e-6 m` in one 0.5 ms step — an
+/// amplification of `~1e9` that made two consecutive contacted steps
+/// non-differentiable even though one step on its own matched central
+/// differences to every digit.
+///
+/// The fallback rate on that stance is 1.8 % now, so this flag is a net under
+/// the fix rather than the fix itself — and on that stance turning it *on* is
+/// measurably worse (a two-step `1e-9 N·m` response of `1.3e-10 m` against
+/// `3.8e-15 m` with it off), because averaging tied vertices reintroduces a
+/// tie set that moves.
 ///
 /// With this set, vertices within [`SUPPORT_TIE_EPS`] of the maximum are
 /// averaged instead of raced. A face-on contact returns the face centre, an
@@ -89,6 +113,25 @@ use std::sync::OnceLock;
 pub fn stable_witness() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("PHYZ_STABLE_WITNESS").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Restore the pre-fix face clipper: reference face always taken from shape
+/// `A`, and separation measured along the contact normal from that face's
+/// first vertex.
+///
+/// Off by default. The old path produced no face manifold at all for 80 % of
+/// the body-body pairs of the K1 skate stance, and let a 20:1 box stack fall
+/// flat — see [`clip_faces`] and `tests/contact_physics_benchmarks.rs` — so it
+/// is kept only as an escape hatch for reproducing pre-fix numbers.
+pub fn legacy_clip() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_LEGACY_CLIP").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Trace every face-clip decision to stderr. Diagnostic only.
+fn clip_debug() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_CLIP_DEBUG").is_ok())
 }
 
 /// Relative slack for deciding that two vertices support a direction equally.
@@ -219,12 +262,43 @@ pub fn contact_manifold_within(
     let face_b = support_face(geom_b, pos_b, rot_b, &(-normal));
 
     let points = match (face_a, face_b) {
-        (Some(ref_face), Some(inc_face)) => clip_faces(&ref_face, &inc_face, &normal, margin)
-            .unwrap_or_else(|| {
+        (Some(fa), Some(fb)) => {
+            // Which of the two faces is the *reference* — the one whose plane
+            // the manifold is measured against — is not a free choice. The
+            // separating normal is a face normal of at most one of the two
+            // boxes; the other shape touches it on an edge or a corner, and
+            // its "support face" is then tilted away from `n` by whatever the
+            // relative orientation happens to be. Measuring depth against that
+            // tilted plane charges the incident vertices for the reference
+            // face's own tilt: on the K1 skate stance the reference face spans
+            // up to 45 mm along `n`, so every incident vertex reads as tens of
+            // millimetres of gap while the true gap is half a millimetre.
+            //
+            // So take the better-aligned face as the reference, and fall back
+            // to A only on a tie. `legacy_clip()` restores the old
+            // always-A choice.
+            let (reference, incident) = if legacy_clip()
+                || fa.verts.is_empty()
+                || (!fb.verts.is_empty() && fa.normal.dot(normal) >= fb.normal.dot(-normal))
+            {
+                (fa, fb)
+            } else {
+                (fb, fa)
+            };
+            let clipped = clip_faces(&reference, &incident, &normal, margin);
+            if clip_debug() {
+                eprintln!(
+                    "PAIR clipped={} npts={}",
+                    clipped.is_some(),
+                    clipped.as_ref().map_or(0, |v| v.len())
+                );
+            }
+            clipped.unwrap_or_else(|| {
                 vec![single_point(
                     geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
                 )]
-            }),
+            })
+        }
         // At least one surface is curved: one point is the whole story.
         _ => vec![single_point(
             geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
@@ -432,12 +506,44 @@ fn clip_faces(
         }
         poly = clip_polygon(&poly, &a, &plane_n);
         if poly.is_empty() {
+            if clip_debug() {
+                eprintln!("CLIP EMPTY at side plane {i}/{n_ref}");
+            }
             return None;
         }
     }
 
-    // Reference plane offset along the shared normal.
+    // Reference plane: the point and the *face's own* outward normal.
+    //
+    // The separation of a clipped vertex is its signed distance from that
+    // plane, and the only direction that measures a distance from a plane is
+    // the plane's normal. Measuring along the contact normal instead — as this
+    // did — is only equivalent when the two agree, and they agree only when
+    // the reference face happens to be the face that generated `n`. When they
+    // differ by 15°, as the tilted foot boxes on the skate deck do, the
+    // reference face's own extent along `n` (up to 45 mm) is added to every
+    // vertex's reading, the `sep > margin` test rejects the whole polygon, and
+    // the manifold silently drops to the `single_point` fallback.
     let ref_point = reference.point;
+    let ref_n = if legacy_clip() {
+        *normal
+    } else {
+        reference.normal
+    };
+
+    if clip_debug() {
+        let seps: Vec<f64> = poly.iter().map(|p| (p - ref_point).dot(ref_n)).collect();
+        let kept = seps.iter().filter(|s| **s <= margin.max(1e-9)).count();
+        eprintln!(
+            "CLIP align_ref={:.6} align_inc={:.6} margin={:.3e} npoly={} kept={} seps={:?}",
+            reference.normal.dot(normal).abs(),
+            incident.normal.dot(normal).abs(),
+            margin,
+            poly.len(),
+            kept,
+            seps
+        );
+    }
 
     let out: Vec<ManifoldPoint> = poly
         .iter()
@@ -446,13 +552,14 @@ fn clip_faces(
             // measured along the contact normal. Negative separation is
             // penetration; a positive separation up to `margin` is a gap
             // inside the band and is kept, with a negative depth.
-            let sep = (p - ref_point).dot(normal);
+            let sep = (p - ref_point).dot(ref_n);
             if sep > margin.max(1e-9) {
                 return None;
             }
             Some(ManifoldPoint {
-                // Put the point on the midsurface.
-                position: p - *normal * (sep * 0.5),
+                // Put the point on the midsurface: halfway back toward the
+                // reference plane, along that plane's normal.
+                position: p - ref_n * (sep * 0.5),
                 depth: -sep,
             })
         })
@@ -785,6 +892,74 @@ mod tests {
         for p in &m.points {
             assert!(p.depth > 0.0 && p.depth < 0.05, "depth {}", p.depth);
         }
+    }
+
+    /// **The tilted-reference regression.** A small box resting on a *tilted*
+    /// slab, with its own sole parallel to the slab, is a face-on-face contact
+    /// and must produce a face manifold whose depths are the real overlap.
+    ///
+    /// It did not. `clip_faces` measured each clipped vertex's separation along
+    /// the contact normal from a vertex of a reference face it always took from
+    /// shape `A` — here the slab, tilted 15° away from that normal and so
+    /// spanning 2.6 m along it. Every vertex read metres of gap against a
+    /// centimetre of real overlap, `sep > margin` rejected the whole polygon,
+    /// and the pair fell through to a single support vertex.
+    ///
+    /// The scale is the point: the error is the *reference face's own size*,
+    /// which is why the same bug read as "3–44 mm beyond the plane" on 0.15 m
+    /// foot boxes and as a collapsed stack on 0.1 m ones.
+    #[test]
+    fn a_tilted_reference_face_still_gives_a_face_manifold() {
+        let tilt = 15f64.to_radians();
+        // A big slab rotated about +x, so its top face leans in y and its
+        // highest feature is the long edge at local y = +5.
+        let (c, s) = (tilt.cos(), tilt.sin());
+        let slab_rot = Mat3::new(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c);
+        let slab = Geometry::Box {
+            half_extents: Vec3::new(5.0, 5.0, 0.5),
+        };
+
+        // A small axis-aligned box sitting on that edge: its flat underside is
+        // the contact plane, so the separating normal is +z — which the slab's
+        // own support face misses by the full 15°.
+        let rider = unit_box(0.5);
+        let edge = slab_rot * Vec3::new(0.0, -5.0, 0.5);
+        let rider_pos = Vec3::new(0.0, edge.y, edge.z + 0.5 - 0.01);
+
+        let m = contact_manifold(
+            &slab,
+            &rider,
+            &Vec3::zeros(),
+            &slab_rot,
+            &rider_pos,
+            &Mat3::identity(),
+        )
+        .expect("a box resting on a slab's edge is a contact");
+
+        assert!(
+            (m.normal - Vec3::z()).norm() < 1e-6,
+            "the normal is the rider's own face normal, +z; got {:?}",
+            m.normal
+        );
+        assert!(
+            m.points.len() >= 2,
+            "an edge-on-face contact must give at least the two ends of the \
+             edge, got {} point(s) — one point has no resistance to rolling \
+             along it, and getting one here means the clipped polygon was \
+             rejected and `single_point` took over",
+            m.points.len()
+        );
+        let deepest = m
+            .points
+            .iter()
+            .map(|p| p.depth)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (deepest - 0.01).abs() < 1e-6,
+            "the deepest point overlaps by 0.01 m; got {deepest} — an error \
+             the size of the slab's own extent along the normal (2.6 m here) \
+             is the bug this pins"
+        );
     }
 
     /// Disjoint shapes produce nothing.
