@@ -1195,8 +1195,8 @@ fn sweep(
         // fixed point — dropping it is what makes an IFT gradient of a
         // finitely-swept iterate wrong.
         let d_f_n = if a_nn > 0.0 && unclamped > 0.0 {
-            let d_num = -dr[0] - (db[0][1] * f[c].y + a_nu * dfc.y)
-                - (db[0][2] * f[c].z + a_nw * dfc.z);
+            let d_num =
+                -dr[0] - (db[0][1] * f[c].y + a_nu * dfc.y) - (db[0][2] * f[c].z + a_nw * dfc.z);
             (d_num - unclamped * db[0][0]) / a_nn
         } else {
             // The forward took the `max(0.0)` branch (or the degenerate
@@ -1371,7 +1371,11 @@ fn newton_step_diff(
     // `K` is consumed by the elimination, so keep a copy for `dK raw` and
     // solve the differential in the same factorization pass: appending `drhs`
     // as a second column is what keeps the two systems provably identical.
-    let k_nominal = if diff.is_some() { k.clone() } else { Vec::new() };
+    let k_nominal = if diff.is_some() {
+        k.clone()
+    } else {
+        Vec::new()
+    };
     crate::gradient::solve_dense(&mut k, &mut rhs, dim, 1)?;
     if rhs.iter().any(|v| !v.is_finite()) {
         return None;
@@ -1439,9 +1443,20 @@ fn newton_step_diff(
             }
             let mut kk = k_nominal;
             let mut sol = drhs;
-            crate::gradient::solve_dense(&mut kk, &mut sol, dim, 1)?;
-            if sol.iter().any(|v| !v.is_finite()) {
-                return None;
+            // The tangent solve must never veto the *primal* candidate: the
+            // matrix is byte-identical to the one the primal just factorised
+            // (same pivots, same elimination), so a `None` here used to be
+            // reachable only through the finite-ness check below — and taking
+            // it changed which branch the solver ran relative to a diff-free
+            // execution of the same solve. That is exactly the divergence the
+            // `replayed.iterations == recorded.iterations` assertions in the
+            // adjoint exist to forbid. A non-finite *differential* now stays a
+            // non-finite differential: the candidate is returned unchanged and
+            // the NaN propagates loudly into the gradient instead of silently
+            // rerouting the primal; a failed second factorisation (unreachable
+            // for an identical matrix, handled defensively) does the same.
+            if crate::gradient::solve_dense(&mut kk, &mut sol, dim, 1).is_none() {
+                sol = vec![f64::NAN; dim];
             }
             sol
         }

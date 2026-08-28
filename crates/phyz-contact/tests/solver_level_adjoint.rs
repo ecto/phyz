@@ -123,17 +123,13 @@ fn fd(
 /// Worst relative disagreement between two impulse differentials, scaled by the
 /// largest component so a near-zero row cannot dominate the ratio.
 fn worst_rel(a: &[Vec3], b: &[Vec3]) -> f64 {
-    let scale = a
-        .iter()
-        .chain(b)
-        .fold(1e-12f64, |m, v| m.max(v.x.abs()).max(v.y.abs()).max(v.z.abs()));
-    a.iter()
-        .zip(b)
-        .fold(0.0f64, |m, (x, y)| {
-            let d = *x - *y;
-            m.max(d.x.abs().max(d.y.abs()).max(d.z.abs()))
-        })
-        / scale
+    let scale = a.iter().chain(b).fold(1e-12f64, |m, v| {
+        m.max(v.x.abs()).max(v.y.abs()).max(v.z.abs())
+    });
+    a.iter().zip(b).fold(0.0f64, |m, (x, y)| {
+        let d = *x - *y;
+        m.max(d.x.abs().max(d.y.abs()).max(d.z.abs()))
+    }) / scale
 }
 
 fn check(cfg: ContactSolverConfig, n: usize, mu: f64, tol: f64, label: &str) {

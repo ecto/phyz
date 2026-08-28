@@ -410,6 +410,72 @@ impl FixedPointSensitivity {
         out
     }
 
+    /// The transpose of [`Self::apply`]: pull a covector over `df` back to
+    /// covectors over the stationarity residual and the per-contact
+    /// `dM_t·(t* − f_t)` channel.
+    ///
+    /// For any `(d_stationarity, d_mt_rel)` and any `bar_f`,
+    ///
+    /// ```text
+    /// ⟨bar_f, apply(d_stationarity, d_mt_rel)⟩
+    ///   = ⟨bar_res, d_stationarity⟩ + ⟨bar_mt, d_mt_rel⟩
+    /// ```
+    ///
+    /// with `(bar_res, bar_mt)` the pair returned here — the same
+    /// one-linear-map-two-sides identity `contact_solve_differential_transpose`
+    /// pins for the solver-level path, now available for the IFT path. It is
+    /// what lets an adjoint contract *one* covector through the contact
+    /// channel instead of pushing one differential per input lane, and it is
+    /// pinned to round-off by `tests::apply_transpose_pairs_with_apply`.
+    // Stride arithmetic into flat, row-major arrays, matching `apply`.
+    #[allow(clippy::needless_range_loop)]
+    pub fn apply_transpose(&self, bar_f: &[Vec3]) -> (Vec<f64>, Vec<[f64; 2]>) {
+        let n = self.n;
+        let dim = 3 * n;
+        // Transpose of `out = inv · dres`: `bar_dres = invᵀ · bar_f`.
+        let mut bar_dres = vec![0.0; dim];
+        for col in 0..dim {
+            let mut acc = 0.0;
+            for c in 0..n {
+                let base = 3 * c;
+                let f = bar_f[c];
+                acc += self.inv[base * dim + col] * f.x
+                    + self.inv[(base + 1) * dim + col] * f.y
+                    + self.inv[(base + 2) * dim + col] * f.z;
+            }
+            bar_dres[col] = acc;
+        }
+        // Transpose of the per-regime masking `apply` performs on its way in.
+        let mut bar_res = vec![0.0; dim];
+        let mut bar_mt = vec![[0.0f64; 2]; n];
+        for c in 0..n {
+            let base = 3 * c;
+            if self.regimes[c] == ContactRegime::Separating {
+                continue;
+            }
+            match &self.slide[c] {
+                None => {
+                    bar_res[base] = bar_dres[base];
+                    if self.regimes[c] != ContactRegime::Sliding {
+                        bar_res[base + 1] = bar_dres[base + 1];
+                        bar_res[base + 2] = bar_dres[base + 2];
+                    }
+                }
+                Some(st) => {
+                    bar_res[base] = bar_dres[base];
+                    // Forward: dres_t = C · (d_stationarity_t + d_mt_rel);
+                    // transpose: bar over both summands is Cᵀ · bar_dres_t.
+                    let b0 = st.map[0][0] * bar_dres[base + 1] + st.map[1][0] * bar_dres[base + 2];
+                    let b1 = st.map[0][1] * bar_dres[base + 1] + st.map[1][1] * bar_dres[base + 2];
+                    bar_res[base + 1] = b0;
+                    bar_res[base + 2] = b1;
+                    bar_mt[c] = [b0, b1];
+                }
+            }
+        }
+        (bar_res, bar_mt)
+    }
+
     /// `df/db` under the exact map linearization, same layout as
     /// [`impulse_sensitivity`].
     // Stride arithmetic into flat, row-major arrays, as above.

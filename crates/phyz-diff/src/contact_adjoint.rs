@@ -119,9 +119,15 @@ use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
 #[path = "anchor_vs_narrow_phase.rs"]
 mod anchor_vs_narrow_phase;
 
+use crate::model_generic::{
+    aba_gen, contact_frame_gen, crba_gen, effective_restitution_gen, fk_gen, impedance_at_gen,
+    integrate_configuration_gen, invert_sym_gen, lift_v3, point_jacobian_gen,
+};
+use crate::rev::{Rev, backward, tape_scope};
 use crate::rollout::FinalStateObjective;
 pub use crate::rollout::N_INERTIA_PARAMS;
 use crate::rollout::inertia_params;
+use tang::Scalar;
 
 /// Central-difference step for the smooth (non-solve) blocks.
 ///
@@ -155,6 +161,29 @@ const FD_EPS_DEFAULT: f64 = 1e-8;
 fn pull_mode() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| !std::env::var("PHYZ_ADJOINT_PUSH").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Differentiate the smooth blocks (FK, ABA, assembly, `Φ`) by **reverse-mode
+/// AD** instead of per-lane central differences. Off by default
+/// (`PHYZ_SMOOTH_ADJOINT=1` turns it on); unset, every code path below is
+/// byte-identical to the lane machinery that shipped before it existed.
+///
+/// What it changes: in the lane machinery, every one of the
+/// `nq + 2·nv + 10·n_bodies + 1` input lanes pays two full evaluations of
+/// [`eval_pieces`] per step — the measured `111 ms/step` floor the pull-mode
+/// covector work could not go below, plus a `~1e-8` accuracy cap from the
+/// difference step itself. But in pull mode every lane ends in the *same*
+/// scalar contraction (a fixed covector against the pieces), so the whole
+/// lane loop is the gradient of one scalar — exactly the shape reverse mode
+/// computes in a single taped forward + one backward sweep, at machine
+/// precision. The generic mirrors in [`crate::model_generic`] carry the full
+/// engine force law, and `Φ` is the mirror of the quaternion-aware
+/// [`phyz_rigid::integrate_configuration`] — not the flat `q + dt·v` that
+/// `crate::symbolic` assumes, which is why that Jacobian could never be
+/// dropped in here.
+fn smooth_adjoint_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_SMOOTH_ADJOINT").is_ok_and(|v| v == "1" || v == "true"))
 }
 
 /// [`FD_EPS_DEFAULT`], overridable by `PHYZ_ADJOINT_FD_EPS`.
@@ -879,6 +908,344 @@ fn phi(model: &Model, q: &DVec, v_next: &DVec) -> DVec {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Scalar-generic pieces (the reverse-mode path)
+// ---------------------------------------------------------------------------
+
+/// [`Pieces`], generic over the scalar. Same fields, same meaning; `apr` and
+/// `cvec` are only populated when the caller asks (solver-level mode).
+struct GenPieces<T> {
+    v_free: Vec<T>,
+    residual: Vec<T>,
+    mt_rel: Vec<[T; 2]>,
+    apr: Vec<T>,
+    cvec: Vec<T>,
+    gf: Vec<T>,
+}
+
+/// One contact re-evaluated from its anchor at a generic configuration —
+/// the generic mirror of [`Anchor::collision`].
+struct GenCollision<T> {
+    body_i: usize,
+    body_j: usize,
+    point: tang::Vec3<T>,
+    normal: tang::Vec3<T>,
+    depth: T,
+}
+
+impl Anchor {
+    /// Generic mirror of [`Anchor::collision`], reading the (generic) FK
+    /// transforms directly.
+    fn collision_gen<T: Scalar>(
+        &self,
+        xforms: &[tang::SpatialTransform<T>],
+        ground_height: f64,
+    ) -> GenCollision<T> {
+        match *self {
+            Self::Ground {
+                body,
+                material_point,
+                world_offset,
+            } => {
+                let xf = &xforms[body];
+                let support = xf.pos
+                    + xf.rot.transpose().mul_vec(lift_v3(material_point))
+                    + lift_v3(world_offset);
+                let depth = T::from_f64(ground_height) - support.z;
+                GenCollision {
+                    body_i: body,
+                    body_j: Collision::WORLD,
+                    point: tang::Vec3::new(
+                        support.x,
+                        support.y,
+                        T::from_f64(ground_height) - depth * T::HALF,
+                    ),
+                    normal: tang::Vec3::new(T::ZERO, T::ZERO, T::ONE),
+                    depth,
+                }
+            }
+            Self::Pair {
+                body_i,
+                body_j,
+                point_i,
+                point_j,
+                normal_frame,
+                normal_local,
+            } => {
+                let xi = &xforms[body_i];
+                let xj = &xforms[body_j];
+                let pi = xi.pos + xi.rot.transpose().mul_vec(lift_v3(point_i));
+                let pj = xj.pos + xj.rot.transpose().mul_vec(lift_v3(point_j));
+                let n = xforms[normal_frame]
+                    .rot
+                    .transpose()
+                    .mul_vec(lift_v3(normal_local));
+                let depth = (pj - pi).dot(n);
+                let vertex = if normal_frame == body_i { pj } else { pi };
+                let sign = if normal_frame == body_i { -1.0 } else { 1.0 };
+                GenCollision {
+                    body_i,
+                    body_j,
+                    point: vertex + n * (T::from_f64(sign) * T::HALF * depth),
+                    normal: n,
+                    depth,
+                }
+            }
+        }
+    }
+}
+
+/// Generic mirror of [`eval_pieces`]: the same frozen step function, evaluated
+/// on `T` so that instantiating it at [`Rev`] tapes the whole smooth block —
+/// FK, the full-force-law ABA, CRBA + inversion, contact Jacobians, Delassus,
+/// restitution ramp, impedance/bias rows, regularizer — in one pass.
+///
+/// `scene_restitution` is the (possibly seeded) restitution of `material`;
+/// every other material constant is lifted with zero tangent, matching the
+/// lane machinery, whose only material lane was restitution.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_range_loop)]
+fn eval_pieces_gen<T: Scalar>(
+    model: &Model,
+    ground_height: f64,
+    material: &ContactMaterial,
+    scene_restitution: T,
+    config: &ContactSolverConfig,
+    anchors: &[Anchor],
+    f_star: &[Vec3],
+    t_rel: &[[f64; 2]],
+    q: &[T],
+    v: &[T],
+    u: &[T],
+    inertias: &[tang::SpatialInertia<T>],
+    want_apr: bool,
+) -> GenPieces<T> {
+    let dt = model.dt;
+    let nv = model.nv;
+    let (xforms, _) = fk_gen(model, q, v);
+    let qdd = aba_gen(model, inertias, q, v, u, None);
+    let v_free: Vec<T> = v
+        .iter()
+        .zip(&qdd)
+        .map(|(&vi, &ai)| vi + T::from_f64(dt) * ai)
+        .collect();
+
+    if anchors.is_empty() {
+        return GenPieces {
+            v_free,
+            residual: Vec::new(),
+            mt_rel: Vec::new(),
+            apr: Vec::new(),
+            cvec: Vec::new(),
+            gf: vec![T::ZERO; nv],
+        };
+    }
+
+    let contacts: Vec<GenCollision<T>> = anchors
+        .iter()
+        .map(|a| a.collision_gen(&xforms, ground_height))
+        .collect();
+    let n = contacts.len();
+    let dim = 3 * n;
+
+    // Mass matrix and inverse (mirror of `assemble`'s crba + invert).
+    let mass = crba_gen(model, inertias, q);
+    let inv_mass = invert_sym_gen(&mass, nv);
+
+    // Per-contact 3 × nv constraint Jacobian, rows [normal, u, w].
+    let mut jacobians: Vec<Vec<T>> = Vec::with_capacity(n);
+    for c in &contacts {
+        let ji = point_jacobian_gen(model, &xforms, c.body_i, c.point);
+        let point_j: Vec<T> = if c.body_j == Collision::WORLD {
+            ji
+        } else {
+            let jj = point_jacobian_gen(model, &xforms, c.body_j, c.point);
+            ji.iter().zip(&jj).map(|(&a, &b)| a - b).collect()
+        };
+        let (nrm, uf, wf) = contact_frame_gen(&c.normal);
+        let mut rows = vec![T::ZERO; 3 * nv];
+        for col in 0..nv {
+            let vcol = tang::Vec3::new(point_j[col], point_j[nv + col], point_j[2 * nv + col]);
+            rows[col] = vcol.dot(nrm);
+            rows[nv + col] = vcol.dot(uf);
+            rows[2 * nv + col] = vcol.dot(wf);
+        }
+        jacobians.push(rows);
+    }
+
+    // A = J M⁻¹ Jᵀ.
+    let mut minv_jt: Vec<Vec<T>> = Vec::with_capacity(n);
+    for jc in &jacobians {
+        let mut m = vec![T::ZERO; nv * 3];
+        for r in 0..nv {
+            for k in 0..3 {
+                let mut acc = T::ZERO;
+                for col in 0..nv {
+                    acc += inv_mass[r * nv + col] * jc[k * nv + col];
+                }
+                m[r * 3 + k] = acc;
+            }
+        }
+        minv_jt.push(m);
+    }
+    let mut delassus = vec![T::ZERO; dim * dim];
+    for a in 0..n {
+        for b in 0..n {
+            for r in 0..3 {
+                for k in 0..3 {
+                    let mut acc = T::ZERO;
+                    for col in 0..nv {
+                        acc += jacobians[a][r * nv + col] * minv_jt[b][col * 3 + k];
+                    }
+                    delassus[(3 * a + r) * dim + 3 * b + k] = acc;
+                }
+            }
+        }
+    }
+
+    // b = J v_free, restitution folded into the normal row; per-row bias and
+    // impedance from the (pair-combined) material.
+    let materials = model.contact_materials(material);
+    let pick = |b: usize| materials[b.min(materials.len() - 1)].clone();
+    // The seeded scalar is the *scene* material's restitution; a body with its
+    // own material contributes a constant, exactly as the restitution lane's
+    // central difference perturbed only `rollout.material`.
+    let body_e = |b: usize| -> T {
+        match &model.bodies.get(b).and_then(|body| body.material.clone()) {
+            Some(own) => T::from_f64(own.restitution),
+            None => scene_restitution,
+        }
+    };
+    let mut free_velocity = vec![T::ZERO; dim];
+    let mut bias_rows = vec![T::ZERO; n];
+    let mut impedance_rows = vec![T::ZERO; n];
+    for (ci, c) in contacts.iter().enumerate() {
+        for r in 0..3 {
+            let mut acc = T::ZERO;
+            for col in 0..nv {
+                acc += jacobians[ci][r * nv + col] * v_free[col];
+            }
+            free_velocity[3 * ci + r] = acc;
+        }
+
+        // Mirror of `material_for` + `ContactMaterial::combine` (constants),
+        // with the restitution channel kept generic (`max` on the primal).
+        let mat_combined = if c.body_j == Collision::WORLD {
+            pick(c.body_i)
+        } else {
+            ContactMaterial::combine(&pick(c.body_i), &pick(c.body_j))
+        };
+        let e_pair = if c.body_j == Collision::WORLD {
+            body_e(c.body_i)
+        } else {
+            body_e(c.body_i).max(body_e(c.body_j))
+        };
+
+        let approach = (-free_velocity[3 * ci]).max(T::ZERO);
+        let e = effective_restitution_gen(e_pair, approach, config.restitution_threshold);
+        free_velocity[3 * ci] *= T::ONE + e;
+
+        // Mirror of `ContactRow::from_material`.
+        let violation = c.depth.max(T::ZERO);
+        let d = impedance_at_gen(&mat_combined, c.depth);
+        bias_rows[ci] = if dt > 0.0 {
+            d * T::from_f64(mat_combined.solref.error_reduction(dt) / dt) * violation
+        } else {
+            T::ZERO
+        };
+        impedance_rows[ci] = d;
+    }
+
+    // Mirror of `regularization_diag`.
+    let reg_for = |c: usize, delassus: &[T], impedance: &[T]| -> [T; 3] {
+        let base = 3 * c;
+        let d = impedance[c].clamp(T::from_f64(1e-6), T::ONE);
+        let scale = (T::ONE - d) / d;
+        let a_nn = delassus[base * dim + base];
+        let normal = (scale * a_nn).max(T::from_f64(config.regularization));
+        let tangent = if config.mujoco_compat {
+            normal
+        } else {
+            T::from_f64(config.regularization)
+        };
+        [normal, tangent, tangent]
+    };
+
+    // Residual `(A + R)f* + b − e_n·bias` at the frozen impulses.
+    let mut flat = vec![0.0f64; dim];
+    for (c, f) in f_star.iter().enumerate() {
+        flat[3 * c] = f.x;
+        flat[3 * c + 1] = f.y;
+        flat[3 * c + 2] = f.z;
+    }
+    let mut residual = vec![T::ZERO; dim];
+    for c in 0..n {
+        let reg = reg_for(c, &delassus, &impedance_rows);
+        let base = 3 * c;
+        for r in 0..3 {
+            let mut acc = free_velocity[base + r];
+            for (col, fc) in flat.iter().enumerate() {
+                acc += delassus[(base + r) * dim + col] * T::from_f64(*fc);
+            }
+            acc += reg[r] * T::from_f64(flat[base + r]);
+            if r == 0 {
+                acc -= bias_rows[c];
+            }
+            residual[base + r] = acc;
+        }
+    }
+    let mut mt_rel = vec![[T::ZERO; 2]; n];
+    for (c, tr) in t_rel.iter().enumerate() {
+        let base = 3 * c;
+        for i in 0..2 {
+            mt_rel[c][i] = delassus[(base + 1 + i) * dim + base + 1] * T::from_f64(tr[0])
+                + delassus[(base + 1 + i) * dim + base + 2] * T::from_f64(tr[1]);
+        }
+    }
+    let (apr, cvec) = if want_apr {
+        let mut apr = delassus.clone();
+        let mut cvec = free_velocity.clone();
+        for c in 0..n {
+            let reg = reg_for(c, &delassus, &impedance_rows);
+            let base = 3 * c;
+            for r in 0..3 {
+                apr[(base + r) * dim + base + r] += reg[r];
+            }
+            cvec[base] -= bias_rows[c];
+        }
+        (apr, cvec)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    // gf = M⁻¹ Jᵀ f* (mirror of `ContactAssembly::velocity_delta`).
+    let mut tau = vec![T::ZERO; nv];
+    for (jc, f) in jacobians.iter().zip(f_star) {
+        for col in 0..nv {
+            tau[col] += jc[col] * T::from_f64(f.x)
+                + jc[nv + col] * T::from_f64(f.y)
+                + jc[2 * nv + col] * T::from_f64(f.z);
+        }
+    }
+    let mut gf = vec![T::ZERO; nv];
+    for r in 0..nv {
+        let mut acc = T::ZERO;
+        for cix in 0..nv {
+            acc += inv_mass[r * nv + cix] * tau[cix];
+        }
+        gf[r] = acc;
+    }
+
+    GenPieces {
+        v_free,
+        residual,
+        mt_rel,
+        apr,
+        cvec,
+        gf,
+    }
+}
+
 /// A model with body `b`'s inertia rebuilt from a perturbed 10-vector.
 fn perturbed_model(model: &Model, body: usize, params: &[f64; N_INERTIA_PARAMS]) -> Model {
     use phyz_math::{Mat3, SpatialInertia};
@@ -1114,7 +1481,31 @@ pub fn convex_adjoint_gradient(
         // dropped one at a time. Batching the lanes through a single forward
         // replay would have bought the same wall clock and cost 123 of those
         // simultaneously, which is the reason it is not what happens here.
-        let w_v = {
+        let smooth = smooth_adjoint_enabled();
+        // `Φ`'s two pullbacks. Reverse mode gets both — `Φ_vᵀ lam_q` (into
+        // `w_v`) and the direct `Φ_qᵀ lam_q` block — from one taped pass
+        // through the mirror of the real quaternion-aware integrator; the
+        // lane machinery keeps its `nv` central differences of `phi`.
+        let (w_v, phi_q_pull) = if smooth {
+            let _scope = tape_scope();
+            let qv: Vec<Rev> = rec.q.as_slice().iter().map(|&x| Rev::var(x)).collect();
+            let vnv: Vec<Rev> = rec.v_next.as_slice().iter().map(|&x| Rev::var(x)).collect();
+            let qn = integrate_configuration_gen(model, &qv, &vnv, model.dt);
+            let mut s = Rev::constant(0.0);
+            for i in 0..nq {
+                s += Rev::constant(lam_q[i]) * qn[i];
+            }
+            let g = backward(s);
+            let mut w = lam_v.clone();
+            for j in 0..nv {
+                w[j] += g.of(vnv[j]);
+            }
+            let mut pq = DVec::zeros(nq);
+            for i in 0..nq {
+                pq[i] = g.of(qv[i]);
+            }
+            (w, Some(pq))
+        } else {
             let mut w = lam_v.clone();
             // `Phi_v^T lam_q`, by central differences of the same `phi` the
             // lanes use — one pass over `nv`, not one per lane.
@@ -1131,41 +1522,45 @@ pub fn convex_adjoint_gradient(
                 }
                 w[j] += acc;
             }
-            w
+            (w, None)
+        };
+
+        // `velocity_deltaᵀ w_v` per contact: `M⁻¹` is symmetric, so the
+        // transpose is `(J (M⁻¹ w_v))_c`, read straight off the assembly.
+        // Both pull paths (solver-level and IFT) start from this covector.
+        let bar_f_of = |asm: &ContactAssembly| -> Vec<Vec3> {
+            let mut y = DVec::zeros(nv);
+            for r in 0..nv {
+                let mut acc = 0.0;
+                for c in 0..nv {
+                    acc += asm.inv_mass[(r, c)] * w_v[c];
+                }
+                y[r] = acc;
+            }
+            asm.jacobians
+                .iter()
+                .map(|j| {
+                    let mut out = [0.0f64; 3];
+                    for (r, o) in out.iter_mut().enumerate() {
+                        let mut acc = 0.0;
+                        for col in 0..nv {
+                            acc += j[(r, col)] * y[col];
+                        }
+                        *o = acc;
+                    }
+                    Vec3::new(out[0], out[1], out[2])
+                })
+                .collect()
         };
 
         // The transposed contact channel, or `None` when this step has no
         // contacts, is not in solver-level mode, or has been forced back onto
         // the push path for a differential comparison.
         let pulled: Option<(Vec<f64>, Vec<f64>)> = match &rec.contact {
-            Some((asm, sol, seed)) if solver_level && pull_mode() => {
-                // `velocity_delta` is `f -> M^-1 J^T f`. `M^-1` is symmetric,
-                // so its transpose is `w -> (J (M^-1 w))_c` per contact — read
-                // straight off the assembly rather than probed with `3n` basis
-                // vectors, which would be the same arithmetic done `3n` times.
-                let mut y = DVec::zeros(nv);
-                for r in 0..nv {
-                    let mut acc = 0.0;
-                    for c in 0..nv {
-                        acc += asm.inv_mass[(r, c)] * w_v[c];
-                    }
-                    y[r] = acc;
-                }
-                let bar_f: Vec<Vec3> = asm
-                    .jacobians
-                    .iter()
-                    .map(|j| {
-                        let mut out = [0.0f64; 3];
-                        for (r, o) in out.iter_mut().enumerate() {
-                            let mut acc = 0.0;
-                            for col in 0..nv {
-                                acc += j[(r, col)] * y[col];
-                            }
-                            *o = acc;
-                        }
-                        Vec3::new(out[0], out[1], out[2])
-                    })
-                    .collect();
+            // The reverse path is pull-shaped by construction, so it takes
+            // this branch regardless of the legacy `PHYZ_ADJOINT_PUSH` knob.
+            Some((asm, sol, seed)) if solver_level && (pull_mode() || smooth) => {
+                let bar_f = bar_f_of(asm);
                 let (replayed, td) = contact_solve_differential_transpose(
                     &asm.problem,
                     &rollout.config,
@@ -1218,123 +1613,207 @@ pub fn convex_adjoint_gradient(
         let mut new_lam_q = DVec::zeros(nq);
         let mut new_lam_v = DVec::zeros(nv);
 
-        // --- q lanes ---
-        for i in 0..nq {
-            let h = fd_eps() * rec.q[i].abs().max(1.0);
-            let mut qp = rec.q.clone();
-            let mut qm = rec.q.clone();
-            qp[i] += h;
-            qm[i] -= h;
-            let dp = lane(
-                model,
-                model,
-                &rollout.material,
-                &rollout.material,
-                &qp,
-                &qm,
-                &rec.v,
-                &rec.v,
-                &rec.u,
-                &rec.u,
-                h,
-            );
-            // Direct Φ_q block; the v'-mediated part is carried by `w_v`.
-            let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
-                * (1.0 / (2.0 * h));
-            new_lam_q[i] = lane_contract(&dp, Some(&dqn_direct));
-        }
+        if smooth {
+            // IFT-mode covectors: pull `velocity_deltaᵀ w_v` back through the
+            // transposed map linearization, so the residual/mt_rel channels
+            // contract exactly like the solver-level `apr`/`cvec` ones.
+            let ift_bars: Option<(Vec<f64>, Vec<[f64; 2]>)> = match (&rec.contact, &fps) {
+                (Some((asm, _, _)), Some(s)) => Some(s.apply_transpose(&bar_f_of(asm))),
+                _ => None,
+            };
 
-        // --- v lanes ---
-        for j in 0..nv {
-            let h = fd_eps() * rec.v[j].abs().max(1.0);
-            let mut vp = rec.v.clone();
-            let mut vm = rec.v.clone();
-            vp[j] += h;
-            vm[j] -= h;
-            let dp = lane(
+            // One taped pass through the generic pieces, one backward sweep:
+            // every lane the machinery below would difference — q, v, ctrl,
+            // 10 inertia scalars per body, restitution — read off one tape.
+            let _scope = tape_scope();
+            let qv: Vec<Rev> = rec.q.as_slice().iter().map(|&x| Rev::var(x)).collect();
+            let vv: Vec<Rev> = rec.v.as_slice().iter().map(|&x| Rev::var(x)).collect();
+            let uv: Vec<Rev> = rec.u.as_slice().iter().map(|&x| Rev::var(x)).collect();
+            let param_vars: Vec<[Rev; N_INERTIA_PARAMS]> = nominal_params
+                .iter()
+                .map(|p| {
+                    let mut a = [Rev::constant(0.0); N_INERTIA_PARAMS];
+                    for (ak, &pk) in a.iter_mut().zip(p.iter()) {
+                        *ak = Rev::var(pk);
+                    }
+                    a
+                })
+                .collect();
+            let inertias_rev: Vec<tang::SpatialInertia<Rev>> = param_vars
+                .iter()
+                .map(crate::rollout::step::inertia_from_params)
+                .collect();
+            let e_var = Rev::var(rollout.material.restitution);
+            let gp = eval_pieces_gen(
                 model,
-                model,
+                rollout.ground_height,
                 &rollout.material,
-                &rollout.material,
-                &rec.q,
-                &rec.q,
-                &vp,
-                &vm,
-                &rec.u,
-                &rec.u,
-                h,
+                e_var,
+                &rollout.config,
+                &rec.anchors,
+                &f_star,
+                &t_rel,
+                &qv,
+                &vv,
+                &uv,
+                &inertias_rev,
+                solver_level,
             );
-            new_lam_v[j] = lane_contract(&dp, None);
-        }
-
-        // --- control lanes ---
-        for j in 0..nv {
-            let h = fd_eps() * rec.u[j].abs().max(1.0);
-            let mut up = rec.u.clone();
-            let mut um = rec.u.clone();
-            up[j] += h;
-            um[j] -= h;
-            let dp = lane(
-                model,
-                model,
-                &rollout.material,
-                &rollout.material,
-                &rec.q,
-                &rec.q,
-                &rec.v,
-                &rec.v,
-                &up,
-                &um,
-                h,
-            );
-            d_ctrl[t][j] = lane_contract(&dp, None);
-        }
-
-        // --- inertia-parameter lanes ---
-        for b in 0..nb {
-            for k in 0..N_INERTIA_PARAMS {
-                let h = fd_eps() * nominal_params[b][k].abs().max(1.0);
-                let mut pp = nominal_params[b];
-                let mut pm = nominal_params[b];
-                pp[k] += h;
-                pm[k] -= h;
-                let mp = perturbed_model(model, b, &pp);
-                let mm = perturbed_model(model, b, &pm);
+            let mut s = Rev::constant(0.0);
+            for j in 0..nv {
+                s += Rev::constant(w_v[j]) * (gp.v_free[j] + gp.gf[j]);
+            }
+            if let Some((bar_apr, bar_c)) = &pulled {
+                for (b, d) in bar_apr.iter().zip(&gp.apr) {
+                    s += Rev::constant(*b) * *d;
+                }
+                for (b, d) in bar_c.iter().zip(&gp.cvec) {
+                    s += Rev::constant(*b) * *d;
+                }
+            } else if let Some((bar_res, bar_mt)) = &ift_bars {
+                for (b, d) in bar_res.iter().zip(&gp.residual) {
+                    s += Rev::constant(*b) * *d;
+                }
+                for (b, d) in bar_mt.iter().zip(&gp.mt_rel) {
+                    s += Rev::constant(b[0]) * d[0] + Rev::constant(b[1]) * d[1];
+                }
+            }
+            let g = backward(s);
+            let pq = phi_q_pull
+                .as_ref()
+                .expect("smooth mode always computes the Φ_q pullback");
+            for i in 0..nq {
+                new_lam_q[i] = pq[i] + g.of(qv[i]);
+            }
+            for j in 0..nv {
+                new_lam_v[j] = g.of(vv[j]);
+                d_ctrl[t][j] = g.of(uv[j]);
+            }
+            for (db, pv) in d_inertia.iter_mut().zip(&param_vars) {
+                for (dk, rk) in db.iter_mut().zip(pv.iter()) {
+                    *dk += g.of(*rk);
+                }
+            }
+            d_restitution += g.of(e_var);
+        } else {
+            // --- q lanes ---
+            for i in 0..nq {
+                let h = fd_eps() * rec.q[i].abs().max(1.0);
+                let mut qp = rec.q.clone();
+                let mut qm = rec.q.clone();
+                qp[i] += h;
+                qm[i] -= h;
                 let dp = lane(
-                    &mp,
-                    &mm,
+                    model,
+                    model,
                     &rollout.material,
                     &rollout.material,
-                    &rec.q,
-                    &rec.q,
+                    &qp,
+                    &qm,
                     &rec.v,
                     &rec.v,
                     &rec.u,
                     &rec.u,
                     h,
                 );
-                d_inertia[b][k] += lane_contract(&dp, None);
+                // Direct Φ_q block; the v'-mediated part is carried by `w_v`.
+                let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
+                    * (1.0 / (2.0 * h));
+                new_lam_q[i] = lane_contract(&dp, Some(&dqn_direct));
             }
-        }
 
-        // --- restitution lane ---
-        //
-        // `e` reaches the impulses through `b`: assembly scales the normal row
-        // of the free velocity by `1 + e_eff`. So it is an ordinary lane, and
-        // the machinery above prices it including the low-speed smoothstep
-        // ramp, which is exactly why §4.3 insisted restitution be a term in `b`
-        // rather than a post-solve velocity reset — a reset would be a branch
-        // on the primal, with no derivative in `e` at all at `v_n = 0`.
-        {
-            let h = fd_eps() * rollout.material.restitution.abs().max(1.0);
-            let mut matp = rollout.material.clone();
-            let mut matm = rollout.material.clone();
-            matp.restitution += h;
-            matm.restitution -= h;
-            let dp = lane(
-                model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
-            );
-            d_restitution += lane_contract(&dp, None);
+            // --- v lanes ---
+            for j in 0..nv {
+                let h = fd_eps() * rec.v[j].abs().max(1.0);
+                let mut vp = rec.v.clone();
+                let mut vm = rec.v.clone();
+                vp[j] += h;
+                vm[j] -= h;
+                let dp = lane(
+                    model,
+                    model,
+                    &rollout.material,
+                    &rollout.material,
+                    &rec.q,
+                    &rec.q,
+                    &vp,
+                    &vm,
+                    &rec.u,
+                    &rec.u,
+                    h,
+                );
+                new_lam_v[j] = lane_contract(&dp, None);
+            }
+
+            // --- control lanes ---
+            for j in 0..nv {
+                let h = fd_eps() * rec.u[j].abs().max(1.0);
+                let mut up = rec.u.clone();
+                let mut um = rec.u.clone();
+                up[j] += h;
+                um[j] -= h;
+                let dp = lane(
+                    model,
+                    model,
+                    &rollout.material,
+                    &rollout.material,
+                    &rec.q,
+                    &rec.q,
+                    &rec.v,
+                    &rec.v,
+                    &up,
+                    &um,
+                    h,
+                );
+                d_ctrl[t][j] = lane_contract(&dp, None);
+            }
+
+            // --- inertia-parameter lanes ---
+            for b in 0..nb {
+                for k in 0..N_INERTIA_PARAMS {
+                    let h = fd_eps() * nominal_params[b][k].abs().max(1.0);
+                    let mut pp = nominal_params[b];
+                    let mut pm = nominal_params[b];
+                    pp[k] += h;
+                    pm[k] -= h;
+                    let mp = perturbed_model(model, b, &pp);
+                    let mm = perturbed_model(model, b, &pm);
+                    let dp = lane(
+                        &mp,
+                        &mm,
+                        &rollout.material,
+                        &rollout.material,
+                        &rec.q,
+                        &rec.q,
+                        &rec.v,
+                        &rec.v,
+                        &rec.u,
+                        &rec.u,
+                        h,
+                    );
+                    d_inertia[b][k] += lane_contract(&dp, None);
+                }
+            }
+
+            // --- restitution lane ---
+            //
+            // `e` reaches the impulses through `b`: assembly scales the normal row
+            // of the free velocity by `1 + e_eff`. So it is an ordinary lane, and
+            // the machinery above prices it including the low-speed smoothstep
+            // ramp, which is exactly why §4.3 insisted restitution be a term in `b`
+            // rather than a post-solve velocity reset — a reset would be a branch
+            // on the primal, with no derivative in `e` at all at `v_n = 0`.
+            {
+                let h = fd_eps() * rollout.material.restitution.abs().max(1.0);
+                let mut matp = rollout.material.clone();
+                let mut matm = rollout.material.clone();
+                matp.restitution += h;
+                matm.restitution -= h;
+                let dp = lane(
+                    model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
+                );
+                d_restitution += lane_contract(&dp, None);
+            }
         }
 
         // --- friction channel ---
