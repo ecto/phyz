@@ -201,6 +201,23 @@ pub struct ContactSolverConfig {
     /// apart from a real bug. `mujoco_creep_matches_the_analytic_rate` in
     /// `tests/stabilization.rs` measures both modes side by side.
     pub mujoco_compat: bool,
+    /// Spend the whole iteration budget rather than exiting on stagnation.
+    ///
+    /// Off by default, and `PHYZ_NO_STALL_EXIT=1` still forces it on
+    /// process-wide, so nothing that set the variable changes behaviour. See
+    /// [`no_stall_exit`] for what the exit buys and what it costs.
+    ///
+    /// It is a field as well as a variable because the two things a caller
+    /// wants from this solver — a fast forward step and a differentiable one
+    /// — can be wanted *in the same process*, and an environment variable
+    /// latched in a `OnceLock` cannot express that. Two tests in ipse's
+    /// `shac_gradient_path.rs` are the concrete case: one pins that the
+    /// stagnation exit makes the jump window discontinuous at the shipped
+    /// default, the other that the second contact solve is as differentiable
+    /// as the first, which is only measurable with the exit off. As a
+    /// variable those two claims cannot share a test binary; as a field they
+    /// are just two solver configs.
+    pub no_stall_exit: bool,
 }
 
 impl Default for ContactSolverConfig {
@@ -235,6 +252,7 @@ impl ContactSolverConfig {
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
+            no_stall_exit: false,
         }
     }
 
@@ -252,6 +270,7 @@ impl ContactSolverConfig {
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
+            no_stall_exit: false,
         }
     }
 
@@ -925,7 +944,7 @@ pub(crate) fn solve_contacts_warm_diff(
         // success.
         if residual > entry_residual * STALL_RATIO {
             stalls += 1;
-            if stalls >= STALL_BLOCKS && !no_stall_exit() {
+            if stalls >= STALL_BLOCKS && !(config.no_stall_exit || no_stall_exit()) {
                 break;
             }
         } else {
@@ -944,11 +963,15 @@ pub(crate) fn solve_contacts_warm_diff(
     )
 }
 
-/// Whether to spend the whole iteration budget rather than exiting on
-/// stagnation.
+/// The process-wide `PHYZ_NO_STALL_EXIT` override, OR-ed with
+/// [`ContactSolverConfig::no_stall_exit`] at the one site that reads it —
+/// so setting either spends the whole budget, and setting neither stops the
+/// solver exactly where it always has.
 ///
-/// Off by default: with this unset the solver stops exactly where it always
-/// has and every number it reports is unchanged.
+/// Prefer the config field. This variable stays because callers already set
+/// it and because it is the only way to reach a solve whose config a caller
+/// does not own; but it is latched in a `OnceLock`, so a process gets one
+/// answer and two differently-configured solves in it cannot disagree.
 ///
 /// The stagnation exit is a throughput decision — a block that removed less
 /// than `STALL_RATIO` of the residual is on a rate that cannot reach the
