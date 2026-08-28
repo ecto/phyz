@@ -1544,7 +1544,16 @@ impl<B: KernelBackend> BatchSim<B> {
         // `enable_pd_control` because it is a property of the POLICY, and a
         // spec swapped from a torque one back to a position one must turn
         // the summand off again.
-        self.pd.as_mut().expect("PD pass checked above").has_tau = n_tau > 0;
+        let pd = self.pd.as_mut().expect("PD pass checked above");
+        if pd.has_tau != (n_tau > 0) {
+            pd.has_tau = n_tau > 0;
+            // `has_tau` is a scalar the step sequence BAKES IN — a captured
+            // graph carries whatever it was at capture, so a span recorded
+            // before the channel came on would replay without the summand
+            // and a policy would train twelve outputs that reach no joint.
+            // Exactly what `invalidate_graph` is for.
+            self.invalidate_graph();
+        }
 
         let n_wc = spec.n_world_consts();
         let reuse = self.policy.take().filter(|p| {
