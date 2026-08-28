@@ -101,14 +101,21 @@
 
 use phyz_collision::Collision;
 use phyz_contact::gradient::{FixedPointSensitivity, friction_sensitivity};
-use phyz_contact::{contact_solve_differential, solver_adjoint_enabled};
 use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
 };
+use phyz_contact::{contact_solve_differential, solver_adjoint_enabled};
 use phyz_math::{DVec, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
+
+/// Does the frozen anchor reproduce the narrow phase's own geometry
+/// derivative? A child module, because the answer is measured against
+/// [`Anchor`]'s private internals — see its docs.
+#[cfg(test)]
+#[path = "anchor_vs_narrow_phase.rs"]
+mod anchor_vs_narrow_phase;
 
 use crate::rollout::FinalStateObjective;
 pub use crate::rollout::N_INERTIA_PARAMS;
