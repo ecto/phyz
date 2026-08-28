@@ -818,7 +818,7 @@ pub fn solve_contacts_warm(
         // success.
         if residual > entry_residual * STALL_RATIO {
             stalls += 1;
-            if stalls >= STALL_BLOCKS {
+            if stalls >= STALL_BLOCKS && !no_stall_exit() {
                 break;
             }
         } else {
@@ -832,6 +832,30 @@ pub fn solve_contacts_warm(
         residual,
         converged: residual < config.tolerance,
     }
+}
+
+/// Whether to spend the whole iteration budget rather than exiting on
+/// stagnation.
+///
+/// Off by default: with this unset the solver stops exactly where it always
+/// has and every number it reports is unchanged.
+///
+/// The stagnation exit is a throughput decision — a block that removed less
+/// than `STALL_RATIO` of the residual is on a rate that cannot reach the
+/// tolerance inside the cap, so the remaining sweeps are pure cost. It gives up
+/// honestly (`converged: false`) and [`crate::gradient`] refuses the step, so
+/// nothing is silently wrong.
+///
+/// But it gives up *early*, and "on a linear rate" is a local estimate: a solve
+/// that stalls for a few blocks and would then have found its footing is
+/// abandoned. On a redundant contact manifold — the case active-set Newton
+/// exists for — that is a real possibility, and every abandoned step is a step
+/// the adjoint cannot differentiate and therefore a whole window's gradient
+/// lost, since the adjoint walks backwards and one refusal kills everything
+/// behind it. Set this when a gradient matters more than a step time.
+fn no_stall_exit() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_NO_STALL_EXIT").is_ok_and(|v| v == "1" || v == "true"))
 }
 
 /// PGS sweeps spent establishing the active set before Newton takes over.
