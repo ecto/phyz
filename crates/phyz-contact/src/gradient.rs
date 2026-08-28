@@ -205,34 +205,43 @@ pub struct SlideTangent {
     pub t_rel: [f64; 2],
 }
 
-impl FixedPointSensitivity {
-    /// Build the exact map linearization at a converged solution.
-    ///
-    /// Returns `None` when the solve did not converge (not a fixed point) or
-    /// the linearized system is singular (the derivative genuinely does not
-    /// exist at a degenerate active set).
-    pub fn at(
-        problem: &ContactProblem,
-        solution: &ContactSolution,
-        config: &ContactSolverConfig,
-    ) -> Option<Self> {
-        if !solution.converged {
-            return None;
-        }
-        let n = problem.n;
-        let dim = 3 * n;
-        if n == 0 {
-            return Some(Self {
-                n,
-                inv: Vec::new(),
-                slide: Vec::new(),
-                regimes: Vec::new(),
-            });
-        }
-        let regimes = classify(problem, solution, classify_band());
-        // Start from the solver's pinned-direction system and correct the
+/// The complete linearization `K'` of the staged fixed-point map at an
+/// iterate, with the per-contact tangential data that goes with it.
+///
+/// Extracted from [`FixedPointSensitivity::at`] so the forward solver's
+/// preconditioned accelerator can Newton-iterate on the *same* linearization
+/// the gradient assumes — solving and differentiating the same object is the
+/// invariant that keeps the two from drifting apart. Unlike `at`, this does
+/// not require a converged solution: the linearization is well-defined at any
+/// iterate, it is simply only *the derivative* at a fixed point.
+pub(crate) struct CompleteKkt {
+    /// `K'`, row-major `3n x 3n`.
+    pub k: Vec<f64>,
+    /// Per-contact sliding tangential data, as in [`FixedPointSensitivity`].
+    pub slide: Vec<Option<SlideTangent>>,
+    /// The regime each contact was linearized in.
+    pub regimes: Vec<ContactRegime>,
+    /// Per sliding contact, the slip direction `t_hat` of the unconstrained
+    /// tangential minimizer at the iterate (`None` where undefined).
+    pub that: Vec<Option<[f64; 2]>>,
+}
+
+/// Assemble [`CompleteKkt`] at an arbitrary impulse iterate.
+// The loop indices drive stride arithmetic into flat, row-major arrays
+// (base = 3*c), matching the rest of this module.
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn complete_kkt(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    impulses: &[Vec3],
+    regimes: &[ContactRegime],
+) -> CompleteKkt {
+    let n = problem.n;
+    let dim = 3 * n;
+    let mut that_dirs: Vec<Option<[f64; 2]>> = vec![None; n];
+            // Start from the solver's pinned-direction system and correct the
         // sliding tangential rows.
-        let mut k = kkt_matrix(problem, config, &regimes, &solution.impulses);
+        let mut k = kkt_matrix(problem, config, regimes, impulses);
         let a = &problem.delassus;
         let mut slide: Vec<Option<SlideTangent>> = vec![None; n];
 
@@ -241,7 +250,7 @@ impl FixedPointSensitivity {
                 continue;
             }
             let base = 3 * c;
-            let f = solution.impulses[c];
+            let f = impulses[c];
             let ft = (f.y * f.y + f.z * f.z).sqrt();
             if ft <= 1e-14 {
                 // Frictionless-but-loaded (or exactly zero slip): the pin rows
@@ -269,7 +278,7 @@ impl FixedPointSensitivity {
                 [-m[1][0] / det, m[0][0] / det],
             ];
             // r_t = [(A + R) f + b]_t - M_t f_t, then t* = -M_t^-1 r_t.
-            let flat = flat_impulses(&solution.impulses);
+            let flat = flat_impulses(impulses);
             let mut r = [0.0f64; 2];
             for (i, ri) in r.iter_mut().enumerate() {
                 let row = base + 1 + i;
@@ -325,8 +334,46 @@ impl FixedPointSensitivity {
                 map: cmap,
                 t_rel: [t_star[0] - f.y, t_star[1] - f.z],
             });
+            that_dirs[c] = Some(that);
         }
 
+
+    let _ = dim;
+    CompleteKkt {
+        k,
+        slide,
+        regimes: regimes.to_vec(),
+        that: that_dirs,
+    }
+}
+
+impl FixedPointSensitivity {
+    /// Build the exact map linearization at a converged solution.
+    ///
+    /// Returns `None` when the solve did not converge (not a fixed point) or
+    /// the linearized system is singular (the derivative genuinely does not
+    /// exist at a degenerate active set).
+    pub fn at(
+        problem: &ContactProblem,
+        solution: &ContactSolution,
+        config: &ContactSolverConfig,
+    ) -> Option<Self> {
+        if !solution.converged {
+            return None;
+        }
+        let n = problem.n;
+        let dim = 3 * n;
+        if n == 0 {
+            return Some(Self {
+                n,
+                inv: Vec::new(),
+                slide: Vec::new(),
+                regimes: Vec::new(),
+            });
+        }
+        let regimes = classify(problem, solution, classify_band());
+        let lin = complete_kkt(problem, config, &solution.impulses, &regimes);
+        let (mut k, slide, regimes) = (lin.k, lin.slide, lin.regimes);
         // inv = -K'^-1: solve K X = -I.
         let mut rhs = vec![0.0; dim * dim];
         for i in 0..dim {
@@ -408,6 +455,67 @@ impl FixedPointSensitivity {
             out[c] = Vec3::new(d[0], d[1], d[2]);
         }
         out
+    }
+
+    /// Transpose of [`FixedPointSensitivity::apply`]: given a covector on
+    /// the impulses, return the covector on the stationarity residual (per
+    /// row) and, per sliding contact, the covector on `dM_t (t* - f_t)`.
+    ///
+    /// This is the reverse-mode counterpart the solver-level adjoint uses at
+    /// a converged solve: the two are transposes of the same `-K'^-1`-based
+    /// map, so a forward/reverse dot-product identity holds to rounding.
+    // Stride arithmetic into flat, row-major arrays, as above.
+    #[allow(clippy::needless_range_loop)]
+    pub fn apply_transpose(&self, bar_f: &[Vec3]) -> (Vec<f64>, Vec<[f64; 2]>) {
+        let n = self.n;
+        let dim = 3 * n;
+        // bar_dres = inv^T bar_out.
+        let mut bar_out = vec![0.0; dim];
+        for c in 0..n {
+            let base = 3 * c;
+            bar_out[base] = bar_f[c].x;
+            bar_out[base + 1] = bar_f[c].y;
+            bar_out[base + 2] = bar_f[c].z;
+        }
+        let mut bar_dres = vec![0.0; dim];
+        for col in 0..dim {
+            let mut acc = 0.0;
+            for row in 0..dim {
+                acc += self.inv[row * dim + col] * bar_out[row];
+            }
+            bar_dres[col] = acc;
+        }
+        // Invert the dres construction of `apply`, row block by row block.
+        let mut bar_stat = vec![0.0; dim];
+        let mut bar_mt = vec![[0.0; 2]; n];
+        for c in 0..n {
+            let base = 3 * c;
+            if self.regimes[c] == ContactRegime::Separating {
+                continue;
+            }
+            match &self.slide[c] {
+                None => {
+                    bar_stat[base] = bar_dres[base];
+                    if self.regimes[c] != ContactRegime::Sliding {
+                        bar_stat[base + 1] = bar_dres[base + 1];
+                        bar_stat[base + 2] = bar_dres[base + 2];
+                    }
+                }
+                Some(st) => {
+                    bar_stat[base] = bar_dres[base];
+                    // Forward: dres_t = map * (d_stat_t + d_mt_rel), so both
+                    // channels receive map^T bar_dres_t.
+                    let dr = [
+                        st.map[0][0] * bar_dres[base + 1] + st.map[1][0] * bar_dres[base + 2],
+                        st.map[0][1] * bar_dres[base + 1] + st.map[1][1] * bar_dres[base + 2],
+                    ];
+                    bar_stat[base + 1] = dr[0];
+                    bar_stat[base + 2] = dr[1];
+                    bar_mt[c] = dr;
+                }
+            }
+        }
+        (bar_stat, bar_mt)
     }
 
     /// `df/db` under the exact map linearization, same layout as
