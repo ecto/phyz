@@ -68,7 +68,7 @@ pub use rollout::{
 // model `phyz::Simulator::step_with_contacts` integrates forward.
 pub use contact_adjoint::{
     ConvexAdjointError, ConvexAdjointGradients, ConvexContactRollout, convex_adjoint_gradient,
-    convex_rollout_objective,
+    convex_rollout_objective, convex_rollout_objective_and_state,
 };
 
 use phyz_math::{DMat, DVec};

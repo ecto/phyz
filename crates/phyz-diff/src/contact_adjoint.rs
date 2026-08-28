@@ -105,7 +105,9 @@ use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
 };
-use phyz_contact::{contact_solve_differential, solver_adjoint_enabled};
+use phyz_contact::{
+    contact_solve_differential, contact_solve_differential_transpose, solver_adjoint_enabled,
+};
 use phyz_math::{DVec, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
@@ -131,6 +133,29 @@ use crate::rollout::inertia_params;
 /// solve inside), so the round-off floor at this step size is `~1e-8`
 /// relative — the truncation/round-off crossover sits near here.
 const FD_EPS_DEFAULT: f64 = 1e-8;
+
+/// Pull the contact channel back as one covector, rather than pushing every
+/// lane's differential forward through it. On by default *within* the
+/// solver-level adjoint, which is itself off by default.
+///
+/// `PHYZ_ADJOINT_PUSH=1` restores the per-lane forward replay. The two compute
+/// the same number — they are one linear map applied on opposite sides, and
+/// `phyz-contact`'s `solver_level_adjoint_transpose.rs` pins the pairing to
+/// `2.4e-15` — so this knob exists to *check* that, and to have a way back if
+/// the transposed replay is ever suspected. It is not a tuning parameter.
+///
+/// Measured on ipse's 12-step jump window, 15-contact skate stance, 123 lanes,
+/// solver tolerance `1e-7`: push `469 ms/step`, pull **`111 ms/step`**, both
+/// returning `-2.121576e-5` for the largest control lane — identical to every
+/// digit printed. The IFT path costs `111 ms` on the same window, so pulling
+/// puts the solver-level adjoint exactly on the floor set by the lane
+/// evaluations themselves, and the `4.2x` it used to cost over the IFT is
+/// gone. What is left is `eval_pieces`, which both modes pay alike and which
+/// no amount of restructuring the contact channel can remove.
+fn pull_mode() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !std::env::var("PHYZ_ADJOINT_PUSH").is_ok_and(|v| v == "1" || v == "true"))
+}
 
 /// [`FD_EPS_DEFAULT`], overridable by `PHYZ_ADJOINT_FD_EPS`.
 ///
@@ -667,6 +692,27 @@ pub fn convex_rollout_objective(
     rollout: &ConvexContactRollout,
     objective: &FinalStateObjective,
 ) -> f64 {
+    convex_rollout_objective_and_state(rollout, objective).0
+}
+
+/// [`convex_rollout_objective`], returning the final state alongside the
+/// objective value.
+///
+/// The rollout has the terminal `(q, v)` in hand and used to throw it away, so
+/// every caller that wanted both — a training bridge stepping an environment,
+/// anything that needs the next observation as well as the return — had to
+/// either run the rollout twice or smuggle the state out through a `RefCell`
+/// captured in the objective closure. `phyz-tang` did the second, which works
+/// and is a lie about the data flow: the closure is documented as a pure
+/// function of the final state, and one that also writes to a cell is not.
+///
+/// [`convex_rollout_objective`] stays, forwarding to this, because "just the
+/// number" is what an FD oracle wants and cloning two vectors per finite
+/// difference is not free at the rates those are called.
+pub fn convex_rollout_objective_and_state(
+    rollout: &ConvexContactRollout,
+    objective: &FinalStateObjective,
+) -> (f64, State) {
     let model = rollout.model;
     let mut state = model.default_state();
     state.q = rollout.q0.clone();
@@ -683,7 +729,8 @@ pub fn convex_rollout_objective(
             &mut cache,
         );
     }
-    (objective.value)(state.q.as_slice(), state.v.as_slice())
+    let value = (objective.value)(state.q.as_slice(), state.v.as_slice());
+    (value, state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,26 +1079,138 @@ pub fn convex_adjoint_gradient(
             }
         };
 
-        // dq' along a v'-direction, by central difference through Φ.
-        let dphi_dvnext = |dvn: &DVec| -> DVec {
-            let norm = dvn.as_slice().iter().fold(0.0f64, |m, x| m.max(x.abs()));
-            if norm == 0.0 {
-                return DVec::zeros(nq);
+        // ------------------------------------------------------------------
+        // Pull mode: one covector back, instead of 123 differentials forward
+        // ------------------------------------------------------------------
+        //
+        // Every lane below ends in the same scalar,
+        //
+        //     lam_q . dq' + lam_v . dv'
+        //       = lam_q . dq'_direct + (Phi_v^T lam_q + lam_v) . dv'
+        //       = lam_q . dq'_direct + w_v . dv',
+        //
+        // so the only thing any lane needs from `Phi` is the single covector
+        // `w_v`, built once per step rather than rebuilt inside every lane.
+        // That alone removes 122 of the 123 `dphi_dvnext` calls.
+        //
+        // The expensive half is `dv'` itself. Push mode forms it per lane,
+        // which under `PHYZ_SOLVER_ADJOINT` means re-executing the whole
+        // contact solve carrying that lane's tangent — measured on ipse's
+        // 12-step jump window at `2.9 ms` a lane, `360 ms` a step, which is the
+        // entire gap between the solver-level adjoint's `471 ms/step` and the
+        // IFT's `111 ms`. But
+        //
+        //     w_v . dv' = w_v . (dv_free + d(M^-1 J^T f*))
+        //               + (velocity_delta^T w_v) . df*,
+        //
+        // and `df*` is linear in `(d(A+R), d(b - e_n bias))`. So one transposed
+        // replay of the recorded solve turns `velocity_delta^T w_v` into
+        // covectors over those two, and every lane's contact channel collapses
+        // to two dot products against pieces it already computed. One replay
+        // per step instead of one per lane.
+        //
+        // Memory is unchanged: the covectors are `3n` and `3n x 3n` — 16 KB at
+        // 15 contacts — and a lane's `Pieces` is still built, contracted and
+        // dropped one at a time. Batching the lanes through a single forward
+        // replay would have bought the same wall clock and cost 123 of those
+        // simultaneously, which is the reason it is not what happens here.
+        let w_v = {
+            let mut w = lam_v.clone();
+            // `Phi_v^T lam_q`, by central differences of the same `phi` the
+            // lanes use — one pass over `nv`, not one per lane.
+            for j in 0..nv {
+                let h = fd_eps() * rec.v_next[j].abs().max(1.0);
+                let mut vp = rec.v_next.clone();
+                let mut vm = rec.v_next.clone();
+                vp[j] += h;
+                vm[j] -= h;
+                let dq = &(&phi(model, &rec.q, &vp) - &phi(model, &rec.q, &vm)) * (1.0 / (2.0 * h));
+                let mut acc = 0.0;
+                for i in 0..nq {
+                    acc += lam_q[i] * dq[i];
+                }
+                w[j] += acc;
             }
-            let s = fd_eps() / norm;
-            let vp = &rec.v_next + &(dvn * s);
-            let vm = &rec.v_next - &(dvn * s);
-            &(&phi(model, &rec.q, &vp) - &phi(model, &rec.q, &vm)) * (1.0 / (2.0 * s))
+            w
         };
 
-        // Contract a lane's (dq', dv') against the incoming adjoint.
-        let contract = |dqn: &DVec, dvn: &DVec| -> f64 {
-            let mut acc = 0.0;
-            for i in 0..nq {
-                acc += lam_q[i] * dqn[i];
+        // The transposed contact channel, or `None` when this step has no
+        // contacts, is not in solver-level mode, or has been forced back onto
+        // the push path for a differential comparison.
+        let pulled: Option<(Vec<f64>, Vec<f64>)> = match &rec.contact {
+            Some((asm, sol, seed)) if solver_level && pull_mode() => {
+                // `velocity_delta` is `f -> M^-1 J^T f`. `M^-1` is symmetric,
+                // so its transpose is `w -> (J (M^-1 w))_c` per contact — read
+                // straight off the assembly rather than probed with `3n` basis
+                // vectors, which would be the same arithmetic done `3n` times.
+                let mut y = DVec::zeros(nv);
+                for r in 0..nv {
+                    let mut acc = 0.0;
+                    for c in 0..nv {
+                        acc += asm.inv_mass[(r, c)] * w_v[c];
+                    }
+                    y[r] = acc;
+                }
+                let bar_f: Vec<Vec3> = asm
+                    .jacobians
+                    .iter()
+                    .map(|j| {
+                        let mut out = [0.0f64; 3];
+                        for (r, o) in out.iter_mut().enumerate() {
+                            let mut acc = 0.0;
+                            for col in 0..nv {
+                                acc += j[(r, col)] * y[col];
+                            }
+                            *o = acc;
+                        }
+                        Vec3::new(out[0], out[1], out[2])
+                    })
+                    .collect();
+                let (replayed, td) = contact_solve_differential_transpose(
+                    &asm.problem,
+                    &rollout.config,
+                    seed,
+                    &bar_f,
+                );
+                debug_assert_eq!(
+                    replayed.iterations, sol.iterations,
+                    "the transposed re-execution must follow the recorded solve"
+                );
+                Some((td.bar_apr, td.bar_c))
             }
-            for j in 0..nv {
-                acc += lam_v[j] * dvn[j];
+            _ => None,
+        };
+
+        // One lane's contribution to the adjoint. `dqn_direct` is the explicit
+        // `dq'/dq` block, which only the `q` lanes have.
+        let lane_contract = |dp: &Pieces, dqn_direct: Option<&DVec>| -> f64 {
+            let mut acc = 0.0;
+            if let Some(d) = dqn_direct {
+                for i in 0..nq {
+                    acc += lam_q[i] * d[i];
+                }
+            }
+            match &pulled {
+                Some((bar_apr, bar_c)) => {
+                    // `w_v . (dv_free + d(M^-1 J^T f*)|_f)` — the part of `dv'`
+                    // that does not go through `df*`.
+                    for j in 0..nv {
+                        acc += w_v[j] * (dp.v_free[j] + dp.gf[j]);
+                    }
+                    for (b, d) in bar_apr.iter().zip(&dp.apr) {
+                        acc += b * d;
+                    }
+                    for (b, d) in bar_c.iter().zip(&dp.cvec) {
+                        acc += b * d;
+                    }
+                }
+                None => {
+                    // Push mode, unchanged: form this lane's `dv'` outright.
+                    let dvn = dv_next(dp);
+                    for j in 0..nv {
+                        acc += w_v[j] * dvn[j];
+                    }
+                }
             }
             acc
         };
@@ -1079,12 +1238,10 @@ pub fn convex_adjoint_gradient(
                 &rec.u,
                 h,
             );
-            let dvn = dv_next(&dp);
-            // Direct Φ_q block plus the v'-mediated part.
+            // Direct Φ_q block; the v'-mediated part is carried by `w_v`.
             let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
                 * (1.0 / (2.0 * h));
-            let dqn = &dqn_direct + &dphi_dvnext(&dvn);
-            new_lam_q[i] = contract(&dqn, &dvn);
+            new_lam_q[i] = lane_contract(&dp, Some(&dqn_direct));
         }
 
         // --- v lanes ---
@@ -1107,9 +1264,7 @@ pub fn convex_adjoint_gradient(
                 &rec.u,
                 h,
             );
-            let dvn = dv_next(&dp);
-            let dqn = dphi_dvnext(&dvn);
-            new_lam_v[j] = contract(&dqn, &dvn);
+            new_lam_v[j] = lane_contract(&dp, None);
         }
 
         // --- control lanes ---
@@ -1132,9 +1287,7 @@ pub fn convex_adjoint_gradient(
                 &um,
                 h,
             );
-            let dvn = dv_next(&dp);
-            let dqn = dphi_dvnext(&dvn);
-            d_ctrl[t][j] = contract(&dqn, &dvn);
+            d_ctrl[t][j] = lane_contract(&dp, None);
         }
 
         // --- inertia-parameter lanes ---
@@ -1160,9 +1313,7 @@ pub fn convex_adjoint_gradient(
                     &rec.u,
                     h,
                 );
-                let dvn = dv_next(&dp);
-                let dqn = dphi_dvnext(&dvn);
-                d_inertia[b][k] += contract(&dqn, &dvn);
+                d_inertia[b][k] += lane_contract(&dp, None);
             }
         }
 
@@ -1183,9 +1334,7 @@ pub fn convex_adjoint_gradient(
             let dp = lane(
                 model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
             );
-            let dvn = dv_next(&dp);
-            let dqn = dphi_dvnext(&dvn);
-            d_restitution += contract(&dqn, &dvn);
+            d_restitution += lane_contract(&dp, None);
         }
 
         // --- friction channel ---
@@ -1217,9 +1366,17 @@ pub fn convex_adjoint_gradient(
                     }
                     *dfc = Vec3::new(acc[0], acc[1], acc[2]);
                 }
+                // `dv'` is already in hand here, so this contracts against
+                // `w_v` directly rather than going back through `Phi` — the
+                // same scalar `contract(dphi_dvnext(dvn), dvn)` computed, with
+                // the `Phi` differences hoisted out of it like every other
+                // lane's.
                 let dvn = asm.velocity_delta(&df);
-                let dqn = dphi_dvnext(&dvn);
-                d_friction += contract(&dqn, &dvn);
+                let mut acc = 0.0;
+                for j in 0..nv {
+                    acc += w_v[j] * dvn[j];
+                }
+                d_friction += acc;
             }
         }
 
