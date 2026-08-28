@@ -130,8 +130,13 @@ fn convergence_budget_by_contact_count() {
 fn redundancy_does_not_blow_up_the_iteration_count() {
     let (four, _, _) = sweeps_to_tolerance(4, false);
     let (thirty_two, _, _) = sweeps_to_tolerance(32, false);
+    // The absolute floor exists for `PHYZ_CONTACT_PRECOND=1`, under which the
+    // small cases converge in 2 iterations and a pure ratio against that floor
+    // would flag 18 iterations on a 96-dimensional rank-deficient manifold as
+    // a blow-up. The ratio still binds wherever iteration counts are the old
+    // tens-to-hundreds.
     assert!(
-        thirty_two <= 4 * four.max(1),
+        thirty_two <= (4 * four.max(1)).max(24),
         "32 coplanar contacts took {thirty_two} iterations against {four} for 4"
     );
 }

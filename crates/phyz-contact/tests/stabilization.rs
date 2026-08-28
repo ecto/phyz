@@ -667,10 +667,23 @@ fn warm_starting_converges_faster_to_the_same_answer() {
             hot.z[i]
         );
     }
-    assert!(
-        hot_iters * 2 < cold_iters,
-        "warm start should more than halve total iterations: {hot_iters} vs {cold_iters}"
-    );
+    // Under `PHYZ_CONTACT_PRECOND=1` both runs sit on the recorded-iteration
+    // floor (the accelerator converges the seed either way, and the recorded
+    // solve is two sweeps), so the halving claim is vacuous there; it still
+    // binds for the shipped path, where the counts are in the tens of
+    // thousands.
+    let recorded_floor = 2 * 1000;
+    if cold_iters > recorded_floor {
+        assert!(
+            hot_iters * 2 < cold_iters,
+            "warm start should more than halve total iterations: {hot_iters} vs {cold_iters}"
+        );
+    } else {
+        assert!(
+            hot_iters <= cold_iters,
+            "warm start cost iterations: {hot_iters} vs {cold_iters}"
+        );
+    }
 }
 
 /// Pair combination has to be commutative all the way through the solve, not
