@@ -3443,6 +3443,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-tang"
+version = "0.3.1"
+dependencies = [
+ "phyz-contact",
+ "phyz-diff",
+ "phyz-math",
+ "phyz-model",
+ "tang-tensor",
+ "tang-train",
+]
+
+[[package]]
 name = "phyz-urdf"
 version = "0.3.1"
 dependencies = [

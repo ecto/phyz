@@ -1,0 +1,20 @@
+[package]
+name = "phyz-tang"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "phyz's differentiable step as a tang autograd node"
+keywords = ["differentiable", "physics", "autodiff", "gradients"]
+categories = ["simulation", "mathematics", "science"]
+publish = false
+
+[dependencies]
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-contact.workspace = true
+phyz-diff.workspace = true
+tang-tensor.workspace = true
+tang-train.workspace = true
