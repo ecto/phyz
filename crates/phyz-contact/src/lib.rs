@@ -23,7 +23,8 @@ pub use cache::{ContactCache, ContactKey};
 pub use cone::{contact_frame, in_cone, in_cone_interior, project_cone};
 pub use convex::{
     ContactCoupling, ContactProblem, ContactRow, ContactSolution, ContactSolverConfig, GPU_SWEEPS,
-    regularization_depth_derivative, regularization_diag, solve_contacts, solve_contacts_warm,
+    contact_solve_differential, regularization_depth_derivative, regularization_diag,
+    solve_contacts, solve_contacts_warm, solver_adjoint_enabled,
 };
 pub use material::{ContactMaterial, SolImp, SolRef};
 #[allow(deprecated)]

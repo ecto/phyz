@@ -101,6 +101,7 @@
 
 use phyz_collision::Collision;
 use phyz_contact::gradient::{FixedPointSensitivity, friction_sensitivity};
+use phyz_contact::{contact_solve_differential, solver_adjoint_enabled};
 use phyz_contact::{
     ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
     find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
@@ -122,7 +123,26 @@ use crate::rollout::inertia_params;
 /// pieces being differenced are smooth closed-form evaluations (no iterative
 /// solve inside), so the round-off floor at this step size is `~1e-8`
 /// relative — the truncation/round-off crossover sits near here.
-const FD_EPS: f64 = 1e-8;
+const FD_EPS_DEFAULT: f64 = 1e-8;
+
+/// [`FD_EPS_DEFAULT`], overridable by `PHYZ_ADJOINT_FD_EPS`.
+///
+/// A knob for attribution, not for tuning. The lane differences above are the
+/// only finite differences left inside an otherwise analytic adjoint, so when
+/// the adjoint disagrees with an external finite difference, the first question
+/// is whether the disagreement is the *adjoint's own* step size. Sweeping this
+/// answers it: an error that moves with it belongs here, and one that does not
+/// belongs to the model being differenced.
+fn fd_eps() -> f64 {
+    static EPS: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *EPS.get_or_init(|| {
+        std::env::var("PHYZ_ADJOINT_FD_EPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|e: &f64| e.is_finite() && *e > 0.0)
+            .unwrap_or(FD_EPS_DEFAULT)
+    })
+}
 
 /// A differentiable rollout through the forward simulator's contact path.
 ///
@@ -515,12 +535,12 @@ struct StepRecord {
     u: DVec,
     v_next: DVec,
     anchors: Vec<Anchor>,
-    contact: Option<(ContactAssembly, ContactSolution)>,
+    contact: Option<(ContactAssembly, ContactSolution, Vec<Vec3>)>,
 }
 
 /// The assembled problem and its solution for a contacted step (`None` when
 /// the step had no contacts).
-type StepSolve = Option<(ContactAssembly, ContactSolution)>;
+type StepSolve = Option<(ContactAssembly, ContactSolution, Vec<Vec3>)>;
 
 /// One step of the forward pass, mirroring `Simulator::step_with_contacts`
 /// operation for operation (FK → detect → free velocity → assemble →
@@ -561,7 +581,10 @@ fn forward_step(
         let solution = solve_contacts_warm(&asm.problem, config, &seed);
         cache.store(state, &bare, &solution.impulses);
         state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
-        Some((asm, solution))
+        // The seed is recorded because the solver-level adjoint re-executes
+        // this exact solve, and a solve is only reproducible from the state it
+        // started in.
+        Some((asm, solution, seed))
     };
 
     let v_clone = state.v.clone();
@@ -673,6 +696,19 @@ struct Pieces {
     /// 2x2 block applied to `t* − f_t`; the regularizer floor is constant and
     /// drops out of the difference). Zero for non-sliding contacts.
     mt_rel: Vec<[f64; 2]>,
+    /// `A + R`, row-major `3n x 3n`. Carried so the lane machinery differences
+    /// it into `d(A + R)` — the operator the solver-level adjoint needs, and
+    /// the one the IFT path never has to form because it only ever evaluates
+    /// the residual at the converged impulses.
+    ///
+    /// Empty unless `PHYZ_SOLVER_ADJOINT` is on: it is 16 KB per evaluation at
+    /// 15 contacts, and there is no reason to pay it for a mode that does not
+    /// read it.
+    apr: Vec<f64>,
+    /// `b - e_n * bias`, length `3n`. The staged normal update only ever reads
+    /// the combination `bias - b_n`, so differencing the two together is the
+    /// exact quantity rather than a convenience.
+    cvec: Vec<f64>,
     gf: DVec,
 }
 
@@ -709,6 +745,8 @@ fn eval_pieces(
             v_free,
             residual: Vec::new(),
             mt_rel: Vec::new(),
+            apr: Vec::new(),
+            cvec: Vec::new(),
             gf: DVec::zeros(model.nv),
         };
     }
@@ -752,12 +790,30 @@ fn eval_pieces(
                 + p.delassus[(base + 1 + i) * dim + base + 2] * tr[1];
         }
     }
+    // `A + R` and `b - e_n bias`, for the solver-level adjoint to difference.
+    let (apr, cvec) = if solver_adjoint_enabled() {
+        let mut apr = p.delassus.clone();
+        let mut cvec = p.free_velocity.clone();
+        for c in 0..n {
+            let reg = regularization_diag(p, c, config);
+            let base = 3 * c;
+            for r in 0..3 {
+                apr[(base + r) * dim + base + r] += reg[r];
+            }
+            cvec[base] -= p.rows[c].bias;
+        }
+        (apr, cvec)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let gf = asm.velocity_delta(f_star);
 
     Pieces {
         v_free,
         residual,
         mt_rel,
+        apr,
+        cvec,
         gf,
     }
 }
@@ -817,24 +873,41 @@ pub fn convex_adjoint_gradient(
     for (t, rec) in records.iter().enumerate().rev() {
         // IFT sensitivity of this step's *recorded* solve. Cached, never
         // re-solved: warm starting makes a re-solve path-dependent.
+        // Two ways to close the contact channel, and they differ in what they
+        // assume the forward pass achieved.
+        //
+        // The IFT path (default) anchors on a fixed point, so it must refuse
+        // any step that did not reach one — and one refusal kills every
+        // gradient behind it, because the adjoint walks backwards.
+        //
+        // The solver-level path re-executes the recorded solve carrying a
+        // parameter differential, so it differentiates whatever iterate the
+        // solver actually produced. There is nothing to refuse: an
+        // unconverged iterate is still a function of the parameters, and it is
+        // the function the forward pass evaluated.
+        let solver_level = solver_adjoint_enabled();
         let fps: Option<FixedPointSensitivity> = match &rec.contact {
             None => None,
-            Some((asm, sol)) => {
-                if !sol.converged {
-                    return Err(ConvexAdjointError::Unconverged {
-                        step: t,
-                        iterations: sol.iterations,
-                        residual: sol.residual,
-                    });
+            Some((asm, sol, _)) => {
+                if solver_level {
+                    None
+                } else {
+                    if !sol.converged {
+                        return Err(ConvexAdjointError::Unconverged {
+                            step: t,
+                            iterations: sol.iterations,
+                            residual: sol.residual,
+                        });
+                    }
+                    Some(
+                        FixedPointSensitivity::at(&asm.problem, sol, &rollout.config)
+                            .ok_or(ConvexAdjointError::SingularKkt { step: t })?,
+                    )
                 }
-                Some(
-                    FixedPointSensitivity::at(&asm.problem, sol, &rollout.config)
-                        .ok_or(ConvexAdjointError::SingularKkt { step: t })?,
-                )
             }
         };
         let t_rel: Vec<[f64; 2]> = match (&rec.contact, &fps) {
-            (Some((asm, _)), Some(s)) => (0..asm.problem.n)
+            (Some((asm, _, _)), Some(s)) => (0..asm.problem.n)
                 .map(|c| s.slide_tangent(c).map(|st| st.t_rel).unwrap_or([0.0; 2]))
                 .collect(),
             _ => Vec::new(),
@@ -842,17 +915,42 @@ pub fn convex_adjoint_gradient(
         let f_star: Vec<Vec3> = rec
             .contact
             .as_ref()
-            .map(|(_, s)| s.impulses.clone())
+            .map(|(_, s, _)| s.impulses.clone())
             .unwrap_or_default();
 
         // Directional derivative of v' from a directional derivative of the
         // smooth pieces, closing the contact channel with the IFT.
         let dv_next = |dp: &Pieces| -> DVec {
             match (&rec.contact, &fps) {
-                (Some((asm, _)), Some(s)) => {
+                (Some((asm, _, _)), Some(s)) => {
                     // df* from the exact map linearization; dv' = dv_free +
                     // d(M⁻¹Jᵀ f*)|_f + M⁻¹Jᵀ df*.
                     let df = s.apply(&dp.residual, &dp.mt_rel);
+                    &(&dp.v_free + &dp.gf) + &asm.velocity_delta(&df)
+                }
+                (Some((asm, sol, seed)), None) if solver_level => {
+                    // Same chain rule, but `df*` comes from re-executing the
+                    // solve alongside the parameter differential rather than
+                    // from inverting a KKT matrix at an assumed fixed point.
+                    //
+                    // `d_initial` is empty: the warm-start seed is the previous
+                    // step's impulses, and this adjoint carries `(q, v)` between
+                    // steps, not `f`. At a converged solve that is exactly right
+                    // — the answer is seed-independent. At a truncated one it is
+                    // the residual approximation this mode does not remove, and
+                    // `PHYZ_CONTACT_COLD_START=1` removes it outright.
+                    let (replayed, df) = contact_solve_differential(
+                        &asm.problem,
+                        &rollout.config,
+                        seed,
+                        &[],
+                        &dp.apr,
+                        &dp.cvec,
+                    );
+                    debug_assert_eq!(
+                        replayed.iterations, sol.iterations,
+                        "the differentiated re-execution must follow the recorded solve"
+                    );
                     &(&dp.v_free + &dp.gf) + &asm.velocity_delta(&df)
                 }
                 _ => dp.v_free.clone(),
@@ -911,6 +1009,18 @@ pub fn convex_adjoint_gradient(
                     .zip(&b.mt_rel)
                     .map(|(x, y)| [(x[0] - y[0]) * inv, (x[1] - y[1]) * inv])
                     .collect(),
+                apr: a
+                    .apr
+                    .iter()
+                    .zip(&b.apr)
+                    .map(|(x, y)| (x - y) * inv)
+                    .collect(),
+                cvec: a
+                    .cvec
+                    .iter()
+                    .zip(&b.cvec)
+                    .map(|(x, y)| (x - y) * inv)
+                    .collect(),
                 gf: &(&a.gf - &b.gf) * inv,
             }
         };
@@ -921,7 +1031,7 @@ pub fn convex_adjoint_gradient(
             if norm == 0.0 {
                 return DVec::zeros(nq);
             }
-            let s = FD_EPS / norm;
+            let s = fd_eps() / norm;
             let vp = &rec.v_next + &(dvn * s);
             let vm = &rec.v_next - &(dvn * s);
             &(&phi(model, &rec.q, &vp) - &phi(model, &rec.q, &vm)) * (1.0 / (2.0 * s))
@@ -944,7 +1054,7 @@ pub fn convex_adjoint_gradient(
 
         // --- q lanes ---
         for i in 0..nq {
-            let h = FD_EPS * rec.q[i].abs().max(1.0);
+            let h = fd_eps() * rec.q[i].abs().max(1.0);
             let mut qp = rec.q.clone();
             let mut qm = rec.q.clone();
             qp[i] += h;
@@ -972,7 +1082,7 @@ pub fn convex_adjoint_gradient(
 
         // --- v lanes ---
         for j in 0..nv {
-            let h = FD_EPS * rec.v[j].abs().max(1.0);
+            let h = fd_eps() * rec.v[j].abs().max(1.0);
             let mut vp = rec.v.clone();
             let mut vm = rec.v.clone();
             vp[j] += h;
@@ -997,7 +1107,7 @@ pub fn convex_adjoint_gradient(
 
         // --- control lanes ---
         for j in 0..nv {
-            let h = FD_EPS * rec.u[j].abs().max(1.0);
+            let h = fd_eps() * rec.u[j].abs().max(1.0);
             let mut up = rec.u.clone();
             let mut um = rec.u.clone();
             up[j] += h;
@@ -1023,7 +1133,7 @@ pub fn convex_adjoint_gradient(
         // --- inertia-parameter lanes ---
         for b in 0..nb {
             for k in 0..N_INERTIA_PARAMS {
-                let h = FD_EPS * nominal_params[b][k].abs().max(1.0);
+                let h = fd_eps() * nominal_params[b][k].abs().max(1.0);
                 let mut pp = nominal_params[b];
                 let mut pm = nominal_params[b];
                 pp[k] += h;
@@ -1058,7 +1168,7 @@ pub fn convex_adjoint_gradient(
         // rather than a post-solve velocity reset — a reset would be a branch
         // on the primal, with no derivative in `e` at all at `v_n = 0`.
         {
-            let h = FD_EPS * rollout.material.restitution.abs().max(1.0);
+            let h = fd_eps() * rollout.material.restitution.abs().max(1.0);
             let mut matp = rollout.material.clone();
             let mut matm = rollout.material.clone();
             matp.restitution += h;
@@ -1085,7 +1195,7 @@ pub fn convex_adjoint_gradient(
         // the derivative with respect to the single shared coefficient, and
         // from there the contraction is the same as every other lane's, since
         // `v_free` and the impulse-held-fixed term do not depend on `mu`.
-        if let Some((asm, sol)) = &rec.contact {
+        if let Some((asm, sol, _)) = &rec.contact {
             let n = asm.problem.n;
             if let Some(dfdmu) = friction_sensitivity(&asm.problem, sol, &rollout.config) {
                 let mut df = vec![Vec3::zeros(); n];
