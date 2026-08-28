@@ -87,6 +87,36 @@ pub fn classify(
 /// the rule the gradient will later use. Sharing one function is the point —
 /// a solver that converges to a different active set than the gradient
 /// linearizes around is the mismatch that has bitten this crate before.
+/// The band [`FixedPointSensitivity::at`] classifies with, `1e-7` unless
+/// `PHYZ_CLASSIFY_BAND` overrides it.
+///
+/// It exists to *measure* the boundary channel, not to tune it. The forward
+/// sweep branches on the cone exactly — `f_n = max(0, .)` and
+/// `if t_norm > limit`, both at zero tolerance — while this backward
+/// classification uses a band. Any contact sitting inside that band is
+/// linearized on a branch the forward pass need not have taken, and that error
+/// is convergence-independent: no amount of extra sweeps removes it.
+///
+/// Sweeping this knob is what tells the two apart. If the adjoint is unchanged
+/// across decades of band, no contact is ambiguously placed and whatever
+/// disagreement remains against finite differences is truncation — the finite
+/// iteration count, not the boundary. Measured on the K1 13-contact skate
+/// stance, that is exactly what happens, which is why the fix that followed is
+/// a solver-level replay rather than a softened complementarity function.
+///
+/// Default-off in the sense that matters: unset, this returns the same `1e-7`
+/// the constant always was, so shipped behaviour is byte-identical.
+fn classify_band() -> f64 {
+    static BAND: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *BAND.get_or_init(|| {
+        std::env::var("PHYZ_CLASSIFY_BAND")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|b: &f64| b.is_finite() && *b >= 0.0)
+            .unwrap_or(1e-7)
+    })
+}
+
 pub(crate) fn classify_impulses(
     problem: &ContactProblem,
     impulses: &[Vec3],
@@ -199,7 +229,7 @@ impl FixedPointSensitivity {
                 regimes: Vec::new(),
             });
         }
-        let regimes = classify(problem, solution, 1e-7);
+        let regimes = classify(problem, solution, classify_band());
         // Start from the solver's pinned-direction system and correct the
         // sliding tangential rows.
         let mut k = kkt_matrix(problem, config, &regimes, &solution.impulses);
