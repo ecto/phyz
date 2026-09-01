@@ -820,9 +820,62 @@ PHYZ_DEV v3 support_point(const float* geometry, u32 i, v3 n_body) {
     return v3_add(o_p, rot_tmul(o_r, support));
 }
 
-// Contact point cpt of collision instance i (box: corner; else: support against n_body).
+// Candidate cpt (0..8) of collision instance i's cylinder, body frame, origin
+// applied.
+//
+// A cylinder's ground contact is its lowest LINE, not a point: level, the
+// barrel touches along a whole generator, and reducing that to one point lets
+// a wheel pitch about its own contact with nothing to resist it. So cpt 0..4
+// are the four rim directions of the +h/2 cap and 4..8 those of the -h/2 cap,
+// and the depth filter keeps whichever are actually near the plane: the two
+// ends of the lowest line on its side, one cap's rim polygon standing on end.
+//
+// Direction 0 is `u`, the steepest DOWNHILL direction on the barrel, so
+// candidate 0 of the lower cap is exactly the deepest point of the shape.
+// Mirrors `phyz_contact::solver::ground_candidates` point for point, order
+// included, and `shaders.rs` line for line.
+PHYZ_DEV v3 cylinder_point(const float* geometry, u32 i, v3 n_body, u32 cpt) {
+    u32 g = i * GEOM_STRIDE;
+    v3 o_p = geom_origin_pos(geometry, i);
+    r9 o_r = geom_origin_rot(geometry, i);
+    // World up, in the shape's frame. The axis is the shape's own z, so the
+    // rim basis is entirely a question of n's horizontal part.
+    v3 n = rot_mul(o_r, n_body);
+    float radius = geometry[g + 1u];
+    float half_h = geometry[g + 2u] * 0.5f;
+
+    float rho = sqrtf(n.x * n.x + n.y * n.y);
+    v3 d0 = v3_(1.0f, 0.0f, 0.0f);
+    v3 d1 = v3_(0.0f, 1.0f, 0.0f);
+    // Within 1e-6 rad of vertical the barrel has no lowest line and the
+    // cylinder stands on a cap, where the shape's own x/y are the rim
+    // directions. The CPU switches at 1e-9; between the two the answers differ
+    // by radius * 1e-6, which on a 27 mm wheel is 27 nm.
+    if (rho > 1e-6f) {
+        d0 = v3_(-n.x / rho, -n.y / rho, 0.0f);
+        d1 = v3_(-d0.y, d0.x, 0.0f);
+    }
+    v3 dir = d0;
+    u32 k = cpt & 3u;
+    if (k == 1u) dir = d1;
+    else if (k == 2u) dir = v3_scale(d0, -1.0f);
+    else if (k == 3u) dir = v3_scale(d1, -1.0f);
+    v3 support = v3_add(v3_(0.0f, 0.0f, cpt < 4u ? half_h : -half_h), v3_scale(dir, radius));
+    return v3_add(o_p, rot_tmul(o_r, support));
+}
+
+// How many ground candidates a shape offers: every corner of a box, both ends
+// of a cylinder's lowest line (via its eight rim directions), one support
+// point for everything else.
+PHYZ_DEV u32 candidate_count(u32 gt) {
+    return (gt == 2u || gt == 4u) ? 8u : 1u;
+}
+
+// Contact point cpt of collision instance i (box: corner; cylinder: rim point;
+// else: support against n_body).
 PHYZ_DEV v3 contact_pt(const float* geometry, u32 i, u32 gtype, u32 cpt, v3 n_body) {
     if (gtype == 2u) return box_corner(geometry, i, cpt);
+    if (gtype == 4u) return cylinder_point(geometry, i, n_body, cpt);
     return support_point(geometry, i, n_body);
 }
 
@@ -1140,7 +1193,7 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
         for (u32 g = gbegin; fk_mode != PHYZ_FK_REUSE && g < gbegin + gcount; g++) {
             u32 gt = (u32)geometry[g * GEOM_STRIDE];
             if (gt == 0u) continue;
-            u32 np = gt == 2u ? 8u : 1u;
+            u32 np = candidate_count(gt);
             for (u32 c = 0; c < np; c++) {
                 v3 sp = contact_pt(geometry, g, gt, c, z_body);
                 v3 spw = v3_add(w_pos[i], rot_mul(w_rot[i], sp));
@@ -1195,7 +1248,10 @@ PHYZ_DEV void contact_thread_c(u32 world_idx, const float* cparams,
             u32 g = sel_g[cpt];
             u32 gbase = g * GEOM_STRIDE;
             u32 gtype = (u32)geometry[gbase];
-            float pt_scale = gtype == 2u ? 0.25f : 1.0f;
+            // A quarter for a box, a half for a cylinder: the manifold each
+            // rests on is four corners or the two ends of a line, and the
+            // per-point spring has to sum to the body's own.
+            float pt_scale = gtype == 2u ? 0.25f : (gtype == 4u ? 0.5f : 1.0f);
 
             v3 support = contact_pt(geometry, g, gtype, sel_c[cpt], z_body);
             v3 sup_w = v3_add(w_pos[i], rot_mul(w_rot[i], support));

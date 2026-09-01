@@ -26,13 +26,15 @@ pub use convex::{
     regularization_depth_derivative, regularization_diag, solve_contacts, solve_contacts_warm,
 };
 pub use material::{ContactMaterial, SolImp, SolRef};
+pub use solver::{
+    CYL_AXIS_EPS, GroundSupport, cylinder_rim_basis, cylinder_rim_dir, find_contacts,
+    find_ground_contacts, find_ground_contacts_model, find_ground_contacts_model_with_drop,
+    find_ground_contacts_model_with_offset, find_ground_contacts_model_with_support,
+    find_heightfield_contacts_model, find_heightfield_contacts_model_with_drop,
+    find_heightfield_contacts_model_with_support,
+};
 #[allow(deprecated)]
 pub use solver::{contact_forces, contact_forces_implicit};
-pub use solver::{
-    find_contacts, find_ground_contacts, find_ground_contacts_model,
-    find_ground_contacts_model_with_drop, find_heightfield_contacts_model,
-    find_heightfield_contacts_model_with_drop,
-};
 
 use phyz_collision::Collision;
 use phyz_math::{SpatialVec, Vec3};
