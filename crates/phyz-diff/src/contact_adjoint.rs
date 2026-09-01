@@ -102,8 +102,9 @@
 use phyz_collision::Collision;
 use phyz_contact::gradient::{FixedPointSensitivity, friction_sensitivity};
 use phyz_contact::{
-    ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig, assemble,
-    find_contacts, find_ground_contacts_model_with_drop, regularization_diag, solve_contacts_warm,
+    ContactAssembly, ContactCache, ContactMaterial, ContactSolution, ContactSolverConfig,
+    GroundSupport, assemble, cylinder_rim_dir, find_contacts,
+    find_ground_contacts_model_with_support, regularization_diag, solve_contacts_warm,
 };
 use phyz_contact::{
     contact_solve_differential, contact_solve_differential_transpose, solver_adjoint_enabled,
@@ -375,13 +376,47 @@ enum Anchor {
     /// `p_world(q) = pos(q) + Rᵀ(q)·material_point + world_offset`:
     /// `material_point` is a body-frame point (a box corner, a mesh vertex, a
     /// capsule hemisphere centre, a sphere centre), and `world_offset` is the
-    /// constant world-axis part (`−r·ẑ` for a sphere or capsule dropping onto a
-    /// z-plane; zero otherwise). This covers every geometry
-    /// `find_ground_contacts` emits.
+    /// part that does *not* ride the body: `−r·ẑ` for a sphere or capsule
+    /// dropping onto a z-plane, zero for a box corner or mesh vertex.
+    /// Detection reports which it is per contact
+    /// (`find_ground_contacts_model_with_support`).
     Ground {
         body: usize,
         material_point: Vec3,
         world_offset: Vec3,
+    },
+    /// A contact against the ground plane on a cylinder's rim.
+    ///
+    /// `p_world(q) = pos(q) + Rᵀ(q)·cap_centre + radius · dir(â(q))`, where
+    /// `â(q) = Rᵀ(q)·axis_local` is the cylinder's axis and `dir` is the rim
+    /// direction `quarter_turns` × 90° around from the barrel's steepest
+    /// downhill `û` (`phyz_contact::cylinder_rim_dir`).
+    ///
+    /// This is [`Anchor::Ground`] with the offset recomputed rather than
+    /// frozen, and the difference is a whole gradient channel. Spinning the
+    /// wheel about its axle leaves `â` alone, so the two agree exactly there —
+    /// the rolling case. *Banking* the wheel rotates `â`, which slides the
+    /// contact around the rim by `r·dû`, and a frozen offset reports none of
+    /// it: measured on a wheel rolling at 0.25 rad of tilt, the frozen form
+    /// gave `dJ/d(tilt) = +7.8e-3` against a finite difference of `−9.5e-3`.
+    /// Wrong sign, not merely small — see
+    /// `phyz-diff/tests/cylinder_contact_adjoint.rs`.
+    ///
+    /// A cylinder standing on its cap takes [`Anchor::Ground`] instead: there
+    /// `û` does not exist, the rim point taken along the shape's own x/y *is*
+    /// a material point, and `Material` is the exact description rather than
+    /// an approximation of one.
+    GroundCylinderRim {
+        body: usize,
+        /// Cap centre, in body coordinates.
+        cap_centre: Vec3,
+        /// The cylinder's axis, in body coordinates.
+        axis_local: Vec3,
+        radius: f64,
+        quarter_turns: u8,
+        /// The world offset detection resolved, used only if a perturbed axis
+        /// lands inside the vertical degeneracy where `û` does not exist.
+        frozen_offset: Vec3,
     },
     /// A contact between two moving bodies.
     ///
@@ -418,32 +453,45 @@ enum Anchor {
 impl Anchor {
     /// Recover the anchor of a detected collision.
     ///
-    /// `drop` is a ground contact's world-axis drop as reported by
-    /// `find_ground_contacts_model_with_drop`: the radius by which a sphere or
-    /// capsule support point hangs below its centre along world `−ẑ`, zero for
-    /// material-point contacts (box corners, cylinder rims, mesh vertices).
-    /// Detection reports it per contact because a multi-shape body no longer
-    /// determines the producing shape by itself. It is unread for a body-body
-    /// contact, whose two surface points are recovered from the manifold
-    /// geometry instead.
+    /// `support_kind` is how the ground contact attaches to its body, as
+    /// reported by `find_ground_contacts_model_with_support`. Detection reports
+    /// it per contact because a multi-shape body no longer determines the
+    /// producing shape by itself. It is unread for a body-body contact, whose
+    /// two surface points are recovered from the manifold geometry instead.
     ///
     /// Detection reports the *midsurface* point in both cases. For the ground
     /// the support point itself is at `z = ground_height − depth`; for a pair
     /// the two surface points straddle the midsurface by `depth/2` along the
     /// normal, `body_i`'s on the far side since `+normal` is the direction `i`
     /// must move to separate.
-    fn of(c: &Collision, drop: f64, state: &State, ground_height: f64) -> Self {
+    fn of(c: &Collision, support_kind: GroundSupport, state: &State, ground_height: f64) -> Self {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
         if c.is_world_j() {
-            let world_offset = Vec3::new(0.0, 0.0, -drop);
             let xform = &state.body_xform[c.body_i];
             let support = Vec3::new(
                 c.contact_point.x,
                 c.contact_point.y,
                 ground_height - c.penetration_depth,
             );
+            let world_offset = support_kind.world_offset();
             let material_point = xform.rot * (support - xform.pos - world_offset);
+            if let GroundSupport::CylinderRim {
+                axis,
+                radius,
+                quarter_turns,
+                offset,
+            } = support_kind
+            {
+                return Self::GroundCylinderRim {
+                    body: c.body_i,
+                    cap_centre: material_point,
+                    axis_local: xform.rot * axis,
+                    radius,
+                    quarter_turns,
+                    frozen_offset: offset,
+                };
+            }
             return Self::Ground {
                 body: c.body_i,
                 material_point,
@@ -522,6 +570,30 @@ impl Anchor {
             } => {
                 let xform = &state.body_xform[body];
                 let support = xform.pos + xform.rot.transpose() * material_point + world_offset;
+                let depth = ground_height - support.z;
+                Collision {
+                    body_i: body,
+                    body_j: Collision::WORLD,
+                    contact_point: Vec3::new(support.x, support.y, ground_height - depth * 0.5),
+                    contact_normal: Vec3::z(),
+                    penetration_depth: depth,
+                }
+            }
+            Self::GroundCylinderRim {
+                body,
+                cap_centre,
+                axis_local,
+                radius,
+                quarter_turns,
+                frozen_offset,
+            } => {
+                let xform = &state.body_xform[body];
+                let axis = xform.rot.transpose() * axis_local;
+                // The same function detection used, so an anchor cannot drift
+                // from the detector that produced it.
+                let offset =
+                    cylinder_rim_dir(axis, quarter_turns).map_or(frozen_offset, |dir| dir * radius);
+                let support = xform.pos + xform.rot.transpose() * cap_centre + offset;
                 let depth = ground_height - support.z;
                 Collision {
                     body_i: body,
@@ -613,20 +685,24 @@ fn forward_step(
     material: &ContactMaterial,
     config: &ContactSolverConfig,
     cache: &mut ContactCache,
-) -> (Vec<(Collision, f64)>, StepSolve) {
+) -> (Vec<(Collision, GroundSupport)>, StepSolve) {
     let dt = model.dt;
 
     let (xforms, _velocities) = forward_kinematics(model, state);
     state.body_xform = xforms;
 
     // Same detection as `Simulator::step_with_contacts` — the full collision
-    // set — plus each ground contact's world-axis drop, which the anchor
-    // recovery below needs. Body-body contacts carry a drop of zero; they are
-    // rejected as unsupported before it is ever read.
-    let mut contacts: Vec<(Collision, f64)> =
-        find_ground_contacts_model_with_drop(model, state, ground_height, material.margin);
+    // set — plus how each ground contact attaches to its body, which the
+    // anchor recovery below needs. Body-body contacts carry `Material`; it is
+    // never read, since they are rejected as unsupported first.
+    let mut contacts: Vec<(Collision, GroundSupport)> =
+        find_ground_contacts_model_with_support(model, state, ground_height, material.margin);
     let body_contacts = find_contacts(model, state, material.margin);
-    contacts.extend(body_contacts.into_iter().map(|c| (c, 0.0)));
+    contacts.extend(
+        body_contacts
+            .into_iter()
+            .map(|c| (c, GroundSupport::Material)),
+    );
 
     let qdd = aba(model, state);
     let free_qd = &state.v + &(&qdd * dt);
@@ -697,8 +773,8 @@ fn forward_rollout(
         pre.v = v.clone();
         let (pre_xf, _) = forward_kinematics(model, &pre);
         pre.body_xform = pre_xf;
-        for (c, drop) in &contacts {
-            anchors.push(Anchor::of(c, *drop, &pre, rollout.ground_height));
+        for (c, support) in &contacts {
+            anchors.push(Anchor::of(c, *support, &pre, rollout.ground_height));
         }
 
         records.push(StepRecord {
@@ -951,6 +1027,55 @@ impl Anchor {
                 let support = xf.pos
                     + xf.rot.transpose().mul_vec(lift_v3(material_point))
                     + lift_v3(world_offset);
+                let depth = T::from_f64(ground_height) - support.z;
+                GenCollision {
+                    body_i: body,
+                    body_j: Collision::WORLD,
+                    point: tang::Vec3::new(
+                        support.x,
+                        support.y,
+                        T::from_f64(ground_height) - depth * T::HALF,
+                    ),
+                    normal: tang::Vec3::new(T::ZERO, T::ZERO, T::ONE),
+                    depth,
+                }
+            }
+            Self::GroundCylinderRim {
+                body,
+                cap_centre,
+                axis_local,
+                radius,
+                quarter_turns,
+                frozen_offset,
+            } => {
+                // The generic mirror of the `GroundCylinderRim` arm of
+                // `Anchor::collision`, and of `phyz_contact::cylinder_rim_dir`
+                // that arm goes through. Written out here rather than called
+                // because the tape needs it on `T`; the arithmetic is the same
+                // expression in the same order, `a_x^2 + a_y^2` for the
+                // vertical component included — writing it as `1 - a_z^2`
+                // cancels away the whole drop for a nearly-upright cylinder.
+                let xf = &xforms[body];
+                let axis = xf.rot.transpose().mul_vec(lift_v3(axis_local));
+                let rho2 = axis.x * axis.x + axis.y * axis.y;
+                let rho = rho2.sqrt();
+                let offset = if rho > T::from_f64(phyz_contact::CYL_AXIS_EPS) {
+                    let u = tang::Vec3::new(axis.z * axis.x, axis.z * axis.y, -rho2).normalize();
+                    let w = axis.cross(u);
+                    let dir = match quarter_turns & 3 {
+                        0 => u,
+                        1 => w,
+                        2 => -u,
+                        _ => -w,
+                    };
+                    dir * T::from_f64(radius)
+                } else {
+                    // Inside the degeneracy the rim direction does not exist;
+                    // fall back to what detection resolved, which is what the
+                    // f64 arm does.
+                    lift_v3(frozen_offset)
+                };
+                let support = xf.pos + xf.rot.transpose().mul_vec(lift_v3(cap_centre)) + offset;
                 let depth = T::from_f64(ground_height) - support.z;
                 GenCollision {
                     body_i: body,

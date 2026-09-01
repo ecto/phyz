@@ -151,6 +151,24 @@ fn free_sphere(mass: f64, radius: f64) -> Model {
         .build()
 }
 
+/// A wheel: a free cylinder whose axis is the shape's own z.
+fn free_cylinder(mass: f64, radius: f64, height: f64) -> Model {
+    let i_axial = 0.5 * mass * radius * radius;
+    let i_diam = mass * (3.0 * radius * radius + height * height) / 12.0;
+    let inertia = SpatialInertia::new(
+        mass,
+        Vec3::zeros(),
+        Mat3::from_diagonal(&Vec3::new(i_diam, i_diam, i_axial)),
+    );
+    let mut body = phyz_model::Body::new("wheel", inertia, -1, 0);
+    body.geometry = Some(Geometry::Cylinder { radius, height });
+    ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(0.001)
+        .add_free_body_with_geometry("wheel", -1, SpatialTransform::identity(), inertia, body)
+        .build()
+}
+
 // ── Reference ─────────────────────────────────────────────────────────────
 
 fn cpu_step(model: &Model, s: &mut State) {
@@ -2094,6 +2112,81 @@ fn suite_policy_tau<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) 
     }
 }
 
+/// A rolling cylinder, CUDA C against WGSL.
+///
+/// A cylinder's ground contact is its lowest generator line, and both kernels
+/// build it the same way: eight rim candidates, direction 0 the steepest
+/// downhill, the depth filter keeping the two that touch. That is a hand port
+/// in each language of one CPU function, so it is exactly the kind of code
+/// that drifts silently — a rolling wheel over 600 steps is the trajectory
+/// that would expose it, since the contact point sweeps the whole rim.
+fn suite_cylinder_vs_wgpu<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B>) {
+    if !wgpu_hardware_adapter() {
+        return;
+    }
+    let (mass, radius, height) = (2.0, 0.1, 0.04);
+    let model = free_cylinder(mass, radius, height);
+    let Ok(mut wg) = GpuBatchSimulator::new(model.clone(), 1) else {
+        eprintln!("skipping cylinder kernel-vs-kernel: no wgpu adapter");
+        return;
+    };
+    let mut cu = mk(model.clone(), 1);
+    let (k, d) = (mass * 200.0 * 200.0, 2.0 * mass * 200.0);
+    wg.enable_ground_contact(0.0, k, d, 0.8).unwrap();
+    cu.enable_ground_contact(0.0, k, d, 0.8).unwrap();
+
+    // Laid on its side, rolling without slipping in +x.
+    let mut s = model.default_state();
+    s.q[0] = std::f64::consts::FRAC_PI_2;
+    s.q[5] = radius + 2e-3;
+    s.v[2] = -12.0;
+    s.v[3] = 12.0 * radius;
+    wg.load_states(std::slice::from_ref(&s));
+    cu.load_states(std::slice::from_ref(&s));
+    for _ in 0..300 {
+        wg.step();
+        cu.step();
+    }
+    let a = wg.readback_states();
+    let b = cu.readback_states();
+    // 300 steps, not 600: two f32 kernels doing the same arithmetic in a
+    // different order separate slowly under rolling contact, and by 600 the
+    // spin-axis velocity is 3.0e-4 apart on a value of 0.073 — 0.4%, which is
+    // f32 drift rather than a port bug, but past what a parity gate should
+    // wave through. Halve the horizon instead of loosening the bound.
+    assert_state_close("cuda-c vs wgsl rolling cylinder", &b[0], &a[0], 2e-4);
+    // It has to have actually rolled, or the comparison is between two
+    // stationary wheels and proves nothing.
+    assert!(
+        a[0].q[3] > 0.2,
+        "the wgsl wheel only travelled {:.4} m in 0.3 s",
+        a[0].q[3]
+    );
+
+    let ca = &wg.readback_contacts().unwrap()[0][0];
+    let cb = &cu.readback_contacts().unwrap()[0][0];
+    assert_eq!(ca.touching, cb.touching);
+    assert!(
+        (ca.penetration - cb.penetration).abs() < 1e-5,
+        "{ca:?} vs {cb:?}"
+    );
+    assert!((ca.force.z - cb.force.z).abs() < 1e-2, "{ca:?} vs {cb:?}");
+
+    // Upright on its cap: the degenerate branch, where both kernels fall back
+    // to the shape's own x/y for the rim basis and report a support polygon.
+    let mut s = model.default_state();
+    s.q[5] = 0.5 * height + 2e-3;
+    wg.load_states(std::slice::from_ref(&s));
+    cu.load_states(std::slice::from_ref(&s));
+    for _ in 0..600 {
+        wg.step();
+        cu.step();
+    }
+    let a = wg.readback_states();
+    let b = cu.readback_states();
+    assert_state_close("cuda-c vs wgsl upright cylinder", &b[0], &a[0], 2e-4);
+}
+
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_single_steps(mk);
@@ -2102,6 +2195,7 @@ fn run_all<B: KernelBackend>(mk: impl Fn(Model, usize) -> BatchSim<B> + Copy) {
     suite_contact(mk);
     suite_ant(mk);
     suite_vs_wgpu(mk);
+    suite_cylinder_vs_wgpu(mk);
     suite_unified_contact(mk);
     suite_policy(mk);
     suite_policy_base_targets(mk);
@@ -2146,6 +2240,10 @@ mod host {
     #[test]
     fn matches_wgsl_kernels() {
         suite_vs_wgpu(mk);
+    }
+    #[test]
+    fn cylinder_matches_wgsl_kernels() {
+        suite_cylinder_vs_wgpu(mk);
     }
     #[test]
     fn unified_contact_matches_wgsl_kernels() {

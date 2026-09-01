@@ -284,7 +284,9 @@ fn scene(q: &DVec, model: &Model, margin: f64, want: usize) -> (Vec<Collision>, 
     );
     let anchors = contacts
         .iter()
-        .map(|c| Anchor::of(c, 0.0, &nominal, 0.0))
+        // Body-body contacts: the ground-support kind is unread on this
+        // branch, and `Material` is what detection reports for them.
+        .map(|c| Anchor::of(c, GroundSupport::Material, &nominal, 0.0))
         .collect();
     (contacts, anchors)
 }

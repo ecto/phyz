@@ -652,6 +652,70 @@ fn support_point(g: u32, n_body: vec3<f32>) -> vec3<f32> {
     return o_p + rot_t_mul(o_r, support);
 }
 
+// Candidate `cpt` (0..8) of collision instance `g`'s cylinder, in BODY
+// coordinates with the instance's origin applied.
+//
+// A cylinder's ground contact is its lowest LINE, not a point: with the axis
+// level, the barrel touches along a whole generator, and reducing that to one
+// point lets a wheel pitch about its own contact with nothing to resist it —
+// the same failure a box reduced to one corner has. So `cpt` 0..4 are the four
+// rim directions of the `+h/2` cap and 4..8 those of the `-h/2` cap, and the
+// depth filter keeps whichever of the eight are actually near the plane: the
+// two ends of the lowest line when the cylinder is on its side, one cap's rim
+// polygon when it is standing on end.
+//
+// Direction 0 is `u`, the steepest DOWNHILL direction on the barrel, so
+// candidate 0 of the lower cap is exactly the deepest point of the shape. The
+// other three are 90/180/270 degrees around from it. Mirrors
+// `phyz_contact::solver::ground_candidates` point for point, including the
+// order, so the parity tests compare like with like.
+fn cylinder_point(g: u32, n_body: vec3<f32>, cpt: u32) -> vec3<f32> {
+    let gbase = g * GEOM_STRIDE;
+    let o_p = vec3<f32>(geometry[gbase + 10u], geometry[gbase + 11u], geometry[gbase + 12u]);
+    var o_r: array<f32, 9>;
+    for (var k = 0u; k < 9u; k++) { o_r[k] = geometry[gbase + 13u + k]; }
+    // World up, in the shape's frame. The axis is the shape's own z, so the
+    // rim basis is entirely a question of `n`'s horizontal part.
+    let n = rot_mul(o_r, n_body);
+    let radius = geometry[gbase + 1u];
+    let half_h = geometry[gbase + 2u] * 0.5;
+
+    let rho = length(vec2<f32>(n.x, n.y));
+    var d0 = vec3<f32>(1.0, 0.0, 0.0);
+    var d1 = vec3<f32>(0.0, 1.0, 0.0);
+    // Within 1e-6 rad of vertical the barrel has no lowest line and the
+    // cylinder is standing on a cap, where the shape's own x/y are the rim
+    // directions — and are material points of the body, which is the exact
+    // answer rather than an approximation of one. The CPU switches at 1e-9
+    // instead; between the two thresholds the answers differ by
+    // `radius * 1e-6`, which on a 27 mm wheel is 27 nm.
+    if (rho > 1e-6) {
+        d0 = vec3<f32>(-n.x, -n.y, 0.0) / rho;
+        d1 = vec3<f32>(-d0.y, d0.x, 0.0);
+    }
+    var dir = d0;
+    let k = cpt & 3u;
+    if (k == 1u) { dir = d1; } else if (k == 2u) { dir = -d0; } else if (k == 3u) { dir = -d1; }
+    let cap = select(-half_h, half_h, cpt < 4u);
+    let support = vec3<f32>(0.0, 0.0, cap) + dir * radius;
+    return o_p + rot_t_mul(o_r, support);
+}
+
+// How many ground candidates a shape offers, and where candidate `c` is.
+// Boxes contact through every penetrating corner, cylinders through their
+// lowest line (or their cap's rim polygon), everything else through the single
+// support point it actually touches at.
+fn candidate_count(gt: u32) -> u32 {
+    if (gt == 2u || gt == 4u) { return 8u; }
+    return 1u;
+}
+
+fn contact_pt(g: u32, gt: u32, c: u32, n_body: vec3<f32>) -> vec3<f32> {
+    if (gt == 2u) { return box_corner(g, c); }
+    if (gt == 4u) { return cylinder_point(g, n_body, c); }
+    return support_point(g, n_body);
+}
+
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -812,16 +876,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var g = gbegin; g < gbegin + gcount; g++) {
             let gt = u32(geometry[g * GEOM_STRIDE]);
             if (gt == 0u) { continue; }
-            // Boxes contact through EVERY penetrating corner; other shapes
-            // through the single support point they actually touch at. A box
-            // reduced to one point can rock on that corner with nothing to
-            // resist it, which is what felled the loose-stance rollouts.
-            var np = 1u;
-            if (gt == 2u) { np = 8u; }
+            // Boxes contact through EVERY penetrating corner and cylinders
+            // through both ends of their lowest line; other shapes through the
+            // single support point they actually touch at. A box reduced to one
+            // point can rock on that corner with nothing to resist it, which is
+            // what felled the loose-stance rollouts.
+            let np = candidate_count(gt);
             for (var c = 0u; c < np; c++) {
-                var sp: vec3<f32>;
-                if (gt == 2u) { sp = box_corner(g, c); }
-                else { sp = support_point(g, z_body); }
+                let sp = contact_pt(g, gt, c, z_body);
                 let spw = w_pos[i] + rot_mul(w_rot[i], sp);
                 let tq = terrain(spw.xy);
                 let pen = tq.z * (tq.w - spw.z);
@@ -879,15 +941,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let g = sel_g[cpt];
             let gbase = g * GEOM_STRIDE;
             let gtype = u32(geometry[gbase]);
-            // Per-point stiffness is a quarter of the body's for a box, so a
-            // flat-resting face carries the same total spring as a
-            // single-point shape does.
+            // Per-point stiffness is a quarter of the body's for a box and a
+            // half for a cylinder, so a flat-resting face and a cylinder lying
+            // on its line each carry the same total spring as a single-point
+            // shape does. Those are the manifold sizes each shape rests on:
+            // four corners for a box, the two ends of a line for a cylinder.
             var pt_scale = 1.0;
-            if (gtype == 2u) { pt_scale = 0.25; }
+            if (gtype == 2u) { pt_scale = 0.25; } else if (gtype == 4u) { pt_scale = 0.5; }
 
-            var support: vec3<f32>;
-            if (gtype == 2u) { support = box_corner(g, sel_c[cpt]); }
-            else { support = support_point(g, z_body); }
+            let support = contact_pt(g, gtype, sel_c[cpt], z_body);
             let sup_w = w_pos[i] + rot_mul(w_rot[i], support);
 
             // Terrain under this contact point (the flat plane when no
@@ -1318,6 +1380,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let g = sel_g[cpt];
             let gbase = g * GEOM_STRIDE;
             let gtype = u32(geometry[gbase]);
+            // No cylinder case here: the body-plane pass still takes a single
+            // support point for every non-box shape (see the `gt != 2u` branch
+            // above), so a cylinder against a *plane geom* is still one point.
+            // The ground path is the one this change made analytic.
             var pt_scale = 1.0;
             if (gtype == 2u) { pt_scale = 0.25; }
 

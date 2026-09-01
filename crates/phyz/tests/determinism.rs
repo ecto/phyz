@@ -106,11 +106,16 @@ fn wheel_rolling() -> Scene {
     model.bodies[0].geometry = Some(Geometry::Cylinder { radius, height });
 
     let mut state = model.default_state();
-    // Lay the cylinder's axis along +y (rotate 90 deg about x) so it rolls in x.
+    // Lay the cylinder's axis along -y (rotate 90 deg about x) so it rolls in x.
     state.q[0] = std::f64::consts::FRAC_PI_2;
     state.q[5] = radius + 2e-3;
-    // Roll without slipping to first order: v_x = omega_y * r, in body frame.
-    state.v[1] = -12.0;
+    // Spin about the AXLE, which is the shape's own z — `v[1]` is the body's
+    // y, and after the 90 deg roll that is world *up*, so the fixture used to
+    // yaw the disc like a spun coin and never rolled it at all. Nothing
+    // noticed, because the four-rim-sample cylinder could not roll either.
+    // With the axle right and `v_x = omega r`, this is rolling without
+    // slipping: the contact point is stationary on the ground.
+    state.v[2] = -12.0;
     state.v[3] = 12.0 * radius;
 
     Scene {
@@ -215,9 +220,18 @@ fn fingerprint(scene: &Scene) -> u64 {
 ///    history says which commit moved the numbers.
 ///
 /// Do not update these to make a red test green without doing step 1.
+///
+/// `wheel_rolling` moved on the commit that gave the cylinder an analytic
+/// ground contact (its lowest generator line, instead of eight body-frame rim
+/// samples). Two changes in that commit reach this scene: the contact geometry
+/// itself, and the fixture's spin axis, which was `v[1]` — the body's *y*,
+/// which after the 90 deg roll is world up — so the disc was being spun like a
+/// coin rather than rolled. The other two scenes carry no cylinder and their
+/// hashes are unchanged, which is the check that the new code is confined to
+/// the shape it claims.
 const GOLDEN: &[(&str, u64)] = &[
     ("box_tipping", 0xdf32_a0df_8c7f_0577),
-    ("wheel_rolling", 0x8e0d_77aa_c1ae_df3e),
+    ("wheel_rolling", 0x0843_1b92_eb20_3d15),
     ("chain_falling", 0x6c5b_4ac0_1d83_af9f),
 ];
 
@@ -469,17 +483,24 @@ fn a_zero_ulp_perturbation_never_separates() {
 ///
 /// | scene           | growth  | fitted lambda | doubling time |
 /// |-----------------|---------|---------------|---------------|
-/// | `box_tipping`   | ~85x    | negative      | — (settles)   |
-/// | `wheel_rolling` | ~1.4e2x | negative      | — (settles)   |
+/// | `box_tipping`   | ~85x    | ~-1.1 / s     | — (settles)   |
+/// | `wheel_rolling` | ~1.4e4x | ~+1.4 / s     | ~0.48 s       |
 /// | `chain_falling` | ~8x     | ~+1.1 / s     | ~0.65 s       |
 ///
 /// Which is worth stating plainly, because it contradicts the intuition that
-/// sends people looking for chaos first: two of the three scenes *contract*.
-/// Contact is dissipative, and a box that settles forgets its initial
-/// perturbation rather than amplifying it. Only the articulated chain, which
-/// keeps swinging, shows sustained exponential growth — and even there the
-/// separation is still `1e-15` after 1.2 s, because exponential growth from
-/// `1e-16` takes tens of seconds to reach anything you could see.
+/// sends people looking for chaos first: the box *contracts*. Contact is
+/// dissipative, and a box that settles forgets its initial perturbation rather
+/// than amplifying it. The scenes that keep moving — the articulated chain,
+/// and the wheel once it could actually roll — show sustained exponential
+/// growth. Even there the separation is still `1e-12` after 1.5 s, because
+/// exponential growth from `1e-16` takes tens of seconds to reach anything you
+/// could see.
+///
+/// `wheel_rolling` used to sit in the contracting column at ~1.4e2x. That was
+/// not a property of rolling: the cylinder's ground contact was eight rim
+/// samples, so the wheel clunked over its own corners and stopped after 23 cm.
+/// A wheel that rolls does not settle, and a rolling wheel's lean is genuinely
+/// unstable, so the sign flipped when the contact became analytic.
 ///
 /// The practical reading: if two rollouts of a scene like these disagree in
 /// the *third* digit after one second, chaos is not a sufficient explanation.
@@ -569,9 +590,12 @@ fn the_articulated_scene_has_a_positive_lyapunov_exponent() {
         "full-mantissa horizon {horizon} s looks wrong"
     );
 
-    // The settling scenes must fit the *other* sign, so the report is not
-    // simply reporting "positive" for everything.
-    for settling in [box_tipping(), wheel_rolling()] {
+    // A settling scene must fit the *other* sign, so the report is not simply
+    // reporting "positive" for everything. `box_tipping` is the one that
+    // settles: it tips onto a face and stops. `wheel_rolling` used to be here
+    // too, back when the wheel could not roll — see the calibration table.
+    #[allow(clippy::single_element_loop)]
+    for settling in [box_tipping()] {
         let sims = [Simulator::new(), Simulator::new()];
         let d = divergence(
             settling.model.nq,
