@@ -230,7 +230,7 @@ fn single_point(
 
 /// `p` projected along the face normal onto the face's plane.
 fn project_onto_face(p: &Vec3, face: &Face) -> Vec3 {
-    p - face.normal * (p - face.point).dot(&face.normal)
+    p - face.normal * (p - face.point).dot(face.normal)
 }
 
 /// A planar face of a shape, in world coordinates.
