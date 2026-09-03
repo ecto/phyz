@@ -331,7 +331,36 @@ enum Anchor {
         /// the direction `body_i` must move to separate, matching
         /// `Collision::contact_normal`.
         normal_local: Vec3,
+        /// For a curved body (a sphere) the surface point is not a material
+        /// point: it is the centre displaced by the radius along the *live*
+        /// normal, exactly as [`Anchor::Ground`]'s `world_offset` treats a
+        /// ball on the plane. Freezing a sphere's surface point in its own
+        /// frame instead makes the frozen point roll around with the ball, and
+        /// a resting marble on a fixed plate reported `dJ/dx₀ = 102` where
+        /// translation invariance says `1`. `Some(r)` marks that body as a
+        /// sphere of radius `r` whose `point_*` is its centre.
+        radius_i: Option<f64>,
+        radius_j: Option<f64>,
     },
+}
+
+/// The body's collision shape as a single sphere, if that is what it is.
+fn sphere_radius(model: &Model, body: usize) -> Option<(f64, Vec3)> {
+    use phyz_model::Geometry;
+    let b = model.bodies.get(body)?;
+    if b.collisions.is_empty() {
+        match b.geometry {
+            Some(Geometry::Sphere { radius }) => Some((radius, Vec3::zeros())),
+            _ => None,
+        }
+    } else if b.collisions.len() == 1 {
+        match b.collisions[0].geometry {
+            Geometry::Sphere { radius } => Some((radius, b.collisions[0].origin.pos)),
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 impl Anchor {
@@ -351,7 +380,7 @@ impl Anchor {
     /// the two surface points straddle the midsurface by `depth/2` along the
     /// normal, `body_i`'s on the far side since `+normal` is the direction `i`
     /// must move to separate.
-    fn of(c: &Collision, drop: f64, state: &State, ground_height: f64) -> Self {
+    fn of(c: &Collision, drop: f64, state: &State, ground_height: f64, model: &Model) -> Self {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
         if c.is_world_j() {
@@ -378,15 +407,25 @@ impl Anchor {
         let surface_j = c.contact_point + n * half;
         let xi = &state.body_xform[c.body_i];
         let xj = &state.body_xform[c.body_j];
-        let normal_frame = Self::reference_body(c.body_i, c.body_j, n, state);
+        let normal_frame = Self::reference_body(c.body_i, c.body_j, n, state, model);
         let owner = &state.body_xform[normal_frame];
+        // A sphere's anchor is its centre; the surface point is re-derived from
+        // the live normal at evaluation time.
+        let sph_i = sphere_radius(model, c.body_i);
+        let sph_j = sphere_radius(model, c.body_j);
         Self::Pair {
             body_i: c.body_i,
             body_j: c.body_j,
-            point_i: xi.rot * (surface_i - xi.pos),
-            point_j: xj.rot * (surface_j - xj.pos),
+            point_i: sph_i
+                .map(|(_, centre)| centre)
+                .unwrap_or(xi.rot * (surface_i - xi.pos)),
+            point_j: sph_j
+                .map(|(_, centre)| centre)
+                .unwrap_or(xj.rot * (surface_j - xj.pos)),
             normal_frame,
             normal_local: owner.rot * n,
+            radius_i: sph_i.map(|(r, _)| r),
+            radius_j: sph_j.map(|(r, _)| r),
         }
     }
 
@@ -416,7 +455,23 @@ impl Anchor {
     /// and so is the choice. That is an approximation of the same order as
     /// freezing the feature pair at all (§4.4), not an additional one: either
     /// body's frame transports a centre-determined normal about equally well.
-    fn reference_body(body_i: usize, body_j: usize, n_world: Vec3, state: &State) -> usize {
+    fn reference_body(
+        body_i: usize,
+        body_j: usize,
+        n_world: Vec3,
+        state: &State,
+        model: &Model,
+    ) -> usize {
+        // A sphere has no face and cannot own a normal; against a sphere the
+        // normal is the other body's. Deciding this by axis alignment instead
+        // ties at the identity (`+ẑ` is an axis of *every* upright frame), and
+        // the tie went to the ball: its frozen normal then rolled with it, and
+        // a marble at rest on a plate reported `dJ/dx₀ = 102` instead of `1`.
+        match (sphere_radius(model, body_i), sphere_radius(model, body_j)) {
+            (Some(_), None) => return body_j,
+            (None, Some(_)) => return body_i,
+            _ => {}
+        }
         // How nearly a direction is a coordinate axis of a frame: 1 exactly on
         // an axis, 1/sqrt(3) at the worst-case body diagonal.
         let axis_alignment = |body: usize| -> f64 {
@@ -457,16 +512,26 @@ impl Anchor {
                 point_j,
                 normal_frame,
                 normal_local,
+                radius_i,
+                radius_j,
             } => {
                 let xi = &state.body_xform[body_i];
                 let xj = &state.body_xform[body_j];
-                let pi = xi.pos + xi.rot.transpose() * point_i;
-                let pj = xj.pos + xj.rot.transpose() * point_j;
                 // The frozen body-frame normal stays unit under a rotation, so
                 // no renormalization is needed and none is done: a `normalize`
                 // here would divide by a quantity that is identically one, and
                 // its derivative would be a spurious zero-magnitude channel.
                 let n = state.body_xform[normal_frame].rot.transpose() * normal_local;
+                // `i` separates along `+n`, so `i` sits on the `+n` side and
+                // its surface point faces `−n`; the mirror image for `j`.
+                let mut pi = xi.pos + xi.rot.transpose() * point_i;
+                let mut pj = xj.pos + xj.rot.transpose() * point_j;
+                if let Some(r) = radius_i {
+                    pi -= n * r;
+                }
+                if let Some(r) = radius_j {
+                    pj += n * r;
+                }
                 // Positive = overlapping, consistent with the ground branch:
                 // the surfaces have swapped sides along `n` by this much.
                 let depth = (pj - pi).dot(n);
@@ -614,7 +679,7 @@ fn forward_rollout(
         let (pre_xf, _) = forward_kinematics(model, &pre);
         pre.body_xform = pre_xf;
         for (c, drop) in &contacts {
-            anchors.push(Anchor::of(c, *drop, &pre, rollout.ground_height));
+            anchors.push(Anchor::of(c, *drop, &pre, rollout.ground_height, model));
         }
 
         records.push(StepRecord {

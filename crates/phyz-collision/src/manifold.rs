@@ -161,8 +161,30 @@ pub fn contact_manifold_within(
                     geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
                 )]
             }),
-        // At least one surface is curved: one point is the whole story.
-        _ => vec![single_point(
+        // Flat against curved: the curved shape's deepest point is the one
+        // well-defined witness, and the flat shape's surface sits `depth`
+        // behind it along the normal. Using the flat shape's own support point
+        // here is wrong: along a face normal the box support is degenerate
+        // (any vertex of that face is a maximizer), so the witness-midpoint
+        // landed up to a half-face away from where the ball actually touched.
+        // The contact force then acted through a 9 cm lever arm on a 10 mm
+        // marble and pushed it *through* the plate. Found by the newt marble.
+        (Some(_), None) => {
+            let wb = geom_b.support(&(-normal), pos_b, rot_b);
+            vec![ManifoldPoint {
+                position: wb + normal * (0.5 * depth),
+                depth,
+            }]
+        }
+        (None, Some(_)) => {
+            let wa = geom_a.support(&normal, pos_a, rot_a);
+            vec![ManifoldPoint {
+                position: wa - normal * (0.5 * depth),
+                depth,
+            }]
+        }
+        // Both curved: the two witnesses are each unique; halfway is exact.
+        (None, None) => vec![single_point(
             geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
         )],
     };
