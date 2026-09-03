@@ -412,7 +412,13 @@ impl Anchor {
     /// the two surface points straddle the midsurface by `depth/2` along the
     /// normal, `body_i`'s on the far side since `+normal` is the direction `i`
     /// must move to separate.
-    fn of(c: &Collision, support_kind: GroundSupport, state: &State, ground_height: f64, model: &Model) -> Self {
+    fn of(
+        c: &Collision,
+        support_kind: GroundSupport,
+        state: &State,
+        ground_height: f64,
+        model: &Model,
+    ) -> Self {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
         if c.is_world_j() {
