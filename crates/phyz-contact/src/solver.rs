@@ -466,7 +466,7 @@ pub fn find_ground_contacts(
         if !pos_is_finite(&xform.pos) || !rot_is_finite(&xform.rot) {
             continue;
         }
-        let Some((candidates, _drop)) = ground_candidates(geom, xform) else {
+        let Some(candidates) = ground_candidates(geom, xform) else {
             continue;
         };
         emit_ground_hits(&mut contacts, i, candidates, ground_height, cutoff);
@@ -485,6 +485,127 @@ fn sanitize_margin(margin: f64) -> f64 {
     }
 }
 
+/// How a ground support point is attached to the body that owns it.
+///
+/// Detection reports this per contact because the *gradient* of a contact
+/// depends on it: a support point that rides the body rigidly moves with
+/// `Rᵀ(q)`, one that hangs below a curved surface does not, and one on a
+/// cylinder's rim does neither — it moves with the axis. The convex adjoint
+/// (`phyz_diff::contact_adjoint`) reconstructs the support point from this,
+/// and getting it wrong is a silently wrong gradient rather than a failure.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GroundSupport {
+    /// The support point is a material point of the body: a box corner, a mesh
+    /// vertex, or a cylinder rim point in the degenerate upright case.
+    Material,
+    /// The support hangs a *constant world vector* below a material point:
+    /// `(0, 0, −r)` for a sphere or capsule dropping onto a z-plane. Spinning
+    /// the body does not move it.
+    WorldOffset(Vec3),
+    /// A point on a cylinder's cap rim: `cap centre + radius · dir`, where
+    /// `dir` is the barrel's steepest-downhill direction `û` turned
+    /// `quarter_turns × 90°` about the axis (see [`cylinder_rim_dir`]).
+    ///
+    /// `axis` is the cylinder's axis in *world* coordinates at detection time.
+    /// It is a body-fixed direction, so an adjoint that wants to stay exact
+    /// under a perturbation freezes it in the body frame and recomputes `dir`
+    /// from the perturbed axis — `û` is a function of the configuration, and
+    /// holding it fixed drops the whole "the wheel banked, so its contact
+    /// moved around the rim" channel.
+    CylinderRim {
+        /// The cylinder's axis in world coordinates at detection time.
+        axis: Vec3,
+        /// The cylinder's radius.
+        radius: f64,
+        /// Which rim direction this contact sits on, in 90° steps from `û`.
+        quarter_turns: u8,
+        /// `radius · dir` as detection resolved it — the world offset, kept so
+        /// that callers who only want that do not have to recompute it, and so
+        /// that an adjoint has something total to fall back on if a perturbed
+        /// axis lands inside the degeneracy.
+        offset: Vec3,
+    },
+}
+
+impl GroundSupport {
+    /// The vector from the material point that generated the contact to the
+    /// support point, in world coordinates, at the configuration it was
+    /// detected in.
+    pub fn world_offset(&self) -> Vec3 {
+        match self {
+            Self::Material => Vec3::zeros(),
+            Self::WorldOffset(o) => *o,
+            Self::CylinderRim { offset, .. } => *offset,
+        }
+    }
+}
+
+/// One candidate ground-support point of a shape: its world position and how
+/// it is attached to the body.
+#[derive(Clone, Copy, Debug)]
+struct GroundCandidate {
+    point: Vec3,
+    support: GroundSupport,
+}
+
+impl GroundCandidate {
+    /// A support point that rides the body rigidly (box corner, mesh vertex).
+    fn material(point: Vec3) -> Self {
+        Self {
+            point,
+            support: GroundSupport::Material,
+        }
+    }
+}
+
+/// Below this `sin` of the axis-to-vertical angle (equivalently, this
+/// horizontal extent of the unit axis) the barrel's lowest line is numerically
+/// undefined and the cylinder is standing on a cap.
+///
+/// The two branches agree to `radius * CYL_AXIS_EPS` at the threshold — a
+/// cylinder within `1e-9` rad of upright — so the switch is a rounding event,
+/// not a step.
+pub const CYL_AXIS_EPS: f64 = 1e-9;
+
+/// The orthonormal rim basis of a cylinder whose world axis is `axis`:
+/// `(û, ŵ)`, both perpendicular to the axis, with `û` the steepest *downhill*
+/// direction on the barrel and `ŵ = â × û`.
+///
+/// `None` when the axis is within [`CYL_AXIS_EPS`] of vertical, where the
+/// barrel has no lowest line and the cylinder is standing on a cap instead.
+///
+/// `û` is `−(ẑ − (ẑ·â)â)` normalized, written componentwise as
+/// `(â_z â_x, â_z â_y, −(â_x² + â_y²))`. Not as `ẑ − (ẑ·â)â`: that form
+/// computes the vertical component as `1 − â_z²`, which for a nearly-upright
+/// cylinder subtracts two numbers that agree to every bit it has. At 1e-9 rad
+/// from vertical `cos` already rounds to exactly 1, the term evaluates to 0
+/// instead of 1e-18, and the support point loses its whole `r sin φ` drop — a
+/// 27 nm step in the depth of a 27 mm wheel. `â_x² + â_y²` is the same
+/// quantity with no cancellation in it.
+pub fn cylinder_rim_basis(axis: Vec3) -> Option<(Vec3, Vec3)> {
+    let rho2 = axis.x * axis.x + axis.y * axis.y;
+    if rho2.sqrt() <= CYL_AXIS_EPS {
+        return None;
+    }
+    let u = Vec3::new(axis.z * axis.x, axis.z * axis.y, -rho2).normalize();
+    Some((u, axis.cross(u)))
+}
+
+/// The rim direction `quarter_turns × 90°` around from `û`, for a cylinder
+/// whose world axis is `axis`. See [`cylinder_rim_basis`].
+///
+/// This is the one definition of where a cylinder's ground contacts sit;
+/// detection and the convex adjoint both go through it, so an anchor cannot
+/// drift from the detector that produced it.
+pub fn cylinder_rim_dir(axis: Vec3, quarter_turns: u8) -> Option<Vec3> {
+    cylinder_rim_basis(axis).map(|(u, w)| match quarter_turns & 3 {
+        0 => u,
+        1 => w,
+        2 => -u,
+        _ => -w,
+    })
+}
+
 /// Candidate ground-support points for one shape, in world coordinates.
 ///
 /// `xform` follows the body-transform convention (`rot` is world→shape, `pos`
@@ -492,73 +613,137 @@ fn sanitize_margin(margin: f64) -> f64 {
 /// body, compose the body transform with the shape's `GeomInstance::origin`
 /// first; [`shape_world_xform`] does exactly that.
 ///
-/// The second return is the shape's *world-axis drop*: the constant `r` by
-/// which a sphere or capsule support point hangs below its centre along world
-/// `−ẑ` (zero for shapes whose candidates are material points). The convex
-/// adjoint needs it to pin a contact to a body-frame feature.
-///
 /// Returns `None` for planes, which cannot rest on the ground plane.
+///
+/// # Cylinders contact along a line
+///
+/// A cylinder's ground contact is its lowest **generator line**, not a set of
+/// sampled rim points. With axis `â` (the shape's local `z` in world), centre
+/// `c`, radius `r` and half-height `h`, the steepest downhill direction on the
+/// barrel is
+///
+/// ```text
+/// û = −normalize(ẑ − (ẑ·â)â)
+/// ```
+///
+/// and the line's two ends are `c ± hâ + r·û`, each carrying its own depth:
+/// two equal depths when the axis is level, one end deeper when it tilts.
+///
+/// The previous implementation sampled each end cap's rim at four *body-frame*
+/// angles, which rotate with the wheel and never include the barrel point that
+/// actually touches. A rolling cylinder's effective radius then ripples by
+/// `r(1 − cos 45°) = 0.293 r` once per quarter turn — 7.9 mm on a 27 mm
+/// skateboard wheel, which is to say the wheel was a square (ipse #233,
+/// `GAP_CYLINDER_GROUND`). The analytic line has no ripple at all: the support
+/// point sits exactly `r` below the axis for every spin angle.
+///
+/// The three remaining rim directions of each cap are still emitted, at
+/// **90°, 180° and 270° from `û`** rather than at fixed body angles. Those are
+/// the cap's own support polygon, and they matter for exactly one
+/// configuration: a cylinder standing on end, where the whole rim touches and
+/// a single point could not resist tipping. In every other pose they are
+/// `r sin φ (1 − cos θ)` above the plane and the margin filter drops them, so
+/// they cost eight transforms and change nothing. Sampling them *from* `û`
+/// rather than from the body frame is what keeps the deepest candidate exact:
+/// direction 0 **is** the lowest line, so the polygon never displaces it.
 fn ground_candidates(
     geom: &ModelGeometry,
     xform: &phyz_math::SpatialTransform,
-) -> Option<(Vec<Vec3>, f64)> {
+) -> Option<Vec<GroundCandidate>> {
     // `SpatialTransform::rot` is the *world→shape* rotation; the
     // direction-carrying `SpatialTransformExt` methods used below exist so
     // this file never has to hand-roll the transpose again. (Using `rot`
     // directly here once rotated the offsets the wrong way — invisible at
     // identity, inverted as soon as the body tilted.)
     let pos = xform.pos;
-    let (candidates, drop): (Vec<Vec3>, f64) = match geom {
+    let candidates: Vec<GroundCandidate> = match geom {
         ModelGeometry::Box { half_extents } => {
             let h = half_extents;
             let mut v = Vec::with_capacity(8);
             for sx in [-1.0, 1.0] {
                 for sy in [-1.0, 1.0] {
                     for sz in [-1.0, 1.0] {
-                        v.push(xform.body_to_world_point(Vec3::new(sx * h.x, sy * h.y, sz * h.z)));
+                        v.push(GroundCandidate::material(
+                            xform.body_to_world_point(Vec3::new(sx * h.x, sy * h.y, sz * h.z)),
+                        ));
                     }
                 }
             }
-            (v, 0.0)
+            v
         }
-        ModelGeometry::Sphere { radius } => (vec![pos - Vec3::new(0.0, 0.0, *radius)], *radius),
+        ModelGeometry::Sphere { radius } => {
+            let drop = Vec3::new(0.0, 0.0, -*radius);
+            vec![GroundCandidate {
+                point: pos + drop,
+                support: GroundSupport::WorldOffset(drop),
+            }]
+        }
         ModelGeometry::Capsule { radius, length } => {
             // The two hemisphere centres, each dropped by the radius.
             let axis = xform.body_to_world_dir(Vec3::new(0.0, 0.0, length * 0.5));
-            (
-                vec![
-                    pos + axis - Vec3::new(0.0, 0.0, *radius),
-                    pos - axis - Vec3::new(0.0, 0.0, *radius),
-                ],
-                *radius,
-            )
+            let drop = Vec3::new(0.0, 0.0, -*radius);
+            vec![
+                GroundCandidate {
+                    point: pos + axis + drop,
+                    support: GroundSupport::WorldOffset(drop),
+                },
+                GroundCandidate {
+                    point: pos - axis + drop,
+                    support: GroundSupport::WorldOffset(drop),
+                },
+            ]
         }
         ModelGeometry::Cylinder { radius, height } => {
-            // Rim points of both end caps, sampled around the circle.
-            let hz = xform.body_to_world_dir(Vec3::new(0.0, 0.0, height * 0.5));
-            let (ex, ey) = (
-                xform.body_to_world_dir(Vec3::x()) * *radius,
-                xform.body_to_world_dir(Vec3::y()) * *radius,
-            );
+            let axis = xform.body_to_world_dir(Vec3::z());
+            let half = axis * (height * 0.5);
             let mut v = Vec::with_capacity(8);
-            for k in 0..4 {
-                let t = k as f64 * std::f64::consts::FRAC_PI_2;
-                let r = ex * phyz_math::fp::cos(t) + ey * phyz_math::fp::sin(t);
-                v.push(pos + hz + r);
-                v.push(pos - hz + r);
+            match cylinder_rim_basis(axis) {
+                // The barrel has a lowest line: rim direction 0 is `û`, so
+                // candidate 0 of each cap is one end of that line, and 1/2/3
+                // are the rest of the cap's support polygon.
+                Some((u, w)) => {
+                    for cap_sign in [1.0, -1.0] {
+                        let cap = pos + half * cap_sign;
+                        for (quarter_turns, dir) in [u, w, -u, -w].into_iter().enumerate() {
+                            let offset = dir * *radius;
+                            v.push(GroundCandidate {
+                                point: cap + offset,
+                                support: GroundSupport::CylinderRim {
+                                    axis,
+                                    radius: *radius,
+                                    quarter_turns: quarter_turns as u8,
+                                    offset,
+                                },
+                            });
+                        }
+                    }
+                }
+                // Standing on a cap. `û` is undefined, and it is also not
+                // needed: with the cap parallel to the ground every rim point
+                // is a contact, and a rim point taken along the shape's own
+                // x/y **is** a material point of the body — the exact anchor,
+                // not an approximation of one. This is the previous sampler,
+                // reproduced for the one pose it was right for.
+                None => {
+                    let ex = xform.body_to_world_dir(Vec3::x()) * *radius;
+                    let ey = xform.body_to_world_dir(Vec3::y()) * *radius;
+                    for cap_sign in [1.0, -1.0] {
+                        let cap = pos + half * cap_sign;
+                        for dir in [ex, ey, -ex, -ey] {
+                            v.push(GroundCandidate::material(cap + dir));
+                        }
+                    }
+                }
             }
-            (v, 0.0)
+            v
         }
-        ModelGeometry::Mesh { vertices, .. } => (
-            vertices
-                .iter()
-                .map(|v| xform.body_to_world_point(*v))
-                .collect(),
-            0.0,
-        ),
+        ModelGeometry::Mesh { vertices, .. } => vertices
+            .iter()
+            .map(|v| GroundCandidate::material(xform.body_to_world_point(*v)))
+            .collect(),
         ModelGeometry::Plane { .. } => return None,
     };
-    Some((candidates, drop))
+    Some(candidates)
 }
 
 /// The world transform of a shape mounted at `origin` inside a body at
@@ -588,12 +773,13 @@ fn shape_world_xform(
 fn emit_ground_hits(
     contacts: &mut Vec<Collision>,
     body: usize,
-    candidates: Vec<Vec3>,
+    candidates: Vec<GroundCandidate>,
     ground_height: f64,
     cutoff: f64,
 ) {
     let mut hits: Vec<(f64, Vec3)> = candidates
         .into_iter()
+        .map(|c| c.point)
         .filter(|p| p.z.is_finite() && p.z < cutoff)
         .map(|p| (ground_height - p.z, p))
         .collect();
@@ -633,25 +819,62 @@ pub fn find_ground_contacts_model(
     ground_height: f64,
     margin: f64,
 ) -> Vec<Collision> {
-    find_ground_contacts_model_with_drop(model, state, ground_height, margin)
+    find_ground_contacts_model_with_support(model, state, ground_height, margin)
         .into_iter()
         .map(|(c, _)| c)
         .collect()
 }
 
-/// [`find_ground_contacts_model`], with each contact's *world-axis drop*: the
-/// radius by which a sphere/capsule support point hangs below its centre along
-/// world `−ẑ` (zero for box, cylinder and mesh contacts, whose support points
-/// are material points of the body). The convex adjoint uses it to pin a
-/// contact to the body-frame feature that produced it; with several shapes
-/// per body the producing shape is no longer recoverable from the body alone,
-/// so detection reports it.
+/// [`find_ground_contacts_model_with_support`], reporting only the *world-axis
+/// drop* — how far the support point hangs below its material point along
+/// world `−ẑ`, which is `−offset.z`.
+///
+/// Kept for callers that predate the richer form. It is exact for spheres and
+/// capsules, whose offset is vertical by construction, and for a level
+/// cylinder, whose lowest line hangs straight down; it loses the horizontal
+/// component of a *tilted* cylinder's rim offset, and it cannot express that a
+/// cylinder rim point moves with the axis at all. Prefer
+/// [`find_ground_contacts_model_with_support`].
 pub fn find_ground_contacts_model_with_drop(
     model: &Model,
     state: &State,
     ground_height: f64,
     margin: f64,
 ) -> Vec<(Collision, f64)> {
+    find_ground_contacts_model_with_support(model, state, ground_height, margin)
+        .into_iter()
+        .map(|(c, s)| (c, -s.world_offset().z))
+        .collect()
+}
+
+/// [`find_ground_contacts_model_with_support`], reporting only the world
+/// offset at the detected configuration.
+pub fn find_ground_contacts_model_with_offset(
+    model: &Model,
+    state: &State,
+    ground_height: f64,
+    margin: f64,
+) -> Vec<(Collision, Vec3)> {
+    find_ground_contacts_model_with_support(model, state, ground_height, margin)
+        .into_iter()
+        .map(|(c, s)| (c, s.world_offset()))
+        .collect()
+}
+
+/// [`find_ground_contacts_model`], with each contact's [`GroundSupport`]: how
+/// the support point is attached to the body that owns it.
+///
+/// The convex adjoint uses it to pin a contact to the body-frame feature that
+/// produced it. The support point of a curved shape does not ride the body
+/// rigidly, and pretending it does is exactly the error that makes a rolling
+/// wheel square. With several shapes per body the producing shape is no longer
+/// recoverable from the body alone, so detection reports it.
+pub fn find_ground_contacts_model_with_support(
+    model: &Model,
+    state: &State,
+    ground_height: f64,
+    margin: f64,
+) -> Vec<(Collision, GroundSupport)> {
     let margin = sanitize_margin(margin);
     let cutoff = ground_height + margin;
     let mut out = Vec::new();
@@ -666,16 +889,16 @@ pub fn find_ground_contacts_model_with_drop(
 
         // One candidate pool per body: shapes compete for the same manifold
         // slots, exactly as a single shape's own corners already did.
-        let mut pool: Vec<(f64, Vec3, f64)> = Vec::new();
+        let mut pool: Vec<(f64, Vec3, GroundSupport)> = Vec::new();
         let mut push_shape = |geom: &ModelGeometry, sx: &phyz_math::SpatialTransform| {
-            let Some((candidates, drop)) = ground_candidates(geom, sx) else {
+            let Some(candidates) = ground_candidates(geom, sx) else {
                 return;
             };
             pool.extend(
                 candidates
                     .into_iter()
-                    .filter(|p| p.z.is_finite() && p.z < cutoff)
-                    .map(|p| (ground_height - p.z, p, drop)),
+                    .filter(|c| c.point.z.is_finite() && c.point.z < cutoff)
+                    .map(|c| (ground_height - c.point.z, c.point, c.support)),
             );
         };
 
@@ -692,7 +915,7 @@ pub fn find_ground_contacts_model_with_drop(
         pool.sort_by(|a, b| b.0.total_cmp(&a.0));
         pool.truncate(phyz_collision::MAX_MANIFOLD_POINTS);
 
-        for (depth, p, drop) in pool {
+        for (depth, p, support) in pool {
             out.push((
                 Collision {
                     body_i: i,
@@ -701,7 +924,7 @@ pub fn find_ground_contacts_model_with_drop(
                     contact_normal: Vec3::z(),
                     penetration_depth: depth,
                 },
-                drop,
+                support,
             ));
         }
     }
@@ -739,7 +962,7 @@ pub fn find_heightfield_contacts_model(
     hf: &Heightfield,
     margin: f64,
 ) -> Vec<Collision> {
-    find_heightfield_contacts_model_with_drop(model, state, hf, margin)
+    find_heightfield_contacts_model_with_support(model, state, hf, margin)
         .into_iter()
         .map(|(c, _)| c)
         .collect()
@@ -753,6 +976,20 @@ pub fn find_heightfield_contacts_model_with_drop(
     hf: &Heightfield,
     margin: f64,
 ) -> Vec<(Collision, f64)> {
+    find_heightfield_contacts_model_with_support(model, state, hf, margin)
+        .into_iter()
+        .map(|(c, s)| (c, -s.world_offset().z))
+        .collect()
+}
+
+/// [`find_heightfield_contacts_model`], with each contact's [`GroundSupport`]
+/// (see [`find_ground_contacts_model_with_support`]).
+pub fn find_heightfield_contacts_model_with_support(
+    model: &Model,
+    state: &State,
+    hf: &Heightfield,
+    margin: f64,
+) -> Vec<(Collision, GroundSupport)> {
     let margin = sanitize_margin(margin);
     let mut out = Vec::new();
 
@@ -767,19 +1004,20 @@ pub fn find_heightfield_contacts_model_with_drop(
         // One candidate pool per body, exactly as the flat path: shapes
         // compete for the same manifold slots. Entries carry the terrain
         // normal alongside depth, point and drop.
-        let mut pool: Vec<(f64, Vec3, Vec3, f64)> = Vec::new();
+        let mut pool: Vec<(f64, Vec3, Vec3, GroundSupport)> = Vec::new();
         let mut push_shape = |geom: &ModelGeometry, sx: &phyz_math::SpatialTransform| {
-            let Some((candidates, drop)) = ground_candidates(geom, sx) else {
+            let Some(candidates) = ground_candidates(geom, sx) else {
                 return;
             };
-            for p in candidates {
+            for c in candidates {
+                let p = c.point;
                 if !(p.z.is_finite() && p.x.is_finite() && p.y.is_finite()) {
                     continue;
                 }
                 let n = hf.normal(p.x, p.y);
                 let depth = n.z * (hf.height(p.x, p.y) - p.z);
                 if depth > -margin {
-                    pool.push((depth, p, n, drop));
+                    pool.push((depth, p, n, c.support));
                 }
             }
         };
@@ -797,7 +1035,7 @@ pub fn find_heightfield_contacts_model_with_drop(
         pool.sort_by(|a, b| b.0.total_cmp(&a.0));
         pool.truncate(phyz_collision::MAX_MANIFOLD_POINTS);
 
-        for (depth, p, n, drop) in pool {
+        for (depth, p, n, support) in pool {
             out.push((
                 Collision {
                     body_i: i,
@@ -809,7 +1047,7 @@ pub fn find_heightfield_contacts_model_with_drop(
                     contact_normal: n,
                     penetration_depth: depth,
                 },
-                drop,
+                support,
             ));
         }
     }
