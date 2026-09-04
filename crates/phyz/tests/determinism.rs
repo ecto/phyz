@@ -229,10 +229,17 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// coin rather than rolled. The other two scenes carry no cylinder and their
 /// hashes are unchanged, which is the check that the new code is confined to
 /// the shape it claims.
+///
+/// All three moved on the commit that made an impacting contact rigid
+/// (`ContactRow::impact`) and read restitution off the pre-step approach
+/// speed. Every scene here begins with a drop onto the ground, so every scene
+/// has at least one contact whose first step is an impact, and that step's
+/// regularizer and bias changed. `contact_physics_benchmarks` gained the
+/// Newton drop-height gate in the same commit.
 const GOLDEN: &[(&str, u64)] = &[
-    ("box_tipping", 0xdf32_a0df_8c7f_0577),
-    ("wheel_rolling", 0x0843_1b92_eb20_3d15),
-    ("chain_falling", 0x6c5b_4ac0_1d83_af9f),
+    ("box_tipping", 0x3c0d_3ef2_a08a_96b5),
+    ("wheel_rolling", 0xf6e7_d6d4_97a2_9351),
+    ("chain_falling", 0x6413_a88b_4fec_238d),
 ];
 
 #[test]
@@ -476,7 +483,7 @@ fn a_zero_ulp_perturbation_never_separates() {
 /// |-----------------|---------|---------------|---------------|
 /// | `box_tipping`   | ~85x    | ~-1.1 / s     | — (settles)   |
 /// | `wheel_rolling` | ~1.4e4x | ~+1.4 / s     | ~0.48 s       |
-/// | `chain_falling` | ~8x     | ~+1.1 / s     | ~0.65 s       |
+/// | `chain_falling` | ~4x     | ~+1.1 / s     | ~0.65 s       |
 ///
 /// Which is worth stating plainly, because it contradicts the intuition that
 /// sends people looking for chaos first: the box *contracts*. Contact is
@@ -520,8 +527,11 @@ fn a_one_ulp_perturbation_is_calibrated_for_every_scene() {
         // all the way down, because the contact set itself is a discrete
         // function of the state. If this ever reads ~1.0, the perturbation is
         // being quantized away somewhere and the calibration means nothing.
+        // (The chain read ~8x until impacting contacts became rigid; an
+        // impact row's impedance no longer moves with depth, which was the
+        // chain's sharpest channel, and it now reads ~4.4x.)
         assert!(
-            d.final_distance() > 5.0 * d.initial,
+            d.final_distance() > 2.0 * d.initial,
             "{}: a 1-ulp difference should amplify; {} -> {}",
             scene.name,
             d.initial,

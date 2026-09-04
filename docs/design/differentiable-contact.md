@@ -699,9 +699,20 @@ at any angle.
 ### 6.2 Restitution from drop height
 
 - Drop a sphere from `h₀`, measure apex `h₁`. Theory: `h₁/h₀ = e²`.
-- Assert for `e ∈ {0.0, 0.3, 0.5, 0.8, 0.95}` to `2%` (allowing for the soft-contact
-  energy loss, which is a real and documented effect — the test tolerance encodes the
-  approximation rather than hiding it).
+- Assert for `e ∈ {0.0, 0.3, 0.5, 0.8, 0.95}` to `2%`, or to the time-of-impact
+  quantization `v·dt + margin` where that is larger (a fixed step finds the sphere
+  anywhere from `v·dt` below the plane to `margin` above it, and the apex carries that
+  offset; at `e = 0.3` from 20 cm it is 11% of a 1.8 cm rebound).
+- **Impacts are rigid.** Soft contact (§4.5) is a resting-contact model: its impedance
+  delivers a velocity target scaled by `d`, its margin band tapers `d` to nothing, and
+  its stabilization bias adds `erp` to the effective `e`. All three ate the bounce
+  (measured: 77% of nominal `e` on a hard impact, and a 3.5 m/s impact detected half a
+  millimetre above the plane swallowed whole). So a contact row carries an `impact`
+  weight — the §4.3 ramp of the approach speed, on its own — that drives its impedance
+  to `0.999` and its bias to zero; a settled contact (`impact = 0`) is exactly the soft
+  contact it always was. Restitution and the ramp read the approach speed at the
+  *start* of the step, not off the free velocity with `g·dt` already in it: that `g·dt`
+  was `m·g·dt·|v|` of energy gained per bounce, 50% over thirty seconds at `e = 1`.
 - **Settling test:** with `e = 0.8`, assert the sphere is at rest (`|v| < 1e-3`) within
   10 s and stays there for another 5 s. This is what the restitution threshold ramp
   (§4.3) exists to guarantee, and it is where naive restitution implementations fail.
@@ -1031,7 +1042,7 @@ number rather than checking physics.
 | What | Spec | Measured | Issue |
 |---|---|---|---|
 | §6.1 C sliding acceleration, box on a 40° slope | within 1% | **16% excess** (`a = 2.0838` vs `1.7968`; effective `mu` `0.5618` vs `0.600`) | [#63] |
-| §6.2 restitution, dropped sphere | `h1/h0 = e²` within 2% | **81% of nominal `e` from 20 cm, 92% from 80 cm** (8–19% energy shortfall); no measurable rebound at all from 5 cm at any `e` | [#64] |
+| §6.2 restitution, dropped sphere | `h1/h0 = e²` within 2% | **fixed**: was 81% of nominal `e` from 20 cm, 92% from 80 cm, and no rebound from 5 cm; now within 0.2% of nominal above `e = 0.5` and within the time-of-impact quantization below it (see §6.2, `ContactRow::impact`) | [#64] |
 | §6.3 stacking at high mass ratio | degraded but bounded | **no bound exists** — tilt after settling is 0.01° / 0.00° / 0.89° / **40.85°** / 0.00° / **180.36°** / **190.40°** at ratios 1 / 2 / 5 / 10 / 20 / 50 / 100 | [#65] |
 
 The friction one is the most surprising, because three natural explanations are
@@ -1095,9 +1106,9 @@ Two limits are pinned as tests rather than described:
 Roughly in descending order of what a caller would actually notice.
 
 - §3 the generic-over-scalar solver, per §8.2.
-- The three §6 shortfalls of §8.3 — issues [#63], [#64], [#65]. #63 and #64 are
-  correctness bugs in the shipped forward model, which makes them higher
-  priority than anything else on this list.
+- The remaining §6 shortfalls of §8.3 — issues [#63] and [#65]. #63 is a
+  correctness bug in the shipped forward model, which makes it higher priority
+  than anything else on this list. #64 (restitution) is fixed.
 - `dJ/dsol_ref` is still unplumbed. `dJ/dmu` and `dJ/de` now reach the rollout;
   `depth_sensitivity` exists at solver level and the stabilization parameters do
   not.
