@@ -1,7 +1,7 @@
 //! Tape-based reverse-mode scalar: one backward pass, every input's gradient.
 //!
 //! [`Rev`] implements [`tang::Scalar`], so any computation written generically
-//! over `T: Scalar` — the model-layout mirrors in [`crate::model_generic`], the
+//! over `T: Scalar` — the model-layout mirrors in `crate::model_generic`, the
 //! rollout step in `crate::rollout::step` — can be evaluated once on `Rev` and
 //! then differentiated with respect to *all* of its seeded inputs in a single
 //! [`backward`] sweep. That is the reverse-mode complement to

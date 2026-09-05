@@ -37,8 +37,8 @@ use crate::contact_pipeline::{
 };
 use crate::gpu_batch_simulator::default_contact_sweeps;
 use crate::layout::{
-    self, CONTACT_STATE_STRIDE, MAX_BODIES, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows,
-    pack_states, unpack_contacts, unpack_states,
+    self, CONTACT_STATE_STRIDE, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows, pack_states,
+    unpack_contacts, unpack_states,
 };
 use crate::pd_pipeline::PdDof;
 use crate::policy_pipeline::{
@@ -242,6 +242,17 @@ pub trait KernelBackend {
 
     /// Human-readable name of the device the kernels run on.
     fn device_name(&self) -> String;
+
+    /// The body count this backend's kernels were compiled for.
+    ///
+    /// Not a property of the hardware — a property of the module that was
+    /// built. The NVRTC backend specialises it per model; the host C++
+    /// backend's translation unit is compiled once by `build.rs` and is
+    /// stuck at [`layout::DEFAULT_MAX_BODIES`]. [`BatchSim::with_backend`]
+    /// checks the model against this, and sizes the step caches from it.
+    fn max_bodies(&self) -> usize {
+        layout::DEFAULT_MAX_BODIES
+    }
 
     // ── Graph capture ─────────────────────────────────────────────────────
     //
@@ -709,8 +720,14 @@ impl CudaBatchSimulator {
     }
 
     /// Create a CUDA batch simulator on a specific device ordinal.
+    /// The kernels are compiled for this model's own body count, so there is
+    /// no cap to run into — a 34-body rig (K1 + a faithful board) compiles a
+    /// 34-body module.
     pub fn on_device(model: Model, nworld: usize, ordinal: usize) -> Result<Self, String> {
-        let backend = CudaBackend::new(ordinal)?;
+        let backend = CudaBackend::with_max_bodies(
+            ordinal,
+            crate::layout::kernel_max_bodies(model.nbodies()),
+        )?;
         Self::with_backend(backend, model, nworld)
     }
 }
@@ -727,9 +744,18 @@ impl<B: KernelBackend> BatchSim<B> {
     /// Build the simulator on an existing backend.
     pub fn with_backend(backend: B, model: Model, nworld: usize) -> Result<Self, String> {
         let nb = model.nbodies();
-        if nb > MAX_BODIES {
+        let mb = backend.max_bodies();
+        if nb > mb {
+            // Not a fixed ceiling any more: it means this backend's module
+            // was built for a narrower model than the one handed over.
+            // `CudaBatchSimulator::on_device` compiles for the model, so this
+            // only fires on a hand-built backend or the `cuda-host` path.
             return Err(format!(
-                "model has {nb} bodies but the kernels hold at most {MAX_BODIES} per world"
+                "model has {nb} bodies but this backend's kernels were compiled for {mb} per \
+                 world ({} bytes of per-thread private storage); rebuild the backend with \
+                 CudaBackend::with_max_bodies({nb}) — {nb} bodies would need {} bytes",
+                layout::private_bytes_per_world(mb),
+                layout::private_bytes_per_world(nb),
             ));
         }
         if model.nq != model.nv {
@@ -832,8 +858,15 @@ impl<B: KernelBackend> BatchSim<B> {
             return Ok(());
         }
         if self.aba_cache.is_none() {
-            self.aba_cache = Some(self.backend.alloc(self.nworld * layout::ABA_CACHE_FLOATS)?);
-            self.fk_cache = Some(self.backend.alloc(self.nworld * layout::FK_CACHE_FLOATS)?);
+            let mb = self.backend.max_bodies();
+            self.aba_cache = Some(
+                self.backend
+                    .alloc(self.nworld * layout::aba_cache_floats(mb))?,
+            );
+            self.fk_cache = Some(
+                self.backend
+                    .alloc(self.nworld * layout::fk_cache_floats(mb))?,
+            );
             self.invalidate_graph();
         }
         Ok(())

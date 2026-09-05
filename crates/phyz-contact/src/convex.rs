@@ -205,7 +205,7 @@ pub struct ContactSolverConfig {
     ///
     /// Off by default, and `PHYZ_NO_STALL_EXIT=1` still forces it on
     /// process-wide, so nothing that set the variable changes behaviour. See
-    /// [`no_stall_exit`] for what the exit buys and what it costs.
+    /// `no_stall_exit` for what the exit buys and what it costs.
     ///
     /// It is a field as well as a variable because the two things a caller
     /// wants from this solver — a fast forward step and a differentiable one
@@ -2219,7 +2219,7 @@ pub fn point_mass_problem(
 /// Is the solver-level adjoint enabled?
 ///
 /// Default off: unset, nothing in this crate calls
-/// [`solve_contacts_warm_diff`] with a differential and every number the crate
+/// `solve_contacts_warm_diff` with a differential and every number the crate
 /// reports is byte-identical to what shipped. `PHYZ_SOLVER_ADJOINT=1` switches
 /// [`crate::gradient`]'s consumers over to differentiating the algorithm
 /// instead of an assumed fixed point.
@@ -2243,7 +2243,7 @@ pub fn solver_adjoint_enabled() -> bool {
 /// `d_apr` is `d(A + R)` (row-major `3n x 3n`) and `dc` is `d(b - e_n bias)`
 /// (length `3n`); `d_initial` is the differential of the warm-start seed, which
 /// callers that cannot track it across steps should pass empty (see
-/// [`solve_contacts_warm_diff`] for exactly what that costs). Returns `df`, the
+/// `solve_contacts_warm_diff` for exactly what that costs). Returns `df`, the
 /// differential of the impulses the solve produced — the same object
 /// [`crate::gradient::FixedPointSensitivity::apply`] returns, and a drop-in for
 /// it, except that it is correct at an unconverged iterate.

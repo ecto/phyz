@@ -161,7 +161,13 @@ impl GpuBatchSimulator {
         // Create shader modules
         let aba_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("aba_general_shader"),
-            source: wgpu::ShaderSource::Wgsl(ABA_GENERAL_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::specialise_max_bodies(
+                    ABA_GENERAL_SHADER,
+                    crate::layout::kernel_max_bodies(model.nbodies()),
+                )
+                .into(),
+            ),
         });
 
         let integrate_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

@@ -373,7 +373,7 @@ pub struct BodyPlane {
     ///
     /// Packed as a per-plane bitmask over body indices, so two planes on the
     /// same rig can exclude different bodies. Bounded by
-    /// [`crate::layout::MAX_BODIES`], which the contact pass already is.
+    /// the kernel body count ([`crate::layout::kernel_max_bodies`]), which the contact pass already is.
     pub exclude: Vec<usize>,
     /// Extra rotation of the face inside the body, body -> face, row-major,
     /// in the same sense as [`phyz_model::GeomInstance::origin`]'s `rot`.
@@ -617,7 +617,13 @@ impl ContactPipeline {
         // Create shader module
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("contact_ground_shader"),
-            source: wgpu::ShaderSource::Wgsl(CONTACT_GROUND_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::specialise_max_bodies(
+                    CONTACT_GROUND_SHADER,
+                    crate::layout::kernel_max_bodies(model.nbodies()),
+                )
+                .into(),
+            ),
         });
 
         // Bind group layout (7 bindings)
@@ -774,13 +780,10 @@ pub(crate) fn pack_contact_geometry(
     if let Some(hf) = heightfield {
         validate_heightfield(hf)?;
     }
-    if model.nbodies() > crate::layout::MAX_BODIES {
-        return Err(format!(
-            "contact pass supports at most {} bodies, model has {}",
-            crate::layout::MAX_BODIES,
-            model.nbodies()
-        ));
-    }
+    // No body-count check here any more: the contact shader is specialised to
+    // `model.nbodies()` when the pipeline is built, so the pass is exactly as
+    // wide as the model. What it costs is per-thread private storage, and
+    // that is checked against the device when the pipeline is created.
     for p in planes {
         if p.body >= model.nbodies() {
             return Err(format!(
