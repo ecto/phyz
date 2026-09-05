@@ -165,7 +165,8 @@ impl GpuBatchSimulator {
                 crate::shaders::specialise_max_bodies(
                     ABA_GENERAL_SHADER,
                     crate::layout::kernel_max_bodies(model.nbodies()),
-                ).into(),
+                )
+                .into(),
             ),
         });
 

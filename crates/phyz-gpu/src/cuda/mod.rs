@@ -37,8 +37,8 @@ use crate::contact_pipeline::{
 };
 use crate::gpu_batch_simulator::default_contact_sweeps;
 use crate::layout::{
-    self, CONTACT_STATE_STRIDE, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows,
-    pack_states, unpack_contacts, unpack_states,
+    self, CONTACT_STATE_STRIDE, check_pd_dofs, pack_bodies, pack_pd_dofs, pack_rows, pack_states,
+    unpack_contacts, unpack_states,
 };
 use crate::pd_pipeline::PdDof;
 use crate::policy_pipeline::{
@@ -724,7 +724,10 @@ impl CudaBatchSimulator {
     /// no cap to run into — a 34-body rig (K1 + a faithful board) compiles a
     /// 34-body module.
     pub fn on_device(model: Model, nworld: usize, ordinal: usize) -> Result<Self, String> {
-        let backend = CudaBackend::with_max_bodies(ordinal, crate::layout::kernel_max_bodies(model.nbodies()))?;
+        let backend = CudaBackend::with_max_bodies(
+            ordinal,
+            crate::layout::kernel_max_bodies(model.nbodies()),
+        )?;
         Self::with_backend(backend, model, nworld)
     }
 }
@@ -856,8 +859,14 @@ impl<B: KernelBackend> BatchSim<B> {
         }
         if self.aba_cache.is_none() {
             let mb = self.backend.max_bodies();
-            self.aba_cache = Some(self.backend.alloc(self.nworld * layout::aba_cache_floats(mb))?);
-            self.fk_cache = Some(self.backend.alloc(self.nworld * layout::fk_cache_floats(mb))?);
+            self.aba_cache = Some(
+                self.backend
+                    .alloc(self.nworld * layout::aba_cache_floats(mb))?,
+            );
+            self.fk_cache = Some(
+                self.backend
+                    .alloc(self.nworld * layout::fk_cache_floats(mb))?,
+            );
             self.invalidate_graph();
         }
         Ok(())

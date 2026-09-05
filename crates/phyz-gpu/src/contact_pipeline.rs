@@ -622,7 +622,7 @@ impl ContactPipeline {
                     CONTACT_GROUND_SHADER,
                     crate::layout::kernel_max_bodies(model.nbodies()),
                 )
-                    .into(),
+                .into(),
             ),
         });
 

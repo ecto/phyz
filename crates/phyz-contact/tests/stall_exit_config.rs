@@ -96,8 +96,13 @@ fn the_no_stall_exit_field_spends_the_budget() {
         full.iterations,
         stalled.iterations
     );
+    // Both residuals sit at the f64 noise floor here (~1e-13); a strict
+    // `<=` compares rounding noise and flips by platform (Linux CI saw
+    // 1.76e-13 against 1.70e-13). "Not worse" means not worse by more than
+    // that noise, so the comparison carries an absolute floor.
+    const RESIDUAL_NOISE_FLOOR: f64 = 1e-10;
     assert!(
-        full.residual <= stalled.residual,
+        full.residual <= stalled.residual.max(RESIDUAL_NOISE_FLOOR),
         "spending the budget must not make the residual worse: {:e} against \
          {:e}",
         full.residual,
