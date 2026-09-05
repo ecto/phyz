@@ -50,7 +50,7 @@
 //!   up to 45 mm. GJK reported a 0.5 mm gap; `clip_faces` read 3–44 mm,
 //!   `sep > margin` rejected every vertex, and the pair fell through.
 //!
-//! Downstream that mattered because [`single_point`] picks a box corner by the
+//! Downstream that mattered because `single_point` picks a box corner by the
 //! **sign of each component** of the direction in the box's local frame, and
 //! along a face normal those in-plane components are exact-cancellation noise.
 //! Their signs are decided by the last bits of the pose, so the witness point
@@ -67,7 +67,7 @@ use crate::gjk::GjkOutcome;
 use phyz_math::{Mat3, Vec3};
 use std::sync::OnceLock;
 
-/// Whether to build the [`single_point`] fallback from the *supporting
+/// Whether to build the `single_point` fallback from the *supporting
 /// feature's centroid* rather than from a single support vertex.
 ///
 /// Off by default: with this unset every number this module produces is
@@ -103,7 +103,7 @@ use std::sync::OnceLock;
 /// `3.8e-15 m` with it off), because averaging tied vertices reintroduces a
 /// tie set that moves.
 ///
-/// With this set, vertices within [`SUPPORT_TIE_EPS`] of the maximum are
+/// With this set, vertices within `SUPPORT_TIE_EPS` of the maximum are
 /// averaged instead of raced. A face-on contact returns the face centre, an
 /// edge-on contact the edge midpoint, a corner contact the corner — the
 /// centroid of whichever feature actually supports the direction. The tie set
@@ -121,7 +121,7 @@ pub fn stable_witness() -> bool {
 ///
 /// Off by default. The old path produced no face manifold at all for 80 % of
 /// the body-body pairs of the K1 skate stance, and let a 20:1 box stack fall
-/// flat — see [`clip_faces`] and `tests/contact_physics_benchmarks.rs` — so it
+/// flat — see `clip_faces` and `tests/contact_physics_benchmarks.rs` — so it
 /// is kept only as an escape hatch for reproducing pre-fix numbers.
 pub fn legacy_clip() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();

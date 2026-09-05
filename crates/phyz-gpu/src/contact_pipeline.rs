@@ -373,7 +373,7 @@ pub struct BodyPlane {
     ///
     /// Packed as a per-plane bitmask over body indices, so two planes on the
     /// same rig can exclude different bodies. Bounded by
-    /// [`crate::layout::MAX_BODIES`], which the contact pass already is.
+    /// the kernel body count ([`crate::layout::kernel_max_bodies`]), which the contact pass already is.
     pub exclude: Vec<usize>,
     /// Extra rotation of the face inside the body, body -> face, row-major,
     /// in the same sense as [`phyz_model::GeomInstance::origin`]'s `rot`.
