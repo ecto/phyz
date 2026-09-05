@@ -192,8 +192,10 @@ fn the_axle_does_not_climb_its_own_rim() {
     // of magnitude below that is the claim; the bar is set at the sphere's own
     // residual times ten, because what is left is the penetration breathing
     // under the solver and not the shape.
+    // ...with a floor of a few ulps of the axle height: a sphere's ripple can
+    // read exactly zero, and a 1e-16 m ripple is rounding, not climbing.
     assert!(
-        w.height_ripple < 10.0 * b.height_ripple,
+        w.height_ripple < 10.0 * b.height_ripple.max(1e-14),
         "the axle height moved {:.3e} m while rolling, against a sphere's \
          {:.3e} m in the same fixture — the wheel is still climbing its own rim",
         w.height_ripple,

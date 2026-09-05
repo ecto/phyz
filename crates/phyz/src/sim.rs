@@ -15,7 +15,10 @@ use phyz_contact::{
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
 use phyz_model::{Model, State};
-use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
+use phyz_rigid::{
+    aba, forward_kinematics, integrate_configuration, rotate_free_joint_velocities,
+    strip_free_joint_coriolis,
+};
 use std::cell::RefCell;
 
 /// Pluggable solver trait.
@@ -35,10 +38,14 @@ pub struct SemiImplicitEulerSolver;
 impl Solver for SemiImplicitEulerSolver {
     fn step(&self, model: &Model, state: &mut State) {
         let dt = model.dt;
-        let qdd = aba(model, state);
+        let mut qdd = aba(model, state);
+        let v_before = state.v.clone();
+        strip_free_joint_coriolis(model, v_before.as_slice(), qdd.as_mut_slice());
 
         // Semi-implicit Euler: update velocity first, then position
         state.v += &(&qdd * dt);
+        // A free joint's linear velocity is body-frame; the body has turned.
+        rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
         let v_clone = state.v.clone();
         // NOT `q += v*dt`: free and ball joints parameterise rotation with
         // exponential coordinates, and a free joint's linear velocity is
@@ -339,7 +346,10 @@ impl Simulator {
         // Free velocity: where the system lands after one step with every
         // force except contact. The contact solve then finds the impulses
         // that correct it.
-        let qdd = aba(model, state);
+        // In the frame the contacts were assembled in: a free joint's
+        // body-frame turn is taken out here and put back, exactly, below.
+        let mut qdd = aba(model, state);
+        strip_free_joint_coriolis(model, state.v.as_slice(), qdd.as_mut_slice());
         let free_qd = &state.v + &(&qdd * dt);
 
         if contacts.is_empty() {
@@ -370,6 +380,9 @@ impl Simulator {
             // v' = v_free + M^-1 J^T f.
             state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }
+
+        // Into the frame the step ends in, exactly.
+        rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
 
         // The acceleration the step actually realized, contacts included.
         let realized_qdd = &(&state.v - &v_before) * (1.0 / dt);
