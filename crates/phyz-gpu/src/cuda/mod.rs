@@ -724,7 +724,7 @@ impl CudaBatchSimulator {
     /// no cap to run into — a 34-body rig (K1 + a faithful board) compiles a
     /// 34-body module.
     pub fn on_device(model: Model, nworld: usize, ordinal: usize) -> Result<Self, String> {
-        let backend = CudaBackend::with_max_bodies(ordinal, model.nbodies())?;
+        let backend = CudaBackend::with_max_bodies(ordinal, crate::layout::kernel_max_bodies(model.nbodies()))?;
         Self::with_backend(backend, model, nworld)
     }
 }

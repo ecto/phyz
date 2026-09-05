@@ -618,7 +618,10 @@ impl ContactPipeline {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("contact_ground_shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::specialise_max_bodies(CONTACT_GROUND_SHADER, model.nbodies())
+                crate::shaders::specialise_max_bodies(
+                    CONTACT_GROUND_SHADER,
+                    crate::layout::kernel_max_bodies(model.nbodies()),
+                )
                     .into(),
             ),
         });

@@ -123,13 +123,28 @@ fn compare(model: &Model, state: &State, steps: usize, tol: f64, label: &str) {
 /// 34 bodies — the width that motivated this: K1 (24) on a faithful board
 /// (10). The old `contact_pipeline` refused this with "contact pass supports
 /// at most 32 bodies, model has 34".
+///
+/// **But the refusal was only on the contact path.** `GpuBatchSimulator`'s
+/// ABA pass never consulted `MAX_BODIES` on the host at all — it just indexed
+/// `array<_, 32>` with body 32 and 33, and WGSL *clamps* an out-of-bounds
+/// index rather than trapping. So a 34-body model on the pre-change rev did
+/// not error; it silently aliased its last two bodies onto body 31 and
+/// returned a wrong answer. Measured on this fixture at the base rev:
+/// `v[0]` was off by **1.5e-6**, and the 40-body case below by **1.4e-4** —
+/// small enough to pass the crate's standing 1e-4 tolerance at 34, which is
+/// exactly what makes it dangerous.
+///
+/// Hence the tightened 1e-6 here: at 1e-4 this test would have passed before
+/// the fix, and it is meant to fail before and pass after.
 #[test]
 fn chain_of_34_matches_cpu() {
     let m = chain(34);
-    compare(&m, &stirred(&m), 10, 1e-4, "chain34");
+    compare(&m, &stirred(&m), 10, 1e-6, "chain34");
 }
 
-/// Comfortably past the old cap, to show 34 was not a new cap either.
+/// Comfortably past the old cap, to show 34 was not a new cap either. This
+/// one exceeded even the loose tolerance before the fix (1.4e-4), so it is
+/// the case where the silent aliasing was visible.
 #[test]
 fn chain_of_40_matches_cpu() {
     let m = chain(40);
@@ -210,4 +225,33 @@ fn cache_sizes_track_the_body_count() {
         "34 bodies wants {} bytes/thread",
         private_bytes_per_world(34)
     );
+}
+
+/// **The floor is the bit-exactness guarantee.**
+///
+/// Every model at or under the stock width must compile the stock width, so
+/// the WGSL source and the preprocessed `.cu` are the same bytes they were
+/// before the count became configurable. If this ever returns the model's own
+/// width for a narrow model, "bit-identical for models that already worked"
+/// stops being structural and becomes a measurement.
+#[test]
+fn narrow_models_compile_at_the_stock_width() {
+    use phyz_gpu::layout::{DEFAULT_MAX_BODIES, kernel_max_bodies};
+    use phyz_gpu::shaders::{ABA_GENERAL_SHADER, CONTACT_GROUND_SHADER, specialise_max_bodies};
+
+    for nb in [1usize, 2, 8, 24, 31, 32] {
+        assert_eq!(
+            kernel_max_bodies(nb),
+            DEFAULT_MAX_BODIES,
+            "a {nb}-body model must still compile at the stock width"
+        );
+        // ...and that width leaves both shaders untouched, byte for byte.
+        for src in [CONTACT_GROUND_SHADER, ABA_GENERAL_SHADER] {
+            assert_eq!(specialise_max_bodies(src, kernel_max_bodies(nb)), src);
+        }
+    }
+    // Only past the stock width does anything change.
+    assert_eq!(kernel_max_bodies(33), 33);
+    assert_eq!(kernel_max_bodies(34), 34);
+    assert_eq!(kernel_max_bodies(40), 40);
 }

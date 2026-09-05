@@ -631,3 +631,30 @@ pub fn unpack_contacts(
         })
         .collect()
 }
+
+/// The width to compile the kernels at for a model of `nbodies` bodies.
+///
+/// **A floor, not a fit** — anything at or under [`DEFAULT_MAX_BODIES`]
+/// compiles at the stock width, so the shader source and the preprocessed
+/// `.cu` are byte-identical to what they were before the count became
+/// configurable. Only a model WIDER than the stock width gets a new module,
+/// and such a model had no correct behaviour to preserve: it was refused by
+/// the contact pass, or silently aliased by the ABA pass.
+///
+/// Fitting each model to its own width would also *work* — a 1-body box
+/// compiled at width 1 was measured bit-identical to the same box at width
+/// 32, so the shader compilers do not appear to reorder float work when the
+/// array bound shrinks. But that is an observation on two toolchains, not a
+/// guarantee anyone should rely on: array bounds feed register allocation,
+/// and register pressure is exactly the kind of thing that changes
+/// contraction and therefore the last bits. A floor costs nothing — narrow
+/// models keep today's cache sizes, today's occupancy and today's tick time —
+/// and it turns "bit-exactness held when we measured it" into "bit-exactness
+/// is structural because the bytes are the same bytes".
+pub const fn kernel_max_bodies(nbodies: usize) -> usize {
+    if nbodies < DEFAULT_MAX_BODIES {
+        DEFAULT_MAX_BODIES
+    } else {
+        nbodies
+    }
+}
