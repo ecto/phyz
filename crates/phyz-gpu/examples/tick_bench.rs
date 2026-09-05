@@ -59,10 +59,17 @@ fn main() {
                 for _ in 0..warmup {
                     sim.step();
                 }
+                // readback_states() forces a sync. Without it this times
+                // the ENQUEUE of the launches, not the work: CUDA step() is
+                // asynchronous, and the loop alone reports ~2us/step, which
+                // is the driver accepting launches, not the GPU doing ABA.
+                let _ = sim.readback_states();
                 let t = Instant::now();
                 for _ in 0..steps {
                     sim.step();
                 }
+                let sunk = sim.readback_states();
+                std::hint::black_box(&sunk);
                 let us = t.elapsed().as_secs_f64() * 1e6 / steps as f64;
                 println!("CUDA nbodies={nb} nworld={nworld} tick={us:.1}us");
                 return;
@@ -76,10 +83,13 @@ fn main() {
     for _ in 0..warmup {
         sim.step();
     }
+    let _ = sim.readback_states();
     let t = Instant::now();
     for _ in 0..steps {
         sim.step();
     }
+    let sunk = sim.readback_states();
+    std::hint::black_box(&sunk);
     let us = t.elapsed().as_secs_f64() * 1e6 / steps as f64;
     println!("wgpu nbodies={nb} nworld={nworld} tick={us:.1}us");
 }
