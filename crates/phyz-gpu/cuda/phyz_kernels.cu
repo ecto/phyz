@@ -39,8 +39,18 @@
 typedef unsigned int u32;
 typedef int i32;
 
-// Mirrors layout.rs.
+// Mirrors layout.rs. NOT a cap: the NVRTC path compiles this translation
+// unit once per model and passes `-D MAX_BODIES=<nbodies>u`, so the caches
+// below are exactly the model's width. The fallback below is what the
+// `cuda-host` C++ path — compiled once by build.rs, with no model in hand —
+// gets, and matches `layout::DEFAULT_MAX_BODIES`.
+//
+// Every array sized by it lives in a THREAD's frame (CUDA local memory), not
+// in shared memory, so widening it spends per-thread local storage (512 KiB
+// limit) rather than the 48 KiB shared block.
+#ifndef MAX_BODIES
 #define MAX_BODIES 32u
+#endif
 /// Velocity-DOF bound for the per-step `U`/`D⁻¹` cache. A model wider than
 /// this still runs — `aba_thread_c` falls back to refactorising, exactly as
 /// it did before the cache existed.

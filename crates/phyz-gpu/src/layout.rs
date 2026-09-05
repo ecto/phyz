@@ -182,12 +182,15 @@ pub const PLANE_DETAIL_STRIDE: usize = 6;
 /// ```
 pub const PD_DOF_STRIDE: usize = 8;
 
-/// Largest body count a per-world kernel thread can hold in private storage.
+/// Body count the kernels are built for when the caller does not say.
 ///
-/// Both kernel languages size their per-thread scratch arrays to this; a
-/// model with more bodies must be rejected on the host rather than silently
-/// indexing past the arrays on device.
-pub const MAX_BODIES: usize = 32;
+/// Nothing caps a model at this any more: both kernel languages are
+/// specialised to the model's own body count at pipeline-build time (WGSL by
+/// substituting the constant into the source, CUDA by `-D MAX_BODIES` at
+/// NVRTC compile time). This is only the value a backend built without a
+/// model in hand — the `cuda-host` C++ path, whose translation unit is
+/// compiled once by `build.rs` — falls back to.
+pub const DEFAULT_MAX_BODIES: usize = 32;
 
 /// Velocity-DOF bound for the per-step `U`/`D⁻¹` cache. Mirrors `MAX_NV` in
 /// `cuda/phyz_kernels.cu`; a wider model refactorises instead of caching.
@@ -196,27 +199,46 @@ pub const MAX_KERNEL_NV: usize = 64;
 /// Floats per world in the fissioned step's ABA cache — `x_rot`, `x_pos`,
 /// `i_a`, `c_bias`, `p_bias`, `u_pack`, `dinv_pack`, `udu_ok`, in that order.
 /// Mirrors `ABA_CACHE_FLOATS` in `cuda/phyz_kernels.cu`; the two must agree
-/// or the stage kernels read the wrong field.
-pub const ABA_CACHE_FLOATS: usize = MAX_BODIES * 9
-    + MAX_BODIES * 3
-    + MAX_BODIES * 36
-    + MAX_BODIES * 6
-    + MAX_BODIES * 6
-    + MAX_KERNEL_NV * 6
-    + MAX_KERNEL_NV * 6
-    + MAX_BODIES;
+/// or the stage kernels read the wrong field. Both are now expressions in
+/// `MAX_BODIES` rather than constants, so they follow the specialisation.
+pub const fn aba_cache_floats(max_bodies: usize) -> usize {
+    max_bodies * 9
+        + max_bodies * 3
+        + max_bodies * 36
+        + max_bodies * 6
+        + max_bodies * 6
+        + MAX_KERNEL_NV * 6
+        + MAX_KERNEL_NV * 6
+        + max_bodies
+}
 
 /// Floats per world in the fissioned step's FK/manifold cache — `w_rot`,
 /// `w_pos`, `tree_rot`, `tree_pos`, the ground manifold and the clipped face
 /// manifold. Mirrors `FK_CACHE_FLOATS` in `cuda/phyz_kernels.cu`.
-pub const FK_CACHE_FLOATS: usize = MAX_BODIES * 9
-    + MAX_BODIES * 3
-    + MAX_BODIES * 9
-    + MAX_BODIES * 3
-    + MAX_BODIES
-    + MAX_BODIES * MAX_CONTACT_PTS * 3
-    + MAX_BODIES
-    + MAX_BODIES * MAX_PLANE_CONTACT_PTS * 4;
+pub const fn fk_cache_floats(max_bodies: usize) -> usize {
+    max_bodies * 9
+        + max_bodies * 3
+        + max_bodies * 9
+        + max_bodies * 3
+        + max_bodies
+        + max_bodies * MAX_CONTACT_PTS * 3
+        + max_bodies
+        + max_bodies * MAX_PLANE_CONTACT_PTS * 4
+}
+
+/// Bytes of per-thread private storage one world costs at `max_bodies`.
+///
+/// This — not workgroup/shared memory — is the resource the body count
+/// actually spends. Every one of these arrays lives in the kernel thread's
+/// own frame: CUDA local memory (`fk_cache_t`, `aba_cache_t` on the stack)
+/// and the WGSL `function` address space. Neither is shared across a
+/// workgroup, so the ceiling is the per-thread local-memory limit (512 KiB
+/// on every CUDA architecture since sm_20), not the 48 KiB shared-memory
+/// block. Reported in the error when a model would exceed a backend's
+/// budget so the number in the message is the true one.
+pub const fn private_bytes_per_world(max_bodies: usize) -> usize {
+    (aba_cache_floats(max_bodies) + fk_cache_floats(max_bodies)) * 4
+}
 
 /// Pack model bodies into a flat f32 array (see [`BODY_STRIDE`]).
 pub fn pack_bodies(model: &Model) -> Vec<f32> {
