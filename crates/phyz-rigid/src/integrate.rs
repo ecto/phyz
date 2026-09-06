@@ -86,7 +86,7 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
 ///
 /// A free joint's linear velocity lives in the body frame, so under a
 /// constant world velocity it obeys `v̇ = −ω × v`: not a force, the frame
-/// turning. [`aba`](crate::aba) reports that term as part of `qdd`, and an
+/// turning. [`aba`](crate::aba::aba) reports that term as part of `qdd`, and an
 /// explicit velocity update `v += dt·qdd` then turns *and* stretches the
 /// vector — `|v|` grows by `(|ω| dt)² / 2` a step, which for a 27 mm wheel
 /// rolling at 2 m/s (74 rad/s, 1 ms steps) is a runaway in half a second.

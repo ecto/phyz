@@ -941,20 +941,21 @@ fn rotate_tangent(model: &Model, v: &DVec, v_next: &DVec, dv: &mut DVec, v_lane:
         let omega = Vec3::new(v[off], v[off + 1], v[off + 2]);
         let d = Vec3::new(dv[off + 3], dv[off + 4], dv[off + 5]);
         let mut out = phyz_math::quat_exp(&(omega * -dt)).rotate(d);
-        if let Some(j) = v_lane {
-            if j >= off && j < off + 3 {
-                let domega = match j - off {
-                    0 => Vec3::new(1.0, 0.0, 0.0),
-                    1 => Vec3::new(0.0, 1.0, 0.0),
-                    _ => Vec3::new(0.0, 0.0, 1.0),
-                };
-                let after = Vec3::new(v_next[off + 3], v_next[off + 4], v_next[off + 5]);
-                let before = phyz_math::quat_exp(&(omega * dt)).rotate(after);
-                let h = 1e-6;
-                let p = phyz_math::quat_exp(&((omega + domega * h) * -dt)).rotate(before);
-                let m = phyz_math::quat_exp(&((omega - domega * h) * -dt)).rotate(before);
-                out += (p - m) * (1.0 / (2.0 * h));
-            }
+        if let Some(j) = v_lane
+            && j >= off
+            && j < off + 3
+        {
+            let domega = match j - off {
+                0 => Vec3::new(1.0, 0.0, 0.0),
+                1 => Vec3::new(0.0, 1.0, 0.0),
+                _ => Vec3::new(0.0, 0.0, 1.0),
+            };
+            let after = Vec3::new(v_next[off + 3], v_next[off + 4], v_next[off + 5]);
+            let before = phyz_math::quat_exp(&(omega * dt)).rotate(after);
+            let h = 1e-6;
+            let p = phyz_math::quat_exp(&((omega + domega * h) * -dt)).rotate(before);
+            let m = phyz_math::quat_exp(&((omega - domega * h) * -dt)).rotate(before);
+            out += (p - m) * (1.0 / (2.0 * h));
         }
         dv[off + 3] = out.x;
         dv[off + 4] = out.y;
