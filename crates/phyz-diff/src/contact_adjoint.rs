@@ -108,7 +108,10 @@ use phyz_contact::{
 };
 use phyz_math::{DVec, Vec3};
 use phyz_model::{Model, State};
-use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
+use phyz_rigid::{
+    aba, forward_kinematics, integrate_configuration, rotate_free_joint_velocities,
+    strip_free_joint_coriolis,
+};
 
 use crate::rollout::FinalStateObjective;
 pub use crate::rollout::N_INERTIA_PARAMS;
@@ -694,7 +697,12 @@ fn forward_step(
             .map(|c| (c, GroundSupport::Material)),
     );
 
-    let qdd = aba(model, state);
+    // Mirrors `Simulator::step_with_contacts` bit for bit: a free joint's
+    // body-frame turn is stripped from `qdd` here and put back, exactly,
+    // after the solve (`phyz_rigid::strip_free_joint_coriolis`).
+    let mut qdd = aba(model, state);
+    let v_before = state.v.clone();
+    strip_free_joint_coriolis(model, v_before.as_slice(), qdd.as_mut_slice());
     let free_qd = &state.v + &(&qdd * dt);
 
     let bare: Vec<Collision> = contacts.iter().map(|(c, _)| c.clone()).collect();
@@ -710,6 +718,7 @@ fn forward_step(
         state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         Some((asm, solution))
     };
+    rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
 
     let v_clone = state.v.clone();
     integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
@@ -848,7 +857,11 @@ fn eval_pieces(
     let (xforms, _) = forward_kinematics(model, &state);
     state.body_xform = xforms;
 
-    let qdd = aba(model, &state);
+    // The same stripped `qdd` the forward step integrates. The turn that
+    // follows the solve (`rotate_free_joint_velocities`) is linear in `v'`
+    // and is applied to each lane's `dv'` by `rotate_tangent` below.
+    let mut qdd = aba(model, &state);
+    strip_free_joint_coriolis(model, state.v.as_slice(), qdd.as_mut_slice());
     let v_free = &state.v + &(&qdd * dt);
 
     if anchors.is_empty() {
@@ -906,6 +919,47 @@ fn eval_pieces(
         residual,
         mt_rel,
         gf,
+    }
+}
+
+/// Tangent of `rotate_free_joint_velocities` at this step.
+///
+/// The forward pass turns each free joint's linear velocity by `R(−ω dt)`
+/// after the solve, with `ω` read from the step's input velocity `v`. So
+/// `dv'' = R(−ω dt)·dv' + (∂R(−ω dt)/∂ω · dω)·v'`, where `v'` is the
+/// pre-turn velocity (recovered from the recorded post-turn `v_next` by the
+/// inverse turn) and `dω` is nonzero only on a `v` lane. The second term is
+/// `O(dt)`, the same order as everything else in the step's Jacobian, and
+/// is taken by central difference of the exact turn.
+fn rotate_tangent(model: &Model, v: &DVec, v_next: &DVec, dv: &mut DVec, v_lane: Option<usize>) {
+    let dt = model.dt;
+    for (jidx, joint) in model.joints.iter().enumerate() {
+        if joint.joint_type != phyz_model::JointType::Free {
+            continue;
+        }
+        let off = model.v_offsets[jidx];
+        let omega = Vec3::new(v[off], v[off + 1], v[off + 2]);
+        let d = Vec3::new(dv[off + 3], dv[off + 4], dv[off + 5]);
+        let mut out = phyz_math::quat_exp(&(omega * -dt)).rotate(d);
+        if let Some(j) = v_lane
+            && j >= off
+            && j < off + 3
+        {
+            let domega = match j - off {
+                0 => Vec3::new(1.0, 0.0, 0.0),
+                1 => Vec3::new(0.0, 1.0, 0.0),
+                _ => Vec3::new(0.0, 0.0, 1.0),
+            };
+            let after = Vec3::new(v_next[off + 3], v_next[off + 4], v_next[off + 5]);
+            let before = phyz_math::quat_exp(&(omega * dt)).rotate(after);
+            let h = 1e-6;
+            let p = phyz_math::quat_exp(&((omega + domega * h) * -dt)).rotate(before);
+            let m = phyz_math::quat_exp(&((omega - domega * h) * -dt)).rotate(before);
+            out += (p - m) * (1.0 / (2.0 * h));
+        }
+        dv[off + 3] = out.x;
+        dv[off + 4] = out.y;
+        dv[off + 5] = out.z;
     }
 }
 
@@ -994,8 +1048,8 @@ pub fn convex_adjoint_gradient(
 
         // Directional derivative of v' from a directional derivative of the
         // smooth pieces, closing the contact channel with the IFT.
-        let dv_next = |dp: &Pieces| -> DVec {
-            match (&rec.contact, &fps) {
+        let dv_next = |dp: &Pieces, v_lane: Option<usize>| -> DVec {
+            let mut dvn = match (&rec.contact, &fps) {
                 (Some((asm, _)), Some(s)) => {
                     // df* from the exact map linearization; dv' = dv_free +
                     // d(M⁻¹Jᵀ f*)|_f + M⁻¹Jᵀ df*.
@@ -1003,7 +1057,10 @@ pub fn convex_adjoint_gradient(
                     &(&dp.v_free + &dp.gf) + &asm.velocity_delta(&df)
                 }
                 _ => dp.v_free.clone(),
-            }
+            };
+            // ...then the free joints' turn into the end-of-step frame.
+            rotate_tangent(model, &rec.v, &rec.v_next, &mut dvn, v_lane);
+            dvn
         };
 
         let eval = |m: &Model, mat: &ContactMaterial, q: &DVec, v: &DVec, u: &DVec| -> Pieces {
@@ -1109,7 +1166,7 @@ pub fn convex_adjoint_gradient(
                 &rec.u,
                 h,
             );
-            let dvn = dv_next(&dp);
+            let dvn = dv_next(&dp, None);
             // Direct Φ_q block plus the v'-mediated part.
             let dqn_direct = &(&phi(model, &qp, &rec.v_next) - &phi(model, &qm, &rec.v_next))
                 * (1.0 / (2.0 * h));
@@ -1137,7 +1194,7 @@ pub fn convex_adjoint_gradient(
                 &rec.u,
                 h,
             );
-            let dvn = dv_next(&dp);
+            let dvn = dv_next(&dp, Some(j));
             let dqn = dphi_dvnext(&dvn);
             new_lam_v[j] = contract(&dqn, &dvn);
         }
@@ -1162,7 +1219,7 @@ pub fn convex_adjoint_gradient(
                 &um,
                 h,
             );
-            let dvn = dv_next(&dp);
+            let dvn = dv_next(&dp, None);
             let dqn = dphi_dvnext(&dvn);
             d_ctrl[t][j] = contract(&dqn, &dvn);
         }
@@ -1190,7 +1247,7 @@ pub fn convex_adjoint_gradient(
                     &rec.u,
                     h,
                 );
-                let dvn = dv_next(&dp);
+                let dvn = dv_next(&dp, None);
                 let dqn = dphi_dvnext(&dvn);
                 d_inertia[b][k] += contract(&dqn, &dvn);
             }
@@ -1213,7 +1270,7 @@ pub fn convex_adjoint_gradient(
             let dp = lane(
                 model, model, &matp, &matm, &rec.q, &rec.q, &rec.v, &rec.v, &rec.u, &rec.u, h,
             );
-            let dvn = dv_next(&dp);
+            let dvn = dv_next(&dp, None);
             let dqn = dphi_dvnext(&dvn);
             d_restitution += contract(&dqn, &dvn);
         }

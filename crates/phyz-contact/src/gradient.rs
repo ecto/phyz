@@ -720,9 +720,11 @@ pub fn depth_sensitivity(
         let f = solution.impulses[c];
 
         // Channel 1: the stabilization bias, which exists only while the
-        // surfaces actually overlap. Product rule over `d * violation`.
+        // surfaces actually overlap. Product rule over `d * violation`, scaled
+        // by the resting share `1 - impact` the bias was built with.
         let dbias = if contact_row.depth > 0.0 && dt > 0.0 {
-            erp / dt * (contact_row.impedance + contact_row.dimpedance_ddepth * contact_row.depth)
+            (1.0 - contact_row.impact) * erp / dt
+                * (contact_row.impedance + contact_row.dimpedance_ddepth * contact_row.depth)
         } else {
             0.0
         };
