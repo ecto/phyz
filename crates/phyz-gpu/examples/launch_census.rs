@@ -1,9 +1,14 @@
 //! How many host-issued calls a physics step and a control period cost.
 //!
 //! ```text
-//! cargo run --release -p phyz-gpu --features cuda      --example launch_census -- [worlds..]
-//! cargo run --release -p phyz-gpu --features cuda-host --example launch_census -- [worlds..]
+//! cargo run --release -p phyz-gpu --features cuda-host      --example launch_census -- [worlds..]
+//! cargo run --release -p phyz-gpu --features cuda,cuda-host --example launch_census -- [worlds..]
 //! ```
+//!
+//! The example is gated on `cuda-host` because that is the backend it can
+//! always fall back to; enable `cuda` alongside it on a machine with a device
+//! and it runs on the GPU instead, which is the only way to get the graph
+//! rows.
 //!
 //! The device collector this crate feeds is launch-bound: 16x the worlds
 //! costs 1.6x the time, and the host's issue time dominates. The census is

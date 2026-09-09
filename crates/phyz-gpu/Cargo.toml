@@ -68,9 +68,11 @@ required-features = ["cuda-host"]
 name = "cuda_graph_bench"
 required-features = ["cuda"]
 
-# The launch census. Runs on either backend: the counts are what `BatchSim`
-# issues, which is backend-independent, so the host mirror gives the same
-# table minus the graph rows it cannot capture.
+# The launch census. Gated on the host mirror because that is the backend it
+# can always fall back to; add `cuda` alongside (`--features cuda,cuda-host`)
+# on a machine with a device and it runs there instead. The counts are what
+# `BatchSim` issues, which is backend-independent, so the host mirror gives
+# the same table minus the graph rows it cannot capture.
 [[example]]
 name = "launch_census"
 required-features = ["cuda-host"]
