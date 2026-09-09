@@ -40,6 +40,23 @@ every revolute DOF, `control_every = 20`. Kernel launches:
 | `Fission` | 35 | 700 | 700 |
 | `Unfused` | 35 | 700 | 700 |
 
+The same table with capture on, taken on mew's 3090 (counts are immune to GPU
+contention, so this probe is valid while the walk arms hold the device).
+Kernel launches collapse to graph replays:
+
+| issue mode | one `step()` | period as 20x `step()` | period as `step_many(20)` |
+|---|---|---|---|
+| `Fused` | 1 replay | **20 replays** | **1 replay** |
+| `Fission` | 1 replay | **20 replays** | **1 replay** |
+| `Unfused` | 1 replay | **20 replays** | **1 replay** |
+
+Two things to read off it. Capture is enormous where the step is not already
+fused — 700 host calls per period become 1 — and that is what #80 bought. But
+**`period as 20x step()` is 20 host calls in every mode, captured or not**:
+capture collapses the launches *within* a step and can never collapse across
+`step()` calls, because each one is a separate host call by construction. The
+period-as-one-call number is only reachable through `step_many`.
+
 `3 + 2 * sweeps = 35` is the unfused sequence: PD, a leading ABA, sixteen
 [contact, ABA] pairs, integrate. A `readback_states()` costs 2 downloads and
 **1 sync** on top, per readback.
@@ -54,7 +71,9 @@ never adds a launch, so no amount of extra width amortises the host bill.
 Read the fused row again. In the default configuration a whole control period
 is **one** launch if the caller asks for the period, and **twenty** if it asks
 for twenty steps — same arithmetic, same bits, 20x the host bill. Capture is
-not what separates those two numbers; `step_many` is.
+not what separates those two numbers; `step_many` is — and the captured table
+above shows capture cannot close the gap, since twenty `step()`s are twenty
+`cudaGraphLaunch`es.
 
 And the collector asks for twenty steps. ipse's `GpuCollector::step_period`
 loops `for _ in 0..n { sim.step() }` unless `RL_STEP_MANY=1` is set, and it is
@@ -97,13 +116,12 @@ lane brief expected a host-side active set to be the obstacle and it is not.
 
 ## Timing
 
-Not taken. mew's 3090 was running four walk arms for the whole session, and a
+Not taken. The counts above were, including the captured rows — a count is
+exact under contention, a duration is not. mew's 3090 was running four walk arms for the whole session, and a
 timing run against a contended GPU measures the other process's kernels. A
 detached runner (`~/lanes/run-step-graph-capture.sh` on mew) waits on
 `/tmp/wsarms/pids` and then takes the census and `cuda_graph_bench` at
-512/2048/4096/16384 worlds into `/tmp/phyzgraph-gpu/`. The graph rows of the
-census table — the ones that need a device that can capture — are blank until
-it runs.
+512/2048/4096/16384 worlds into `/tmp/phyzgraph-gpu/`. Every remaining blank is a duration.
 
 ## Rows
 
