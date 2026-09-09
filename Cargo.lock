@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-collision",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-bench"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "phyz",
@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-camera"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "phyz-collision",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-collision"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-compile"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "naga 23.1.0",
@@ -3141,7 +3141,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-contact"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-collision",
  "phyz-math",
@@ -3151,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-coupling"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-em",
@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-diff"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "phyz-collision",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-dream"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-em"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3203,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-env"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-gpu",
  "phyz-math",
@@ -3216,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-examples"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz",
  "phyz-collision",
@@ -3245,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-format"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-mjcf",
@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-gpu"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "bytemuck",
@@ -3280,14 +3280,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-gravity"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-guardian"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3296,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-home"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3309,14 +3309,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-lbm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-loop"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3326,7 +3326,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-math"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libm",
  "proptest",
@@ -3336,7 +3336,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-md"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3348,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-mjcf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3359,14 +3359,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-model"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-particle"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3374,7 +3374,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-prob"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3384,7 +3384,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-qft"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3393,7 +3393,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-quantum"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "num-complex",
@@ -3413,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-real2sim"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-diff",
  "phyz-format",
@@ -3426,7 +3426,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-regge"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-rigid"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3444,7 +3444,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-urdf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3455,7 +3455,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-validate"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-em",
  "phyz-gravity",
@@ -3468,14 +3468,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-vbd"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-wasm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3494,7 +3494,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-world"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-collision",
  "phyz-math",
@@ -3507,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-xpbd"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]

@@ -111,7 +111,10 @@ use phyz_contact::{
 };
 use phyz_math::{DVec, Vec3};
 use phyz_model::{Model, State};
-use phyz_rigid::{aba, forward_kinematics, integrate_configuration};
+use phyz_rigid::{
+    aba, forward_kinematics, integrate_configuration, rotate_free_joint_velocities,
+    strip_free_joint_coriolis,
+};
 
 /// Does the frozen anchor reproduce the narrow phase's own geometry
 /// derivative? A child module, because the answer is measured against
@@ -447,7 +450,36 @@ enum Anchor {
         /// the direction `body_i` must move to separate, matching
         /// `Collision::contact_normal`.
         normal_local: Vec3,
+        /// For a curved body (a sphere) the surface point is not a material
+        /// point: it is the centre displaced by the radius along the *live*
+        /// normal, exactly as [`Anchor::Ground`]'s `world_offset` treats a
+        /// ball on the plane. Freezing a sphere's surface point in its own
+        /// frame instead makes the frozen point roll around with the ball, and
+        /// a resting marble on a fixed plate reported `dJ/dx₀ = 102` where
+        /// translation invariance says `1`. `Some(r)` marks that body as a
+        /// sphere of radius `r` whose `point_*` is its centre.
+        radius_i: Option<f64>,
+        radius_j: Option<f64>,
     },
+}
+
+/// The body's collision shape as a single sphere, if that is what it is.
+fn sphere_radius(model: &Model, body: usize) -> Option<(f64, Vec3)> {
+    use phyz_model::Geometry;
+    let b = model.bodies.get(body)?;
+    if b.collisions.is_empty() {
+        match b.geometry {
+            Some(Geometry::Sphere { radius }) => Some((radius, Vec3::zeros())),
+            _ => None,
+        }
+    } else if b.collisions.len() == 1 {
+        match b.collisions[0].geometry {
+            Geometry::Sphere { radius } => Some((radius, b.collisions[0].origin.pos)),
+            _ => None,
+        }
+    } else {
+        None
+    }
 }
 
 impl Anchor {
@@ -464,7 +496,13 @@ impl Anchor {
     /// the two surface points straddle the midsurface by `depth/2` along the
     /// normal, `body_i`'s on the far side since `+normal` is the direction `i`
     /// must move to separate.
-    fn of(c: &Collision, support_kind: GroundSupport, state: &State, ground_height: f64) -> Self {
+    fn of(
+        c: &Collision,
+        support_kind: GroundSupport,
+        state: &State,
+        ground_height: f64,
+        model: &Model,
+    ) -> Self {
         // `xform.rot` is world→body, so body coordinates of a world point are
         // `R (p − pos)`, and `Rᵀ` carries a body direction back to world.
         if c.is_world_j() {
@@ -507,15 +545,25 @@ impl Anchor {
         let surface_j = c.contact_point + n * half;
         let xi = &state.body_xform[c.body_i];
         let xj = &state.body_xform[c.body_j];
-        let normal_frame = Self::reference_body(c.body_i, c.body_j, n, state);
+        let normal_frame = Self::reference_body(c.body_i, c.body_j, n, state, model);
         let owner = &state.body_xform[normal_frame];
+        // A sphere's anchor is its centre; the surface point is re-derived from
+        // the live normal at evaluation time.
+        let sph_i = sphere_radius(model, c.body_i);
+        let sph_j = sphere_radius(model, c.body_j);
         Self::Pair {
             body_i: c.body_i,
             body_j: c.body_j,
-            point_i: xi.rot * (surface_i - xi.pos),
-            point_j: xj.rot * (surface_j - xj.pos),
+            point_i: sph_i
+                .map(|(_, centre)| centre)
+                .unwrap_or(xi.rot * (surface_i - xi.pos)),
+            point_j: sph_j
+                .map(|(_, centre)| centre)
+                .unwrap_or(xj.rot * (surface_j - xj.pos)),
             normal_frame,
             normal_local: owner.rot * n,
+            radius_i: sph_i.map(|(r, _)| r),
+            radius_j: sph_j.map(|(r, _)| r),
         }
     }
 
@@ -545,7 +593,23 @@ impl Anchor {
     /// and so is the choice. That is an approximation of the same order as
     /// freezing the feature pair at all (§4.4), not an additional one: either
     /// body's frame transports a centre-determined normal about equally well.
-    fn reference_body(body_i: usize, body_j: usize, n_world: Vec3, state: &State) -> usize {
+    fn reference_body(
+        body_i: usize,
+        body_j: usize,
+        n_world: Vec3,
+        state: &State,
+        model: &Model,
+    ) -> usize {
+        // A sphere has no face and cannot own a normal; against a sphere the
+        // normal is the other body's. Deciding this by axis alignment instead
+        // ties at the identity (`+ẑ` is an axis of *every* upright frame), and
+        // the tie went to the ball: its frozen normal then rolled with it, and
+        // a marble at rest on a plate reported `dJ/dx₀ = 102` instead of `1`.
+        match (sphere_radius(model, body_i), sphere_radius(model, body_j)) {
+            (Some(_), None) => return body_j,
+            (None, Some(_)) => return body_i,
+            _ => {}
+        }
         // How nearly a direction is a coordinate axis of a frame: 1 exactly on
         // an axis, 1/sqrt(3) at the worst-case body diagonal.
         let axis_alignment = |body: usize| -> f64 {
@@ -610,16 +674,26 @@ impl Anchor {
                 point_j,
                 normal_frame,
                 normal_local,
+                radius_i,
+                radius_j,
             } => {
                 let xi = &state.body_xform[body_i];
                 let xj = &state.body_xform[body_j];
-                let pi = xi.pos + xi.rot.transpose() * point_i;
-                let pj = xj.pos + xj.rot.transpose() * point_j;
                 // The frozen body-frame normal stays unit under a rotation, so
                 // no renormalization is needed and none is done: a `normalize`
                 // here would divide by a quantity that is identically one, and
                 // its derivative would be a spurious zero-magnitude channel.
                 let n = state.body_xform[normal_frame].rot.transpose() * normal_local;
+                // `i` separates along `+n`, so `i` sits on the `+n` side and
+                // its surface point faces `−n`; the mirror image for `j`.
+                let mut pi = xi.pos + xi.rot.transpose() * point_i;
+                let mut pj = xj.pos + xj.rot.transpose() * point_j;
+                if let Some(r) = radius_i {
+                    pi -= n * r;
+                }
+                if let Some(r) = radius_j {
+                    pj += n * r;
+                }
                 // Positive = overlapping, consistent with the ground branch:
                 // the surfaces have swapped sides along `n` by this much.
                 let depth = (pj - pi).dot(n);
@@ -704,7 +778,12 @@ fn forward_step(
             .map(|c| (c, GroundSupport::Material)),
     );
 
-    let qdd = aba(model, state);
+    // Mirrors `Simulator::step_with_contacts` bit for bit: a free joint's
+    // body-frame turn is stripped from `qdd` here and put back, exactly,
+    // after the solve (`phyz_rigid::strip_free_joint_coriolis`).
+    let mut qdd = aba(model, state);
+    let v_before = state.v.clone();
+    strip_free_joint_coriolis(model, v_before.as_slice(), qdd.as_mut_slice());
     let free_qd = &state.v + &(&qdd * dt);
 
     let bare: Vec<Collision> = contacts.iter().map(|(c, _)| c.clone()).collect();
@@ -723,6 +802,7 @@ fn forward_step(
         // started in.
         Some((asm, solution, seed))
     };
+    rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
 
     let v_clone = state.v.clone();
     integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
@@ -774,7 +854,7 @@ fn forward_rollout(
         let (pre_xf, _) = forward_kinematics(model, &pre);
         pre.body_xform = pre_xf;
         for (c, support) in &contacts {
-            anchors.push(Anchor::of(c, *support, &pre, rollout.ground_height));
+            anchors.push(Anchor::of(c, *support, &pre, rollout.ground_height, model));
         }
 
         records.push(StepRecord {
@@ -896,7 +976,11 @@ fn eval_pieces(
     let (xforms, _) = forward_kinematics(model, &state);
     state.body_xform = xforms;
 
-    let qdd = aba(model, &state);
+    // The same stripped `qdd` the forward step integrates. The turn that
+    // follows the solve (`rotate_free_joint_velocities`) is linear in `v'`
+    // and is pulled back onto the step covector by `rotate_covector` below.
+    let mut qdd = aba(model, &state);
+    strip_free_joint_coriolis(model, state.v.as_slice(), qdd.as_mut_slice());
     let v_free = &state.v + &(&qdd * dt);
 
     if anchors.is_empty() {
@@ -975,6 +1059,58 @@ fn eval_pieces(
         cvec,
         gf,
     }
+}
+
+/// The free joints' end-of-step turn, pulled back onto the step's covector.
+///
+/// The forward pass turns each free joint's linear velocity by `R(−ω dt)`
+/// after the solve, with `ω` read from the step's input velocity `v`, so
+/// `dv'' = R·dv' + (∂R/∂ω · dω)·v'` — and `dω` is nonzero only on a `v` lane.
+///
+/// Pull mode dots one covector `w_v` against `dv''`, the velocity *after* the
+/// free joints' end-of-step turn, while every lane produces `dv'`, the
+/// velocity before it. Since `dv'' = R·dv' + E_j v'`,
+///
+/// ```text
+/// w · dv'' = (Rᵀ w) · dv' + w · E_j v',
+/// ```
+///
+/// so the turn costs one rotation of the covector — done once per step, here,
+/// rather than one rotation of `dv'` in each of the 123 lanes — plus a
+/// `v`-lane-only scalar that does not depend on the lane's `dv'` at all. That
+/// second term is returned per `v` lane and added by the caller, and is taken
+/// by central difference of the exact turn.
+fn rotate_covector(model: &Model, v: &DVec, v_next: &DVec, w: &mut DVec) -> Vec<f64> {
+    let dt = model.dt;
+    let mut extra = vec![0.0; w.len()];
+    for (jidx, joint) in model.joints.iter().enumerate() {
+        if joint.joint_type != phyz_model::JointType::Free {
+            continue;
+        }
+        let off = model.v_offsets[jidx];
+        let omega = Vec3::new(v[off], v[off + 1], v[off + 2]);
+        let wl = Vec3::new(w[off + 3], w[off + 4], w[off + 5]);
+        // The pre-turn velocity, recovered from the recorded post-turn one.
+        let after = Vec3::new(v_next[off + 3], v_next[off + 4], v_next[off + 5]);
+        let before = phyz_math::quat_exp(&(omega * dt)).rotate(after);
+        let h = 1e-6;
+        for k in 0..3 {
+            let domega = match k {
+                0 => Vec3::new(1.0, 0.0, 0.0),
+                1 => Vec3::new(0.0, 1.0, 0.0),
+                _ => Vec3::new(0.0, 0.0, 1.0),
+            };
+            let pp = phyz_math::quat_exp(&((omega + domega * h) * -dt)).rotate(before);
+            let mm = phyz_math::quat_exp(&((omega - domega * h) * -dt)).rotate(before);
+            extra[off + k] = wl.dot((pp - mm) * (1.0 / (2.0 * h)));
+        }
+        // The turn is `quat_exp(−ω dt)`; a rotation's transpose is its inverse.
+        let out = phyz_math::quat_exp(&(omega * dt)).rotate(wl);
+        w[off + 3] = out.x;
+        w[off + 4] = out.y;
+        w[off + 5] = out.z;
+    }
+    extra
 }
 
 /// `q' = Φ(q, v')` — the shared configuration update.
@@ -1096,15 +1232,27 @@ impl Anchor {
                 point_j,
                 normal_frame,
                 normal_local,
+                radius_i,
+                radius_j,
             } => {
                 let xi = &xforms[body_i];
                 let xj = &xforms[body_j];
-                let pi = xi.pos + xi.rot.transpose().mul_vec(lift_v3(point_i));
-                let pj = xj.pos + xj.rot.transpose().mul_vec(lift_v3(point_j));
+                let mut pi = xi.pos + xi.rot.transpose().mul_vec(lift_v3(point_i));
+                let mut pj = xj.pos + xj.rot.transpose().mul_vec(lift_v3(point_j));
                 let n = xforms[normal_frame]
                     .rot
                     .transpose()
                     .mul_vec(lift_v3(normal_local));
+                // A sphere's anchor is its centre; its surface point is the
+                // centre displaced by the radius along the *live* normal, so
+                // the generic mirror re-derives it here exactly as the f64 arm
+                // does rather than freezing a point that rolls with the ball.
+                if let Some(r) = radius_i {
+                    pi -= n * T::from_f64(r);
+                }
+                if let Some(r) = radius_j {
+                    pj += n * T::from_f64(r);
+                }
                 let depth = (pj - pi).dot(n);
                 let vertex = if normal_frame == body_i { pj } else { pi };
                 let sign = if normal_frame == body_i { -1.0 } else { 1.0 };
@@ -1148,7 +1296,23 @@ fn eval_pieces_gen<T: Scalar>(
     let dt = model.dt;
     let nv = model.nv;
     let (xforms, _) = fk_gen(model, q, v);
-    let qdd = aba_gen(model, inertias, q, v, u, None);
+    let mut qdd = aba_gen(model, inertias, q, v, u, None);
+    // The same stripped `qdd` the forward step integrates; generic mirror of
+    // `phyz_rigid::strip_free_joint_coriolis`. Without it this path builds
+    // `v_free` from an acceleration that still carries the frame-turn term,
+    // and the whole tape differentiates a step the engine does not take.
+    for (jidx, joint) in model.joints.iter().enumerate() {
+        if joint.joint_type != phyz_model::JointType::Free {
+            continue;
+        }
+        let off = model.v_offsets[jidx];
+        let omega = tang::Vec3::new(v[off], v[off + 1], v[off + 2]);
+        let lin = tang::Vec3::new(v[off + 3], v[off + 4], v[off + 5]);
+        let c = omega.cross(lin);
+        qdd[off + 3] += c.x;
+        qdd[off + 4] += c.y;
+        qdd[off + 5] += c.z;
+    }
     let v_free: Vec<T> = v
         .iter()
         .zip(&qdd)
@@ -1266,19 +1430,36 @@ fn eval_pieces_gen<T: Scalar>(
             body_e(c.body_i).max(body_e(c.body_j))
         };
 
-        let approach = (-free_velocity[3 * ci]).max(T::ZERO);
+        // The restitution target and the impact ramp read the normal velocity
+        // at the *start* of the step, before gravity's `g dt` kick — see
+        // `phyz_contact::assemble`. Reading it off `v_free` instead hands the
+        // rebound a `g dt` it never had.
+        let mut normal_pre = T::ZERO;
+        for col in 0..nv {
+            normal_pre += jacobians[ci][col] * v[col];
+        }
+        let approach = (-normal_pre).max(T::ZERO);
         let e = effective_restitution_gen(e_pair, approach, config.restitution_threshold);
-        free_velocity[3 * ci] *= T::ONE + e;
+        free_velocity[3 * ci] -= e * approach;
 
-        // Mirror of `ContactRow::from_material`.
+        // Mirror of `ContactRow::from_material` + `with_impact`. An impacting
+        // row is rigid: its bias is scaled by the resting share `1 - impact`
+        // and its impedance is driven towards `IMPACT_IMPEDANCE`. A settled
+        // row (`impact = 0`) is exactly the soft contact it always was.
         let violation = c.depth.max(T::ZERO);
         let d = impedance_at_gen(&mat_combined, c.depth);
+        let impact = effective_restitution_gen(T::ONE, approach, config.restitution_threshold)
+            .clamp(T::ZERO, T::ONE);
         bias_rows[ci] = if dt > 0.0 {
-            d * T::from_f64(mat_combined.solref.error_reduction(dt) / dt) * violation
+            (T::ONE - impact)
+                * d
+                * T::from_f64(mat_combined.solref.error_reduction(dt) / dt)
+                * violation
         } else {
             T::ZERO
         };
-        impedance_rows[ci] = d;
+        impedance_rows[ci] =
+            d + impact * (T::from_f64(phyz_contact::IMPACT_IMPEDANCE) - d).max(T::ZERO);
     }
 
     // Mirror of `regularization_diag`.
@@ -1649,6 +1830,12 @@ pub fn convex_adjoint_gradient(
             }
             (w, None)
         };
+        // `w_v` is a covector on the post-turn `dv''`; the lanes below produce
+        // the pre-turn `dv'`. Carry it across the turn once, and keep the
+        // `v`-lane-only remainder for `new_lam_v`.
+        let mut w_v = w_v;
+        let rot_extra = rotate_covector(model, &rec.v, &rec.v_next, &mut w_v);
+        let w_v = w_v;
 
         // `velocity_deltaᵀ w_v` per contact: `M⁻¹` is symmetric, so the
         // transpose is `(J (M⁻¹ w_v))_c`, read straight off the assembly.
@@ -1811,7 +1998,7 @@ pub fn convex_adjoint_gradient(
                 new_lam_q[i] = pq[i] + g.of(qv[i]);
             }
             for j in 0..nv {
-                new_lam_v[j] = g.of(vv[j]);
+                new_lam_v[j] = g.of(vv[j]) + rot_extra[j];
                 d_ctrl[t][j] = g.of(uv[j]);
             }
             for (db, pv) in d_inertia.iter_mut().zip(&param_vars) {
@@ -1867,7 +2054,7 @@ pub fn convex_adjoint_gradient(
                     &rec.u,
                     h,
                 );
-                new_lam_v[j] = lane_contract(&dp, None);
+                new_lam_v[j] = lane_contract(&dp, None) + rot_extra[j];
             }
 
             // --- control lanes ---

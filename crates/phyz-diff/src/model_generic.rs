@@ -883,11 +883,14 @@ pub(crate) fn integrate_configuration_gen<T: Scalar>(
                 let omega = Vec3::new(v[v_off], v[v_off + 1], v[v_off + 2]);
                 let lin = Vec3::new(v[v_off + 3], v[v_off + 4], v[v_off + 5]);
                 let current = quat_exp_gen(Vec3::new(q[q_off], q[q_off + 1], q[q_off + 2]));
-                let world_lin = current.rotate(lin);
+                let next = current.mul(&quat_exp_gen(omega * dt)).normalize();
+                // `next`, not `current`: the body-frame linear velocity is the
+                // step's updated one, expressed in the frame it will have at
+                // the end of the step. See `phyz_rigid::integrate_configuration`.
+                let world_lin = next.rotate(lin);
                 out[q_off + 3] = q[q_off + 3] + dt * world_lin.x;
                 out[q_off + 4] = q[q_off + 4] + dt * world_lin.y;
                 out[q_off + 5] = q[q_off + 5] + dt * world_lin.z;
-                let next = current.mul(&quat_exp_gen(omega * dt)).normalize();
                 let log = quat_log_gen(&next);
                 out[q_off] = log.x;
                 out[q_off + 1] = log.y;

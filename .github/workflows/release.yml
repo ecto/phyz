@@ -40,8 +40,9 @@ jobs:
             exit 1
           fi
 
-      # Dependency order: math -> model -> rigid -> collision -> contact,
-      # diff -> phyz. `cargo publish` rewrites the path entries of
+      # Dependency order: math -> model -> collision -> rigid -> contact ->
+      # diff -> world -> camera -> phyz. kosm consumes every one of these, so
+      # every one has to ship. `cargo publish` rewrites the path entries of
       # [workspace.dependencies] to plain registry deps on upload, so each
       # crate resolves its phyz-* deps from the versions published just above.
       - name: Publish in dependency order
@@ -49,8 +50,8 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in phyz-math phyz-model phyz-rigid phyz-collision \
-                       phyz-contact phyz-diff phyz; do
+          for crate in phyz-math phyz-model phyz-collision phyz-rigid phyz-urdf phyz-mjcf \
+                       phyz-contact phyz-diff phyz-world phyz-camera phyz; do
             echo "::group::publish $crate"
             cargo publish -p "$crate"
             # Give the index a moment to serve the new version to the next crate.

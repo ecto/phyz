@@ -2,10 +2,14 @@
 name = "phyz-env"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Batched reinforcement-learning environments for phyz (Gymnasium-style vector API)"
+keywords = ["reinforcement", "gymnasium", "physics", "simulation", "robotics"]
+categories = ["simulation", "science::robotics", "science"]
+readme = "README.md"
 
 [features]
 default = []

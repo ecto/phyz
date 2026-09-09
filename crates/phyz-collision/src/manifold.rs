@@ -295,13 +295,22 @@ pub fn contact_manifold_within(
             }
             clipped.unwrap_or_else(|| {
                 vec![single_point(
-                    geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
+                    geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, None, None, &normal, depth,
                 )]
             })
         }
         // At least one surface is curved: one point is the whole story.
-        _ => vec![single_point(
-            geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, &normal, depth,
+        (face_a, face_b) => vec![single_point(
+            geom_a,
+            geom_b,
+            pos_a,
+            rot_a,
+            pos_b,
+            rot_b,
+            face_a.as_ref(),
+            face_b.as_ref(),
+            &normal,
+            depth,
         )],
     };
 
@@ -318,6 +327,19 @@ pub fn contact_manifold_within(
 ///
 /// This replaces the old `(pos_i + pos_j) * 0.5`, the midpoint of the two body
 /// *centres*, which is generally inside both bodies and on neither surface.
+///
+/// A flat face needs one more step. Its support point along `n` is *any*
+/// vertex of that face — the whole face is equally deep — so a box under a
+/// sphere would report a witness at a box corner, and the midpoint would land
+/// centimetres to the side of where the sphere actually touches. The solver
+/// then applies the normal force at that off-centre point, which on a marble
+/// is almost pure torque: the sphere spins up, the contact-point velocity
+/// satisfies the non-penetration row through rotation alone, and the sphere
+/// keeps translating straight through the plate. (That is the newt marble
+/// spike: a 10 mm marble falling 7 m in 1.2 s through a fixed 10 mm plate.)
+/// So when one side has a flat face (`face_*`), its witness is the *other*
+/// side's witness projected onto that face's plane — the point on the face
+/// directly across from the curved surface.
 #[allow(clippy::too_many_arguments)]
 fn single_point(
     geom_a: &Geometry,
@@ -326,11 +348,20 @@ fn single_point(
     rot_a: &Mat3,
     pos_b: &Vec3,
     rot_b: &Mat3,
+    face_a: Option<&Face>,
+    face_b: Option<&Face>,
     normal: &Vec3,
     depth: f64,
 ) -> ManifoldPoint {
-    let wa = witness(geom_a, normal, pos_a, rot_a);
-    let wb = witness(geom_b, &(-*normal), pos_b, rot_b);
+    let mut wa = witness(geom_a, normal, pos_a, rot_a);
+    let mut wb = witness(geom_b, &(-*normal), pos_b, rot_b);
+    // A flat face's witness is the curved side's witness projected onto it,
+    // not that face's own support point.
+    match (face_a, face_b) {
+        (Some(fa), None) => wa = project_onto_face(&wb, fa),
+        (None, Some(fb)) => wb = project_onto_face(&wa, fb),
+        _ => {}
+    }
     ManifoldPoint {
         position: (wa + wb) * 0.5,
         depth,
@@ -382,6 +413,11 @@ fn box_support_centroid(half_extents: &Vec3, pos: &Vec3, rot: &Mat3, dir: &Vec3)
         };
     }
     pos + *rot * Vec3::new(local[0], local[1], local[2])
+}
+
+/// `p` projected along the face normal onto the face's plane.
+fn project_onto_face(p: &Vec3, face: &Face) -> Vec3 {
+    p - face.normal * (p - face.point).dot(face.normal)
 }
 
 /// A planar face of a shape, in world coordinates.

@@ -3,6 +3,7 @@ name = "phyz-home"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+# the phyz.dev site (Trunk/wasm bundle), not a library crate
 publish = false
 
 [lib]

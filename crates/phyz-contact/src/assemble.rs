@@ -122,25 +122,39 @@ pub fn assemble(
         }
 
         let material = material_for(materials, c.body_i, c.body_j);
-        let approach = (-free_velocity[3 * ci]).max(0.0);
+        // The approach speed restitution acts on is the normal velocity at the
+        // *start* of the step, before gravity's `g dt` has been added to it.
+        // The free velocity already carries that kick, and Newton's law
+        // applied to it hands the rebound `g dt` it never had: with `e = 1`
+        // a ball gains `m g dt |v|` per bounce and climbs without bound, and
+        // with `e < 1` the effective coefficient reads `g dt / |v|` high.
+        // Soft contact used to hide this under its own 5 % loss per bounce.
+        // (The impulse is still solved against the free velocity; only the
+        // restitution target and the impact ramp read the pre-kick speed.)
+        let mut normal_pre = 0.0;
+        for col in 0..nv {
+            normal_pre += jacobians[ci][(0, col)] * state.v[col];
+        }
+        let approach = (-normal_pre).max(0.0);
         let e = ContactProblem::effective_restitution(
             material.restitution,
             approach,
             config.restitution_threshold,
         );
         // Target normal velocity is `+e * approach` instead of 0.
-        free_velocity[3 * ci] *= 1.0 + e;
+        free_velocity[3 * ci] -= e * approach;
 
         // `from_material` applies the margin ramp itself (and records the
         // impedance's depth derivative alongside it, which the gradient needs),
         // so a separated-but-detected contact comes out with a tapering
-        // impedance rather than the full `dmin`.
-        rows.push(ContactRow::from_material(
-            &material,
-            c.penetration_depth,
-            dt,
-            e,
-        ));
+        // impedance rather than the full `dmin`. An *impacting* contact is
+        // then made rigid on the restitution ramp's own smoothstep, so the
+        // soft resting-contact model does not eat the bounce; see
+        // [`ContactRow::impact`].
+        let impact = ContactProblem::impact_weight(approach, config.restitution_threshold);
+        rows.push(
+            ContactRow::from_material(&material, c.penetration_depth, dt, e).with_impact(impact),
+        );
     }
 
     ContactAssembly {

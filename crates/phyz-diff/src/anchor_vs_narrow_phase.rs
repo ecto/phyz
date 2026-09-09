@@ -286,7 +286,7 @@ fn scene(q: &DVec, model: &Model, margin: f64, want: usize) -> (Vec<Collision>, 
         .iter()
         // Body-body contacts: the ground-support kind is unread on this
         // branch, and `Material` is what detection reports for them.
-        .map(|c| Anchor::of(c, GroundSupport::Material, &nominal, 0.0))
+        .map(|c| Anchor::of(c, GroundSupport::Material, &nominal, 0.0, model))
         .collect();
     (contacts, anchors)
 }

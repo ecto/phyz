@@ -373,7 +373,38 @@ pub struct ContactRow {
     /// Zero on a hand-built row, which is the right default: a row whose
     /// impedance was pinned by hand does not vary with depth.
     pub dimpedance_ddepth: f64,
+    /// How much of an impact this contact is, in `[0, 1]`: the restitution
+    /// ramp's `smoothstep` of the approach speed, on its own.
+    ///
+    /// Soft contact is a resting-contact model. Its impedance `d` lets a
+    /// fraction `1 - d` of the approach velocity through each step, its
+    /// margin band tapers `d` towards zero over the last millimetre, and its
+    /// stabilization bias repays penetration with a small separating push.
+    /// All three are right for a foot bearing weight and wrong for a ball
+    /// arriving at five metres a second: the target `-e * v_n` is delivered
+    /// scaled by `d` (0.95 on the penetrating side, as low as you like inside
+    /// the margin, so an impact that happens to be detected 0.5 mm above the
+    /// floor loses most of its bounce), and the bias adds `erp` to the
+    /// effective coefficient of restitution on top. Measured, phyz delivered
+    /// 77 % of nominal `e` on a hard impact and swallowed a 3.5 m/s one whole.
+    ///
+    /// So an impacting row is rigid — to a part in a thousand,
+    /// [`IMPACT_IMPEDANCE`], not exactly: a box landing flat has four
+    /// impacting corners and a rank-deficient Delassus block, and with the
+    /// regularizer down at the config floor that solve amplifies roundoff by
+    /// a million and the determinism calibration in `phyz/tests/determinism.rs`
+    /// stops holding. At `0.999` the rebound is short by a tenth of a percent
+    /// of `1 + e` and the manifold stays conditioned — and its bias is zero:
+    /// the rebound itself clears the penetration. This weight blends between
+    /// the two on the same `smoothstep` as
+    /// [`ContactProblem::effective_restitution`], so a settled body (`0`) is
+    /// exactly the contact it always was and the transition is `C^1` in the
+    /// approach speed. `0` on a hand-built row.
+    pub impact: f64,
 }
+
+/// The impedance an impacting row is driven to; see [`ContactRow::impact`].
+pub const IMPACT_IMPEDANCE: f64 = 0.999;
 
 impl ContactRow {
     /// Build a row from a (already pair-combined) material.
@@ -416,7 +447,24 @@ impl ContactRow {
             bias,
             impedance: d,
             dimpedance_ddepth: material.dimpedance_ddepth(depth),
+            impact: 0.0,
         }
+    }
+
+    /// Mark this row as `impact` of an impact (see [`Self::impact`]): the
+    /// stabilization bias is scaled down by `1 - impact`, and the regularizer
+    /// reads the field through [`Self::effective_impedance`].
+    pub fn with_impact(mut self, impact: f64) -> Self {
+        let impact = impact.clamp(0.0, 1.0);
+        self.bias *= 1.0 - impact;
+        self.impact = impact;
+        self
+    }
+
+    /// The impedance the regularizer sees: `d` for a resting row,
+    /// [`IMPACT_IMPEDANCE`] for an impacting one, and the linear blend between.
+    pub fn effective_impedance(&self) -> f64 {
+        self.impedance + self.impact * (IMPACT_IMPEDANCE - self.impedance).max(0.0)
     }
 }
 
@@ -430,6 +478,7 @@ impl Default for ContactRow {
             // Fully rigid: the regularizer falls back to the config floor.
             impedance: 1.0,
             dimpedance_ddepth: 0.0,
+            impact: 0.0,
         }
     }
 }
@@ -500,6 +549,13 @@ impl ContactProblem {
         let t = (s - v_rest) / v_rest;
         e * t * t * (3.0 - 2.0 * t)
     }
+
+    /// The restitution ramp alone: how much of an impact an approach at this
+    /// speed is, `0` at and below `v_rest`, `1` at and above `2 * v_rest`.
+    /// This is what [`ContactRow::impact`] carries.
+    pub fn impact_weight(approach_speed: f64, v_rest: f64) -> f64 {
+        Self::effective_restitution(1.0, approach_speed, v_rest)
+    }
 }
 
 /// Diagonal regularizer `R` for contact `c`, one entry per row of its frame.
@@ -536,7 +592,7 @@ pub fn regularization_diag(
 ) -> [f64; 3] {
     let dim = 3 * problem.n;
     let base = 3 * c;
-    let d = problem.rows[c].impedance.clamp(1e-6, 1.0);
+    let d = problem.rows[c].effective_impedance().clamp(1e-6, 1.0);
     let scale = (1.0 - d) / d;
     let a_nn = problem.delassus[base * dim + base];
     let normal = (scale * a_nn).max(config.regularization);
@@ -578,11 +634,13 @@ pub fn regularization_depth_derivative(
     let dim = 3 * problem.n;
     let base = 3 * c;
     let row = &problem.rows[c];
-    let d_raw = row.impedance;
+    let d_raw = row.effective_impedance();
     let d = d_raw.clamp(1e-6, 1.0);
     // Where the clamp binds, `R` is frozen with respect to the impedance.
+    // An impacting row's effective impedance moves with depth only through
+    // its resting share, `(1 - impact) * d'`.
     let dd = if d_raw > 1e-6 && d_raw < 1.0 {
-        row.dimpedance_ddepth
+        (1.0 - row.impact) * row.dimpedance_ddepth
     } else {
         0.0
     };
@@ -2199,18 +2257,20 @@ pub fn point_mass_problem(
     for i in 0..3 {
         delassus[i * 3 + i] = inv_m;
     }
+    let approach = free_vel.x.min(0.0).abs();
     let e = ContactProblem::effective_restitution(
         material.restitution,
-        free_vel.x.min(0.0).abs(),
+        approach,
         restitution_threshold,
     );
+    let impact = ContactProblem::impact_weight(approach, restitution_threshold);
     ContactProblem {
         n: 1,
         delassus,
         // Restitution: the target normal velocity is `-e * v_approach`
         // rather than 0, folded into b.
         free_velocity: vec![free_vel.x * (1.0 + e), free_vel.y, free_vel.z],
-        rows: vec![ContactRow::from_material(material, depth, dt, e)],
+        rows: vec![ContactRow::from_material(material, depth, dt, e).with_impact(impact)],
         // A single point mass against the static world: nothing to couple to.
         bodies: vec![(0, usize::MAX)],
     }
@@ -3033,6 +3093,9 @@ mod stance_lab {
                         bias: v[3],
                         impedance: v[4],
                         dimpedance_ddepth: v[5],
+                        // A dump is a settled stance, and `0` is the weight of
+                        // a hand-built row; see `ContactRow::impact`.
+                        impact: 0.0,
                     });
                 }
                 Some("body") => bodies.push((
