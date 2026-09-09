@@ -2,10 +2,12 @@
 name = "phyz-examples"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Compile-checked runnable examples for the phyz workspace (not published)"
+# a target-only shell that compile-checks examples/; ships no library
 publish = false
 
 # This crate exists so that every file under the repository-root `examples/`

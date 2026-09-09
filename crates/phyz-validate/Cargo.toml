@@ -2,10 +2,12 @@
 name = "phyz-validate"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Closed-form physics benchmarks for every phyz solver"
+# validation suites against reference solutions, not a public API
 publish = false
 
 [dependencies]
