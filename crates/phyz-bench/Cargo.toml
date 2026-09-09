@@ -2,10 +2,12 @@
 name = "phyz-bench"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Benchmark harness for phyz: throughput, gradients, energy drift, and cross-library comparison"
+# benchmark harness and its recorded results, not a public API
 publish = false
 
 [lib]
