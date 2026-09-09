@@ -38,6 +38,28 @@ use phyz_collision::Collision;
 use phyz_math::{SpatialTransformExt, Vec3};
 use phyz_model::State;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// Whether to seed every solve at zero, ignoring the cache.
+///
+/// Off by default: with this unset the cache behaves exactly as it always has.
+///
+/// It exists to answer one question and it answered it. Warm starting makes the
+/// solve's iteration path depend on the previous step's exact result, which
+/// made it a prime suspect for why two consecutive contacted steps do not
+/// differentiate where one does — a last-bits state change could plausibly
+/// land the iteration on a different stopping point. Flipping this on the K1
+/// skate stance moved the measured response to a `1e-9 N·m` torque from
+/// `-6.260202e-6 m` to `-6.260204e-6 m`: seven digits unchanged. The warm start
+/// is **not** the discontinuity. (It was the narrow phase's witness point —
+/// see `phyz_collision::manifold::stable_witness`.) Kept because a controlled
+/// cold start is worth having the next time the question comes up.
+fn cold_start() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("PHYZ_CONTACT_COLD_START").is_ok_and(|v| v == "1" || v == "true")
+    })
+}
 
 /// A stable identifier for a contact across timesteps.
 ///
@@ -124,6 +146,10 @@ impl ContactCache {
     /// Contacts with no cached match seed at zero, which is exactly the cold
     /// start. The returned vector is what [`crate::solve_contacts_warm`] takes.
     pub fn warm_start(&mut self, state: &State, contacts: &[Collision]) -> Vec<Vec3> {
+        if cold_start() {
+            self.misses += contacts.len();
+            return vec![Vec3::zeros(); contacts.len()];
+        }
         contacts
             .iter()
             .map(|c| match self.prev.get(&self.key(state, c)) {

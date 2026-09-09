@@ -2633,3 +2633,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     qdd[idx] = total_torque / total_inertia;
 }
 "#;
+
+/// Specialise a shader's `MAX_BODIES` to the body count of the model the
+/// pipeline is being built for.
+///
+/// WGSL sizes a `function`-address-space array with a `const` expression, and
+/// an `override` may not size one (overrides size `workgroup` arrays only).
+/// So the count is substituted into the source before `create_shader_module`
+/// rather than passed as a pipeline constant. There is exactly one
+/// declaration of it per shader; a miss is a programming error and panics
+/// rather than silently compiling the stock 32.
+pub fn specialise_max_bodies(src: &str, max_bodies: usize) -> String {
+    const DECL: &str = "const MAX_BODIES: u32 = 32u;";
+    let n = src.matches(DECL).count();
+    assert!(
+        n == 1,
+        "shader source has {n} declarations of MAX_BODIES, expected exactly 1"
+    );
+    src.replace(DECL, &format!("const MAX_BODIES: u32 = {max_bodies}u;"))
+}
+
+#[cfg(test)]
+mod specialise_tests {
+    use super::*;
+
+    /// The stock count must reproduce the original source byte for byte --
+    /// this is what makes a <=32-body model bit-identical to before.
+    #[test]
+    fn stock_count_is_a_no_op() {
+        for src in [CONTACT_GROUND_SHADER, ABA_GENERAL_SHADER] {
+            assert_eq!(specialise_max_bodies(src, 32), src);
+        }
+    }
+
+    #[test]
+    fn wider_count_is_substituted() {
+        let out = specialise_max_bodies(CONTACT_GROUND_SHADER, 40);
+        assert!(out.contains("const MAX_BODIES: u32 = 40u;"));
+        assert!(!out.contains("const MAX_BODIES: u32 = 32u;"));
+    }
+}

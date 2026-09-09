@@ -30,10 +30,117 @@
 //! held fixed. Each surviving point's position and depth *are* smooth
 //! functions of the configuration. This is the same approximation MuJoCo and
 //! Dojo make; see `docs/design/differentiable-contact.md` §4.4.
+//!
+//! That paragraph was true of the *clipped* path and false of the fallback,
+//! and until `fix/clip-faces-manifolds` the fallback was where 80 % of the
+//! body-body pairs of a humanoid standing on a skateboard ended up.
+//!
+//! Step 3 rejected its whole clipped polygon because of two things it got
+//! wrong about the reference face:
+//!
+//! - **It always took the reference from `A`.** The separating normal is a
+//!   face normal of at most one of the two boxes; the other touches on an edge
+//!   or a corner, and its "support face" is tilted away from `n` by whatever
+//!   the relative orientation is. Whichever face is better aligned with `n` is
+//!   the one the manifold should be measured against.
+//! - **It measured separation along `n`, not along the reference face's own
+//!   normal.** The only direction that measures a distance from a plane is
+//!   that plane's normal. Measuring along `n` charges every incident vertex
+//!   for the reference face's own extent along `n` — on the K1 skate stance,
+//!   up to 45 mm. GJK reported a 0.5 mm gap; `clip_faces` read 3–44 mm,
+//!   `sep > margin` rejected every vertex, and the pair fell through.
+//!
+//! Downstream that mattered because `single_point` picks a box corner by the
+//! **sign of each component** of the direction in the box's local frame, and
+//! along a face normal those in-plane components are exact-cancellation noise.
+//! Their signs are decided by the last bits of the pose, so the witness point
+//! walked between corners of the box — measured at up to 24 cm — while the
+//! normal and the depth stayed bit-identical. [`stable_witness`] makes that
+//! fallback report the supporting *feature's* centroid instead; it is still
+//! there, still off by default, and no longer the thing standing between this
+//! module and a differentiable contact.
+//!
+//! [`legacy_clip`] restores both old behaviours together.
 
 use crate::geometry::Geometry;
 use crate::gjk::GjkOutcome;
 use phyz_math::{Mat3, Vec3};
+use std::sync::OnceLock;
+
+/// Whether to build the `single_point` fallback from the *supporting
+/// feature's centroid* rather than from a single support vertex.
+///
+/// Off by default: with this unset every number this module produces is
+/// bit-identical to what it has always produced.
+///
+/// # What it is for
+///
+/// `Geometry::support` picks a box corner by the **sign of each component** of
+/// the direction in the box's local frame. When the contact normal is aligned
+/// with a face — a foot flat on a deck, the overwhelmingly common resting case
+/// — the two in-plane components are not small, they are *noise*: the exact
+/// cancellation is at the 1e-16 level, and their signs are decided by the last
+/// bits of the pose. Flip one and the returned vertex is a different corner of
+/// the box, a whole half-extent away.
+///
+/// Measured on the K1 skate stance (13 contacts, two soles on grip tape, four
+/// wheels, the deck joint) **before** `fix/clip-faces-manifolds`: the face-clip
+/// path failed for 80 % of body-body pairs — the incident face's vertices read
+/// 3–44 mm beyond the reference plane while GJK reported a 0.5 mm gap — so
+/// nearly every body-body contact took this fallback. Perturbing one torque
+/// lane by `1e-9 N·m` moved witness points by up to **24 cm** while the normal
+/// and the depth stayed bit-identical, which is the signature exactly: the
+/// physics of the contact did not move, the *choice of vertex* did. Downstream
+/// that was a different moment arm, a `4.2e-2` change in the solved impulses,
+/// and a trunk position that jumped `6.3e-6 m` in one 0.5 ms step — an
+/// amplification of `~1e9` that made two consecutive contacted steps
+/// non-differentiable even though one step on its own matched central
+/// differences to every digit.
+///
+/// The fallback rate on that stance is 1.8 % now, so this flag is a net under
+/// the fix rather than the fix itself — and on that stance turning it *on* is
+/// measurably worse (a two-step `1e-9 N·m` response of `1.3e-10 m` against
+/// `3.8e-15 m` with it off), because averaging tied vertices reintroduces a
+/// tie set that moves.
+///
+/// With this set, vertices within `SUPPORT_TIE_EPS` of the maximum are
+/// averaged instead of raced. A face-on contact returns the face centre, an
+/// edge-on contact the edge midpoint, a corner contact the corner — the
+/// centroid of whichever feature actually supports the direction. The tie set
+/// is then a function of the geometry at millimetre scale rather than of the
+/// 16th digit, so a last-bits change to the state no longer moves the contact
+/// point at all.
+pub fn stable_witness() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_STABLE_WITNESS").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Restore the pre-fix face clipper: reference face always taken from shape
+/// `A`, and separation measured along the contact normal from that face's
+/// first vertex.
+///
+/// Off by default. The old path produced no face manifold at all for 80 % of
+/// the body-body pairs of the K1 skate stance, and let a 20:1 box stack fall
+/// flat — see `clip_faces` and `tests/contact_physics_benchmarks.rs` — so it
+/// is kept only as an escape hatch for reproducing pre-fix numbers.
+pub fn legacy_clip() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_LEGACY_CLIP").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Trace every face-clip decision to stderr. Diagnostic only.
+fn clip_debug() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_CLIP_DEBUG").is_ok())
+}
+
+/// Relative slack for deciding that two vertices support a direction equally.
+///
+/// Sized to sit far above float cancellation noise (~1e-16 relative) and far
+/// below any real geometric distinction: at a 0.3 m box this is 3e-10 m, so a
+/// vertex is only ever tied with the maximum when it is coplanar with it to
+/// well under a micron.
+const SUPPORT_TIE_EPS: f64 = 1e-9;
 
 /// Upper bound on points retained per manifold.
 ///
@@ -155,12 +262,43 @@ pub fn contact_manifold_within(
     let face_b = support_face(geom_b, pos_b, rot_b, &(-normal));
 
     let points = match (face_a, face_b) {
-        (Some(ref_face), Some(inc_face)) => clip_faces(&ref_face, &inc_face, &normal, margin)
-            .unwrap_or_else(|| {
+        (Some(fa), Some(fb)) => {
+            // Which of the two faces is the *reference* — the one whose plane
+            // the manifold is measured against — is not a free choice. The
+            // separating normal is a face normal of at most one of the two
+            // boxes; the other shape touches it on an edge or a corner, and
+            // its "support face" is then tilted away from `n` by whatever the
+            // relative orientation happens to be. Measuring depth against that
+            // tilted plane charges the incident vertices for the reference
+            // face's own tilt: on the K1 skate stance the reference face spans
+            // up to 45 mm along `n`, so every incident vertex reads as tens of
+            // millimetres of gap while the true gap is half a millimetre.
+            //
+            // So take the better-aligned face as the reference, and fall back
+            // to A only on a tie. `legacy_clip()` restores the old
+            // always-A choice.
+            let (reference, incident) = if legacy_clip()
+                || fa.verts.is_empty()
+                || (!fb.verts.is_empty() && fa.normal.dot(normal) >= fb.normal.dot(-normal))
+            {
+                (fa, fb)
+            } else {
+                (fb, fa)
+            };
+            let clipped = clip_faces(&reference, &incident, &normal, margin);
+            if clip_debug() {
+                eprintln!(
+                    "PAIR clipped={} npts={}",
+                    clipped.is_some(),
+                    clipped.as_ref().map_or(0, |v| v.len())
+                );
+            }
+            clipped.unwrap_or_else(|| {
                 vec![single_point(
                     geom_a, geom_b, pos_a, rot_a, pos_b, rot_b, None, None, &normal, depth,
                 )]
-            }),
+            })
+        }
         // At least one surface is curved: one point is the whole story.
         (face_a, face_b) => vec![single_point(
             geom_a,
@@ -215,8 +353,10 @@ fn single_point(
     normal: &Vec3,
     depth: f64,
 ) -> ManifoldPoint {
-    let mut wa = geom_a.support(normal, pos_a, rot_a);
-    let mut wb = geom_b.support(&(-*normal), pos_b, rot_b);
+    let mut wa = witness(geom_a, normal, pos_a, rot_a);
+    let mut wb = witness(geom_b, &(-*normal), pos_b, rot_b);
+    // A flat face's witness is the curved side's witness projected onto it,
+    // not that face's own support point.
     match (face_a, face_b) {
         (Some(fa), None) => wa = project_onto_face(&wb, fa),
         (None, Some(fb)) => wb = project_onto_face(&wa, fb),
@@ -226,6 +366,53 @@ fn single_point(
         position: (wa + wb) * 0.5,
         depth,
     }
+}
+
+/// The support point, or — under [`stable_witness`] — the centroid of the
+/// supporting *feature*.
+fn witness(geom: &Geometry, dir: &Vec3, pos: &Vec3, rot: &Mat3) -> Vec3 {
+    if !stable_witness() {
+        return geom.support(dir, pos, rot);
+    }
+    match geom {
+        Geometry::Box { half_extents } => box_support_centroid(half_extents, pos, rot, dir),
+        // Curved shapes have a unique support point for any direction — the
+        // argmax is over a smooth surface, not a vertex set, so there is no
+        // tie to break and nothing here to fix.
+        _ => geom.support(dir, pos, rot),
+    }
+}
+
+/// Centroid of the box vertices that support `dir` equally.
+///
+/// Returns the corner for a corner contact, the edge midpoint for an edge
+/// contact, and the face centre for a face contact — with the tie decided at
+/// [`SUPPORT_TIE_EPS`] rather than by the sign of a cancelled float.
+fn box_support_centroid(half_extents: &Vec3, pos: &Vec3, rot: &Mat3, dir: &Vec3) -> Vec3 {
+    let local_dir = rot.transpose() * *dir;
+    let h = [half_extents.x, half_extents.y, half_extents.z];
+    let d = [local_dir.x, local_dir.y, local_dir.z];
+
+    // The support value separates per axis, so the tie set does too: an axis
+    // contributes |d_k| * h_k when its sign is decided and *both* signs when
+    // that axis's contribution is within the slack of zero. Enumerating the
+    // eight corners would give the same answer at eight times the cost.
+    let scale = SUPPORT_TIE_EPS
+        * (1.0 + local_dir.norm())
+        * (1.0 + h.iter().fold(0.0, |a: f64, x| a.max(*x)));
+    let mut local = [0.0; 3];
+    for k in 0..3 {
+        local[k] = if (d[k] * h[k]).abs() <= scale {
+            // Tied: both faces along this axis support `dir` equally, so the
+            // feature spans the axis and its centroid sits at the middle.
+            0.0
+        } else if d[k] >= 0.0 {
+            h[k]
+        } else {
+            -h[k]
+        };
+    }
+    pos + *rot * Vec3::new(local[0], local[1], local[2])
 }
 
 /// `p` projected along the face normal onto the face's plane.
@@ -355,12 +542,44 @@ fn clip_faces(
         }
         poly = clip_polygon(&poly, &a, &plane_n);
         if poly.is_empty() {
+            if clip_debug() {
+                eprintln!("CLIP EMPTY at side plane {i}/{n_ref}");
+            }
             return None;
         }
     }
 
-    // Reference plane offset along the shared normal.
+    // Reference plane: the point and the *face's own* outward normal.
+    //
+    // The separation of a clipped vertex is its signed distance from that
+    // plane, and the only direction that measures a distance from a plane is
+    // the plane's normal. Measuring along the contact normal instead — as this
+    // did — is only equivalent when the two agree, and they agree only when
+    // the reference face happens to be the face that generated `n`. When they
+    // differ by 15°, as the tilted foot boxes on the skate deck do, the
+    // reference face's own extent along `n` (up to 45 mm) is added to every
+    // vertex's reading, the `sep > margin` test rejects the whole polygon, and
+    // the manifold silently drops to the `single_point` fallback.
     let ref_point = reference.point;
+    let ref_n = if legacy_clip() {
+        *normal
+    } else {
+        reference.normal
+    };
+
+    if clip_debug() {
+        let seps: Vec<f64> = poly.iter().map(|p| (p - ref_point).dot(ref_n)).collect();
+        let kept = seps.iter().filter(|s| **s <= margin.max(1e-9)).count();
+        eprintln!(
+            "CLIP align_ref={:.6} align_inc={:.6} margin={:.3e} npoly={} kept={} seps={:?}",
+            reference.normal.dot(normal).abs(),
+            incident.normal.dot(normal).abs(),
+            margin,
+            poly.len(),
+            kept,
+            seps
+        );
+    }
 
     let out: Vec<ManifoldPoint> = poly
         .iter()
@@ -369,13 +588,14 @@ fn clip_faces(
             // measured along the contact normal. Negative separation is
             // penetration; a positive separation up to `margin` is a gap
             // inside the band and is kept, with a negative depth.
-            let sep = (p - ref_point).dot(normal);
+            let sep = (p - ref_point).dot(ref_n);
             if sep > margin.max(1e-9) {
                 return None;
             }
             Some(ManifoldPoint {
-                // Put the point on the midsurface.
-                position: p - *normal * (sep * 0.5),
+                // Put the point on the midsurface: halfway back toward the
+                // reference plane, along that plane's normal.
+                position: p - ref_n * (sep * 0.5),
                 depth: -sep,
             })
         })
@@ -460,6 +680,122 @@ fn reduce(mut pts: Vec<ManifoldPoint>) -> Vec<ManifoldPoint> {
 
 fn is_finite(v: &Vec3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
+
+/// The witness point under [`stable_witness`].
+///
+/// [`stable_witness`] is read from the environment once per process, so these
+/// exercise [`box_support_centroid`] directly — it is the whole of the change,
+/// and the env gate only decides whether [`single_point`] calls it.
+#[cfg(test)]
+mod stable_witness_tests {
+    use super::*;
+
+    fn unit_box() -> Vec3 {
+        Vec3::new(0.3, 0.1, 0.02)
+    }
+
+    /// A direction along a face normal is supported *equally* by all four
+    /// corners of that face. `Geometry::support` has to pick one of them; the
+    /// centroid is the face centre, which is the honest answer.
+    #[test]
+    fn a_face_aligned_direction_gives_the_face_centre() {
+        let h = unit_box();
+        let c = box_support_centroid(&h, &Vec3::zeros(), &Mat3::identity(), &Vec3::z());
+        assert!(
+            (c - Vec3::new(0.0, 0.0, h.z)).norm() < 1e-12,
+            "expected the +z face centre, got {c:?}"
+        );
+    }
+
+    /// The regression this whole change exists for.
+    ///
+    /// `Geometry::support` chooses a box corner by the *sign* of each component
+    /// of the direction in the box's local frame. Along a face normal the two
+    /// in-plane components are exact cancellation noise, so their signs are
+    /// decided by the last bits — and flipping one walks the witness point to a
+    /// different corner, a whole half-extent away. On the K1 skate stance that
+    /// moved contact points by up to 24 cm under a `1e-9 N·m` torque change,
+    /// which is what made two consecutive contacted steps non-differentiable.
+    #[test]
+    fn last_bit_wobble_in_the_direction_does_not_move_the_witness_point() {
+        let h = unit_box();
+        let (pos, rot) = (Vec3::zeros(), Mat3::identity());
+        let geom = Geometry::Box { half_extents: h };
+
+        let base = box_support_centroid(&h, &pos, &rot, &Vec3::z());
+        let mut worst_stable = 0.0f64;
+        let mut worst_support = 0.0f64;
+        let raw0 = geom.support(&Vec3::z(), &pos, &rot);
+
+        // Every sign combination of a last-bits in-plane component: exactly the
+        // perturbations a 1e-15 change to the pose delivers.
+        for sx in [-1.0, 1.0] {
+            for sy in [-1.0, 1.0] {
+                let dir = Vec3::new(sx * 1e-17, sy * 1e-17, 1.0);
+                let c = box_support_centroid(&h, &pos, &rot, &dir);
+                worst_stable = worst_stable.max((c - base).norm());
+                let raw = geom.support(&dir, &pos, &rot);
+                worst_support = worst_support.max((raw - raw0).norm());
+            }
+        }
+
+        assert!(
+            worst_stable < 1e-12,
+            "the stable witness moved by {worst_stable:.3e} m under last-bit noise"
+        );
+        // And the same wobble really does throw the raw support function across
+        // the box — the test would be vacuous if it did not.
+        assert!(
+            worst_support > 0.1,
+            "expected the raw support point to jump; it moved {worst_support:.3e} m"
+        );
+    }
+
+    /// An edge-on direction is supported by two corners: the answer is the edge
+    /// midpoint, not either end.
+    #[test]
+    fn an_edge_on_direction_gives_the_edge_midpoint() {
+        let h = unit_box();
+        let d = Vec3::new(0.0, 1.0, 1.0).normalize();
+        let c = box_support_centroid(&h, &Vec3::zeros(), &Mat3::identity(), &d);
+        assert!(
+            (c - Vec3::new(0.0, h.y, h.z)).norm() < 1e-12,
+            "expected the +y+z edge midpoint, got {c:?}"
+        );
+    }
+
+    /// Where the argmax is genuinely decided, nothing changes: the corner is
+    /// still the corner. The fix must not blunt a real corner contact.
+    #[test]
+    fn a_decided_corner_direction_is_unchanged() {
+        let h = unit_box();
+        let (pos, rot) = (Vec3::zeros(), Mat3::identity());
+        let d = Vec3::new(1.0, 1.0, 1.0).normalize();
+        let c = box_support_centroid(&h, &pos, &rot, &d);
+        let raw = Geometry::Box { half_extents: h }.support(&d, &pos, &rot);
+        assert!(
+            (c - raw).norm() < 1e-12,
+            "corner contact should match the raw support point: {c:?} vs {raw:?}"
+        );
+    }
+
+    /// The centroid is taken in the box's own frame, so it rotates with the box
+    /// rather than being computed in world axes.
+    #[test]
+    fn the_centroid_rides_the_box_frame() {
+        let h = unit_box();
+        let rot =
+            phyz_math::Quat::from_axis_angle(Vec3::x(), std::f64::consts::FRAC_PI_2).to_matrix();
+        let pos = Vec3::new(1.0, 2.0, 3.0);
+        // The box's local +z now points along world −y.
+        let c = box_support_centroid(&h, &pos, &rot, &(-Vec3::y()));
+        let expect = pos + rot * Vec3::new(0.0, 0.0, h.z);
+        assert!(
+            (c - expect).norm() < 1e-12,
+            "expected {expect:?}, got {c:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -592,6 +928,74 @@ mod tests {
         for p in &m.points {
             assert!(p.depth > 0.0 && p.depth < 0.05, "depth {}", p.depth);
         }
+    }
+
+    /// **The tilted-reference regression.** A small box resting on a *tilted*
+    /// slab, with its own sole parallel to the slab, is a face-on-face contact
+    /// and must produce a face manifold whose depths are the real overlap.
+    ///
+    /// It did not. `clip_faces` measured each clipped vertex's separation along
+    /// the contact normal from a vertex of a reference face it always took from
+    /// shape `A` — here the slab, tilted 15° away from that normal and so
+    /// spanning 2.6 m along it. Every vertex read metres of gap against a
+    /// centimetre of real overlap, `sep > margin` rejected the whole polygon,
+    /// and the pair fell through to a single support vertex.
+    ///
+    /// The scale is the point: the error is the *reference face's own size*,
+    /// which is why the same bug read as "3–44 mm beyond the plane" on 0.15 m
+    /// foot boxes and as a collapsed stack on 0.1 m ones.
+    #[test]
+    fn a_tilted_reference_face_still_gives_a_face_manifold() {
+        let tilt = 15f64.to_radians();
+        // A big slab rotated about +x, so its top face leans in y and its
+        // highest feature is the long edge at local y = +5.
+        let (c, s) = (tilt.cos(), tilt.sin());
+        let slab_rot = Mat3::new(1.0, 0.0, 0.0, 0.0, c, s, 0.0, -s, c);
+        let slab = Geometry::Box {
+            half_extents: Vec3::new(5.0, 5.0, 0.5),
+        };
+
+        // A small axis-aligned box sitting on that edge: its flat underside is
+        // the contact plane, so the separating normal is +z — which the slab's
+        // own support face misses by the full 15°.
+        let rider = unit_box(0.5);
+        let edge = slab_rot * Vec3::new(0.0, -5.0, 0.5);
+        let rider_pos = Vec3::new(0.0, edge.y, edge.z + 0.5 - 0.01);
+
+        let m = contact_manifold(
+            &slab,
+            &rider,
+            &Vec3::zeros(),
+            &slab_rot,
+            &rider_pos,
+            &Mat3::identity(),
+        )
+        .expect("a box resting on a slab's edge is a contact");
+
+        assert!(
+            (m.normal - Vec3::z()).norm() < 1e-6,
+            "the normal is the rider's own face normal, +z; got {:?}",
+            m.normal
+        );
+        assert!(
+            m.points.len() >= 2,
+            "an edge-on-face contact must give at least the two ends of the \
+             edge, got {} point(s) — one point has no resistance to rolling \
+             along it, and getting one here means the clipped polygon was \
+             rejected and `single_point` took over",
+            m.points.len()
+        );
+        let deepest = m
+            .points
+            .iter()
+            .map(|p| p.depth)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (deepest - 0.01).abs() < 1e-6,
+            "the deepest point overlaps by 0.01 m; got {deepest} — an error \
+             the size of the slab's own extent along the normal (2.6 m here) \
+             is the bug this pins"
+        );
     }
 
     /// Disjoint shapes produce nothing.

@@ -201,6 +201,23 @@ pub struct ContactSolverConfig {
     /// apart from a real bug. `mujoco_creep_matches_the_analytic_rate` in
     /// `tests/stabilization.rs` measures both modes side by side.
     pub mujoco_compat: bool,
+    /// Spend the whole iteration budget rather than exiting on stagnation.
+    ///
+    /// Off by default, and `PHYZ_NO_STALL_EXIT=1` still forces it on
+    /// process-wide, so nothing that set the variable changes behaviour. See
+    /// `no_stall_exit` for what the exit buys and what it costs.
+    ///
+    /// It is a field as well as a variable because the two things a caller
+    /// wants from this solver — a fast forward step and a differentiable one
+    /// — can be wanted *in the same process*, and an environment variable
+    /// latched in a `OnceLock` cannot express that. Two tests in ipse's
+    /// `shac_gradient_path.rs` are the concrete case: one pins that the
+    /// stagnation exit makes the jump window discontinuous at the shipped
+    /// default, the other that the second contact solve is as differentiable
+    /// as the first, which is only measurable with the exit off. As a
+    /// variable those two claims cannot share a test binary; as a field they
+    /// are just two solver configs.
+    pub no_stall_exit: bool,
 }
 
 impl Default for ContactSolverConfig {
@@ -235,6 +252,7 @@ impl ContactSolverConfig {
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
+            no_stall_exit: false,
         }
     }
 
@@ -252,6 +270,7 @@ impl ContactSolverConfig {
             relaxation: 1.0,
             restitution_threshold: 0.05,
             mujoco_compat: false,
+            no_stall_exit: false,
         }
     }
 
@@ -674,46 +693,95 @@ pub fn solve_contacts_warm(
     config: &ContactSolverConfig,
     initial: &[Vec3],
 ) -> ContactSolution {
+    solve_contacts_warm_diff(problem, config, initial, None, None).0
+}
+
+/// [`solve_contacts_warm`], optionally carrying a parameter differential
+/// through the very same iteration schedule.
+///
+/// # The solver-level adjoint, in one function
+///
+/// [`crate::gradient::FixedPointSensitivity`] differentiates the *fixed point*
+/// via the implicit function theorem. That is exact only if the solve reached
+/// one. This crate's own solver frequently does not — on a 15-contact skate
+/// stance it stops at a residual of `1e-7` after hundreds of sweeps, and with
+/// the stagnation exit on it gives up at `1.7e-4` after 136. The IFT then
+/// differentiates a point the forward pass never computed, and the two answers
+/// diverge in proportion to the leftover residual.
+///
+/// This differentiates *the algorithm*: the finite composition of sweeps and
+/// Newton steps that actually ran. It is exact for any iteration count,
+/// converged or not, because the iterate is a perfectly well-defined function
+/// of the parameters — just not a fixed point.
+///
+/// # Why re-execution instead of a tape
+///
+/// The obvious construction records each iteration's branch data and replays it
+/// transposed. Measured, this stance takes 112–4000 sweeps per step, which puts
+/// a per-sweep-per-contact tape at hundreds of KB. But the solve is
+/// *deterministic*: re-running it reproduces every branch bit-for-bit, so the
+/// differential can simply ride alongside the primal in a second execution and
+/// nothing needs storing at all. The "tape" costs `O(n)` — the seed — and the
+/// derivative is guaranteed to follow the branch the primal took because it is
+/// computed in the same expression that took it.
+///
+/// # What the caller must supply, and the one thing it cannot
+///
+/// `diff` carries `d(A + R)` and `d(b - e_n bias)`, and its `df` field is the
+/// differential of `initial`. That last one is the honest caveat: under a warm
+/// start the seed is the previous step's impulses, so `d(initial)` is not zero
+/// and a caller that passes zero is differentiating at a frozen seed. At a
+/// converged fixed point that is exactly right (the answer is seed-independent);
+/// at a truncated one it is an approximation of the same order as the truncation
+/// being removed. `PHYZ_CONTACT_COLD_START=1` makes the seed identically zero
+/// and the result unconditionally exact, which is how this is validated.
+pub(crate) fn solve_contacts_warm_diff(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    initial: &[Vec3],
+    diff: Option<SweepDiff>,
+    mut tape: Option<&mut Vec<TapeStep>>,
+) -> (ContactSolution, Option<Vec<Vec3>>) {
     let n = problem.n;
     let mut f = vec![Vec3::zeros(); n];
     for (slot, seed) in f.iter_mut().zip(initial) {
         *slot = *seed;
     }
+    let mut diff = diff.map(|mut d| {
+        d.df.resize(n, Vec3::zeros());
+        d
+    });
     if n == 0 {
-        return ContactSolution {
-            impulses: f,
-            iterations: 0,
-            residual: 0.0,
-            converged: true,
-        };
+        return (
+            ContactSolution {
+                impulses: f,
+                iterations: 0,
+                residual: 0.0,
+                converged: true,
+            },
+            diff.map(|d| d.df),
+        );
     }
 
     let dim = 3 * n;
     debug_assert_eq!(problem.delassus.len(), dim * dim);
     debug_assert_eq!(problem.free_velocity.len(), dim);
 
-    let a = &problem.delassus;
-    let at = |i: usize, j: usize| a[i * dim + j];
-
     // Per-contact 3x3 diagonal block, regularized and inverted once.
-    let blocks: Vec<[[f64; 3]; 3]> = (0..n)
-        .map(|c| {
-            let base = 3 * c;
-            let reg = regularization_diag(problem, c, config);
-            let mut m = [[0.0; 3]; 3];
-            for (r, row) in m.iter_mut().enumerate() {
-                for (col, e) in row.iter_mut().enumerate() {
-                    *e = at(base + r, base + col);
-                    if r == col {
-                        *e += reg[r];
-                    }
-                }
-            }
-            m
-        })
-        .collect();
+    let blocks = regularized_blocks(problem, config);
 
     let mut iterations = 0;
+
+    // Preconditioned seed acceleration (`PHYZ_CONTACT_PRECOND=1`): drive the
+    // seed to the staged fixed point with the complete-linearization Newton
+    // before anything is recorded. Primal-only and deterministic, so both
+    // adjoint modes replay it as part of the seed. See [`accelerate`].
+    // Guarded off for fixed-budget presets: with `tolerance: 0` (the GPU
+    // reference) there is no fixed point to certify and no early exit, so the
+    // accelerator would be pure overhead.
+    if precond_enabled() && config.tolerance > 0.0 {
+        accelerate(problem, config, &blocks, &mut f);
+    }
 
     // ---------------------------------------------------------------- stage 1
     //
@@ -743,7 +811,13 @@ pub fn solve_contacts_warm(
     let normal_warmup = WARMUP_SWEEPS.min(config.max_iterations);
     for _ in 0..normal_warmup {
         iterations += 1;
-        if sweep(problem, config, &blocks, &mut f, true) < config.tolerance {
+        if let Some(t) = tape.as_deref_mut() {
+            t.push(TapeStep::Sweep {
+                entry: f.clone(),
+                normals_only: true,
+            });
+        }
+        if sweep(problem, config, &blocks, &mut f, true, diff.as_mut()) < config.tolerance {
             break;
         }
     }
@@ -751,14 +825,23 @@ pub fn solve_contacts_warm(
     let mut residual = f64::INFINITY;
     while iterations < config.max_iterations.min(2 * WARMUP_SWEEPS) {
         iterations += 1;
-        residual = sweep(problem, config, &blocks, &mut f, false);
+        if let Some(t) = tape.as_deref_mut() {
+            t.push(TapeStep::Sweep {
+                entry: f.clone(),
+                normals_only: false,
+            });
+        }
+        residual = sweep(problem, config, &blocks, &mut f, false, diff.as_mut());
         if residual < config.tolerance {
-            return ContactSolution {
-                impulses: f,
-                iterations,
-                residual,
-                converged: true,
-            };
+            return (
+                ContactSolution {
+                    impulses: f,
+                    iterations,
+                    residual,
+                    converged: true,
+                },
+                diff.map(|d| d.df),
+            );
         }
     }
 
@@ -800,13 +883,22 @@ pub fn solve_contacts_warm(
     // the slip directions cheaply and hands Newton a better linearization
     // point, and a damped step keeps a bad proposal from undoing progress.
     let mut newton_solves = 0;
+    let mut newton_none = 0usize;
+    let mut newton_rejected = 0usize;
+    let mut newton_accepted = 0usize;
     let mut stalls = 0;
     while iterations < config.max_iterations {
         let entry_residual = residual;
-        if config.newton
-            && newton_solves < NEWTON_ATTEMPTS
-            && let Some(candidate) = newton_step(problem, config, &f)
-        {
+        let proposal = if config.newton && newton_solves < NEWTON_ATTEMPTS {
+            let p = newton_step_diff(problem, config, &f, diff.as_ref());
+            if p.is_none() {
+                newton_none += 1;
+            }
+            p
+        } else {
+            None
+        };
+        if let Some((candidate, d_candidate)) = proposal {
             newton_solves += 1;
             iterations += 1;
             // A Newton iterate is only a *proposal*: the active set it was
@@ -830,14 +922,65 @@ pub fn solve_contacts_warm(
                     .zip(&candidate)
                     .map(|(cur, cand)| *cur + (*cand - *cur) * alpha)
                     .collect();
+                // The differential of the same interpolation. `alpha` is a
+                // recorded discrete choice and enters as a constant: it is a
+                // step length selected by a comparison, piecewise constant in
+                // the parameters, and differentiating the branch the forward
+                // took is the whole contract here.
+                let mut d_trial: Option<Vec<Vec3>> = diff.as_ref().map(|d| {
+                    d.df.iter()
+                        .zip(&d_candidate)
+                        .map(|(cur, cand)| *cur + (*cand - *cur) * alpha)
+                        .collect()
+                });
                 iterations += 1;
-                let trial_residual = sweep(problem, config, &blocks, &mut trial, false);
+                let trial_residual = match (diff.as_mut(), d_trial.take()) {
+                    (Some(d), Some(dt)) => {
+                        // Sweep the trial with its own differential, then keep
+                        // both or discard both — a rejected proposal must leave
+                        // the derivative exactly as untouched as it leaves `f`.
+                        let saved = std::mem::replace(&mut d.df, dt);
+                        let res = sweep(problem, config, &blocks, &mut trial, false, Some(d));
+                        d_trial = Some(std::mem::replace(&mut d.df, saved));
+                        res
+                    }
+                    _ => sweep(problem, config, &blocks, &mut trial, false, None),
+                };
                 if trial_residual < residual {
+                    // Only an *accepted* proposal is on the tape. A rejected
+                    // one leaves `f` and `df` byte-for-byte where they were, so
+                    // it contributes nothing to the tangent map and the reverse
+                    // pass must not walk it. The interpolated primal is
+                    // recomputed rather than saved: it is the same expression
+                    // evaluated on the same `f`, `candidate` and `alpha`, so it
+                    // reproduces bit-for-bit, and saving a clone per *trial*
+                    // would pay for the rejections too.
+                    if let Some(t) = tape.as_deref_mut() {
+                        t.push(TapeStep::Newton {
+                            f: f.clone(),
+                            alpha,
+                        });
+                        t.push(TapeStep::Sweep {
+                            entry: f
+                                .iter()
+                                .zip(&candidate)
+                                .map(|(cur, cand)| *cur + (*cand - *cur) * alpha)
+                                .collect(),
+                            normals_only: false,
+                        });
+                    }
                     residual = trial_residual;
                     f = trial;
+                    if let (Some(d), Some(dt)) = (diff.as_mut(), d_trial) {
+                        d.df = dt;
+                    }
+                    newton_accepted += 1;
                     break;
                 }
                 alpha *= 0.5;
+            }
+            if newton_accepted + newton_rejected < newton_solves {
+                newton_rejected += 1;
             }
             if residual < config.tolerance {
                 break;
@@ -852,7 +995,13 @@ pub fn solve_contacts_warm(
                 break;
             }
             iterations += 1;
-            residual = sweep(problem, config, &blocks, &mut f, false);
+            if let Some(t) = tape.as_deref_mut() {
+                t.push(TapeStep::Sweep {
+                    entry: f.clone(),
+                    normals_only: false,
+                });
+            }
+            residual = sweep(problem, config, &blocks, &mut f, false, diff.as_mut());
             if residual < config.tolerance {
                 break;
             }
@@ -874,9 +1023,19 @@ pub fn solve_contacts_warm(
         // exhausted cap would be, and [`crate::gradient`] refuses it on the
         // same grounds. Nothing downstream can mistake an early exit for
         // success.
+        if census_enabled() {
+            eprintln!(
+                "  block: iters={} residual={:.3e} E={:.12e} newton_ok={} rej={}",
+                iterations,
+                residual,
+                qp_objective(problem, config, &f),
+                newton_accepted,
+                newton_rejected,
+            );
+        }
         if residual > entry_residual * STALL_RATIO {
             stalls += 1;
-            if stalls >= STALL_BLOCKS {
+            if stalls >= STALL_BLOCKS && !(config.no_stall_exit || no_stall_exit()) {
                 break;
             }
         } else {
@@ -884,12 +1043,675 @@ pub fn solve_contacts_warm(
         }
     }
 
-    ContactSolution {
-        impulses: f,
-        iterations,
-        residual,
-        converged: residual < config.tolerance,
+    if let Ok(path) = std::env::var("PHYZ_PROBLEM_DUMP")
+        && !path.is_empty()
+        && residual >= config.tolerance
+        && n >= dump_min()
+        && !std::path::Path::new(&path).exists()
+    {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        let _ = writeln!(s, "n {n}");
+        let _ = writeln!(
+            s,
+            "delassus {}",
+            problem
+                .delassus
+                .iter()
+                .map(|v| format!("{v:.17e}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let _ = writeln!(
+            s,
+            "free_velocity {}",
+            problem
+                .free_velocity
+                .iter()
+                .map(|v| format!("{v:.17e}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        for row in &problem.rows {
+            let _ = writeln!(
+                s,
+                "row {:.17e} {:.17e} {:.17e} {:.17e} {:.17e} {:.17e}",
+                row.mu, row.restitution, row.depth, row.bias, row.impedance, row.dimpedance_ddepth
+            );
+        }
+        for b in &problem.bodies {
+            let _ = writeln!(s, "body {} {}", b.0, b.1);
+        }
+        let _ = writeln!(
+            s,
+            "seed {}",
+            initial
+                .iter()
+                .map(|v| format!("{:.17e} {:.17e} {:.17e}", v.x, v.y, v.z))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let _ = std::fs::write(&path, s);
     }
+    if census_enabled() {
+        eprintln!(
+            "PHYZ_CENSUS n={} iters={} residual={:.3e} converged={} \
+             newton_ok={} newton_rejected={} newton_none={} tol={:.1e}",
+            n,
+            iterations,
+            residual,
+            residual < config.tolerance,
+            newton_accepted,
+            newton_rejected,
+            newton_none,
+            config.tolerance,
+        );
+    }
+    (
+        ContactSolution {
+            impulses: f,
+            iterations,
+            residual,
+            converged: residual < config.tolerance,
+        },
+        diff.map(|d| d.df),
+    )
+}
+
+/// The regularized QP objective `E(f) = 1/2 f^T (A + R) f + f^T (b - bias e_n)`.
+///
+/// This is the strongly convex function the whole solve minimizes over the
+/// friction cone (the module doc states it; the sweep's per-contact targets
+/// are its exact coordinate minimizers). It exists for the preconditioned
+/// line search: the sweep's `max_move` return is a fixed-point residual, not
+/// a merit function — it is not monotone along a Newton direction, and
+/// accepting on it rejects genuinely descending proposals wholesale
+/// (measured on the K1 skate stance: 23-24 rejections per solve, zero
+/// acceptances). The objective is what a descent step actually descends.
+///
+/// Honors the same coupling mask as [`sweep`], so the two always describe the
+/// same problem.
+#[allow(clippy::needless_range_loop)]
+fn qp_objective(problem: &ContactProblem, config: &ContactSolverConfig, f: &[Vec3]) -> f64 {
+    let n = problem.n;
+    let dim = 3 * n;
+    let at = |r: usize, c: usize| problem.delassus[r * dim + c];
+    let mut e = 0.0;
+    for c in 0..n {
+        let base = 3 * c;
+        let reg = regularization_diag(problem, c, config);
+        let fc = f[c];
+        // 1/2 f_c^T (A f)_c with the coupling mask, plus the diagonal block.
+        for row in 0..3 {
+            let mut acc = 0.0;
+            for k in 0..n {
+                if k != c {
+                    match config.coupling {
+                        ContactCoupling::BlockDiagonal => continue,
+                        ContactCoupling::PerBody
+                            if problem.bodies.len() == n
+                                && !shares_body(problem.bodies[c], problem.bodies[k]) =>
+                        {
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                let kb = 3 * k;
+                let fk = f[k];
+                acc += at(base + row, kb) * fk.x
+                    + at(base + row, kb + 1) * fk.y
+                    + at(base + row, kb + 2) * fk.z;
+            }
+            let fc_row = match row {
+                0 => fc.x,
+                1 => fc.y,
+                _ => fc.z,
+            };
+            e += 0.5 * fc_row * (acc + reg[row] * fc_row);
+            e += fc_row * problem.free_velocity[base + row];
+        }
+        e -= fc.x * problem.rows[c].bias;
+    }
+    e
+}
+
+/// The staged fixed-point residual at an iterate, row for row the equations
+/// [`crate::gradient::complete_kkt`] linearizes:
+///
+/// - separating: `F = f_c` (all three rows);
+/// - sticking (and sliding normal rows): the stationarity residual
+///   `[(A + R) f + b]_row - bias` on the normal row, `[(A + R) f + b]_row`
+///   tangentially;
+/// - sliding tangential rows: `F_t = f_t - mu f_n t_hat`, with `t_hat` the
+///   direction of the unconstrained tangential minimizer at the iterate
+///   (from the same assembly); where that direction is undefined the pin is
+///   `f_t` itself.
+#[allow(clippy::needless_range_loop)]
+fn staged_residual(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    regimes: &[crate::gradient::ContactRegime],
+    that: &[Option<[f64; 2]>],
+    f: &[Vec3],
+) -> Vec<f64> {
+    use crate::gradient::ContactRegime;
+    let n = problem.n;
+    let dim = 3 * n;
+    let at = |r: usize, c: usize| problem.delassus[r * dim + c];
+    let mut res = vec![0.0; dim];
+    for c in 0..n {
+        let base = 3 * c;
+        match regimes[c] {
+            ContactRegime::Separating => {
+                res[base] = f[c].x;
+                res[base + 1] = f[c].y;
+                res[base + 2] = f[c].z;
+            }
+            ContactRegime::Sticking => {
+                let reg = regularization_diag(problem, c, config);
+                for r in 0..3 {
+                    let row = base + r;
+                    let mut acc = problem.free_velocity[row];
+                    for k in 0..n {
+                        let kb = 3 * k;
+                        let fk = f[k];
+                        acc += at(row, kb) * fk.x + at(row, kb + 1) * fk.y + at(row, kb + 2) * fk.z;
+                    }
+                    let own = match r {
+                        0 => f[c].x,
+                        1 => f[c].y,
+                        _ => f[c].z,
+                    };
+                    acc += reg[r] * own;
+                    res[row] = acc;
+                }
+                res[base] -= problem.rows[c].bias;
+            }
+            ContactRegime::Sliding => {
+                let reg = regularization_diag(problem, c, config);
+                let row = base;
+                let mut acc = problem.free_velocity[row];
+                for k in 0..n {
+                    let kb = 3 * k;
+                    let fk = f[k];
+                    acc += at(row, kb) * fk.x + at(row, kb + 1) * fk.y + at(row, kb + 2) * fk.z;
+                }
+                acc += reg[0] * f[c].x;
+                res[base] = acc - problem.rows[c].bias;
+                match that[c] {
+                    Some(that) => {
+                        let lim = problem.rows[c].mu * f[c].x;
+                        res[base + 1] = f[c].y - lim * that[0];
+                        res[base + 2] = f[c].z - lim * that[1];
+                    }
+                    None => {
+                        res[base + 1] = f[c].y;
+                        res[base + 2] = f[c].z;
+                    }
+                }
+            }
+        }
+    }
+    res
+}
+
+/// The slip direction of the unconstrained tangential minimizer at `f`, per
+/// sliding contact — the `t_hat` the staged residual pins against. `None`
+/// where the direction (or the tangential block) is degenerate.
+///
+/// The formula is the one [`crate::gradient::complete_kkt`] uses; this
+/// exists so a line search can re-evaluate the *residual* at a trial point
+/// without paying for (or freezing) the full linearization: the Newton
+/// direction descends the rotating-`t_hat` residual, so the merit must
+/// rotate too — measured against a frozen `t_hat`, every near-solution step
+/// is rejected.
+#[allow(clippy::needless_range_loop)]
+fn tangential_dirs(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    regimes: &[crate::gradient::ContactRegime],
+    f: &[Vec3],
+) -> Vec<Option<[f64; 2]>> {
+    use crate::gradient::ContactRegime;
+    let n = problem.n;
+    let dim = 3 * n;
+    let a = &problem.delassus;
+    let mut out: Vec<Option<[f64; 2]>> = vec![None; n];
+    for c in 0..n {
+        if regimes[c] != ContactRegime::Sliding {
+            continue;
+        }
+        let base = 3 * c;
+        let reg = regularization_diag(problem, c, config);
+        let m = [
+            [
+                a[(base + 1) * dim + base + 1] + reg[1],
+                a[(base + 1) * dim + base + 2],
+            ],
+            [
+                a[(base + 2) * dim + base + 1],
+                a[(base + 2) * dim + base + 2] + reg[2],
+            ],
+        ];
+        let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+        if det.abs() < 1e-30 {
+            continue;
+        }
+        let minv = [
+            [m[1][1] / det, -m[0][1] / det],
+            [-m[1][0] / det, m[0][0] / det],
+        ];
+        // r_t = [(A + R) f + b]_t - M_t f_t, then t* = -M_t^-1 r_t.
+        let mut r = [0.0f64; 2];
+        for (i, ri) in r.iter_mut().enumerate() {
+            let row = base + 1 + i;
+            let mut acc = problem.free_velocity[row];
+            for k in 0..n {
+                let kb = 3 * k;
+                let fk = f[k];
+                acc += a[row * dim + kb] * fk.x
+                    + a[row * dim + kb + 1] * fk.y
+                    + a[row * dim + kb + 2] * fk.z;
+            }
+            let own = if i == 0 { f[c].y } else { f[c].z };
+            acc += reg[1 + i] * own;
+            acc -= m[i][0] * f[c].y + m[i][1] * f[c].z;
+            *ri = acc;
+        }
+        let t_star = [
+            -(minv[0][0] * r[0] + minv[0][1] * r[1]),
+            -(minv[1][0] * r[0] + minv[1][1] * r[1]),
+        ];
+        let t_norm = (t_star[0] * t_star[0] + t_star[1] * t_star[1]).sqrt();
+        if t_norm <= 1e-14 {
+            continue;
+        }
+        out[c] = Some([t_star[0] / t_norm, t_star[1] / t_norm]);
+    }
+    out
+}
+
+/// Probe sweeps the accelerator may spend watching for the wedged tail.
+///
+/// The wedged regime is not visible up front: the skate stance contracts at
+/// a healthy 0.74 per sweep for its first dozens of sweeps and only then
+/// levels off toward 1, so a short probe reads it as healthy and walks away.
+/// The probe sweeps are ordinary solver progress on the actual iterate —
+/// a healthy problem simply converges inside them — so the budget is cheap
+/// to hold open.
+const ACCEL_PROBE_SWEEPS: usize = 64;
+
+/// Iteration units the preconditioned accelerator may spend before handing
+/// the iterate to the recorded solve. Each unit is one semismooth Newton
+/// solve (`O((3n)^3)`) plus one verification sweep.
+const ACCEL_ROUNDS: usize = 40;
+
+/// Drive the iterate to the staged fixed point with semismooth Newton on the
+/// *complete* linearization — the preconditioned solve behind
+/// `PHYZ_CONTACT_PRECOND=1`.
+///
+/// # Why this exists, and why it is primal-only
+///
+/// The census on the K1 skate stance (15-18 contacts) measured the shipped
+/// solver converging on ~0/64 to 2/2000 steps: PGS moves the iterate by
+/// `~1e-5` per sweep at a linear rate wedged against 1 (the redundant
+/// manifold's null space is restrained only by the tiny tangential
+/// regularizer), and the in-solve Newton stage — whose sliding pins hold
+/// `t_hat` fixed at the direction the iterate happened to have — cannot
+/// rotate a slip direction, so on a stance with rotating slip the line
+/// search rejects all its proposals and the stagnation exit fires at
+/// `1e-4`..`1e-7`.
+///
+/// This accelerator Newton-iterates on the full staged conditions with the
+/// slip-direction rotation channel included — [`crate::gradient::complete_kkt`],
+/// the same linearization [`crate::gradient::FixedPointSensitivity`]
+/// differentiates at the solution. Near the fixed point that is a genuine
+/// Newton method: the same stance lands at machine precision in a handful of
+/// solves.
+///
+/// # What it does and does not achieve, measured
+///
+/// It converges problems the shipped solver stalls on — an 8-contact K1
+/// stance snapshot goes from 272 iterations at `4e-8` (stall exit, refused by
+/// the gradient) to 2 iterations at `2e-13`, and a settled 4-contact stack
+/// from 192 at `2e-9` to 2 at machine precision.
+///
+/// It does **not** solve the case it was built for. On the live 16-contact
+/// K1 skate stance, a 2 s settle converges 14/2000 steps against the shipped
+/// path's 18/2000, at `11.2 ms/step` against `2.2` — five times the cost for
+/// no gain. Two things go wrong there and both are about the *active set*
+/// rather than the linear algebra: the refinement below cycles (contacts
+/// trading regimes round after round while `||F||` sits at `1e-2`), and when
+/// the LM does converge it can converge to a stationary point of the wrong
+/// system, which the certification below then rejects — so the work is spent
+/// and discarded. Pure PGS on that stance reaches only `3e-8` in 200 000
+/// sweeps against a `1e-9` tolerance, so the shipped solver is not merely
+/// stopping early there either.
+///
+/// That is why this is gated off and why the gate should stay off: it is a
+/// working mechanism on determinate and mildly redundant contact sets, and an
+/// unfinished one on the deeply redundant stance. The next thing to try is a
+/// non-monotone or anti-cycling active-set rule (a Fletcher-style filter, or
+/// pivoting one contact per round rather than all violators at once).
+///
+/// It runs *before* anything is recorded, differentiated, or taped, and only
+/// mutates the effective warm-start seed: the solve that follows starts at
+/// (or near) the fixed point and terminates through the exact code path that
+/// always ran, so `converged`, `iterations` and `residual` keep their
+/// meanings, and both adjoint modes replay it deterministically as part of
+/// the seed. The seed's differential is the caller's, unchanged — at a
+/// converged fixed point the answer is seed-independent, which is the same
+/// (documented) contract warm starting already relies on.
+// Stride arithmetic into flat, row-major arrays (base = 3*c), as
+// throughout this module.
+#[allow(clippy::needless_range_loop)]
+fn accelerate(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    blocks: &[[[f64; 3]; 3]],
+    f: &mut [Vec3],
+) {
+    let n = problem.n;
+    let dim = 3 * n;
+
+    // Health probe: sweep until converged, budget, or a wedged tail rate.
+    // The first sweeps of any solve make transient progress, so a short probe
+    // cannot tell a healthy solve (contraction well under 1, finishes inside
+    // the recorded budget) from a wedged one (rate against 1 on a redundant
+    // manifold); the tail rate can. Newton only engages on two consecutive
+    // near-1 contractions — on healthy problems the probe either finishes the
+    // solve outright or hands the recorded solve a better seed, and the
+    // frozen-classification Newton (which can pick the wrong attractor when a
+    // contact sits within rounding of its cone boundary) never runs.
+    // Anything past the probe must certify a fixed point or leave no trace:
+    // even the probe's own sweeps can walk a healthy-looking iterate into the
+    // boundary-hugging region where the recorded solve's Newton stage is then
+    // trapped (measured on a cold incline start: ungated converges at step 0,
+    // a probe-advanced-then-reverted-to-probe-endpoint gated solve stalled at
+    // `1e-7`). On failure the seed is restored byte-for-byte, so a gated
+    // solve the accelerator cannot finish is exactly the shipped solve.
+    let checkpoint = f.to_vec();
+    let mut prev = f64::INFINITY;
+    let mut engage = false;
+    for i in 0..ACCEL_PROBE_SWEEPS {
+        let mv = sweep(problem, config, blocks, f, false, None);
+        if mv < config.tolerance {
+            return;
+        }
+        let ratio = mv / prev;
+        prev = mv;
+        // Engage on the *projection*, not on a rate threshold: at a
+        // contraction of `r` per sweep, reaching the tolerance takes
+        // `ln(tol/mv) / ln(r)` more sweeps, and the question is only whether
+        // that fits in what the recorded solve has left. A stance contracting
+        // at a respectable 0.9 still needs thousands of sweeps from `1e-4`,
+        // which is why a rate threshold misses it.
+        if i >= 3 && ratio < 1.0 {
+            let need = (config.tolerance / mv).ln() / ratio.ln();
+            if !need.is_finite() || need > config.max_iterations as f64 {
+                engage = true;
+                break;
+            }
+        } else if i >= 3 {
+            engage = true;
+            break;
+        }
+    }
+    if !engage {
+        // The probe's sweeps are ordinary solver progress on the real
+        // iterate, so they are kept: the recorded solve simply starts closer.
+        return;
+    }
+
+    // The Newton phase is pure Levenberg-Marquardt on the staged residual:
+    // assemble the complete linearization at `f`, refine the active set from
+    // the undamped solution's cone violations, then take a damped step
+    // accepted on the *rotated-t_hat* residual. A rejection raises the
+    // damping and retries the same linearization — it does NOT fall back to
+    // sweeps: on stances with many friction-saturated contacts a sweep
+    // rotates the slip directions enough to raise `||F||` twenty-fold and
+    // erase the phase's progress (measured on a live 16-contact stance).
+    // The sweep's only role here is the final certification below.
+    let mut best: Option<(f64, Vec<Vec3>)> = None;
+    let mut best_fnorm = f64::INFINITY;
+    let mut flat_rounds = 0usize;
+    let mut lambda = 1e-4;
+    'rounds: for _ in 0..ACCEL_ROUNDS {
+        // Active-set refinement (see above): the classification band cannot
+        // see a contact the solution wants outside its cone.
+        let mut regimes = crate::gradient::classify_impulses(problem, f, 1e-7);
+        let mut lin;
+        let mut res;
+        let mut refine = 0;
+        loop {
+            lin = crate::gradient::complete_kkt(problem, config, f, &regimes);
+            res = staged_residual(problem, config, &lin.regimes, &lin.that, f);
+            let mut k = lin.k.clone();
+            let mut d: Vec<f64> = res.iter().map(|v| -v).collect();
+            if crate::gradient::solve_dense(&mut k, &mut d, dim, 1).is_none()
+                || d.iter().any(|v| !v.is_finite())
+            {
+                break;
+            }
+            let mut changed = false;
+            if refine < 8 {
+                for c in 0..n {
+                    let base = 3 * c;
+                    let t_n = f[c].x + d[base];
+                    let (t_u, t_w) = (f[c].y + d[base + 1], f[c].z + d[base + 2]);
+                    match regimes[c] {
+                        crate::gradient::ContactRegime::Sticking => {
+                            if t_n <= 0.0 {
+                                regimes[c] = crate::gradient::ContactRegime::Separating;
+                                changed = true;
+                            } else if (t_u * t_u + t_w * t_w).sqrt() > problem.rows[c].mu * t_n {
+                                regimes[c] = crate::gradient::ContactRegime::Sliding;
+                                changed = true;
+                            }
+                        }
+                        crate::gradient::ContactRegime::Sliding => {
+                            if t_n <= 0.0 {
+                                regimes[c] = crate::gradient::ContactRegime::Separating;
+                                changed = true;
+                            }
+                        }
+                        crate::gradient::ContactRegime::Separating => {
+                            // Re-engagement. Without this the refinement is a
+                            // one-way street into Separating and the LM
+                            // happily converges to a stationary point of the
+                            // wrong system — measured: `||F||` at 7.6e-17 on
+                            // an active set the certification sweep rejects,
+                            // because a contact that was carrying load had
+                            // been released and never taken back. A released
+                            // contact whose *own* stationarity residual is
+                            // negative is being driven into penetration, so
+                            // it belongs back in the active set.
+                            let a_nn = problem.delassus[base * dim + base]
+                                + regularization_diag(problem, c, config)[0];
+                            let mut acc = problem.free_velocity[base] - problem.rows[c].bias;
+                            for kk in 0..n {
+                                let kb = 3 * kk;
+                                acc += problem.delassus[base * dim + kb] * f[kk].x
+                                    + problem.delassus[base * dim + kb + 1] * f[kk].y
+                                    + problem.delassus[base * dim + kb + 2] * f[kk].z;
+                            }
+                            if a_nn > 0.0 && acc < 0.0 {
+                                regimes[c] = crate::gradient::ContactRegime::Sticking;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+            refine += 1;
+        }
+        let fnorm = res.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+        if fnorm < best_fnorm {
+            if fnorm < 0.7 * best_fnorm {
+                flat_rounds = 0;
+            }
+            best_fnorm = fnorm;
+            best = Some((fnorm, f.to_vec()));
+        } else {
+            flat_rounds += 1;
+            if flat_rounds >= 6 {
+                break;
+            }
+        }
+
+        // K^T K and -K^T F once per round; damping retries rescale the
+        // diagonal only.
+        let k = &lin.k;
+        let mut ktk = vec![0.0; dim * dim];
+        for i in 0..dim {
+            for j in 0..dim {
+                let mut acc = 0.0;
+                for r in 0..dim {
+                    acc += k[r * dim + i] * k[r * dim + j];
+                }
+                ktk[i * dim + j] = acc;
+            }
+        }
+        let mut ktf = vec![0.0; dim];
+        for (i, slot) in ktf.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for r in 0..dim {
+                acc -= k[r * dim + i] * res[r];
+            }
+            *slot = acc;
+        }
+
+        let mut accepted = false;
+        for _ in 0..4 {
+            let mut m = ktk.clone();
+            for i in 0..dim {
+                m[i * dim + i] *= 1.0 + lambda;
+            }
+            let mut delta = ktf.clone();
+            if crate::gradient::solve_dense(&mut m, &mut delta, dim, 1).is_none()
+                || delta.iter().any(|v| !v.is_finite())
+            {
+                break 'rounds;
+            }
+            let mut trial = f.to_vec();
+            for c in 0..n {
+                let base = 3 * c;
+                let f_n = (trial[c].x + delta[base]).max(0.0);
+                let (mut t_u, mut t_w) =
+                    (trial[c].y + delta[base + 1], trial[c].z + delta[base + 2]);
+                let limit = problem.rows[c].mu * f_n;
+                let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+                if t_norm > limit {
+                    let s = if t_norm > 0.0 { limit / t_norm } else { 0.0 };
+                    t_u *= s;
+                    t_w *= s;
+                }
+                trial[c] = Vec3::new(f_n, t_u, t_w);
+            }
+            // Merit: the residual with the slip directions re-derived at the
+            // trial. The Newton direction descends the rotating-t_hat
+            // residual, so the merit must rotate too.
+            let trial_that = tangential_dirs(problem, config, &lin.regimes, &trial);
+            let trial_res = staged_residual(problem, config, &lin.regimes, &trial_that, &trial);
+            let trial_norm = trial_res.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+            if trial_norm < fnorm * 0.999 {
+                f.copy_from_slice(&trial);
+                lambda = (lambda * 0.25).max(1e-12);
+                accepted = true;
+                break;
+            }
+            lambda = (lambda * 10.0).min(1e8);
+        }
+        if census_enabled() {
+            eprintln!(
+                "  accel: |F|={fnorm:.3e} lambda={lambda:.1e} accepted={accepted} regimes={:?}",
+                lin.regimes
+            );
+        }
+        if !accepted {
+            break;
+        }
+    }
+
+    // Certify or revert. The best iterate by sweep movement is only accepted
+    // if one more sweep no longer moves it — i.e. the accelerator actually
+    // delivered the staged fixed point. Anything less is discarded outright:
+    // a near-miss can sit in the basin of the wrong attractor (the
+    // borderline-cone case above), where it reads as \"small movement\" while
+    // being far from the point the sweeps converge to, and seeding the
+    // recorded solve there is strictly worse than not having run.
+    if let Some((_, b)) = best {
+        f.copy_from_slice(&b);
+        let mv = sweep(problem, config, blocks, f, false, None);
+        if mv < config.tolerance {
+            return;
+        }
+    }
+    f.copy_from_slice(&checkpoint);
+}
+
+/// Whether the preconditioned solve path is on (`PHYZ_CONTACT_PRECOND=1`).
+///
+/// Default off: with this unset the solver behaves byte-for-byte as shipped.
+/// See the module doc of the Newton stage for what it changes.
+fn precond_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_CONTACT_PRECOND").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Minimum contact count for `PHYZ_PROBLEM_DUMP` (default 4), via
+/// `PHYZ_PROBLEM_DUMP_MIN`.
+fn dump_min() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("PHYZ_PROBLEM_DUMP_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4)
+    })
+}
+
+/// Per-solve convergence census on stderr (`PHYZ_SOLVE_CENSUS=1`).
+///
+/// One line per contact solve: contact count, iteration units, final sweep
+/// residual, whether tolerance was reached, and where the Newton attempts
+/// went — accepted by the line search, rejected by it, or never constructed
+/// (`newton_none`, a singular KKT solve). Diagnostic only; default off.
+fn census_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_SOLVE_CENSUS").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// The process-wide `PHYZ_NO_STALL_EXIT` override, OR-ed with
+/// [`ContactSolverConfig::no_stall_exit`] at the one site that reads it —
+/// so setting either spends the whole budget, and setting neither stops the
+/// solver exactly where it always has.
+///
+/// Prefer the config field. This variable stays because callers already set
+/// it and because it is the only way to reach a solve whose config a caller
+/// does not own; but it is latched in a `OnceLock`, so a process gets one
+/// answer and two differently-configured solves in it cannot disagree.
+///
+/// The stagnation exit is a throughput decision — a block that removed less
+/// than `STALL_RATIO` of the residual is on a rate that cannot reach the
+/// tolerance inside the cap, so the remaining sweeps are pure cost. It gives up
+/// honestly (`converged: false`) and [`crate::gradient`] refuses the step, so
+/// nothing is silently wrong.
+///
+/// But it gives up *early*, and "on a linear rate" is a local estimate: a solve
+/// that stalls for a few blocks and would then have found its footing is
+/// abandoned. On a redundant contact manifold — the case active-set Newton
+/// exists for — that is a real possibility, and every abandoned step is a step
+/// the adjoint cannot differentiate and therefore a whole window's gradient
+/// lost, since the adjoint walks backwards and one refusal kills everything
+/// behind it. Set this when a gradient matters more than a step time.
+fn no_stall_exit() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_NO_STALL_EXIT").is_ok_and(|v| v == "1" || v == "true"))
 }
 
 /// PGS sweeps spent establishing the active set before Newton takes over.
@@ -941,12 +1763,49 @@ fn shares_body(a: (usize, usize), b: (usize, usize)) -> bool {
     (real(a.0) && (a.0 == b.0 || a.0 == b.1)) || (real(a.1) && (a.1 == b.0 || a.1 == b.1))
 }
 
+/// The parameter differential a sweep carries when the solver-level adjoint
+/// re-executes it.
+///
+/// # Why this rides *inside* the sweep
+///
+/// The whole point of a solver-level adjoint is to differentiate the branch the
+/// forward pass actually took. Every branch in the staged update is decided at
+/// **zero tolerance** — `f_n = max(0.0, .)` and `if t_norm > limit` — so the
+/// only way to be sure the derivative agrees with the primal is to compute both
+/// from the same values in the same pass. A separate backward routine that
+/// re-derived the branches from a band (which is what
+/// [`crate::gradient::classify_impulses`] does) is exactly the mismatch this
+/// crate has shipped twice.
+///
+/// So the differential is threaded through the sweep rather than recorded and
+/// replayed. That also makes the "tape" free: re-executing the solve is
+/// deterministic, so nothing per-sweep needs storing.
+///
+/// The parameter channel is expressed in the two combinations the staged update
+/// actually reads:
+///
+/// - `d_apr` — the differential of `A + R`, row-major `3n x 3n`. The
+///   regularizer is diagonal, so off-diagonal blocks are just `dA`.
+/// - `dc` — the differential of `b - e_n * bias`, length `3n`. The normal
+///   numerator only ever sees `bias - b_n`, so folding the two together is not
+///   a shortcut; it is the exact quantity the arithmetic uses.
+pub(crate) struct SweepDiff<'a> {
+    /// `d(A + R)`, row-major `3n x 3n`.
+    pub d_apr: &'a [f64],
+    /// `d(b - e_n bias)`, length `3n`.
+    pub dc: &'a [f64],
+    /// The running differential of the impulses. Updated in place, exactly
+    /// where `f` is.
+    pub df: Vec<Vec3>,
+}
+
 fn sweep(
     problem: &ContactProblem,
     config: &ContactSolverConfig,
     blocks: &[[[f64; 3]; 3]],
     f: &mut [Vec3],
     normals_only: bool,
+    mut diff: Option<&mut SweepDiff>,
 ) -> f64 {
     let n = problem.n;
     let dim = 3 * n;
@@ -966,10 +1825,19 @@ fn sweep(
         // restricted mode remains the same contact model rather than becoming
         // a second one.
         let mut r = [0.0f64; 3];
+        // `dr` mirrors `r` term for term. It accumulates `dc` where `r`
+        // accumulates `b`, and the product rule where `r` accumulates
+        // `A_ck f_k` — under exactly the same coupling mask, so a restricted
+        // operator differentiates as the restricted operator it is.
+        let mut dr = [0.0f64; 3];
         for (row, r_row) in r.iter_mut().enumerate() {
             let mut acc = problem.free_velocity[base + row];
+            let mut dacc = diff.as_ref().map_or(0.0, |d| d.dc[base + row]);
             if config.coupling != ContactCoupling::BlockDiagonal {
-                for (k, f_k) in f.iter().enumerate().take(n) {
+                // `k` indexes `f`, `df` and `d_apr`'s column block together;
+                // enumerating one would hide that they must stay in step.
+                #[allow(clippy::needless_range_loop)]
+                for k in 0..n {
                     if k == c {
                         continue;
                     }
@@ -983,13 +1851,41 @@ fn sweep(
                         continue;
                     }
                     let kb = 3 * k;
+                    let f_k = f[k];
                     acc += at(base + row, kb) * f_k.x
                         + at(base + row, kb + 1) * f_k.y
                         + at(base + row, kb + 2) * f_k.z;
+                    if let Some(d) = diff.as_ref() {
+                        let dfk = d.df[k];
+                        let ri = (base + row) * dim;
+                        dacc += d.d_apr[ri + kb] * f_k.x
+                            + d.d_apr[ri + kb + 1] * f_k.y
+                            + d.d_apr[ri + kb + 2] * f_k.z
+                            + at(base + row, kb) * dfk.x
+                            + at(base + row, kb + 1) * dfk.y
+                            + at(base + row, kb + 2) * dfk.z;
+                    }
                 }
             }
             *r_row = acc;
+            dr[row] = dacc;
         }
+        // The contact's own regularized block, and its differential. `blocks`
+        // is `A_cc + diag(reg)`, so `d_apr`'s own diagonal block is its exact
+        // differential — the regularizer's dependence on depth included.
+        let db: [[f64; 3]; 3] = match diff.as_ref() {
+            None => [[0.0; 3]; 3],
+            Some(d) => {
+                let mut m = [[0.0; 3]; 3];
+                for (i, mi) in m.iter_mut().enumerate() {
+                    for (j, e) in mi.iter_mut().enumerate() {
+                        *e = d.d_apr[(base + i) * dim + base + j];
+                    }
+                }
+                m
+            }
+        };
+        let dfc = diff.as_ref().map_or(Vec3::zeros(), |d| d.df[c]);
 
         // Restitution is already folded into `free_velocity` as a target
         // normal velocity (see `point_mass_problem`) rather than applied
@@ -1033,9 +1929,24 @@ fn sweep(
         // space instead of terminating.
         let a_nn = blocks[c][0][0];
         let (a_nu, a_nw) = (blocks[c][0][1], blocks[c][0][2]);
-        let f_n = if a_nn > 0.0 {
-            ((row.bias - r[0] - a_nu * f[c].y - a_nw * f[c].z) / a_nn).max(0.0)
+        let unclamped = if a_nn > 0.0 {
+            (row.bias - r[0] - a_nu * f[c].y - a_nw * f[c].z) / a_nn
         } else {
+            0.0
+        };
+        let f_n = if a_nn > 0.0 { unclamped.max(0.0) } else { 0.0 };
+        // `d(bias - r_0) = -dr_0`: `dc` folds `db - e_n dbias` into one vector
+        // precisely so this stays a single term. The quotient rule's second
+        // term carries `d(A+R)_nn`, and it is the one that vanishes only at a
+        // fixed point — dropping it is what makes an IFT gradient of a
+        // finitely-swept iterate wrong.
+        let d_f_n = if a_nn > 0.0 && unclamped > 0.0 {
+            let d_num =
+                -dr[0] - (db[0][1] * f[c].y + a_nu * dfc.y) - (db[0][2] * f[c].z + a_nw * dfc.z);
+            (d_num - unclamped * db[0][0]) / a_nn
+        } else {
+            // The forward took the `max(0.0)` branch (or the degenerate
+            // `a_nn <= 0` one): the impulse is pinned, so its differential is.
             0.0
         };
 
@@ -1044,6 +1955,8 @@ fn sweep(
         let (a_un, a_wn) = (blocks[c][1][0], blocks[c][2][0]);
         let r_u = r[1] + a_un * f_n;
         let r_w = r[2] + a_wn * f_n;
+        let d_r_u = dr[1] + db[1][0] * f_n + a_un * d_f_n;
+        let d_r_w = dr[2] + db[2][0] * f_n + a_wn * d_f_n;
         let (m00, m01) = (blocks[c][1][1], blocks[c][1][2]);
         let (m10, m11) = (blocks[c][2][1], blocks[c][2][2]);
         let det = m00 * m11 - m01 * m10;
@@ -1059,6 +1972,25 @@ fn sweep(
         } else {
             (f[c].y, f[c].z)
         };
+        // Same three branches, same order. `normals_only` holds the tangential
+        // impulses, so their differential is held too — a warm start's friction
+        // seed carries its sensitivity through the normal-equilibration phase
+        // exactly as it carries its value.
+        let (mut d_t_u, mut d_t_w) = if !normals_only {
+            if det.abs() > 1e-18 {
+                let d_det = db[1][1] * m11 + m00 * db[2][2] - db[1][2] * m10 - m01 * db[2][1];
+                (
+                    -(db[2][2] * r_u + m11 * d_r_u - db[1][2] * r_w - m01 * d_r_w) / det
+                        - t_u * d_det / det,
+                    -(db[1][1] * r_w + m00 * d_r_w - db[2][1] * r_u - m10 * d_r_u) / det
+                        - t_w * d_det / det,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (dfc.y, dfc.z)
+        };
 
         // Clamp into the friction disc of radius mu*f_n. The clamp is
         // isotropic, so a block sliding at any heading loses speed
@@ -1068,11 +2000,26 @@ fn sweep(
         if t_norm > limit {
             if t_norm > 0.0 {
                 let s = limit / t_norm;
+                // Differentiate before overwriting: `t_u`/`t_w` below are the
+                // pre-scale values this derivative is taken at. Expanded, this
+                // is `s (I - t_hat t_hat^T) dt* + mu t_hat df_n` — the same
+                // projector `FixedPointSensitivity` carries for a converged
+                // sliding contact, here evaluated at whichever iterate the
+                // sweep is on rather than at an assumed fixed point.
+                if diff.is_some() {
+                    let d_t_norm = (t_u * d_t_u + t_w * d_t_w) / t_norm;
+                    let d_s = (row.mu * d_f_n - s * d_t_norm) / t_norm;
+                    let (nu, nw) = (s * d_t_u + t_u * d_s, s * d_t_w + t_w * d_s);
+                    d_t_u = nu;
+                    d_t_w = nw;
+                }
                 t_u *= s;
                 t_w *= s;
             } else {
                 t_u = 0.0;
                 t_w = 0.0;
+                d_t_u = 0.0;
+                d_t_w = 0.0;
             }
         }
 
@@ -1090,6 +2037,10 @@ fn sweep(
         let next = f[c] + (target - f[c]) * config.relaxation;
         max_move = max_move.max((next - f[c]).norm());
         f[c] = next;
+        if let Some(d) = diff.as_mut() {
+            let d_target = Vec3::new(d_f_n, d_t_u, d_t_w);
+            d.df[c] = dfc + (d_target - dfc) * config.relaxation;
+        }
     }
 
     max_move
@@ -1111,14 +2062,32 @@ fn sweep(
 ///
 /// Returns `None` if the KKT matrix is singular at this active set — the
 /// caller falls back to PGS, which needs no such assumption.
+///
+/// # Differentiated
+///
+/// With `diff`, both halves are differentiated at the branches *this call*
+/// takes:
+///
+/// - `d raw = K^-1 (drhs - dK raw)`, with `drhs` from `dc` and `dK` from
+///   `d_apr` on the stationarity rows. The sliding pin rows carry the slip
+///   direction's own rotation, `d t_hat = (I - t_hat t_hat^T) df_t / ||f_t||`,
+///   because `t_hat` is read off the iterate and the iterate moves with the
+///   parameters. Holding it fixed is the approximation the solver is entitled
+///   to (its next sweep re-derives the direction) and a derivative is not.
+/// - the clamp, exactly as in [`sweep`].
+///
+/// The regimes are classified from `f` by the same call the primal makes, so
+/// the differentiated system is the system solved — there is no second
+/// classification and no band.
 // `c` indexes three flat arrays at stride 3 as well as `regimes`; enumerating
 // one of them would hide the correspondence the others depend on.
 #[allow(clippy::needless_range_loop)]
-fn newton_step(
+fn newton_step_diff(
     problem: &ContactProblem,
     config: &ContactSolverConfig,
     f: &[Vec3],
-) -> Option<Vec<Vec3>> {
+    diff: Option<&SweepDiff>,
+) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
     use crate::gradient::ContactRegime;
 
     let n = problem.n;
@@ -1145,31 +2114,132 @@ fn newton_step(
         }
     }
 
+    // `K` is consumed by the elimination, so keep a copy for `dK raw` and
+    // solve the differential in the same factorization pass: appending `drhs`
+    // as a second column is what keeps the two systems provably identical.
+    let k_nominal = if diff.is_some() {
+        k.clone()
+    } else {
+        Vec::new()
+    };
     crate::gradient::solve_dense(&mut k, &mut rhs, dim, 1)?;
     if rhs.iter().any(|v| !v.is_finite()) {
         return None;
     }
 
+    // `d raw`, solved against the same `K` the primal just used.
+    let d_raw = match diff {
+        None => vec![0.0; dim],
+        Some(d) => {
+            let raw = &rhs;
+            let df = &d.df;
+            // drhs: the constant part of the same equations.
+            let mut drhs = vec![0.0; dim];
+            for c in 0..n {
+                let base = 3 * c;
+                match regimes[c] {
+                    ContactRegime::Separating => {}
+                    ContactRegime::Sticking => {
+                        for r in 0..3 {
+                            drhs[base + r] = -d.dc[base + r];
+                        }
+                    }
+                    ContactRegime::Sliding => drhs[base] = -d.dc[base],
+                }
+            }
+            // -dK raw, row by row, mirroring `kkt_matrix`'s row structure.
+            for c in 0..n {
+                let base = 3 * c;
+                match regimes[c] {
+                    // Identity rows: dK = 0.
+                    ContactRegime::Separating => {}
+                    ContactRegime::Sticking => {
+                        for r in 0..3 {
+                            let ri = (base + r) * dim;
+                            let mut acc = 0.0;
+                            for col in 0..dim {
+                                acc += d.d_apr[ri + col] * raw[col];
+                            }
+                            drhs[base + r] -= acc;
+                        }
+                    }
+                    ContactRegime::Sliding => {
+                        let ri = base * dim;
+                        let mut acc = 0.0;
+                        for col in 0..dim {
+                            acc += d.d_apr[ri + col] * raw[col];
+                        }
+                        drhs[base] -= acc;
+                        // Pin rows: `df_t - mu t_hat df_n = 0` with `t_hat`
+                        // read off `f`, so `dK` here is `-mu d(t_hat)`.
+                        let fc = f[c];
+                        let ft = (fc.y * fc.y + fc.z * fc.z).sqrt();
+                        if ft > 1e-14 {
+                            let that = [fc.y / ft, fc.z / ft];
+                            let dft = [df[c].y, df[c].z];
+                            let dot = that[0] * dft[0] + that[1] * dft[1];
+                            let mu = problem.rows[c].mu;
+                            for i in 0..2 {
+                                let dthat = (dft[i] - that[i] * dot) / ft;
+                                drhs[base + 1 + i] -= -mu * dthat * raw[base];
+                            }
+                        }
+                    }
+                }
+            }
+            let mut kk = k_nominal;
+            let mut sol = drhs;
+            // The tangent solve must never veto the *primal* candidate: the
+            // matrix is byte-identical to the one the primal just factorised
+            // (same pivots, same elimination), so a `None` here used to be
+            // reachable only through the finite-ness check below — and taking
+            // it changed which branch the solver ran relative to a diff-free
+            // execution of the same solve. That is exactly the divergence the
+            // `replayed.iterations == recorded.iterations` assertions in the
+            // adjoint exist to forbid. A non-finite *differential* now stays a
+            // non-finite differential: the candidate is returned unchanged and
+            // the NaN propagates loudly into the gradient instead of silently
+            // rerouting the primal; a failed second factorisation (unreachable
+            // for an identical matrix, handled defensively) does the same.
+            if crate::gradient::solve_dense(&mut kk, &mut sol, dim, 1).is_none() {
+                sol = vec![f64::NAN; dim];
+            }
+            sol
+        }
+    };
+
     // Project back into the cone with the *staged* clamp, not a Euclidean cone
     // projection: an infeasible proposal must not be allowed to inflate a
     // normal impulse (see the long note in `sweep`).
-    Some(
-        (0..n)
-            .map(|c| {
-                let base = 3 * c;
-                let f_n = rhs[base].max(0.0);
-                let (mut t_u, mut t_w) = (rhs[base + 1], rhs[base + 2]);
-                let limit = problem.rows[c].mu * f_n;
-                let t_norm = (t_u * t_u + t_w * t_w).sqrt();
-                if t_norm > limit {
-                    let s = if t_norm > 0.0 { limit / t_norm } else { 0.0 };
-                    t_u *= s;
-                    t_w *= s;
-                }
-                Vec3::new(f_n, t_u, t_w)
-            })
-            .collect(),
-    )
+    let mut cand = Vec::with_capacity(n);
+    let mut dcand = Vec::with_capacity(n);
+    for c in 0..n {
+        let base = 3 * c;
+        let f_n = rhs[base].max(0.0);
+        let d_f_n = if rhs[base] > 0.0 { d_raw[base] } else { 0.0 };
+        let (mut t_u, mut t_w) = (rhs[base + 1], rhs[base + 2]);
+        let (mut d_t_u, mut d_t_w) = (d_raw[base + 1], d_raw[base + 2]);
+        let limit = problem.rows[c].mu * f_n;
+        let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+        if t_norm > limit {
+            let s = if t_norm > 0.0 { limit / t_norm } else { 0.0 };
+            if t_norm > 0.0 {
+                let d_t_norm = (t_u * d_t_u + t_w * d_t_w) / t_norm;
+                let d_s = (problem.rows[c].mu * d_f_n - s * d_t_norm) / t_norm;
+                let (nu, nw) = (s * d_t_u + t_u * d_s, s * d_t_w + t_w * d_s);
+                d_t_u = nu;
+                d_t_w = nw;
+            } else {
+                d_t_u = 0.0;
+                d_t_w = 0.0;
+            }
+            t_u *= s;
+            t_w *= s;
+        }
+        cand.push(Vec3::new(f_n, t_u, t_w));
+        dcand.push(Vec3::new(d_f_n, d_t_u, d_t_w));
+    }
+    Some((cand, dcand))
 }
 
 /// Convenience: build a single-contact problem for a point mass of effective
@@ -1203,5 +2273,1031 @@ pub fn point_mass_problem(
         rows: vec![ContactRow::from_material(material, depth, dt, e).with_impact(impact)],
         // A single point mass against the static world: nothing to couple to.
         bodies: vec![(0, usize::MAX)],
+    }
+}
+
+/// Is the solver-level adjoint enabled?
+///
+/// Default off: unset, nothing in this crate calls
+/// `solve_contacts_warm_diff` with a differential and every number the crate
+/// reports is byte-identical to what shipped. `PHYZ_SOLVER_ADJOINT=1` switches
+/// [`crate::gradient`]'s consumers over to differentiating the algorithm
+/// instead of an assumed fixed point.
+///
+/// It is a knob rather than the default because the two answer different
+/// questions. The IFT gradient is the derivative of *the contact model*, and is
+/// what a caller wants when the solve converges — it is independent of the
+/// solver's schedule, so it does not move when the tolerance or the iteration
+/// cap is retuned. The solver-level gradient is the derivative of *this
+/// solver's output*, which is what a caller optimizing through a truncated
+/// solve is actually climbing. Where the solve converges they agree; where it
+/// does not, only the second is the gradient of the function being evaluated.
+pub fn solver_adjoint_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_SOLVER_ADJOINT").is_ok_and(|v| v == "1" || v == "true"))
+}
+
+/// Differentiate the contact solve by re-executing it alongside a parameter
+/// differential — the solver-level adjoint.
+///
+/// `d_apr` is `d(A + R)` (row-major `3n x 3n`) and `dc` is `d(b - e_n bias)`
+/// (length `3n`); `d_initial` is the differential of the warm-start seed, which
+/// callers that cannot track it across steps should pass empty (see
+/// `solve_contacts_warm_diff` for exactly what that costs). Returns `df`, the
+/// differential of the impulses the solve produced — the same object
+/// [`crate::gradient::FixedPointSensitivity::apply`] returns, and a drop-in for
+/// it, except that it is correct at an unconverged iterate.
+///
+/// The `ContactSolution` comes back too, and callers should check it matches
+/// the recorded forward solve: a mismatch means the re-execution diverged from
+/// the original, which would void the branch-following guarantee.
+pub fn contact_solve_differential(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    initial: &[Vec3],
+    d_initial: &[Vec3],
+    d_apr: &[f64],
+    dc: &[f64],
+) -> (ContactSolution, Vec<Vec3>) {
+    let dim = 3 * problem.n;
+    debug_assert_eq!(d_apr.len(), dim * dim, "d(A+R) is 3n x 3n");
+    debug_assert_eq!(dc.len(), dim, "d(b - e_n bias) is 3n");
+    let mut df = vec![Vec3::zeros(); problem.n];
+    for (slot, seed) in df.iter_mut().zip(d_initial) {
+        *slot = *seed;
+    }
+    let (sol, out) = solve_contacts_warm_diff(
+        problem,
+        config,
+        initial,
+        Some(SweepDiff { d_apr, dc, df }),
+        None,
+    );
+    // Preconditioned mode, converged solve: the recorded iteration is a
+    // couple of sweeps from an accelerated seed, so a tangent *riding* it has
+    // only that many terms of its Neumann series — the honest tangent at a
+    // fixed point is the implicit one. Same map, same linearization
+    // ([`crate::gradient::FixedPointSensitivity`]); the ridden tangent is
+    // kept for any solve that did not converge, which is exactly the case
+    // the ridden form exists for.
+    if precond_enabled()
+        && sol.converged
+        && let Some(s) = crate::gradient::FixedPointSensitivity::at(problem, &sol, config)
+    {
+        let df = ift_forward(problem, &sol, &s, d_apr, dc);
+        return (sol, df);
+    }
+    (sol, out.unwrap_or_default())
+}
+
+/// The IFT tangent at a converged solve, from the raw `d(A+R)`/`d(b - e_n
+/// bias)` differentials [`SweepDiff`] carries.
+///
+/// The two inputs of [`crate::gradient::FixedPointSensitivity::apply`] are
+/// assembled here: the stationarity differential at frozen impulses,
+/// `d_apr f* + dc`, and per sliding contact the tangential-block
+/// differential applied to `t* - f_t`.
+#[allow(clippy::needless_range_loop)]
+fn ift_forward(
+    problem: &ContactProblem,
+    sol: &ContactSolution,
+    s: &crate::gradient::FixedPointSensitivity,
+    d_apr: &[f64],
+    dc: &[f64],
+) -> Vec<Vec3> {
+    let n = problem.n;
+    let dim = 3 * n;
+    let mut flat = vec![0.0; dim];
+    for c in 0..n {
+        let base = 3 * c;
+        flat[base] = sol.impulses[c].x;
+        flat[base + 1] = sol.impulses[c].y;
+        flat[base + 2] = sol.impulses[c].z;
+    }
+    let mut d_stat = vec![0.0; dim];
+    for row in 0..dim {
+        let mut acc = dc[row];
+        for col in 0..dim {
+            acc += d_apr[row * dim + col] * flat[col];
+        }
+        d_stat[row] = acc;
+    }
+    let mut d_mt = vec![[0.0; 2]; n];
+    for c in 0..n {
+        if let Some(st) = s.slide_tangent(c) {
+            let base = 3 * c;
+            for i in 0..2 {
+                d_mt[c][i] = d_apr[(base + 1 + i) * dim + base + 1] * st.t_rel[0]
+                    + d_apr[(base + 1 + i) * dim + base + 2] * st.t_rel[1];
+            }
+        }
+    }
+    s.apply(&d_stat, &d_mt)
+}
+
+/// Each contact's own regularized `3x3` block, `A_cc + diag(reg)`.
+///
+/// Extracted so the forward solve and the reverse pass read the *same* blocks
+/// rather than two transcriptions of the same three lines. The transpose is
+/// only valid if it linearizes the arithmetic the primal actually performed,
+/// and the diagonal block is where most of that arithmetic lives — the normal
+/// solve's `a_nn`, the tangential `2x2` and its determinant all come from here.
+/// A drifted copy would be a silent, small, everywhere-plausible error, which
+/// is the worst kind to have in a gradient.
+fn regularized_blocks(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+) -> Vec<[[f64; 3]; 3]> {
+    let n = problem.n;
+    let dim = 3 * n;
+    (0..n)
+        .map(|c| {
+            let base = 3 * c;
+            let reg = regularization_diag(problem, c, config);
+            let mut m = [[0.0; 3]; 3];
+            for (r, row) in m.iter_mut().enumerate() {
+                for (col, e) in row.iter_mut().enumerate() {
+                    *e = problem.delassus[(base + r) * dim + base + col];
+                    if r == col {
+                        *e += reg[r];
+                    }
+                }
+            }
+            m
+        })
+        .collect()
+}
+
+/// One entry in the reverse-mode tape: a tangent map the forward pass applied,
+/// recorded by the primal state it was linearized at.
+///
+/// # Why a state tape and not a coefficient tape
+///
+/// The forward-mode adjoint in this file records nothing at all: it re-executes
+/// the solve carrying one tangent, so every branch it takes is the branch the
+/// primal took *because it is the same expression*. Reverse mode cannot do
+/// that — it has to visit the iterations backwards — so something has to be
+/// stored. The cheapest honest thing to store is the primal iterate at the
+/// entry of each step, because from it every branch and every coefficient can
+/// be recomputed by re-running the primal arithmetic, and recomputing them is
+/// exactly as branch-faithful as the forward mode's re-execution is.
+///
+/// Storing the *coefficients* instead — the `s`, the `t_hat`, the clamp flags —
+/// would be a few times larger and would introduce a second place where the
+/// staged update's branch structure is written down. This crate has shipped
+/// that mismatch twice already (see [`SweepDiff`]), so the tape deliberately
+/// holds the one thing that cannot disagree with itself.
+///
+/// # Size, measured
+///
+/// One `Vec3` per contact per recorded step: `24n` bytes. The stances this
+/// solver is built for run 112–4000 sweeps at 15 contacts, so the tape is
+/// `40 KB` at the low end and `1.4 MB` at the pathological high end — a
+/// one-off allocation next to the `O(n^2)` sweep kernel and the `O(n^3)`
+/// Newton factorizations it sits beside. Nothing here justifies a
+/// checkpointing scheme.
+///
+/// Only steps that *survived* are taped. A Newton proposal rejected by the
+/// line search leaves both `f` and `df` untouched, so it is not a link in the
+/// tangent chain and must not appear.
+pub(crate) enum TapeStep {
+    /// One projected Gauss-Seidel sweep, recorded by the impulses it started
+    /// from. `normals_only` distinguishes the normal-equilibration warm-up
+    /// (phase 1a), whose tangential rows are a pass-through, from the full
+    /// staged sweep.
+    Sweep {
+        entry: Vec<Vec3>,
+        normals_only: bool,
+    },
+    /// One *accepted* Newton proposal and the line-search step length that was
+    /// taken with it, recorded by the impulses the KKT system was built at.
+    /// The sweep that verified the proposal is a separate `Sweep` entry
+    /// immediately after this one.
+    Newton { f: Vec<Vec3>, alpha: f64 },
+}
+
+/// The reverse-mode counterpart of [`contact_solve_differential`]'s output: one
+/// covector per parameter channel.
+///
+/// The contract is the dot-product identity, and it is worth stating precisely
+/// because it is also the acceptance test:
+///
+/// ```text
+/// <bar_f, contact_solve_differential(.., d_initial, d_apr, dc).1>
+///     == <bar_apr, d_apr> + <bar_c, dc> + <bar_initial, d_initial>
+/// ```
+///
+/// for *every* `(d_initial, d_apr, dc)`. Forward mode is a perfect oracle for
+/// this: it is the same linear map, so any disagreement beyond rounding is a
+/// bug in one of the two, and the identity holds at an unconverged iterate for
+/// exactly the same reason the forward mode does — both differentiate the
+/// finite composition of sweeps that ran, not a fixed point nobody reached.
+///
+/// # Why this exists when forward mode already does
+///
+/// Cost. The forward differential carries one tangent per call, so a caller who
+/// wants the sensitivity of a scalar loss to all of `A + R` pays `9n^2` solves.
+/// The transpose pays one, for the same information. On the fifteen-contact
+/// skate stance that is the difference between `2025` re-executions of a
+/// four-thousand-sweep solve and one.
+pub struct TransposedDifferential {
+    /// `dL/d(A + R)`, row-major `3n x 3n` — the covector paired with `d_apr`.
+    pub bar_apr: Vec<f64>,
+    /// `dL/d(b - e_n bias)`, length `3n` — the covector paired with `dc`.
+    pub bar_c: Vec<f64>,
+    /// `dL/d(initial)`, length `n`. This falls out for free: the reverse walk
+    /// ends holding the adjoint of whatever the tangent chain started from, and
+    /// what it started from is the warm-start seed. Under a warm start that is
+    /// the previous step's impulses, so this is the channel that carries a
+    /// gradient across a whole trajectory rather than one step.
+    pub bar_initial: Vec<Vec3>,
+}
+
+/// Reverse-mode (transposed) solver-level adjoint: propagate one covector over
+/// the solve's *output* impulses back to covectors over its parameters.
+///
+/// Same solve, same branches, same truncation as
+/// [`contact_solve_differential`] — this is that function's linear map applied
+/// on the other side, not a second model of the solver. It runs the primal
+/// once (taping the iterate at each surviving step), then walks the tape
+/// backwards applying `P_k^T` to the running covector and accumulating
+/// `Q_k^T` into the parameter covectors.
+///
+/// # The one structural thing to know about the reverse pass
+///
+/// Gauss-Seidel is sequential and in place: sweeping contacts `0..n`, contact
+/// `c` reads the *already updated* `f[k]` for `k < c` and the *stale* `f[k]`
+/// for `k > c`. The forward tangent inherits that ordering exactly. Its
+/// transpose therefore has to run contacts in reverse, `n-1..0`, and — this is
+/// the part that is easy to get wrong — contact `c`'s residual reads `df[k]`
+/// for every `k != c`, so its transpose *scatters* the covector from `c` back
+/// onto all of them. It is not a per-contact diagonal map in either direction.
+///
+/// The primal state each contact was linearized at is reconstructed rather than
+/// stored: each contact is updated exactly once per sweep, so its pre-update
+/// value *is* the sweep's entry value. Restoring `state[c] = entry[c]` on the
+/// way down the reverse walk leaves the array holding post-sweep values for
+/// `k < c` and entry values for `k >= c`, which is precisely the state contact
+/// `c` saw.
+///
+/// `bar_f` may be shorter than `problem.n`; missing entries are zero.
+///
+/// # What is *not* differentiated, and why that is right
+///
+/// Every discrete choice the solve made — the iteration count, the line-search
+/// `alpha`, which contacts clamped, the active-set classification, the
+/// stagnation exit — enters as a recorded constant. These are piecewise
+/// constant functions of the parameters, so their derivative is zero almost
+/// everywhere, and following the branch the forward pass took is the entire
+/// contract of a solver-level adjoint. The measure-zero set where a branch
+/// flips is exactly where the solver's output is non-differentiable, and no
+/// amount of smoothing here would change that.
+// Stride arithmetic into flat, row-major arrays (base = 3*c), as
+// throughout this module.
+#[allow(clippy::needless_range_loop)]
+pub fn contact_solve_differential_transpose(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    initial: &[Vec3],
+    bar_f: &[Vec3],
+) -> (ContactSolution, TransposedDifferential) {
+    let n = problem.n;
+    let dim = 3 * n;
+    let mut tape: Vec<TapeStep> = Vec::new();
+    let (solution, _) = solve_contacts_warm_diff(problem, config, initial, None, Some(&mut tape));
+
+    let mut out = TransposedDifferential {
+        bar_apr: vec![0.0; dim * dim],
+        bar_c: vec![0.0; dim],
+        bar_initial: vec![Vec3::zeros(); n],
+    };
+    if n == 0 {
+        return (solution, out);
+    }
+
+    // Preconditioned mode, converged solve: transpose of the same implicit
+    // tangent [`contact_solve_differential`] returns — see the note there.
+    // `bar_initial` stays zero: at a fixed point the answer is
+    // seed-independent, which is the forward mode's statement `df/d(seed) = 0`
+    // transposed.
+    if precond_enabled()
+        && solution.converged
+        && let Some(s) = crate::gradient::FixedPointSensitivity::at(problem, &solution, config)
+    {
+        let (bar_stat, bar_mt) = s.apply_transpose(bar_f);
+        let mut flat = vec![0.0; dim];
+        for c in 0..n {
+            let base = 3 * c;
+            flat[base] = solution.impulses[c].x;
+            flat[base + 1] = solution.impulses[c].y;
+            flat[base + 2] = solution.impulses[c].z;
+        }
+        for row in 0..dim {
+            let b = bar_stat[row];
+            out.bar_c[row] += b;
+            if b != 0.0 {
+                for col in 0..dim {
+                    out.bar_apr[row * dim + col] += b * flat[col];
+                }
+            }
+        }
+        for c in 0..n {
+            if let Some(st) = s.slide_tangent(c) {
+                let base = 3 * c;
+                for i in 0..2 {
+                    for j in 0..2 {
+                        out.bar_apr[(base + 1 + i) * dim + base + 1 + j] +=
+                            bar_mt[c][i] * st.t_rel[j];
+                    }
+                }
+            }
+        }
+        return (solution, out);
+    }
+
+    let blocks = regularized_blocks(problem, config);
+    let mut bar = vec![Vec3::zeros(); n];
+    for (slot, seed) in bar.iter_mut().zip(bar_f) {
+        *slot = *seed;
+    }
+
+    for step in tape.iter().rev() {
+        match step {
+            TapeStep::Sweep {
+                entry,
+                normals_only,
+            } => sweep_transpose(
+                problem,
+                config,
+                &blocks,
+                entry,
+                *normals_only,
+                &mut bar,
+                &mut out,
+            ),
+            TapeStep::Newton { f, alpha } => {
+                newton_transpose(problem, config, f, *alpha, &mut bar, &mut out)
+            }
+        }
+    }
+
+    out.bar_initial = bar;
+    (solution, out)
+}
+
+/// Transpose of one [`sweep`]'s tangent map.
+///
+/// The forward per-contact chain, in the order [`sweep`] performs it, is:
+///
+/// 1. `dr = dc_c + sum_{k != c} (dA_ck f_k + A_ck df_k)` — the off-block residual;
+/// 2. `db = dA_cc` — the contact's own regularized block;
+/// 3. `d f_n = (-dr_0 - dA_nu f_u - A_nu df_u - dA_nw f_w - A_nw df_w
+///    - unclamped * dA_nn) / A_nn`, or zero on the `max(0, .)` branch;
+/// 4. `d r_t = dr_t + dA_tn f_n + A_tn d f_n` — the load the normal puts on the
+///    tangent rows;
+/// 5. the `2x2` tangential solve, quotient rule and all, or a pass-through of
+///    `df_c`'s tangential part under `normals_only`;
+/// 6. the isotropic disc clamp, `s (I - t_hat t_hat^T) dt + mu t_hat d f_n`;
+/// 7. relaxation, `df_c <- (1 - w) df_c + w d target`.
+///
+/// Each step is transposed in place below, walked 7 down to 1. Steps 4 and 5
+/// are transposed only inside the branch that consumed them: `d r_t` is
+/// *computed* unconditionally in the forward pass but only *read* by the
+/// non-degenerate `!normals_only` branch, so accumulating its adjoint outside
+/// that branch would invent a dependency the forward map does not have.
+///
+/// The primal scalars are recomputed here rather than taped. That is a
+/// transcription of [`sweep`]'s arithmetic and the one real duplication in this
+/// file; it is deliberate, because the alternative — taping `f_n`, `s`,
+/// `t_norm`, `det` and the three branch bits per contact per sweep — is both
+/// larger and a second, independently-drifting statement of the staged update's
+/// branch structure.
+// Stride arithmetic into flat row-major arrays, exactly as in `sweep`.
+#[allow(clippy::needless_range_loop)]
+fn sweep_transpose(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    blocks: &[[[f64; 3]; 3]],
+    entry: &[Vec3],
+    normals_only: bool,
+    bar: &mut [Vec3],
+    out: &mut TransposedDifferential,
+) {
+    let n = problem.n;
+    let dim = 3 * n;
+    let a = &problem.delassus;
+    let at = |i: usize, j: usize| a[i * dim + j];
+    let w = config.relaxation;
+
+    // Run the primal sweep once to get the post-sweep impulses. Combined with
+    // the restore below, this reconstructs the exact state every contact was
+    // linearized at, at the cost of one extra sweep per taped step.
+    let mut state = entry.to_vec();
+    sweep(problem, config, blocks, &mut state, normals_only, None);
+
+    // Whether contact `k` contributes to contact `c`'s residual. Kept as one
+    // predicate so the forward and reverse passes cannot mask differently — a
+    // coupling mismatch would look like a plausible-but-wrong gradient rather
+    // than a failure.
+    let couples = |c: usize, k: usize| {
+        k != c
+            && config.coupling != ContactCoupling::BlockDiagonal
+            && !(config.coupling == ContactCoupling::PerBody
+                && problem.bodies.len() == n
+                && !shares_body(problem.bodies[c], problem.bodies[k]))
+    };
+
+    for c in (0..n).rev() {
+        // Undo contact `c`'s update: `state` now holds post-sweep values for
+        // `k < c` and entry values for `k >= c`, which is what contact `c` saw.
+        state[c] = entry[c];
+        let base = 3 * c;
+        let row = problem.rows[c];
+        let fc = state[c];
+
+        // ------------------------------------------------------------ primal
+        let mut r = [0.0f64; 3];
+        for r_row in 0..3 {
+            let mut acc = problem.free_velocity[base + r_row];
+            for k in 0..n {
+                if !couples(c, k) {
+                    continue;
+                }
+                let kb = 3 * k;
+                let f_k = state[k];
+                acc += at(base + r_row, kb) * f_k.x
+                    + at(base + r_row, kb + 1) * f_k.y
+                    + at(base + r_row, kb + 2) * f_k.z;
+            }
+            r[r_row] = acc;
+        }
+        let a_nn = blocks[c][0][0];
+        let (a_nu, a_nw) = (blocks[c][0][1], blocks[c][0][2]);
+        let unclamped = if a_nn > 0.0 {
+            (row.bias - r[0] - a_nu * fc.y - a_nw * fc.z) / a_nn
+        } else {
+            0.0
+        };
+        let f_n = if a_nn > 0.0 { unclamped.max(0.0) } else { 0.0 };
+        let (a_un, a_wn) = (blocks[c][1][0], blocks[c][2][0]);
+        let r_u = r[1] + a_un * f_n;
+        let r_w = r[2] + a_wn * f_n;
+        let (m00, m01) = (blocks[c][1][1], blocks[c][1][2]);
+        let (m10, m11) = (blocks[c][2][1], blocks[c][2][2]);
+        let det = m00 * m11 - m01 * m10;
+        let solvable = det.abs() > 1e-18;
+        // Pre-clamp tangential impulses: the derivative in step 6 is taken at
+        // these, not at the scaled ones.
+        let (t_u, t_w) = if !normals_only {
+            if solvable {
+                (
+                    -(m11 * r_u - m01 * r_w) / det,
+                    -(m00 * r_w - m10 * r_u) / det,
+                )
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (fc.y, fc.z)
+        };
+        let limit = row.mu * f_n;
+        let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+        let clamped = t_norm > limit;
+
+        // ----------------------------------------------------------- reverse
+        let g = bar[c];
+        // Step 7. `w` is a config constant, so relaxation is a plain convex
+        // combination and its transpose is the same combination.
+        let mut bar_dfc = g * (1.0 - w);
+        let mut a_fn = w * g.x;
+        let (mut a_tu, mut a_tw) = (w * g.y, w * g.z);
+
+        // Step 6, the disc clamp. `t_norm == 0` with `limit == 0` is the
+        // pinned-solid case the forward zeroes outright; its transpose is the
+        // zero map, not a projector with a `0/0` in it.
+        if clamped {
+            if t_norm > 0.0 {
+                let s = limit / t_norm;
+                let bar_ds = t_u * a_tu + t_w * a_tw;
+                let (mut p_u, mut p_w) = (s * a_tu, s * a_tw);
+                a_fn += row.mu / t_norm * bar_ds;
+                let bar_dtnorm = -s / t_norm * bar_ds;
+                p_u += t_u / t_norm * bar_dtnorm;
+                p_w += t_w / t_norm * bar_dtnorm;
+                a_tu = p_u;
+                a_tw = p_w;
+            } else {
+                a_tu = 0.0;
+                a_tw = 0.0;
+            }
+        }
+
+        // `db`'s adjoint, accumulated across steps 5, 4 and 3 before being
+        // scattered into `bar_apr`'s diagonal block once.
+        let mut bar_db = [[0.0f64; 3]; 3];
+        let mut bar_dr = [0.0f64; 3];
+
+        // Step 5, the tangential solve.
+        if normals_only {
+            // Held, not solved: the tangential differential passes straight
+            // through from the incoming `df_c`, so its adjoint does too.
+            bar_dfc.y += a_tu;
+            bar_dfc.z += a_tw;
+        } else if solvable {
+            let p = a_tu / det;
+            let q = a_tw / det;
+            let bar_dru = -m11 * p + m10 * q;
+            let bar_drw = m01 * p - m00 * q;
+            bar_db[2][2] += -r_u * p;
+            bar_db[1][2] += r_w * p;
+            bar_db[1][1] += -r_w * q;
+            bar_db[2][1] += r_u * q;
+            // `d det` feeds both rows; its own transpose puts four more terms
+            // on the block. Dropping it is the classic quotient-rule miss and
+            // it is invisible at a fixed point, which is why it has to be
+            // tested at a truncated one.
+            let bar_ddet = -t_u * p - t_w * q;
+            bar_db[1][1] += m11 * bar_ddet;
+            bar_db[2][2] += m00 * bar_ddet;
+            bar_db[1][2] += -m10 * bar_ddet;
+            bar_db[2][1] += -m01 * bar_ddet;
+
+            // Step 4. Only reachable from here: see the note above.
+            bar_dr[1] += bar_dru;
+            bar_db[1][0] += f_n * bar_dru;
+            a_fn += a_un * bar_dru;
+            bar_dr[2] += bar_drw;
+            bar_db[2][0] += f_n * bar_drw;
+            a_fn += a_wn * bar_drw;
+        }
+
+        // Step 3, the normal solve. The `else` branch of the forward is the
+        // pinned `max(0, .)` (or degenerate `a_nn <= 0`) case: the impulse does
+        // not move, so nothing flows back through it at all.
+        if a_nn > 0.0 && unclamped > 0.0 {
+            let h = a_fn / a_nn;
+            bar_db[0][0] += -unclamped * h;
+            bar_dr[0] += -h;
+            bar_db[0][1] += -fc.y * h;
+            bar_db[0][2] += -fc.z * h;
+            bar_dfc.y += -a_nu * h;
+            bar_dfc.z += -a_nw * h;
+        }
+
+        // Step 2.
+        for i in 0..3 {
+            for j in 0..3 {
+                out.bar_apr[(base + i) * dim + base + j] += bar_db[i][j];
+            }
+        }
+
+        // Step 1, the scatter. This is where the Gauss-Seidel coupling shows
+        // up: contact `c`'s residual read every other contact's impulse, so its
+        // adjoint lands on every other contact's covector.
+        for r_row in 0..3 {
+            let br = bar_dr[r_row];
+            out.bar_c[base + r_row] += br;
+            if br == 0.0 {
+                continue;
+            }
+            let ri = (base + r_row) * dim;
+            for k in 0..n {
+                if !couples(c, k) {
+                    continue;
+                }
+                let kb = 3 * k;
+                let f_k = state[k];
+                out.bar_apr[ri + kb] += br * f_k.x;
+                out.bar_apr[ri + kb + 1] += br * f_k.y;
+                out.bar_apr[ri + kb + 2] += br * f_k.z;
+                bar[k].x += at(base + r_row, kb) * br;
+                bar[k].y += at(base + r_row, kb + 1) * br;
+                bar[k].z += at(base + r_row, kb + 2) * br;
+            }
+        }
+
+        // The output overwrote the input, so the incoming covector is replaced
+        // rather than accumulated. `couples` excludes `k == c`, so the scatter
+        // above cannot have touched this slot.
+        bar[c] = bar_dfc;
+    }
+}
+
+/// Transpose of one accepted Newton proposal, line-search interpolation
+/// included.
+///
+/// The forward map, given the primal `f` the system was built at:
+///
+/// ```text
+/// d raw   = K^-1 drhs(d_apr, dc, df)
+/// d cand  = clamp'(raw) d raw
+/// df_new  = (1 - alpha) df + alpha d cand
+/// ```
+///
+/// so the transpose is that read upwards: split the covector by `alpha`, push
+/// the `d cand` half back through the clamp, solve `K^T y = bar_d_raw`, and
+/// scatter `y` through `drhs`'s construction.
+///
+/// # `K^T` is built explicitly
+///
+/// [`crate::gradient::solve_dense`] is a destructive Gaussian elimination with
+/// partial pivoting and no transposed-solve entry point. Adding a flag would
+/// mean a second index convention inside a routine that every gradient in this
+/// crate goes through; forming `K^T` costs one `9n^2` transposition against an
+/// `O(n^3)` factorization that was going to happen anyway. At the thirty-two
+/// contact redundant manifold that is `9216` stores against `~10^6` flops.
+///
+/// # The sliding pin rows
+///
+/// `K`'s tangential rows for a sliding contact pin `f_t` to `mu t_hat f_n`,
+/// with `t_hat` read off the iterate — so `t_hat` *moves* with the parameters
+/// and `dK` is non-zero there. The forward carries
+/// `d t_hat = (I - t_hat t_hat^T) df_t / ||f_t||`. That projector is symmetric,
+/// which is the only reason this transpose is as short as it is: the covector
+/// comes back through the same `(I - t_hat t_hat^T)`. Below `||f_t|| = 1e-14`
+/// the direction is not defined and the forward drops the term; the transpose
+/// drops it on the same test rather than on a band of its own.
+// Stride arithmetic into flat row-major arrays, as elsewhere in this file.
+#[allow(clippy::needless_range_loop)]
+fn newton_transpose(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    f: &[Vec3],
+    alpha: f64,
+    bar: &mut [Vec3],
+    out: &mut TransposedDifferential,
+) {
+    use crate::gradient::ContactRegime;
+
+    let n = problem.n;
+    let dim = 3 * n;
+
+    // Rebuild exactly what `newton_step_diff` built, at the same tolerance and
+    // from the same iterate, so the regimes the transpose assumes are the
+    // regimes the primal solved.
+    let regimes = crate::gradient::classify_impulses(problem, f, 1e-7);
+    let mut k = crate::gradient::kkt_matrix(problem, config, &regimes, f);
+    let k_nominal = k.clone();
+    let mut rhs = vec![0.0; dim];
+    for c in 0..n {
+        let base = 3 * c;
+        match regimes[c] {
+            ContactRegime::Separating => {}
+            ContactRegime::Sticking => {
+                rhs[base] = problem.rows[c].bias - problem.free_velocity[base];
+                rhs[base + 1] = -problem.free_velocity[base + 1];
+                rhs[base + 2] = -problem.free_velocity[base + 2];
+            }
+            ContactRegime::Sliding => {
+                rhs[base] = problem.rows[c].bias - problem.free_velocity[base];
+            }
+        }
+    }
+    // The forward already succeeded here — this step is on the tape only
+    // because its proposal was accepted — so a failure would mean the primal
+    // was re-executed differently, and dropping the contribution is strictly
+    // better than scattering nonsense into the covectors.
+    if crate::gradient::solve_dense(&mut k, &mut rhs, dim, 1).is_none() {
+        return;
+    }
+    let raw = rhs;
+
+    // The line-search interpolation. `alpha` is a recorded constant, so this is
+    // a plain convex combination in both directions.
+    let mut bar_cand = vec![Vec3::zeros(); n];
+    for c in 0..n {
+        bar_cand[c] = bar[c] * alpha;
+        bar[c] *= 1.0 - alpha;
+    }
+
+    // Transpose of the staged clamp applied to the raw Newton iterate. Same
+    // three branches as `sweep`'s, at the same zero tolerance — note the
+    // normal's `max(0, .)` is tested on `raw[base]`, the *unclamped* value,
+    // exactly as the forward tests it.
+    let mut bar_draw = vec![0.0; dim];
+    for c in 0..n {
+        let base = 3 * c;
+        let mu = problem.rows[c].mu;
+        let f_n = raw[base].max(0.0);
+        let (t_u, t_w) = (raw[base + 1], raw[base + 2]);
+        let limit = mu * f_n;
+        let t_norm = (t_u * t_u + t_w * t_w).sqrt();
+        let g = bar_cand[c];
+        let mut a_fn = g.x;
+        let (mut a_tu, mut a_tw) = (g.y, g.z);
+        if t_norm > limit {
+            if t_norm > 0.0 {
+                let s = limit / t_norm;
+                let bar_ds = t_u * a_tu + t_w * a_tw;
+                let (mut p_u, mut p_w) = (s * a_tu, s * a_tw);
+                a_fn += mu / t_norm * bar_ds;
+                let bar_dtnorm = -s / t_norm * bar_ds;
+                p_u += t_u / t_norm * bar_dtnorm;
+                p_w += t_w / t_norm * bar_dtnorm;
+                a_tu = p_u;
+                a_tw = p_w;
+            } else {
+                a_tu = 0.0;
+                a_tw = 0.0;
+            }
+        }
+        bar_draw[base] = if raw[base] > 0.0 { a_fn } else { 0.0 };
+        bar_draw[base + 1] = a_tu;
+        bar_draw[base + 2] = a_tw;
+    }
+
+    // `K^T y = bar_d_raw`.
+    let mut kt = vec![0.0; dim * dim];
+    for i in 0..dim {
+        for j in 0..dim {
+            kt[j * dim + i] = k_nominal[i * dim + j];
+        }
+    }
+    let mut y = bar_draw;
+    if crate::gradient::solve_dense(&mut kt, &mut y, dim, 1).is_none() {
+        return;
+    }
+
+    // Scatter `y` through `drhs`'s construction. Separating contacts are
+    // identity rows with a zero right-hand side: nothing flows back through
+    // them, which is the same structural zero the forward carries.
+    for c in 0..n {
+        let base = 3 * c;
+        match regimes[c] {
+            ContactRegime::Separating => {}
+            ContactRegime::Sticking => {
+                for r in 0..3 {
+                    let yb = y[base + r];
+                    out.bar_c[base + r] += -yb;
+                    if yb == 0.0 {
+                        continue;
+                    }
+                    let ri = (base + r) * dim;
+                    for col in 0..dim {
+                        out.bar_apr[ri + col] += -yb * raw[col];
+                    }
+                }
+            }
+            ContactRegime::Sliding => {
+                let yb = y[base];
+                out.bar_c[base] += -yb;
+                if yb != 0.0 {
+                    let ri = base * dim;
+                    for col in 0..dim {
+                        out.bar_apr[ri + col] += -yb * raw[col];
+                    }
+                }
+                let fc = f[c];
+                let ft = (fc.y * fc.y + fc.z * fc.z).sqrt();
+                if ft > 1e-14 {
+                    let that = [fc.y / ft, fc.z / ft];
+                    let coef = problem.rows[c].mu * raw[base] / ft;
+                    let v = [y[base + 1] * coef, y[base + 2] * coef];
+                    let dot = that[0] * v[0] + that[1] * v[1];
+                    bar[c].y += v[0] - that[0] * dot;
+                    bar[c].z += v[1] - that[1] * dot;
+                }
+            }
+        }
+    }
+}
+
+/// Dev-only dissection bench for a dumped stance problem
+/// (`PHYZ_PROBLEM_DUMP`). Run with:
+/// `PHYZ_STANCE_LAB=/path cargo test -p phyz-contact stance_lab -- --ignored --nocapture`
+#[allow(clippy::needless_range_loop)]
+#[cfg(test)]
+mod stance_lab {
+    use super::*;
+
+    fn load(path: &str) -> (ContactProblem, Vec<Vec3>) {
+        let text = std::fs::read_to_string(path).expect("dump file");
+        let mut n = 0usize;
+        let mut delassus = Vec::new();
+        let mut free_velocity = Vec::new();
+        let mut rows = Vec::new();
+        let mut bodies = Vec::new();
+        let mut seed = Vec::new();
+        for line in text.lines() {
+            let mut it = line.split_whitespace();
+            match it.next() {
+                Some("n") => n = it.next().unwrap().parse().unwrap(),
+                Some("delassus") => delassus = it.map(|v| v.parse().unwrap()).collect(),
+                Some("free_velocity") => free_velocity = it.map(|v| v.parse().unwrap()).collect(),
+                Some("row") => {
+                    let v: Vec<f64> = it.map(|x| x.parse().unwrap()).collect();
+                    rows.push(ContactRow {
+                        mu: v[0],
+                        restitution: v[1],
+                        depth: v[2],
+                        bias: v[3],
+                        impedance: v[4],
+                        dimpedance_ddepth: v[5],
+                        // A dump is a settled stance, and `0` is the weight of
+                        // a hand-built row; see `ContactRow::impact`.
+                        impact: 0.0,
+                    });
+                }
+                Some("body") => bodies.push((
+                    it.next().unwrap().parse().unwrap(),
+                    it.next().unwrap().parse().unwrap(),
+                )),
+                Some("seed") => {
+                    let v: Vec<f64> = it.map(|x| x.parse().unwrap()).collect();
+                    seed = v.chunks(3).map(|c| Vec3::new(c[0], c[1], c[2])).collect();
+                }
+                _ => {}
+            }
+        }
+        (
+            ContactProblem {
+                n,
+                delassus,
+                free_velocity,
+                rows,
+                bodies,
+            },
+            seed,
+        )
+    }
+
+    #[test]
+    #[ignore = "dev bench, needs PHYZ_STANCE_LAB pointing at a dump"]
+    fn stance_lab() {
+        let path = std::env::var("PHYZ_STANCE_LAB").expect("set PHYZ_STANCE_LAB");
+        let (problem, seed) = load(&path);
+        let config = ContactSolverConfig::simulation();
+        let n = problem.n;
+        eprintln!("n = {n}");
+
+        // Shipped solve from the recorded seed.
+        let sol = solve_contacts_warm(&problem, &config, &seed);
+        eprintln!(
+            "shipped: iters={} residual={:.3e} converged={} E={:.12e}",
+            sol.iterations,
+            sol.residual,
+            sol.converged,
+            qp_objective(&problem, &config, &sol.impulses)
+        );
+
+        // Regimes at the shipped terminus.
+        let regimes = crate::gradient::classify_impulses(&problem, &sol.impulses, 1e-7);
+        for c in 0..n {
+            let f = sol.impulses[c];
+            let ft = (f.y * f.y + f.z * f.z).sqrt();
+            let lim = problem.rows[c].mu * f.x;
+            eprintln!(
+                "  c{c:2} {:?} f_n={:.3e} ft/lim={:.6} depth={:.2e}",
+                regimes[c],
+                f.x,
+                if lim > 0.0 { ft / lim } else { -1.0 },
+                problem.rows[c].depth
+            );
+        }
+
+        // One Newton proposal from the terminus, dissected.
+        if let Some((cand, _)) = newton_step_diff(&problem, &config, &sol.impulses, None) {
+            let e0 = qp_objective(&problem, &config, &sol.impulses);
+            let e_cand = qp_objective(&problem, &config, &cand);
+            let blocks = regularized_blocks(&problem, &config);
+            let mut swept = cand.clone();
+            let mv = sweep(&problem, &config, &blocks, &mut swept, false, None);
+            let e_swept = qp_objective(&problem, &config, &swept);
+            eprintln!(
+                "newton: E0={e0:.12e} E(cand)={e_cand:.12e} E(swept)={e_swept:.12e} sweep_move={mv:.3e}"
+            );
+            let dmax = cand
+                .iter()
+                .zip(&sol.impulses)
+                .map(|(a, b)| (*a - *b).norm())
+                .fold(0.0f64, f64::max);
+            eprintln!("newton proposal max |df| = {dmax:.3e}");
+        } else {
+            eprintln!("newton: proposal construction FAILED (singular K)");
+        }
+
+        // The accelerator from the seed.
+        {
+            let blocks = regularized_blocks(&problem, &config);
+            let mut f = seed.clone();
+            f.resize(n, Vec3::zeros());
+            accelerate(&problem, &config, &blocks, &mut f);
+            let mv = sweep(&problem, &config, &blocks, &mut f, false, None);
+            eprintln!(
+                "accelerate(seed): sweep_move={mv:.3e} E={:.12e}",
+                qp_objective(&problem, &config, &f)
+            );
+        }
+
+        // Dissect the raw Newton linear solve at the terminus: rebuild the
+        // system exactly as `newton_step_diff` does, solve, and report the
+        // pre-clamp solution per contact plus the linear-solve residual.
+        {
+            use crate::gradient::ContactRegime;
+            let dim = 3 * n;
+            let f = &sol.impulses;
+            let regimes = crate::gradient::classify_impulses(&problem, f, 1e-7);
+            let k = crate::gradient::kkt_matrix(&problem, &config, &regimes, f);
+            let mut rhs = vec![0.0; dim];
+            for c in 0..n {
+                let base = 3 * c;
+                match regimes[c] {
+                    ContactRegime::Separating => {}
+                    ContactRegime::Sticking => {
+                        rhs[base] = problem.rows[c].bias - problem.free_velocity[base];
+                        rhs[base + 1] = -problem.free_velocity[base + 1];
+                        rhs[base + 2] = -problem.free_velocity[base + 2];
+                    }
+                    ContactRegime::Sliding => {
+                        rhs[base] = problem.rows[c].bias - problem.free_velocity[base]
+                    }
+                }
+            }
+            let mut kk = k.clone();
+            let mut x = rhs.clone();
+            crate::gradient::solve_dense(&mut kk, &mut x, dim, 1).unwrap();
+            // ||K x - rhs||_inf
+            let mut linres = 0.0f64;
+            for r in 0..dim {
+                let mut acc = 0.0;
+                for cidx in 0..dim {
+                    acc += k[r * dim + cidx] * x[cidx];
+                }
+                linres = linres.max((acc - rhs[r]).abs());
+            }
+            eprintln!("raw newton solve: ||Kx - rhs||_inf = {linres:.3e}");
+            for c in 0..n {
+                let base = 3 * c;
+                let fx = f[c];
+                let lim = problem.rows[c].mu * x[base];
+                let ft = (x[base + 1] * x[base + 1] + x[base + 2] * x[base + 2]).sqrt();
+                eprintln!(
+                    "  c{c:2} {:?} raw=({:+.4e},{:+.4e},{:+.4e}) cur=({:+.4e},{:+.4e},{:+.4e}) viol_n={} ft-lim={:+.2e}",
+                    regimes[c],
+                    x[base],
+                    x[base + 1],
+                    x[base + 2],
+                    fx.x,
+                    fx.y,
+                    fx.z,
+                    x[base] < 0.0,
+                    ft - lim.max(0.0),
+                );
+            }
+        }
+
+        // Sweep-vs-stationarity dissection at the accelerator's terminus.
+        {
+            let blocks = regularized_blocks(&problem, &config);
+            let mut f = seed.clone();
+            f.resize(n, Vec3::zeros());
+            accelerate(&problem, &config, &blocks, &mut f);
+            let regimes = crate::gradient::classify_impulses(&problem, &f, 1e-7);
+            let lin = crate::gradient::complete_kkt(&problem, &config, &f, &regimes);
+            let res = staged_residual(&problem, &config, &lin.regimes, &lin.that, &f);
+            let rn = res.iter().fold(0.0f64, |a, v| a.max(v.abs()));
+            let before = f.clone();
+            let mv = sweep(&problem, &config, &blocks, &mut f, false, None);
+            eprintln!("terminus: |F|={rn:.3e} then sweep_move={mv:.3e}");
+            for c in 0..n {
+                let d = (f[c] - before[c]).norm();
+                if d > mv * 0.5 {
+                    let base = 3 * c;
+                    eprintln!(
+                        "  c{c} {:?} moved {d:.3e}: ({:+.9e},{:+.9e},{:+.9e}) -> ({:+.9e},{:+.9e},{:+.9e})",
+                        lin.regimes[c],
+                        before[c].x,
+                        before[c].y,
+                        before[c].z,
+                        f[c].x,
+                        f[c].y,
+                        f[c].z
+                    );
+                    eprintln!(
+                        "     F rows: {:+.3e} {:+.3e} {:+.3e}  a_nn={:.3e} mu={} depth={:+.3e} bias={:+.3e} imp={:.3e}",
+                        res[base],
+                        res[base + 1],
+                        res[base + 2],
+                        blocks[c][0][0],
+                        problem.rows[c].mu,
+                        problem.rows[c].depth,
+                        problem.rows[c].bias,
+                        problem.rows[c].impedance
+                    );
+                }
+            }
+        }
+
+        // How far can plain sweeps go with an unlimited budget?
+        let mut cfg2 = config;
+        cfg2.max_iterations = 200_000;
+        cfg2.newton = false;
+        let sol2 = solve_contacts_warm(&problem, &cfg2, &seed);
+        eprintln!(
+            "pgs-only 200k: iters={} residual={:.3e} E={:.12e}",
+            sol2.iterations,
+            sol2.residual,
+            qp_objective(&problem, &config, &sol2.impulses)
+        );
     }
 }

@@ -22,6 +22,8 @@ unsafe extern "C" {
         q: *const f32,
         v: *const f32,
         targets: *const f32,
+        tau_ff: *const f32,
+        has_tau: u32,
         ctrl: *mut f32,
     );
     fn phyz_host_contact(
@@ -112,6 +114,8 @@ unsafe extern "C" {
         nsteps: u32,
         pd_dofs: *const f32,
         targets: *const f32,
+        tau_ff: *const f32,
+        has_tau: u32,
         cparams: *const f32,
         bodies: *const f32,
         geometry: *const f32,
@@ -158,6 +162,7 @@ unsafe extern "C" {
         n_h: u32,
         n_out: u32,
         n_dofs: u32,
+        n_pos: u32,
         act_clamp: f32,
         has_clamp_slots: u32,
         rho: f32,
@@ -171,8 +176,11 @@ unsafe extern "C" {
         z: *mut f32,
         act_slots: *const f32,
         act_clamp_slots: *const f32,
+        tau_slots: *const f32,
+        tau_scale: *const f32,
         base_targets: *const f32,
         targets: *mut f32,
+        tau_ff: *mut f32,
         out: *mut f32,
     );
 }
@@ -250,6 +258,7 @@ impl KernelBackend for HostBackend {
         q: &Vec<f32>,
         v: &Vec<f32>,
         targets: &Vec<f32>,
+        tau_ff: &Vec<f32>,
         ctrl: &mut Vec<f32>,
     ) -> Result<(), String> {
         // SAFETY: every pointer is a live Vec of at least the length the
@@ -265,6 +274,8 @@ impl KernelBackend for HostBackend {
                 q.as_ptr(),
                 v.as_ptr(),
                 targets.as_ptr(),
+                tau_ff.as_ptr(),
+                a.has_tau,
                 ctrl.as_mut_ptr(),
             );
         }
@@ -447,6 +458,7 @@ impl KernelBackend for HostBackend {
         a: StepImpulseArgs,
         pd_dofs: &Vec<f32>,
         targets: &Vec<f32>,
+        tau_ff: &Vec<f32>,
         cparams: &Vec<f32>,
         bodies: &Vec<f32>,
         geometry: &Vec<f32>,
@@ -476,6 +488,8 @@ impl KernelBackend for HostBackend {
                 a.nsteps,
                 pd_dofs.as_ptr(),
                 targets.as_ptr(),
+                tau_ff.as_ptr(),
+                a.has_tau,
                 cparams.as_ptr(),
                 bodies.as_ptr(),
                 geometry.as_ptr(),
@@ -562,8 +576,11 @@ impl KernelBackend for HostBackend {
         z: &mut Vec<f32>,
         act_slots: &Vec<f32>,
         act_clamp_slots: &Vec<f32>,
+        tau_slots: &Vec<f32>,
+        tau_scale: &Vec<f32>,
         base_targets: &Vec<f32>,
         targets: &mut Vec<f32>,
+        tau_ff: &mut Vec<f32>,
         out: &mut Vec<f32>,
     ) -> Result<(), String> {
         // SAFETY: as in launch_pd, against `phyz_host_policy`.
@@ -575,6 +592,7 @@ impl KernelBackend for HostBackend {
                 a.n_h,
                 a.n_out,
                 a.n_dofs,
+                a.n_pos,
                 a.act_clamp,
                 a.has_clamp_slots,
                 a.rho,
@@ -588,8 +606,11 @@ impl KernelBackend for HostBackend {
                 z.as_mut_ptr(),
                 act_slots.as_ptr(),
                 act_clamp_slots.as_ptr(),
+                tau_slots.as_ptr(),
+                tau_scale.as_ptr(),
                 base_targets.as_ptr(),
                 targets.as_mut_ptr(),
+                tau_ff.as_mut_ptr(),
                 out.as_mut_ptr(),
             );
         }

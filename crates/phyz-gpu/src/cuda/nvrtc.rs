@@ -41,6 +41,12 @@ pub struct CudaBackend {
     /// Page-locked host staging slots for [`KernelBackend::upload`], grown
     /// on demand and reused round-robin. See [`CudaBackend::pinned_upload`].
     staging: Mutex<Staging>,
+    /// The body count this module's kernels were compiled for. Every
+    /// per-thread cache in the PTX is exactly this wide, so a [`BatchSim`]
+    /// built on this backend must have a model no wider.
+    ///
+    /// [`BatchSim`]: super::BatchSim
+    max_bodies: usize,
 }
 
 /// The pinned host staging pool: one ring of slots per copy length.
@@ -98,8 +104,21 @@ fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> String + '_ {
 }
 
 impl CudaBackend {
-    /// Open device `ordinal` and compile the kernels with NVRTC.
+    /// Open device `ordinal` and compile the kernels with NVRTC at the stock
+    /// body count. Prefer [`CudaBackend::with_max_bodies`], which specialises
+    /// the kernels to the model actually being simulated.
     pub fn new(ordinal: usize) -> Result<Self, String> {
+        Self::with_max_bodies(ordinal, crate::layout::DEFAULT_MAX_BODIES)
+    }
+
+    /// Open device `ordinal` and compile the kernels sized for `max_bodies`.
+    ///
+    /// The count is a `-D MAX_BODIES` on the NVRTC command line, so every
+    /// per-thread cache in the resulting PTX is exactly this wide. Passing
+    /// [`crate::layout::DEFAULT_MAX_BODIES`] reproduces the preprocessed
+    /// source the `#ifndef` fallback gives, hence the same PTX, hence the
+    /// same bits as before this was configurable.
+    pub fn with_max_bodies(ordinal: usize, max_bodies: usize) -> Result<Self, String> {
         // cudarc panics if the shared libraries are absent; probe first so a
         // machine without a driver gets an Err like a machine without a wgpu
         // adapter does.
@@ -147,6 +166,9 @@ impl CudaBackend {
             prec_div: Some(true),
             prec_sqrt: Some(true),
             name: Some("phyz_kernels.cu".into()),
+            // The one knob that changes the kernels' shape. The `.cu` guards
+            // its own definition with `#ifndef`, so this wins.
+            options: vec![format!("-D MAX_BODIES={max_bodies}u")],
             ..Default::default()
         };
         let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL_SOURCE, opts)
@@ -175,6 +197,7 @@ impl CudaBackend {
                 slots: env_usize("PHYZ_PINNED_SLOTS", PINNED_SLOTS),
                 max_len: env_usize("PHYZ_PINNED_MAX", PINNED_MAX_LEN),
             }),
+            max_bodies,
         })
     }
 
@@ -280,6 +303,10 @@ impl KernelBackend for CudaBackend {
 
     fn graph_launch(&self, graph: &Self::Graph) -> Result<(), String> {
         graph.launch().map_err(err("cuGraphLaunch"))
+    }
+
+    fn max_bodies(&self) -> usize {
+        self.max_bodies
     }
 
     fn device_name(&self) -> String {
@@ -389,6 +416,7 @@ impl KernelBackend for CudaBackend {
         q: &Self::Buffer,
         v: &Self::Buffer,
         targets: &Self::Buffer,
+        tau_ff: &Self::Buffer,
         ctrl: &mut Self::Buffer,
     ) -> Result<(), String> {
         let n = a.nworld * a.n_dofs;
@@ -405,6 +433,8 @@ impl KernelBackend for CudaBackend {
                 .arg(q)
                 .arg(v)
                 .arg(targets)
+                .arg(tau_ff)
+                .arg(&a.has_tau)
                 .arg(ctrl)
                 .launch(cfg(n))
         };
@@ -599,6 +629,7 @@ impl KernelBackend for CudaBackend {
         a: super::StepImpulseArgs,
         pd_dofs: &Self::Buffer,
         targets: &Self::Buffer,
+        tau_ff: &Self::Buffer,
         cparams: &Self::Buffer,
         bodies: &Self::Buffer,
         geometry: &Self::Buffer,
@@ -628,6 +659,8 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.nsteps)
                 .arg(pd_dofs)
                 .arg(targets)
+                .arg(tau_ff)
+                .arg(&a.has_tau)
                 .arg(cparams)
                 .arg(bodies)
                 .arg(geometry)
@@ -714,8 +747,11 @@ impl KernelBackend for CudaBackend {
         z: &mut Self::Buffer,
         act_slots: &Self::Buffer,
         act_clamp_slots: &Self::Buffer,
+        tau_slots: &Self::Buffer,
+        tau_scale: &Self::Buffer,
         base_targets: &Self::Buffer,
         targets: &mut Self::Buffer,
+        tau_ff: &mut Self::Buffer,
         out: &mut Self::Buffer,
     ) -> Result<(), String> {
         // SAFETY: as in launch_pd, against `phyz_policy`.
@@ -727,6 +763,7 @@ impl KernelBackend for CudaBackend {
                 .arg(&a.n_h)
                 .arg(&a.n_out)
                 .arg(&a.n_dofs)
+                .arg(&a.n_pos)
                 .arg(&a.act_clamp)
                 .arg(&a.has_clamp_slots)
                 .arg(&a.rho)
@@ -740,8 +777,11 @@ impl KernelBackend for CudaBackend {
                 .arg(z)
                 .arg(act_slots)
                 .arg(act_clamp_slots)
+                .arg(tau_slots)
+                .arg(tau_scale)
                 .arg(base_targets)
                 .arg(targets)
+                .arg(tau_ff)
                 .arg(out)
                 .launch(cfg(a.nworld))
         };
