@@ -50,7 +50,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in phyz-math phyz-model phyz-collision phyz-rigid \
+          for crate in phyz-math phyz-model phyz-collision phyz-rigid phyz-urdf phyz-mjcf \
                        phyz-contact phyz-diff phyz-world phyz-camera phyz; do
             echo "::group::publish $crate"
             cargo publish -p "$crate"
