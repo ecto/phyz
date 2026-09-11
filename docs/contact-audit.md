@@ -183,4 +183,5 @@ and neither alone closes the gradient row.
 passes at the default and fails under `PHYZ_IMPACT_NEEDS_E=1`. The goldens
 roll out e = 0 impacts, so they re-pin with the change. It's the only
 failure in the workspace suite under the gate (138 test results; phyz-gpu,
-phyz-py, phyz-wasm excluded).
+phyz-py, phyz-wasm excluded). At the default (all gates off) the same suite
+has zero failures across 138 test results.
