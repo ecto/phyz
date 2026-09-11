@@ -245,10 +245,18 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// velocity update changed at `O((ω dt)²)`; `spinning_free_body` gained the
 /// gates (a 74 rad/s wheel keeps its speed in free space and on the plane)
 /// in the same commit.
+///
+/// All three moved on the commit that made an impact row rigid only when the
+/// material can bounce (`ContactProblem::impact_weight_for`, e <= 0 -> no
+/// impact row). Every scene here uses `ContactMaterial::default()`, whose
+/// restitution is 0, and every scene begins with a drop, so each first
+/// contact step went back from a rigid bias-free row to the soft resting row.
+/// The e = 0.5 restitution gate in `contact_physics_benchmarks` is unaffected
+/// by construction and passes unchanged in the same commit.
 const GOLDEN: &[(&str, u64)] = &[
-    ("box_tipping", 0xead6_7f1c_4306_7f06),
-    ("wheel_rolling", 0x444f_17c7_aefe_828a),
-    ("chain_falling", 0x818e_3134_cb67_007e),
+    ("box_tipping", 0x0cb5_b085_fc19_41af),
+    ("wheel_rolling", 0x3f54_b6aa_3455_b6f9),
+    ("chain_falling", 0x24a0_6e3b_9d97_0437),
 ];
 
 #[test]

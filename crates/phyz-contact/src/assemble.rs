@@ -11,12 +11,6 @@ use phyz_collision::Collision;
 use phyz_math::{DMat, DVec, SpatialVec, Vec3};
 use phyz_model::{Model, State};
 
-/// Audit gate `PHYZ_IMPACT_NEEDS_E=1`: impact rows only when restitution > 0.
-fn impact_needs_e() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
-}
-
 /// Build the convex contact problem for `contacts` at the current state.
 ///
 /// `free_qd` is the generalized velocity the system would have after this step
@@ -157,16 +151,16 @@ pub fn assemble(
         // then made rigid on the restitution ramp's own smoothstep, so the
         // soft resting-contact model does not eat the bounce; see
         // [`ContactRow::impact`].
-        // AUDIT PROTOTYPE (PHYZ_IMPACT_NEEDS_E=1): a row is only made an
-        // impact row when its material can bounce. With e = 0 the restitution
-        // target is 0 either way, and the rigid 0.999 row only removes the
-        // soft model's compliance -- on a K1 heel strike that is a 4.5 kN
-        // one-tick spike instead of the pre-bump 3.2 kN.
-        let impact = if impact_needs_e() && material.restitution <= 0.0 {
-            0.0
-        } else {
-            ContactProblem::impact_weight(approach, config.restitution_threshold)
-        };
+        // A row is only made an impact row when its material can bounce
+        // (`ContactProblem::impact_weight_for`). With e = 0 the restitution
+        // target is 0 either way, and the rigid row would only remove the
+        // soft model's compliance: on a K1 heel strike that was a 4.5 kN
+        // one-tick spike instead of 3.2 kN (phyz docs/contact-audit.md §5).
+        let impact = ContactProblem::impact_weight_for(
+            material.restitution,
+            approach,
+            config.restitution_threshold,
+        );
         rows.push(
             ContactRow::from_material(&material, c.penetration_depth, dt, e).with_impact(impact),
         );
