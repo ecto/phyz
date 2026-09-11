@@ -551,7 +551,27 @@ fn a_one_ulp_perturbation_is_calibrated_for_every_scene() {
     for scene in scenes() {
         // Each rollout gets its own simulator so the contact caches cannot
         // couple them — otherwise this measures the cache, not the physics.
-        let sims = [Simulator::new(), Simulator::new()];
+        //
+        // And each is COLD-started, for the same reason one level down.
+        // 2026-09-11 (lane contact-integration), on the merge of ecto/phyz#105
+        // (impact row only when e > 0) and #106 (exact friction projection):
+        // warm-started at the default tolerance (1e-10), `wheel_rolling`'s two
+        // rollouts sat ~3e-14 apart until step 256, then jumped 3.4e5x in ONE
+        // step to 1.1e-8 and ended at 1.82e-9, past this test's 1e-10 bar.
+        // Not chaos (no growth before or after; a single step) and not a
+        // determinism bug (every rollout replays bit-for-bit; the same
+        // 1.8222395065723424e-9 on arm64 macOS and x86_64 Linux CI). It is the
+        // warm-started solve stopping at a different iterate in the two
+        // rollouts: the same tree at tolerance 1e-12 (warm) ends at 1.6e-13
+        // with no jump, and cold-started at 1e-10 ends at 6.6e-14. Neither
+        // change alone jumps (#105 only 1.6e-13, #106 only 7.4e-14 at 1500).
+        // This test measures the physics' 1-ulp growth, so it keeps the
+        // solver's stopping point out of it; a warm-started rollout should
+        // expect tolerance-scale (~1e-8) splits between 1-ulp neighbours.
+        let sims = [
+            Simulator::new().with_warm_start(false),
+            Simulator::new().with_warm_start(false),
+        ];
         let d = divergence(
             scene.model.nq,
             &scene.state,
