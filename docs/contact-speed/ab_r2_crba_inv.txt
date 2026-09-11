@@ -1,0 +1,10 @@
+scene                           r2                A_crba            B_crba_inv   hashes
+k1u_single       71.7 /    74.4       66.5 /    69.6       73.0 /    76.9     same
+k1u_stance       79.0 /    82.6       71.6 /    77.7       81.9 /    83.6     same
+k1u_step         55.6 /    60.9       51.7 /    54.9       60.8 /    63.6     same
+k1u_single   r2->A_crba: min 1.077x  median 1.069x
+k1u_stance   r2->A_crba: min 1.104x  median 1.063x
+k1u_step     r2->A_crba: min 1.075x  median 1.108x
+k1u_single   r2->B_crba_inv: min 0.981x  median 0.967x
+k1u_stance   r2->B_crba_inv: min 0.966x  median 0.988x
+k1u_step     r2->B_crba_inv: min 0.915x  median 0.957x

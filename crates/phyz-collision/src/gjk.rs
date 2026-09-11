@@ -4,21 +4,41 @@ use crate::geometry::Geometry;
 use phyz_math::{Mat3, Vec3};
 
 /// Simplex for GJK algorithm (up to 4 points).
+///
+/// A fixed array, not a `Vec`: the Voronoi reduction below rewrites the point
+/// set on almost every iteration, and a heap vector made each rewrite an
+/// allocation — ~95 of them per curved-shape query on the K1 (contact-speed).
+/// The point order and every piece of arithmetic are unchanged.
 struct Simplex {
-    points: Vec<Vec3>,
+    points: [Vec3; 4],
+    len: usize,
 }
 
 impl Simplex {
     fn new() -> Self {
-        Self { points: Vec::new() }
+        Self {
+            points: [Vec3::zeros(); 4],
+            len: 0,
+        }
     }
 
     fn add(&mut self, point: Vec3) {
-        self.points.push(point);
+        self.points[self.len] = point;
+        self.len += 1;
     }
 
     fn len(&self) -> usize {
-        self.points.len()
+        self.len
+    }
+
+    fn as_slice(&self) -> &[Vec3] {
+        &self.points[..self.len]
+    }
+
+    /// Replace the point set, in order.
+    fn set(&mut self, pts: &[Vec3]) {
+        self.points[..pts.len()].copy_from_slice(pts);
+        self.len = pts.len();
     }
 
     /// Update simplex to contain origin, return true if origin is contained.
@@ -42,7 +62,7 @@ impl Simplex {
             *dir = ab.cross(ao).cross(ab);
         } else {
             // Origin is past A
-            self.points.remove(0);
+            self.set(&[a]);
             *dir = ao;
         }
         false
@@ -60,21 +80,21 @@ impl Simplex {
         if abc.cross(ac).dot(ao) > 0.0 {
             if ac.dot(ao) > 0.0 {
                 // Origin is past AC edge
-                self.points = vec![c, a];
+                self.set(&[c, a]);
                 *dir = ac.cross(ao).cross(ac);
             } else {
                 // Origin is past A
-                self.points = vec![a];
+                self.set(&[a]);
                 *dir = ao;
             }
         } else if ab.cross(abc).dot(ao) > 0.0 {
             if ab.dot(ao) > 0.0 {
                 // Origin is past AB edge
-                self.points = vec![b, a];
+                self.set(&[b, a]);
                 *dir = ab.cross(ao).cross(ab);
             } else {
                 // Origin is past A
-                self.points = vec![a];
+                self.set(&[a]);
                 *dir = ao;
             }
         } else {
@@ -82,7 +102,7 @@ impl Simplex {
             if abc.dot(ao) > 0.0 {
                 *dir = abc;
             } else {
-                self.points = vec![b, c, a];
+                self.set(&[b, c, a]);
                 *dir = -abc;
             }
         }
@@ -106,17 +126,17 @@ impl Simplex {
         // Check which face the origin is closest to
         if abc.dot(ao) > 0.0 {
             // Origin is past ABC face
-            self.points = vec![c, b, a];
+            self.set(&[c, b, a]);
             return self.triangle_case(dir);
         }
         if acd.dot(ao) > 0.0 {
             // Origin is past ACD face
-            self.points = vec![d, c, a];
+            self.set(&[d, c, a]);
             return self.triangle_case(dir);
         }
         if adb.dot(ao) > 0.0 {
             // Origin is past ADB face
-            self.points = vec![b, d, a];
+            self.set(&[b, d, a]);
             return self.triangle_case(dir);
         }
 
@@ -217,6 +237,29 @@ pub fn gjk_rot(
     rot_a: &Mat3,
     rot_b: &Mat3,
 ) -> GjkOutcome {
+    gjk_rot_until(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, f64::INFINITY)
+        .unwrap_or(GjkOutcome::Indeterminate)
+}
+
+/// [`gjk_rot`], giving up with `None` as soon as the pair is provably at
+/// least `cutoff` apart.
+///
+/// The proof is the iteration's own lower bound `v·w/|v|` (see below): once
+/// it reaches `cutoff`, the true distance does too, so a caller that only
+/// wants pairs *inside* `cutoff` — `contact_manifold_within` with the margin —
+/// has its answer without iterating to 1e-10 convergence. On a curved shape
+/// that convergence is linear and was the whole cost of a separated
+/// box-cylinder query (contact-speed). With `cutoff = ∞` this is `gjk_rot`
+/// exactly.
+pub(crate) fn gjk_rot_until(
+    geom_a: &Geometry,
+    geom_b: &Geometry,
+    pos_a: &Vec3,
+    pos_b: &Vec3,
+    rot_a: &Mat3,
+    rot_b: &Mat3,
+    cutoff: f64,
+) -> Option<GjkOutcome> {
     let mut simplex = Simplex::new();
     let mut dir = pos_b - pos_a;
     if dir.norm() < 1e-10 {
@@ -232,14 +275,14 @@ pub fn gjk_rot(
 
     let s = support(&dir);
     if !is_finite(&s) {
-        return GjkOutcome::Indeterminate;
+        return Some(GjkOutcome::Indeterminate);
     }
     simplex.add(s);
 
     for _ in 0..64 {
         // `v` is the closest point of the (already Voronoi-reduced) simplex to
         // the origin, so `|v|` is the current best distance estimate.
-        let v = closest_point_to_origin(&simplex.points);
+        let v = closest_point_to_origin(simplex.as_slice());
         let vn = v.norm();
         if vn < 1e-12 {
             // The origin lies on the current simplex. With a single point that
@@ -247,9 +290,9 @@ pub fn gjk_rot(
             // more the origin is enclosed by the simplex, so the shapes are
             // penetrating — reporting separation here would make deep overlaps
             // invisible to `find_contacts`.
-            return if simplex.len() >= 2 {
+            return Some(if simplex.len() >= 2 {
                 GjkOutcome::Penetrating {
-                    simplex: simplex.points.clone(),
+                    simplex: simplex.as_slice().to_vec(),
                 }
             } else {
                 // Exactly touching: the surfaces meet, and the direction is
@@ -258,44 +301,47 @@ pub fn gjk_rot(
                     distance: 0.0,
                     closest: Vec3::zeros(),
                 }
-            };
+            });
         }
 
         dir = -v;
         let w = support(&dir);
         if !is_finite(&w) {
-            return GjkOutcome::Indeterminate;
+            return Some(GjkOutcome::Indeterminate);
         }
 
         // `w` lies on the supporting plane with normal `v̂`; the whole hull is
         // on its far side, so `v·w/|v|` is a lower bound on the true distance.
         // When it meets `|v|` the estimate is exact.
         let lower_bound = v.dot(w) / vn;
+        if lower_bound >= cutoff {
+            return None;
+        }
         if vn - lower_bound <= 1e-10 * (1.0 + vn) {
-            return GjkOutcome::Separated {
+            return Some(GjkOutcome::Separated {
                 distance: vn,
                 closest: v,
-            };
+            });
         }
         // No progress (the support point is already in the simplex): the
         // polytope cannot be refined further, so `|v|` is the answer.
-        if simplex.points.iter().any(|p| (*p - w).norm() < 1e-14) {
-            return GjkOutcome::Separated {
+        if simplex.as_slice().iter().any(|p| (*p - w).norm() < 1e-14) {
+            return Some(GjkOutcome::Separated {
                 distance: vn,
                 closest: v,
-            };
+            });
         }
 
         simplex.add(w);
         let mut reduce_dir = dir;
         if simplex.contains_origin(&mut reduce_dir) {
-            return GjkOutcome::Penetrating {
-                simplex: simplex.points.clone(),
-            };
+            return Some(GjkOutcome::Penetrating {
+                simplex: simplex.as_slice().to_vec(),
+            });
         }
     }
 
-    GjkOutcome::Indeterminate
+    Some(GjkOutcome::Indeterminate)
 }
 
 /// Closest point to the origin on a point / segment / triangle simplex.
