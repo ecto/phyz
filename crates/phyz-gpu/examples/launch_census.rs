@@ -61,7 +61,10 @@ fn pd_dofs(model: &Model) -> Vec<PdDof> {
 }
 
 /// Run `f` and report what it issued.
-fn measure<B: KernelBackend>(sim: &mut BatchSim<B>, f: impl FnOnce(&mut BatchSim<B>)) -> LaunchCensus {
+fn measure<B: KernelBackend>(
+    sim: &mut BatchSim<B>,
+    f: impl FnOnce(&mut BatchSim<B>),
+) -> LaunchCensus {
     census::reset();
     f(sim);
     census::snapshot()
@@ -111,7 +114,11 @@ fn census_at<B: KernelBackend>(
     let can_capture = sim.graphs_enabled();
     println!(
         "\n{nworld} worlds | sweeps {sweeps} | control_every {control_every} | capture {}",
-        if can_capture { "available" } else { "UNAVAILABLE (host mirror)" }
+        if can_capture {
+            "available"
+        } else {
+            "UNAVAILABLE (host mirror)"
+        }
     );
 
     // Warm up so first-touch allocation is not counted as steady-state work.
@@ -176,7 +183,10 @@ fn census_at<B: KernelBackend>(
 
 fn main() {
     let worlds: Vec<usize> = {
-        let v: Vec<usize> = std::env::args().skip(1).filter_map(|s| s.parse().ok()).collect();
+        let v: Vec<usize> = std::env::args()
+            .skip(1)
+            .filter_map(|s| s.parse().ok())
+            .collect();
         if v.is_empty() { vec![512, 4096] } else { v }
     };
     let control_every: usize = std::env::var("CONTROL_EVERY")

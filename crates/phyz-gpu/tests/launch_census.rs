@@ -75,7 +75,11 @@ fn fused_period_is_one_launch_only_via_step_many() {
     let mut sim = sim_for(&model, 8);
     sim.set_step_mode(StepMode::Fused);
 
-    assert_eq!(count(&mut sim, |s| s.step()), 1, "a fused step is one launch");
+    assert_eq!(
+        count(&mut sim, |s| s.step()),
+        1,
+        "a fused step is one launch"
+    );
     assert_eq!(
         count(&mut sim, |s| s.step_many(20).unwrap()),
         1,
