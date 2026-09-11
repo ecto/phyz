@@ -68,3 +68,102 @@ bits. `contact_speed_exact.rs` pins the hash of every state along a mixed
 shape pile (1500 steps) and the K1 stance/step (400/1500 steps) through
 `Simulator::step_with_contacts`, recorded on the lane's base before any
 change. A pure-speed change must keep all of them.
+
+## Baseline (row 0, `r0_baseline.jsonl`, `mujoco.jsonl`)
+
+Thread CPU µs/step, min of 9 runs (median in the rows).
+
+| scene | phyz | MuJoCo 3.13 | phyz / MuJoCo |
+|---|---|---|---|
+| stance | 144.8 | 22.7 | 6.4x |
+| single | 124.0 | 22.2 | 5.6x |
+| step | 103.4 | 23.2 | 4.5x |
+
+`k1u_stance` by stage (µs / allocations per step): FK 1.4 / 3, ground
+detection 2.5 / 25, **body-body detection 50.1 / 573**, ABA 12.8 / 80,
+**assembly 60.3 / 138**, warm start 0.5, solve 25.3 / 12, velocity update
+1.4, integrate 0.8. **835 heap allocations per step.**
+
+(The audit's 1.1 % solve share was the sim2 walking loop, whose solves are
+cheaper than this stance's ~21 iterations; here the solve is 17 %. Detection
+plus assembly is 76 % either way.)
+
+### The waste, ranked
+
+1. **Separated curved pairs iterated to convergence.** Broadphase passes
+   ~11 shape pairs per stance step; the pair filter leaves 6, and all 6 are
+   box-cylinder: each hand box against its own side's hip roll, hip yaw and
+   shank cylinders. Their AABBs overlap because the arms hang beside the hips.
+   None ever produces a contact in any scene. Each costs ~7.3 µs and ~95 heap
+   allocations: GJK on a cylinder converges linearly to its 1e-10 relative
+   tolerance, and its simplex was a `Vec` rebuilt on every Voronoi
+   reduction. **44 of the 50 µs of body detection.**
+2. **Dense assembly over all 28 DOFs.** A foot-corner Jacobian is nonzero on
+   12 columns (the chain trunk→foot), but `M^-1 J^T`, `J M^-1 J^T` and
+   `J v` summed over all 28: ~27 µs at stance.
+3. **The dense mass inverse**: Gauss-Jordan on the 28x28 `M`, ~14 µs, every
+   step, plus CRBA ~10 µs.
+4. **Allocations**: 835 per step, 573 of them in (1).
+5. Not waste, for the record: broadphase itself (sweep-and-prune over 20
+   AABBs, 1.9 µs), the pair filter (0.04 µs) and ground detection (2.0 µs)
+   are cheap; the pair filter already runs once per pair after broadphase and
+   a static pair mask would save < 0.1 µs. The warm-start cache is 0.5 µs.
+
+`k1m_*` (the vendor MJCF in phyz, mesh hulls as `Mesh`) are 1.7–4x slower than
+`k1u_*` and **diverge to NaN in every scene** (identical `state_hash`
+`7f7e827ebb41dc65`, `trunk_z_end` NaN): phyz-mjcf's K1 is not a usable
+model today. Its cost is `placed_shapes` cloning every mesh's vertex list
+each step (~160 µs) and cylinder-vs-mesh GJK (~130 µs). Reported, not fixed:
+no consumer steps this model, and ipse's rig fits boxes to those meshes.
+
+## Changes
+
+| row | change | stance | single | step | exact |
+|---|---|---|---|---|---|
+| 0 | baseline | 144.8 | 124.0 | 103.4 | — |
+| 1 | GJK stops at the margin; stack simplex | 102.9 (1.41x) | 90.5 (1.37x) | 68.4 (1.51x) | yes, every scene |
+| 2 | assembly skips structurally zero Jacobian columns | 89.7 (1.15x) | 70.1 (1.29x) | 61.5 (1.11x) | yes, every scene |
+
+**Row 1** (`r1_gjk_cutoff.jsonl`). `gjk_rot_until(cutoff)` returns `None`
+once GJK's own lower bound `v·w/|v|` reaches the cutoff;
+`contact_manifold_within` passes the margin, where the old code's
+`distance >= margin` arm refused the pair anyway. Public `gjk_rot` is
+`gjk_rot_until(∞)`. The simplex is a `[Vec3; 4]` with the same point order and
+arithmetic. Body detection 50.1 → 5.1 µs, allocations 835 → 282 per step.
+*Exactness argument:* the lower bound never exceeds the true distance, and the
+old path's final `|v|` never falls below it, so a pair the cutoff drops is one
+the old path dropped. The only gap is a true distance within ~1 ulp of the
+margin, where the two float estimates could straddle it; no scene hits it
+(every `state_hash` unchanged).
+
+**Row 2** (`r2_sparse_cols.jsonl`). `M^-1 J^T`, the Delassus product, `J v_free`
+and the pre-step normal speed sum over each contact's nonzero Jacobian columns
+only, in the same increasing order. Each dropped term is `finite × 0 = ±0`,
+which cannot change a running sum that starts at `+0` under round-to-nearest,
+so the sums are bit-identical; any non-finite input keeps the dense path so
+NaN propagation is unchanged. Assembly 61.2 → 48.9 µs at stance. (The anatomy
+columns `asm.minv_jt`/`asm.delassus` in this and later rows time replicas of
+the *old* dense loops; they are attributions of the baseline, not of the new
+code.)
+
+### Row 3 — a negative, reverted (`r3_invert.jsonl`, `ab_r2_r3_r4.txt`)
+
+Two exact rewrites inside `assemble`: the Gauss-Jordan mass inverse on
+bounds-check-free slices, skipping `a`'s already-eliminated block (exact
+`+0`s, and `a` is discarded), and the per-contact temporaries (`cols`,
+`M^-1 J^T`) flattened into single buffers. Every `state_hash` unchanged.
+
+**It is slower.** The benched row said stance 1.03x, single 0.86x, step 0.90x —
+mixed, and rows benched minutes apart swing with the other lanes' load, so it
+was re-measured as an interleaved A/B (`docs/contact-speed/ab.py`: the
+binaries alternate, 8 rounds, min and median of per-round mins):
+
+| k1u | r2 | r3 | r2 → r3 |
+|---|---|---|---|
+| stance | 78.1 / 79.7 | 80.7 / 84.6 | 0.967x / 0.942x |
+| single | 70.8 / 75.8 | 75.5 / 80.5 | 0.938x / 0.941x |
+| step | 56.8 / 60.8 | 64.1 / 67.6 | 0.886x / 0.899x |
+
+A 3–11 % regression, exact or not. Row 3 was never committed; the rows and
+the A/B stay in the directory as the record. (Every row from here on is
+judged by an interleaved A/B against its parent, not by a standalone bench.)

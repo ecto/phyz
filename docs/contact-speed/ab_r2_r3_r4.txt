@@ -1,0 +1,10 @@
+scene                           r2                    r3                    r4   hashes
+k1u_single       70.8 /    75.8       75.5 /    80.5       72.1 /    76.2     same
+k1u_stance       78.1 /    79.7       80.7 /    84.6       78.6 /    81.1     same
+k1u_step         56.8 /    60.8       64.1 /    67.6       58.7 /    61.6     same
+k1u_single   r2->r3: min 0.938x  median 0.941x
+k1u_stance   r2->r3: min 0.967x  median 0.942x
+k1u_step     r2->r3: min 0.886x  median 0.899x
+k1u_single   r2->r4: min 0.982x  median 0.994x
+k1u_stance   r2->r4: min 0.994x  median 0.983x
+k1u_step     r2->r4: min 0.968x  median 0.986x
