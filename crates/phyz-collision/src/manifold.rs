@@ -229,7 +229,10 @@ pub fn contact_manifold_within(
         0.0
     };
 
-    let (depth, normal) = match crate::gjk::gjk_rot(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b) {
+    // `gjk_rot_until` stops once the pair is provably `margin` apart: the
+    // `distance >= margin` arm below would refuse it anyway.
+    let outcome = crate::gjk::gjk_rot_until(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, margin)?;
+    let (depth, normal) = match outcome {
         GjkOutcome::Penetrating { simplex } => {
             crate::epa::epa_from_simplex(geom_a, geom_b, pos_a, pos_b, rot_a, rot_b, &simplex)?
         }
