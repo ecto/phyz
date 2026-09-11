@@ -196,6 +196,55 @@ slice-and-zip Gauss-Jordan that skips half of `a`'s updates is slower than
 the indexed original on a 28x28 matrix. Not investigated further; the dense
 inverse stays as it was.
 
+## Where it ends (`r4_crba.jsonl`, `mujoco_final.jsonl`)
+
+Thread CPU µs/step, min of 9 (the final phyz and MuJoCo rows were benched in
+the same window; the baseline ratio uses the baseline's own MuJoCo window).
+
+| scene | phyz before | phyz after | lane multiplier | MuJoCo | phyz / MuJoCo before → after |
+|---|---|---|---|---|---|
+| K1 stance | 144.8 | **78.7** | **1.84x** | 20.2 | 6.4x → **3.9x** |
+| K1 single support | 124.0 | **72.1** | **1.72x** | 19.9 | 5.6x → **3.6x** |
+| K1 step | 103.4 | **57.8** | **1.79x** | 20.4 | 4.5x → **2.8x** |
+| box rest | 9.9 | 9.6 | 1.03x | — | |
+| box stack | 31.4 | 28.1 | 1.12x | — | |
+
+Every scene's `state_hash` is the baseline's. Allocations per K1 step
+835 → 220.
+
+`k1u_stance` stages before → after (µs): body-body detection **50.1 → 4.3**,
+ground detection 2.5 → 2.2, assembly **60.3 → 38.5**, solve 25.3 → 23.5
+(not touched — `contact-fixes`' lane), ABA 12.8 → 11.4, the rest ~4.
+
+**The stop condition.** Detection + assembly against the solve:
+
+| k1u | detect + assemble | solve | ratio |
+|---|---|---|---|
+| stance | 45.0 | 23.5 | **1.92x** — within 2x, stop |
+| single | 38.2 | 25.2 | **1.51x** — within 2x, stop |
+| step | 33.6 | 11.1 | 3.0x — see below |
+
+The step scene's solve is cheap (~3 contacts), and what is left of its
+assembly is per-step fixed cost that does not scale with contacts: the dense
+28x28 Gauss-Jordan `M^-1` (~14 µs, the baseline anatomy's `asm.invert`,
+unchanged since row 3 was reverted) and CRBA. **Exactly, that is
+irreducible here**: row 3's exact rewrite of the inverse measured slower, and
+anything faster (a tree-sparse `LTDL` factorization of `M`, forming
+`M^-1 J^T` by sparse solves along each contact's chain) reorders the float
+sums, which on the K1 means trajectories that separate at the one-ulp level
+and then chaotically. It also changes an interface: `phyz-diff` reads
+`ContactAssembly::inv_mass` as a dense matrix. That is the next lever, and it
+is a non-exact one; it is not taken on this lane.
+
+**The 10x.** The lane closed 1.7–1.8x on the K1 and took phyz from 4.5–6.4x
+MuJoCo to 2.8–3.9x. Cam's 10x is not in detection and assembly alone any
+more: the stance step is now assembly 38.5 (half of it the dense inverse and
+CRBA), solve 23.5, ABA 11.4, detection 6.5. Getting to MuJoCo's ~20 µs needs
+the non-exact assembly rewrite above **and** a cheaper solve (the Newton
+stage's dense KKT `solve_dense` is ~half the solve in the profile) **and**
+an allocation-free ABA (80 allocations per step, untouched) — MuJoCo's whole
+step is smaller than phyz's assembly alone.
+
 ## What `phyz-gpu` inherits
 
 Nothing directly: every change on this lane is **CPU-only**. `phyz-gpu` runs
