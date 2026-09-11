@@ -181,4 +181,6 @@ and neither alone closes the gradient row.
 
 **What fix 1 costs in this repo:** `phyz/tests/determinism.rs::golden_rollout_hashes`
 passes at the default and fails under `PHYZ_IMPACT_NEEDS_E=1`. The goldens
-roll out e = 0 impacts, so they re-pin with the change.
+roll out e = 0 impacts, so they re-pin with the change. It's the only
+failure in the workspace suite under the gate (138 test results; phyz-gpu,
+phyz-py, phyz-wasm excluded).
