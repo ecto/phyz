@@ -141,9 +141,20 @@ fn k1_rollout(script: &str, steps: usize) -> Option<u64> {
 
 /// Recorded on 03fc682 (the lane's base). See the module docs before
 /// touching these.
-const PILE: u64 = 0x0c15_d37d_d099_a96b;
-const K1_STANCE: u64 = 0xc27d_9d0a_ee11_6de9;
-const K1_STEP: u64 = 0x0367_bbb4_2182_9512;
+///
+/// 2026-09-11 (lane contact-integration): re-pinned because the PHYSICS
+/// under this lane changed, not because this lane moved a bit. main took
+/// ecto/phyz#105 (impact row only when e > 0) and #106 (exact per-corner
+/// friction projection), and both change these trajectories. Measured twice
+/// on the merged tree: (a) #106's tree with only this test and its
+/// `support/k1.rs` added, none of this lane's speed commits, and (b) the same
+/// tree with every contact-speed commit merged on top. Both print exactly
+/// these three values, so the lane is still bit-exact on the new physics.
+/// Was: pile 0x0c15_d37d_d099_a96b, stance 0xc27d_9d0a_ee11_6de9,
+/// step 0x0367_bbb4_2182_9512.
+const PILE: u64 = 0xf52b_e749_29ce_21c6;
+const K1_STANCE: u64 = 0x141b_c4b2_7e86_03b5;
+const K1_STEP: u64 = 0x0076_5f68_4641_b568;
 
 #[test]
 fn contact_speed_pile_is_bit_exact() {

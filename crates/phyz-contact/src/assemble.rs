@@ -11,13 +11,6 @@ use phyz_collision::Collision;
 use phyz_math::{DMat, DVec, SpatialVec, Vec3};
 use phyz_model::{Model, State};
 
-/// `PHYZ_IMPACT_NEEDS_E=1`: the contact-audit prototype that makes only
-/// bouncing materials impact rows (see `assemble`).
-fn impact_needs_e() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
-}
-
 /// Build the convex contact problem for `contacts` at the current state.
 ///
 /// `free_qd` is the generalized velocity the system would have after this step
