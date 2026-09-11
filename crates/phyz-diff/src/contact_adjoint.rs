@@ -1448,8 +1448,13 @@ fn eval_pieces_gen<T: Scalar>(
         // row (`impact = 0`) is exactly the soft contact it always was.
         let violation = c.depth.max(T::ZERO);
         let d = impedance_at_gen(&mat_combined, c.depth);
-        let impact = effective_restitution_gen(T::ONE, approach, config.restitution_threshold)
-            .clamp(T::ZERO, T::ONE);
+        // AUDIT PROTOTYPE mirror of `PHYZ_IMPACT_NEEDS_E` in `assemble`.
+        let impact = if impact_needs_e() && e_pair <= T::ZERO {
+            T::ZERO
+        } else {
+            effective_restitution_gen(T::ONE, approach, config.restitution_threshold)
+                .clamp(T::ZERO, T::ONE)
+        };
         bias_rows[ci] = if dt > 0.0 {
             (T::ONE - impact)
                 * d
@@ -2184,4 +2189,10 @@ pub fn convex_adjoint_gradient(
         d_friction,
         d_restitution,
     })
+}
+
+/// Mirror of `phyz_contact::assemble`'s `PHYZ_IMPACT_NEEDS_E` audit prototype.
+fn impact_needs_e() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
 }
