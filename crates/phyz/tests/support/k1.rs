@@ -15,18 +15,52 @@ use std::path::{Path, PathBuf};
 /// Vendor joint order, gains, effort limits and pose: ipse's `StandingRig`
 /// (vendor gains) as written to `rig.json` by the audit's `contact_audit_k1`.
 pub const JOINTS: [&str; 22] = [
-    "AAHead_yaw", "Head_pitch", "ALeft_Shoulder_Pitch", "Left_Shoulder_Roll", "Left_Elbow_Pitch",
-    "Left_Elbow_Yaw", "ARight_Shoulder_Pitch", "Right_Shoulder_Roll", "Right_Elbow_Pitch",
-    "Right_Elbow_Yaw", "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw", "Left_Knee_Pitch",
-    "Left_Ankle_Pitch", "Left_Ankle_Roll", "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw",
-    "Right_Knee_Pitch", "Right_Ankle_Pitch", "Right_Ankle_Roll",
+    "AAHead_yaw",
+    "Head_pitch",
+    "ALeft_Shoulder_Pitch",
+    "Left_Shoulder_Roll",
+    "Left_Elbow_Pitch",
+    "Left_Elbow_Yaw",
+    "ARight_Shoulder_Pitch",
+    "Right_Shoulder_Roll",
+    "Right_Elbow_Pitch",
+    "Right_Elbow_Yaw",
+    "Left_Hip_Pitch",
+    "Left_Hip_Roll",
+    "Left_Hip_Yaw",
+    "Left_Knee_Pitch",
+    "Left_Ankle_Pitch",
+    "Left_Ankle_Roll",
+    "Right_Hip_Pitch",
+    "Right_Hip_Roll",
+    "Right_Hip_Yaw",
+    "Right_Knee_Pitch",
+    "Right_Ankle_Pitch",
+    "Right_Ankle_Roll",
 ];
 pub const KP: [f64; 22] = [
-    1.6076564945148037, 4.96794603104, 14.219637448679467, 12.858821292846736, 0.5937363343523681,
-    1.7562086058847597, 14.216133999885427, 12.854414564672165, 0.594081067660144, 1.75529654190604,
-    604.180261289572, 500.3593451001352, 54.445200651623594, 278.2593675021229, 92.548975055296,
-    90.9807259388928, 604.1759041201899, 500.3530313430554, 54.4445516726996, 278.25672367342963,
-    92.548975055296, 90.9807259388928,
+    1.6076564945148037,
+    4.96794603104,
+    14.219637448679467,
+    12.858821292846736,
+    0.5937363343523681,
+    1.7562086058847597,
+    14.216133999885427,
+    12.854414564672165,
+    0.594081067660144,
+    1.75529654190604,
+    604.180261289572,
+    500.3593451001352,
+    54.445200651623594,
+    278.2593675021229,
+    92.548975055296,
+    90.9807259388928,
+    604.1759041201899,
+    500.3530313430554,
+    54.4445516726996,
+    278.25672367342963,
+    92.548975055296,
+    90.9807259388928,
 ];
 pub const EFFORT: [f64; 22] = [
     6.0, 6.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 30.0, 35.0, 20.0, 40.0, 20.0, 20.0,
@@ -92,7 +126,10 @@ pub fn urdf_k1(dt: f64) -> Option<Model> {
     if !path.is_file() {
         return None;
     }
-    let opts = phyz_urdf::UrdfOptions { dt: Some(dt), ..Default::default() };
+    let opts = phyz_urdf::UrdfOptions {
+        dt: Some(dt),
+        ..Default::default()
+    };
     let u = phyz_urdf::load_file(path, &opts).ok()?;
     let mut model = u.model;
     let mj = mjcf_k1(dt)?;
@@ -106,10 +143,14 @@ pub fn urdf_k1(dt: f64) -> Option<Model> {
     for link in FEET {
         let idx = model.body_index(link)?;
         let mb = &mj.bodies[mj.body_index(link)?];
-        let (half, off) = mb.collisions.iter().chain(mb.visuals.iter()).find_map(|g| match g.geometry {
-            Geometry::Box { half_extents } => Some((half_extents, g.origin.pos)),
-            _ => None,
-        })?;
+        let (half, off) = mb
+            .collisions
+            .iter()
+            .chain(mb.visuals.iter())
+            .find_map(|g| match g.geometry {
+                Geometry::Box { half_extents } => Some((half_extents, g.origin.pos)),
+                _ => None,
+            })?;
         model.bodies[idx].geometry = None;
         model.bodies[idx].collisions = vec![GeomInstance::new(
             Geometry::Box { half_extents: half },
@@ -120,13 +161,20 @@ pub fn urdf_k1(dt: f64) -> Option<Model> {
         if FEET.contains(&r.link.as_str()) {
             continue;
         }
-        let Some(idx) = model.body_index(&r.link) else { continue };
+        let Some(idx) = model.body_index(&r.link) else {
+            continue;
+        };
         if !model.bodies[idx].collisions.is_empty() || model.bodies[idx].geometry.is_some() {
             continue;
         }
-        let Some((half, centre)) = stl_aabb(&dir.join(&r.filename)) else { continue };
+        let Some((half, centre)) = stl_aabb(&dir.join(&r.filename)) else {
+            continue;
+        };
         let origin = SpatialTransform::new(r.origin.rot, r.origin.body_to_world_point(centre));
-        model.bodies[idx].collisions.push(GeomInstance::new(Geometry::Box { half_extents: half }, origin));
+        model.bodies[idx].collisions.push(GeomInstance::new(
+            Geometry::Box { half_extents: half },
+            origin,
+        ));
     }
     Some(model)
 }
@@ -152,7 +200,11 @@ pub fn k1_map(model: &Model) -> K1Map {
 /// on the trunk body.
 pub fn k1_state(model: &Model, map: &K1Map) -> State {
     let mut s = model.default_state();
-    let free = model.joints.iter().position(|j| j.joint_type == JointType::Free).expect("free base");
+    let free = model
+        .joints
+        .iter()
+        .position(|j| j.joint_type == JointType::Free)
+        .expect("free base");
     let b = model.q_offsets[free];
     for k in 0..22 {
         s.q[map.q[k]] = Q0[k];
@@ -188,7 +240,11 @@ pub fn k1_target(script: &str, t: f64, k: usize) -> f64 {
                 return base;
             }
             let ph = ((t - 0.3) / 0.8).fract();
-            let (leg, x) = if ph < 0.5 { (0, ph / 0.5) } else { (1, (ph - 0.5) / 0.5) };
+            let (leg, x) = if ph < 0.5 {
+                (0, ph / 0.5)
+            } else {
+                (1, (ph - 0.5) / 0.5)
+            };
             base + lift(leg, (std::f64::consts::PI * x).sin())
         }
         _ => base,

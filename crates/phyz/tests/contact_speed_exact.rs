@@ -61,20 +61,63 @@ fn pile() -> (Model, State) {
     let bodies: Vec<(Geometry, [f64; 6])> = vec![
         // A 45-deg box, and an upright cylinder 1 cm off its face along the
         // diagonal: overlapping AABBs, never in contact.
-        (Geometry::Box { half_extents: Vec3::new(0.1, 0.1, 0.1) }, [0.0, 0.0, q, 0.0, 0.0, 0.1]),
-        (Geometry::Cylinder { radius: 0.05, height: 0.2 }, [0.0, 0.0, 0.0, 0.16 * q.cos(), 0.16 * q.sin(), 0.1]),
+        (
+            Geometry::Box {
+                half_extents: Vec3::new(0.1, 0.1, 0.1),
+            },
+            [0.0, 0.0, q, 0.0, 0.0, 0.1],
+        ),
+        (
+            Geometry::Cylinder {
+                radius: 0.05,
+                height: 0.2,
+            },
+            [0.0, 0.0, 0.0, 0.16 * q.cos(), 0.16 * q.sin(), 0.1],
+        ),
         // A small tilted box dropped onto the big one.
-        (Geometry::Box { half_extents: Vec3::new(0.05, 0.05, 0.05) }, [0.05, 0.02, 0.3, 0.0, 0.0, 0.26]),
+        (
+            Geometry::Box {
+                half_extents: Vec3::new(0.05, 0.05, 0.05),
+            },
+            [0.05, 0.02, 0.3, 0.0, 0.0, 0.26],
+        ),
         // A lying capsule with a sphere dropped on it.
-        (Geometry::Capsule { radius: 0.04, length: 0.2 }, [FRAC_PI_2, 0.0, 0.0, -0.3, 0.0, 0.25]),
-        (Geometry::Sphere { radius: 0.06 }, [0.0, 0.0, 0.0, -0.3, 0.02, 0.45]),
+        (
+            Geometry::Capsule {
+                radius: 0.04,
+                length: 0.2,
+            },
+            [FRAC_PI_2, 0.0, 0.0, -0.3, 0.0, 0.25],
+        ),
+        (
+            Geometry::Sphere { radius: 0.06 },
+            [0.0, 0.0, 0.0, -0.3, 0.02, 0.45],
+        ),
         // A lying cylinder with a flat box dropped across it.
-        (Geometry::Cylinder { radius: 0.05, height: 0.1 }, [FRAC_PI_2, 0.0, 0.0, 0.0, -0.35, 0.3]),
-        (Geometry::Box { half_extents: Vec3::new(0.08, 0.03, 0.02) }, [0.0, 0.0, 0.2, 0.02, -0.35, 0.45]),
+        (
+            Geometry::Cylinder {
+                radius: 0.05,
+                height: 0.1,
+            },
+            [FRAC_PI_2, 0.0, 0.0, 0.0, -0.35, 0.3],
+        ),
+        (
+            Geometry::Box {
+                half_extents: Vec3::new(0.08, 0.03, 0.02),
+            },
+            [0.0, 0.0, 0.2, 0.02, -0.35, 0.45],
+        ),
     ];
-    let mut b = ModelBuilder::new().gravity(Vec3::new(0.0, 0.0, -GRAVITY)).dt(1e-3);
+    let mut b = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(1e-3);
     for _ in &bodies {
-        b = b.add_free_body("p", -1, SpatialTransform::identity(), SpatialInertia::sphere(0.5, 0.08));
+        b = b.add_free_body(
+            "p",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::sphere(0.5, 0.08),
+        );
     }
     let mut model = b.build();
     let mut state = model.default_state();
@@ -91,7 +134,9 @@ fn k1_rollout(script: &str, steps: usize) -> Option<u64> {
     let model = k1::urdf_k1(1e-3)?;
     let map = k1::k1_map(&model);
     let state = k1::k1_state(&model, &map);
-    Some(rollout(&model, state, steps, |s| k1::k1_ctrl(&map, script, s)))
+    Some(rollout(&model, state, steps, |s| {
+        k1::k1_ctrl(&map, script, s)
+    }))
 }
 
 /// Recorded on 03fc682 (the lane's base). See the module docs before
@@ -110,8 +155,15 @@ fn contact_speed_pile_is_bit_exact() {
 #[test]
 fn contact_speed_k1_is_bit_exact() {
     let (Some(stance), Some(step)) = (k1_rollout("stance", 400), k1_rollout("step", 1500)) else {
-        eprintln!("contact_speed_k1_is_bit_exact: K1 assets not found under {} — skipped", k1::k1_dir().display());
+        eprintln!(
+            "contact_speed_k1_is_bit_exact: K1 assets not found under {} — skipped",
+            k1::k1_dir().display()
+        );
         return;
     };
-    assert_eq!((stance, step), (K1_STANCE, K1_STEP), "K1 moved: got stance {stance:#018x}, step {step:#018x}");
+    assert_eq!(
+        (stance, step),
+        (K1_STANCE, K1_STEP),
+        "K1 moved: got stance {stance:#018x}, step {step:#018x}"
+    );
 }

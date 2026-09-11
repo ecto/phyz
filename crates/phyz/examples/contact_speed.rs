@@ -23,7 +23,9 @@ use phyz::phyz_contact::{
     ContactCache, ContactMaterial, ContactSolverConfig, assemble, find_contacts,
     find_ground_contacts_model, solve_contacts_warm,
 };
-use phyz::phyz_math::{DMat, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
+use phyz::phyz_math::{
+    DMat, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3,
+};
 use phyz::phyz_model::{Geometry, Model, ModelBuilder, State};
 use phyz::phyz_rigid::{
     aba, crba, forward_kinematics, integrate_configuration, relative_point_jacobian,
@@ -92,14 +94,21 @@ fn cpu_ns() -> u64 {
 // ───────────────────────── the box scenes ─────────────────────────
 
 fn boxes(dt: f64, specs: &[(Vec3, f64)]) -> Model {
-    let mut b = ModelBuilder::new().gravity(Vec3::new(0.0, 0.0, -GRAVITY)).dt(dt);
+    let mut b = ModelBuilder::new()
+        .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+        .dt(dt);
     for (h, m) in specs {
         let i = Vec3::new(
             m / 3.0 * (h.y * h.y + h.z * h.z),
             m / 3.0 * (h.x * h.x + h.z * h.z),
             m / 3.0 * (h.x * h.x + h.y * h.y),
         );
-        b = b.add_free_body("box", -1, SpatialTransform::identity(), SpatialInertia::new(*m, Vec3::zeros(), Mat3::from_diagonal(&i)));
+        b = b.add_free_body(
+            "box",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::new(*m, Vec3::zeros(), Mat3::from_diagonal(&i)),
+        );
     }
     let mut model = b.build();
     for (k, (h, _)) in specs.iter().enumerate() {
@@ -110,8 +119,17 @@ fn boxes(dt: f64, specs: &[(Vec3, f64)]) -> Model {
 
 // ───────────────────────── the step ─────────────────────────
 
-const STAGES: [&str; 9] =
-    ["fk", "detect_ground", "detect_body", "aba", "assemble", "warm_start", "solve", "vel_update", "integrate"];
+const STAGES: [&str; 9] = [
+    "fk",
+    "detect_ground",
+    "detect_body",
+    "aba",
+    "assemble",
+    "warm_start",
+    "solve",
+    "vel_update",
+    "integrate",
+];
 
 #[derive(Default, Clone)]
 struct Prof {
@@ -144,7 +162,14 @@ fn apply_ctrl(sc: &Scene, state: &mut State) {
 
 /// One step, `Simulator::step_with_contacts` exactly (FK first, as the audit
 /// harness does; `Simulator` additionally re-runs FK at the end).
-fn step(model: &Model, state: &mut State, cache: &mut ContactCache, mat: &ContactMaterial, cfg: &ContactSolverConfig, prof: Option<&mut Prof>) -> usize {
+fn step(
+    model: &Model,
+    state: &mut State,
+    cache: &mut ContactCache,
+    mat: &ContactMaterial,
+    cfg: &ContactSolverConfig,
+    prof: Option<&mut Prof>,
+) -> usize {
     let mut p = prof;
     let mut t = cpu_ns();
     let mut a = allocs();
@@ -233,10 +258,21 @@ struct Placed {
 fn conv(g: &Geometry) -> pc::Geometry {
     match g {
         Geometry::Sphere { radius } => pc::Geometry::Sphere { radius: *radius },
-        Geometry::Capsule { radius, length } => pc::Geometry::Capsule { radius: *radius, length: *length },
-        Geometry::Box { half_extents } => pc::Geometry::Box { half_extents: *half_extents },
-        Geometry::Cylinder { radius, height } => pc::Geometry::Cylinder { radius: *radius, height: *height },
-        Geometry::Mesh { vertices, faces } => pc::Geometry::Mesh { vertices: vertices.clone(), faces: faces.clone() },
+        Geometry::Capsule { radius, length } => pc::Geometry::Capsule {
+            radius: *radius,
+            length: *length,
+        },
+        Geometry::Box { half_extents } => pc::Geometry::Box {
+            half_extents: *half_extents,
+        },
+        Geometry::Cylinder { radius, height } => pc::Geometry::Cylinder {
+            radius: *radius,
+            height: *height,
+        },
+        Geometry::Mesh { vertices, faces } => pc::Geometry::Mesh {
+            vertices: vertices.clone(),
+            faces: faces.clone(),
+        },
         Geometry::Plane { normal } => pc::Geometry::Plane { normal: *normal },
     }
 }
@@ -260,7 +296,12 @@ fn placed(model: &Model, state: &State) -> Vec<Placed> {
         let x = &state.body_xform[i];
         let mut push = |g: &Geometry, o: &SpatialTransform| {
             let sx = SpatialTransform::new(o.rot * x.rot, x.body_to_world_point(o.pos));
-            out.push(Placed { body: i, geom: conv(g), pos: sx.pos, rot: sx.rot.transpose() });
+            out.push(Placed {
+                body: i,
+                geom: conv(g),
+                pos: sx.pos,
+                rot: sx.rot.transpose(),
+            });
         };
         if body.collisions.is_empty() {
             if let Some(g) = &body.geometry {
@@ -357,32 +398,71 @@ fn anatomy(model: &Model, state: &State, mat: &ContactMaterial, an: &mut Anatomy
     // detection pieces
     let sh = placed(model, state);
     an.shapes += sh.len() as u64;
-    add(an, "det.placed_shapes", time_reps(reps, || {
-        std::hint::black_box(placed(model, state));
-    }));
-    let aabbs: Vec<AABB> = sh.iter().map(|s| AABB::from_geometry(&s.geom, &s.pos, &s.rot).expanded(0.5 * margin)).collect();
-    add(an, "det.aabbs", time_reps(reps, || {
-        std::hint::black_box(sh.iter().map(|s| AABB::from_geometry(&s.geom, &s.pos, &s.rot).expanded(0.5 * margin)).collect::<Vec<_>>());
-    }));
+    add(
+        an,
+        "det.placed_shapes",
+        time_reps(reps, || {
+            std::hint::black_box(placed(model, state));
+        }),
+    );
+    let aabbs: Vec<AABB> = sh
+        .iter()
+        .map(|s| AABB::from_geometry(&s.geom, &s.pos, &s.rot).expanded(0.5 * margin))
+        .collect();
+    add(
+        an,
+        "det.aabbs",
+        time_reps(reps, || {
+            std::hint::black_box(
+                sh.iter()
+                    .map(|s| AABB::from_geometry(&s.geom, &s.pos, &s.rot).expanded(0.5 * margin))
+                    .collect::<Vec<_>>(),
+            );
+        }),
+    );
     let pairs = sweep_and_prune(&aabbs);
     an.bp_pairs += pairs.len() as u64;
-    add(an, "det.sweep_and_prune", time_reps(reps, || {
-        std::hint::black_box(sweep_and_prune(&aabbs));
-    }));
-    add(an, "det.weld_groups", time_reps(reps, || {
-        std::hint::black_box(model.weld_groups());
-    }));
+    add(
+        an,
+        "det.sweep_and_prune",
+        time_reps(reps, || {
+            std::hint::black_box(sweep_and_prune(&aabbs));
+        }),
+    );
+    add(
+        an,
+        "det.weld_groups",
+        time_reps(reps, || {
+            std::hint::black_box(model.weld_groups());
+        }),
+    );
     let welds = model.weld_groups();
-    let passed: Vec<(usize, usize)> = pairs.iter().copied().filter(|&(i, j)| model.may_collide(sh[i].body, sh[j].body, &welds)).collect();
-    add(an, "det.may_collide", time_reps(reps, || {
-        std::hint::black_box(pairs.iter().filter(|&&(i, j)| model.may_collide(sh[i].body, sh[j].body, &welds)).count());
-    }));
+    let passed: Vec<(usize, usize)> = pairs
+        .iter()
+        .copied()
+        .filter(|&(i, j)| model.may_collide(sh[i].body, sh[j].body, &welds))
+        .collect();
+    add(
+        an,
+        "det.may_collide",
+        time_reps(reps, || {
+            std::hint::black_box(
+                pairs
+                    .iter()
+                    .filter(|&&(i, j)| model.may_collide(sh[i].body, sh[j].body, &welds))
+                    .count(),
+            );
+        }),
+    );
     let mut np_total = 0.0;
     for &(i, j) in &passed {
         let (a, b) = (&sh[i], &sh[j]);
-        let m = pc::contact_manifold_within(&a.geom, &b.geom, &a.pos, &a.rot, &b.pos, &b.rot, margin);
+        let m =
+            pc::contact_manifold_within(&a.geom, &b.geom, &a.pos, &a.rot, &b.pos, &b.rot, margin);
         let ns = time_reps(reps, || {
-            std::hint::black_box(pc::contact_manifold_within(&a.geom, &b.geom, &a.pos, &a.rot, &b.pos, &b.rot, margin));
+            std::hint::black_box(pc::contact_manifold_within(
+                &a.geom, &b.geom, &a.pos, &a.rot, &b.pos, &b.rot, margin,
+            ));
         });
         np_total += ns;
         let hit = m.is_some_and(|m| !m.points.is_empty());
@@ -395,19 +475,33 @@ fn anatomy(model: &Model, state: &State, mat: &ContactMaterial, an: &mut Anatomy
         ks.sort();
         let key = format!("{}-{}{}", ks[0], ks[1], if hit { "+hit" } else { "" });
         an.pair_kind.entry((i, j)).or_insert_with(|| {
-            format!("{}:{}/{}:{}", model.bodies[a.body].name, kind(&a.geom), model.bodies[b.body].name, kind(&b.geom))
+            format!(
+                "{}:{}/{}:{}",
+                model.bodies[a.body].name,
+                kind(&a.geom),
+                model.bodies[b.body].name,
+                kind(&b.geom)
+            )
         });
         let e = an.np_kind_ns.entry(key).or_default();
         e.0 += ns;
         e.1 += 1;
     }
     add(an, "det.narrowphase", np_total);
-    add(an, "det.find_contacts_total", time_reps(reps, || {
-        std::hint::black_box(find_contacts(model, state, margin));
-    }));
-    add(an, "det.ground_total", time_reps(reps, || {
-        std::hint::black_box(find_ground_contacts_model(model, state, 0.0, margin));
-    }));
+    add(
+        an,
+        "det.find_contacts_total",
+        time_reps(reps, || {
+            std::hint::black_box(find_contacts(model, state, margin));
+        }),
+    );
+    add(
+        an,
+        "det.ground_total",
+        time_reps(reps, || {
+            std::hint::black_box(find_ground_contacts_model(model, state, 0.0, margin));
+        }),
+    );
 
     // assembly pieces
     let mut contacts = find_ground_contacts_model(model, state, 0.0, margin);
@@ -419,100 +513,161 @@ fn anatomy(model: &Model, state: &State, mat: &ContactMaterial, an: &mut Anatomy
     let free_qd = state.v.clone();
     let cfg = ContactSolverConfig::simulation();
     let materials = model.contact_materials(mat);
-    add(an, "asm.total", time_reps(reps, || {
-        std::hint::black_box(assemble(model, state, &contacts, &materials, &free_qd, model.dt, &cfg));
-    }));
-    add(an, "asm.fk", time_reps(reps, || {
-        std::hint::black_box(forward_kinematics(model, state));
-    }));
-    add(an, "asm.crba", time_reps(reps, || {
-        std::hint::black_box(crba(model, state));
-    }));
+    add(
+        an,
+        "asm.total",
+        time_reps(reps, || {
+            std::hint::black_box(assemble(
+                model, state, &contacts, &materials, &free_qd, model.dt, &cfg,
+            ));
+        }),
+    );
+    add(
+        an,
+        "asm.fk",
+        time_reps(reps, || {
+            std::hint::black_box(forward_kinematics(model, state));
+        }),
+    );
+    add(
+        an,
+        "asm.crba",
+        time_reps(reps, || {
+            std::hint::black_box(crba(model, state));
+        }),
+    );
     let mass = crba(model, state);
-    add(an, "asm.invert", time_reps(reps, || {
-        std::hint::black_box(invert_symmetric(&mass));
-    }));
+    add(
+        an,
+        "asm.invert",
+        time_reps(reps, || {
+            std::hint::black_box(invert_symmetric(&mass));
+        }),
+    );
     let inv = invert_symmetric(&mass);
     let (xf, _) = forward_kinematics(model, state);
-    let jac = |c: &pc::Collision| relative_point_jacobian(model, &xf, c.body_i, c.attachment_j(), c.contact_point);
-    add(an, "asm.jacobians", time_reps(reps, || {
-        for c in &contacts {
-            std::hint::black_box(jac(c));
-        }
-    }));
+    let jac = |c: &pc::Collision| {
+        relative_point_jacobian(model, &xf, c.body_i, c.attachment_j(), c.contact_point)
+    };
+    add(
+        an,
+        "asm.jacobians",
+        time_reps(reps, || {
+            for c in &contacts {
+                std::hint::black_box(jac(c));
+            }
+        }),
+    );
     let js: Vec<DMat> = contacts.iter().map(jac).collect();
     for j in &js {
-        an.jac_nnz_cols += (0..model.nv).filter(|&c| (0..3).any(|r| j[(r, c)] != 0.0)).count() as u64;
+        an.jac_nnz_cols += (0..model.nv)
+            .filter(|&c| (0..3).any(|r| j[(r, c)] != 0.0))
+            .count() as u64;
     }
     let nv = model.nv;
-    add(an, "asm.minv_jt", time_reps(reps, || {
-        for jc in &js {
-            let mut m = DMat::zeros(nv, 3);
-            for r in 0..nv {
-                for k in 0..3 {
-                    let mut acc = 0.0;
-                    for col in 0..nv {
-                        acc += inv[(r, col)] * jc[(k, col)];
-                    }
-                    m[(r, k)] = acc;
-                }
-            }
-            std::hint::black_box(m);
-        }
-    }));
-    let n = js.len();
-    add(an, "asm.delassus", time_reps(reps, || {
-        let dim = 3 * n;
-        let mut d = vec![0.0; dim * dim];
-        for a in 0..n {
-            for b in 0..n {
-                for r in 0..3 {
+    add(
+        an,
+        "asm.minv_jt",
+        time_reps(reps, || {
+            for jc in &js {
+                let mut m = DMat::zeros(nv, 3);
+                for r in 0..nv {
                     for k in 0..3 {
                         let mut acc = 0.0;
                         for col in 0..nv {
-                            acc += js[a][(r, col)] * js[b][(k, col)];
+                            acc += inv[(r, col)] * jc[(k, col)];
                         }
-                        d[(3 * a + r) * dim + 3 * b + k] = acc;
+                        m[(r, k)] = acc;
+                    }
+                }
+                std::hint::black_box(m);
+            }
+        }),
+    );
+    let n = js.len();
+    add(
+        an,
+        "asm.delassus",
+        time_reps(reps, || {
+            let dim = 3 * n;
+            let mut d = vec![0.0; dim * dim];
+            for a in 0..n {
+                for b in 0..n {
+                    for r in 0..3 {
+                        for k in 0..3 {
+                            let mut acc = 0.0;
+                            for col in 0..nv {
+                                acc += js[a][(r, col)] * js[b][(k, col)];
+                            }
+                            d[(3 * a + r) * dim + 3 * b + k] = acc;
+                        }
                     }
                 }
             }
-        }
-        std::hint::black_box(d);
-    }));
+            std::hint::black_box(d);
+        }),
+    );
 }
 
 // ───────────────────────── main ─────────────────────────
 
 fn scenes(dt: f64) -> Vec<Scene> {
     let mut v = Vec::new();
-    for (tag, build) in [("k1u", urdf_k1 as fn(f64) -> Option<Model>), ("k1m", mjcf_k1)] {
+    for (tag, build) in [
+        ("k1u", urdf_k1 as fn(f64) -> Option<Model>),
+        ("k1m", mjcf_k1),
+    ] {
         let Some(model) = build(dt) else {
-            eprintln!("contact_speed: K1 assets not found under {} — skipping {tag}", k1_dir().display());
+            eprintln!(
+                "contact_speed: K1 assets not found under {} — skipping {tag}",
+                k1_dir().display()
+            );
             continue;
         };
         for (script, secs) in [("stance", 2.0), ("single", 1.0), ("step", 3.0)] {
             let map = k1_map(&model);
             let state = k1_state(&model, &map);
-            v.push(Scene { name: format!("{tag}_{script}"), model: model.clone(), state, k1: Some((map, script.into())), secs });
+            v.push(Scene {
+                name: format!("{tag}_{script}"),
+                model: model.clone(),
+                state,
+                k1: Some((map, script.into())),
+                secs,
+            });
         }
     }
     let a = 0.1;
     let m = boxes(dt, &[(Vec3::new(a, a, a), 1.0)]);
     let mut s = m.default_state();
     s.q[5] = a;
-    v.push(Scene { name: "box_rest".into(), model: m, state: s, k1: None, secs: 2.0 });
+    v.push(Scene {
+        name: "box_rest".into(),
+        model: m,
+        state: s,
+        k1: None,
+        secs: 2.0,
+    });
     let m = boxes(dt, &[(Vec3::new(a, a, a), 1.0), (Vec3::new(a, a, a), 1.0)]);
     let mut s = m.default_state();
     s.q[5] = a;
     s.q[11] = 3.0 * a;
-    v.push(Scene { name: "box_stack".into(), model: m, state: s, k1: None, secs: 2.0 });
+    v.push(Scene {
+        name: "box_stack".into(),
+        model: m,
+        state: s,
+        k1: None,
+        secs: 2.0,
+    });
     v
 }
 
 fn main() {
     let filter = std::env::args().nth(1).unwrap_or_default();
     let dt = 1e-3;
-    let reps: usize = std::env::var("CS_REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
+    let reps: usize = std::env::var("CS_REPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
     let mat = ContactMaterial::default();
     let cfg = ContactSolverConfig::simulation();
     for sc in scenes(dt) {
@@ -567,29 +722,67 @@ fn main() {
         let stages = STAGES
             .iter()
             .enumerate()
-            .map(|(i, s)| format!("\"{s}\":[{:.3},{:.3},{:.2}]", prof.ns[i] as f64 / st / 1e3, prof.ns[i] as f64 / tot.max(1) as f64, prof.al[i] as f64 / st))
+            .map(|(i, s)| {
+                format!(
+                    "\"{s}\":[{:.3},{:.3},{:.2}]",
+                    prof.ns[i] as f64 / st / 1e3,
+                    prof.ns[i] as f64 / tot.max(1) as f64,
+                    prof.al[i] as f64 / st
+                )
+            })
             .collect::<Vec<_>>()
             .join(",");
         let sm = an.samples.max(1) as f64;
         let mut ns: Vec<_> = an.ns.iter().collect();
         ns.sort_by(|a, b| a.0.cmp(b.0));
-        let anat = ns.iter().map(|(k, v)| format!("\"{k}\":{:.3}", *v / sm / 1e3)).collect::<Vec<_>>().join(",");
+        let anat = ns
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":{:.3}", *v / sm / 1e3))
+            .collect::<Vec<_>>()
+            .join(",");
         let mut kinds: Vec<_> = an.np_kind_ns.iter().collect();
         kinds.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
-        let kinds = kinds.iter().map(|(k, (t, c))| format!("\"{k}\":[{:.3},{:.2}]", t / sm / 1e3, *c as f64 / sm)).collect::<Vec<_>>().join(",");
-        let never: Vec<String> = an.pairs.iter().filter(|(_, (_, h))| *h == 0).map(|(k, _)| format!("\"{}\"", an.pair_kind[k])).collect();
-        let ever: Vec<String> = an.pairs.iter().filter(|(_, (_, h))| *h > 0).map(|(k, (t, h))| format!("\"{} {h}/{t}\"", an.pair_kind[k])).collect();
+        let kinds = kinds
+            .iter()
+            .map(|(k, (t, c))| format!("\"{k}\":[{:.3},{:.2}]", t / sm / 1e3, *c as f64 / sm))
+            .collect::<Vec<_>>()
+            .join(",");
+        let never: Vec<String> = an
+            .pairs
+            .iter()
+            .filter(|(_, (_, h))| *h == 0)
+            .map(|(k, _)| format!("\"{}\"", an.pair_kind[k]))
+            .collect();
+        let ever: Vec<String> = an
+            .pairs
+            .iter()
+            .filter(|(_, (_, h))| *h > 0)
+            .map(|(k, (t, h))| format!("\"{} {h}/{t}\"", an.pair_kind[k]))
+            .collect();
         println!(
             "{{\"scene\":\"{}\",\"dt\":{dt},\"steps\":{n},\"nv\":{},\"nbodies\":{},\"us_per_step\":{us:.3},\"us_min\":{:.3},\"us_runs\":[{}],\"state_hash\":\"{hash:016x}\",\"trunk_z_end\":{trunk_z_end:.4},\
 \"contacts_ground\":{:.2},\"contacts_body\":{:.2},\"iters_mean\":{:.2},\"nonconverged\":{},\"allocs_per_step\":{:.1},\
 \"stages_us_share_allocs\":{{{stages}}},\"anatomy_us\":{{{anat}}},\"shapes\":{:.1},\"bp_pairs\":{:.2},\"np_calls\":{:.2},\"np_hits\":{:.2},\"jac_nnz_cols_mean\":{:.1},\"np_by_kind_us_calls\":{{{kinds}}},\"np_pairs_never_hit\":[{}],\"np_pairs_hit\":[{}]}}",
-            sc.name, model.nv, model.bodies.len(), runs[0],
-            runs.iter().map(|x| format!("{x:.2}")).collect::<Vec<_>>().join(","),
-            prof.contacts_ground as f64 / st, prof.contacts_body as f64 / st, prof.iters as f64 / prof.solves.max(1) as f64, prof.nonconv,
+            sc.name,
+            model.nv,
+            model.bodies.len(),
+            runs[0],
+            runs.iter()
+                .map(|x| format!("{x:.2}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            prof.contacts_ground as f64 / st,
+            prof.contacts_body as f64 / st,
+            prof.iters as f64 / prof.solves.max(1) as f64,
+            prof.nonconv,
             prof.al.iter().sum::<u64>() as f64 / st,
-            an.shapes as f64 / sm, an.bp_pairs as f64 / sm, an.np_calls as f64 / sm, an.np_hits as f64 / sm,
+            an.shapes as f64 / sm,
+            an.bp_pairs as f64 / sm,
+            an.np_calls as f64 / sm,
+            an.np_hits as f64 / sm,
             an.jac_nnz_cols as f64 / an.contacts.max(1) as f64,
-            never.join(","), ever.join(","),
+            never.join(","),
+            ever.join(","),
         );
     }
 }
