@@ -3083,6 +3083,7 @@ dependencies = [
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
+ "phyz-urdf",
  "phyz-world",
 ]
 
