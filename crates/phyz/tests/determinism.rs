@@ -245,10 +245,33 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// velocity update changed at `O((ω dt)²)`; `spinning_free_body` gained the
 /// gates (a 74 rad/s wheel keeps its speed in free space and on the plane)
 /// in the same commit.
+///
+/// All three moved on the commit that made an impact row rigid only when the
+/// material can bounce (`ContactProblem::impact_weight_for`, e <= 0 -> no
+/// impact row). Every scene here uses `ContactMaterial::default()`, whose
+/// restitution is 0, and every scene begins with a drop, so each first
+/// contact step went back from a rigid bias-free row to the soft resting row.
+/// The e = 0.5 restitution gate in `contact_physics_benchmarks` is unaffected
+/// by construction and passes unchanged in the same commit.
+///
+/// Moved on the commit that made the per-contact friction step exact
+/// (`convex::disc_block_step`: the trust-region minimizer of the contact's
+/// tangential block over the friction disc, replacing a radial scale of the
+/// unconstrained minimizer). Only scenes with a sliding, off-centre contact
+/// can see it: the radial scale was the exact step whenever a contact's
+/// tangential block was isotropic, so sticking and point-mass contacts are
+/// unchanged. The analytic incline gates (26 deg sticks, 27.5 and 35 deg
+/// match `g (sin - mu cos)`) are the physics check for the commit.
+///
+/// 2026-09-11 (lane contact-integration): re-pinned on the merge of both
+/// changes — ecto/phyz#105 (impact row only when e > 0) and ecto/phyz#106
+/// (exact per-corner friction projection). Each moved these bits on its own
+/// branch; the values below are the combined tree's, measured, not either
+/// branch's.
 const GOLDEN: &[(&str, u64)] = &[
-    ("box_tipping", 0xead6_7f1c_4306_7f06),
-    ("wheel_rolling", 0x444f_17c7_aefe_828a),
-    ("chain_falling", 0x818e_3134_cb67_007e),
+    ("box_tipping", 0x45f0_5e7b_c620_7af6),
+    ("wheel_rolling", 0x03f6_f5bd_5708_23e5),
+    ("chain_falling", 0xc056_0ce9_c277_400b),
 ];
 
 #[test]
@@ -528,7 +551,27 @@ fn a_one_ulp_perturbation_is_calibrated_for_every_scene() {
     for scene in scenes() {
         // Each rollout gets its own simulator so the contact caches cannot
         // couple them — otherwise this measures the cache, not the physics.
-        let sims = [Simulator::new(), Simulator::new()];
+        //
+        // And each is COLD-started, for the same reason one level down.
+        // 2026-09-11 (lane contact-integration), on the merge of ecto/phyz#105
+        // (impact row only when e > 0) and #106 (exact friction projection):
+        // warm-started at the default tolerance (1e-10), `wheel_rolling`'s two
+        // rollouts sat ~3e-14 apart until step 256, then jumped 3.4e5x in ONE
+        // step to 1.1e-8 and ended at 1.82e-9, past this test's 1e-10 bar.
+        // Not chaos (no growth before or after; a single step) and not a
+        // determinism bug (every rollout replays bit-for-bit; the same
+        // 1.8222395065723424e-9 on arm64 macOS and x86_64 Linux CI). It is the
+        // warm-started solve stopping at a different iterate in the two
+        // rollouts: the same tree at tolerance 1e-12 (warm) ends at 1.6e-13
+        // with no jump, and cold-started at 1e-10 ends at 6.6e-14. Neither
+        // change alone jumps (#105 only 1.6e-13, #106 only 7.4e-14 at 1500).
+        // This test measures the physics' 1-ulp growth, so it keeps the
+        // solver's stopping point out of it; a warm-started rollout should
+        // expect tolerance-scale (~1e-8) splits between 1-ulp neighbours.
+        let sims = [
+            Simulator::new().with_warm_start(false),
+            Simulator::new().with_warm_start(false),
+        ];
         let d = divergence(
             scene.model.nq,
             &scene.state,

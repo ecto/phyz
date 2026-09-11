@@ -191,16 +191,16 @@ pub fn assemble(
         // then made rigid on the restitution ramp's own smoothstep, so the
         // soft resting-contact model does not eat the bounce; see
         // [`ContactRow::impact`].
-        // AUDIT PROTOTYPE (PHYZ_IMPACT_NEEDS_E=1): a row is only made an
-        // impact row when its material can bounce. With e = 0 the restitution
-        // target is 0 either way, and the rigid 0.999 row only removes the
-        // soft model's compliance -- on a K1 heel strike that is a 4.5 kN
-        // one-tick spike instead of the pre-bump 3.2 kN.
-        let impact = if impact_needs_e() && material.restitution <= 0.0 {
-            0.0
-        } else {
-            ContactProblem::impact_weight(approach, config.restitution_threshold)
-        };
+        // A row is only made an impact row when its material can bounce
+        // (`ContactProblem::impact_weight_for`). With e = 0 the restitution
+        // target is 0 either way, and the rigid row would only remove the
+        // soft model's compliance: on a K1 heel strike that was a 4.5 kN
+        // one-tick spike instead of 3.2 kN (phyz docs/contact-audit.md §5).
+        let impact = ContactProblem::impact_weight_for(
+            material.restitution,
+            approach,
+            config.restitution_threshold,
+        );
         rows.push(
             ContactRow::from_material(&material, c.penetration_depth, dt, e).with_impact(impact),
         );
