@@ -1448,8 +1448,9 @@ fn eval_pieces_gen<T: Scalar>(
         // row (`impact = 0`) is exactly the soft contact it always was.
         let violation = c.depth.max(T::ZERO);
         let d = impedance_at_gen(&mat_combined, c.depth);
-        // AUDIT PROTOTYPE mirror of `PHYZ_IMPACT_NEEDS_E` in `assemble`.
-        let impact = if impact_needs_e() && e_pair <= T::ZERO {
+        // Mirror of `ContactProblem::impact_weight_for`: only a material that
+        // can bounce gets a rigid impact row.
+        let impact = if e_pair <= T::ZERO {
             T::ZERO
         } else {
             effective_restitution_gen(T::ONE, approach, config.restitution_threshold)
@@ -2191,9 +2192,3 @@ pub fn convex_adjoint_gradient(
     })
 }
 
-
-/// Mirror of `phyz_contact::assemble`'s `PHYZ_IMPACT_NEEDS_E` audit prototype.
-fn impact_needs_e() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
-}
