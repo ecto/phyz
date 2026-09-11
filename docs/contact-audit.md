@@ -161,3 +161,24 @@ Same binary, one phyz tree (68fc142 + the env-gated prototypes), env off / on:
 
 The prototype returns every e = 0 row the bump moved to the old number and
 keeps the bump's restitution fix. That's the evidence for fix 1.
+
+**On the triage's actual reds** (ipse test binaries, same tree, env gates):
+
+| ipse test | neither | `IMPACT_NEEDS_E` | `INTEG_CURRENT` | both |
+|---|---|---|---|---|
+| topple_forensics x4 | red | green | red | green |
+| shac two-step ratio (bar 1..5) | 9.318 | 12.020 | 11.442 | **green** |
+| milestone_5 lateral placement | red | red | red | green |
+| milestone_5 straight line (pin +1.6310) | +1.5574 | +1.6270 | +1.5522 | +1.6278 |
+
+`PHYZ_INTEG_CURRENT=1` restores 21a33f91's displacement frame in
+`integrate_configuration`. It isn't proposed as a fix. #99's frame is the
+correct half of an exact scheme whose other half (`strip_free_joint_coriolis`
++ `rotate_free_joint_velocities`) ipse's hand-rolled loops never adopted, so
+the consumer-side fix is to adopt the pair. The table's point is attribution:
+the bump's K1 reds are the rigid e = 0 impact row **plus** that half-adoption,
+and neither alone closes the gradient row.
+
+**What fix 1 costs in this repo:** `phyz/tests/determinism.rs::golden_rollout_hashes`
+passes at the default and fails under `PHYZ_IMPACT_NEEDS_E=1`. The goldens
+roll out e = 0 impacts, so they re-pin with the change.
