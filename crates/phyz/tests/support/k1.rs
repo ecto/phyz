@@ -134,10 +134,10 @@ pub fn urdf_k1(dt: f64) -> Option<Model> {
     let mut model = u.model;
     let mj = mjcf_k1(dt)?;
     for j in &mj.joints {
-        if j.armature != 0.0 {
-            if let Some(k) = model.joint_index(&j.name) {
-                model.joints[k].armature = j.armature;
-            }
+        if j.armature != 0.0
+            && let Some(k) = model.joint_index(&j.name)
+        {
+            model.joints[k].armature = j.armature;
         }
     }
     for link in FEET {
@@ -206,8 +206,8 @@ pub fn k1_state(model: &Model, map: &K1Map) -> State {
         .position(|j| j.joint_type == JointType::Free)
         .expect("free base");
     let b = model.q_offsets[free];
-    for k in 0..22 {
-        s.q[map.q[k]] = Q0[k];
+    for (k, &q0) in Q0.iter().enumerate() {
+        s.q[map.q[k]] = q0;
     }
     let trunk = model.body_index("Trunk").unwrap_or(0);
     let (x, _) = forward_kinematics(model, &s);
