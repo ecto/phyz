@@ -1698,7 +1698,6 @@ const STALL_RATIO: f64 = 0.99;
 /// proposal rejected by the line search, say — does not end the solve.
 const STALL_BLOCKS: usize = 3;
 
-
 /// One projected Gauss-Seidel sweep with the staged Coulomb update.
 ///
 /// Returns the largest per-contact movement, which is the fixed-point residual
@@ -1767,7 +1766,10 @@ fn disc_block_step(m: [[f64; 2]; 2], r: [f64; 2], limit: f64) -> ([f64; 2], f64)
     let solve = |k: f64, rhs: [f64; 2]| {
         let (a, b, c, d) = (m[0][0] + k, m[0][1], m[1][0], m[1][1] + k);
         let det = a * d - b * c;
-        [(d * rhs[0] - b * rhs[1]) / det, (a * rhs[1] - c * rhs[0]) / det]
+        [
+            (d * rhs[0] - b * rhs[1]) / det,
+            (a * rhs[1] - c * rhs[0]) / det,
+        ]
     };
     let mut k = 0.0f64;
     let mut t = solve(k, [-r[0], -r[1]]);
@@ -1858,7 +1860,11 @@ fn disc_block_tangent_transpose(
         [-bar_g[0] * t[0], -bar_g[0] * t[1]],
         [-bar_g[1] * t[0], -bar_g[1] * t[1]],
     ];
-    ([[bar_dm[0][0], bar_dm[0][1]], [bar_dm[1][0], bar_dm[1][1]]], [-bar_g[0], -bar_g[1]], limit * proj)
+    (
+        [[bar_dm[0][0], bar_dm[0][1]], [bar_dm[1][0], bar_dm[1][1]]],
+        [-bar_g[0], -bar_g[1]],
+        limit * proj,
+    )
 }
 
 fn sweep(

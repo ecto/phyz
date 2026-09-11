@@ -285,7 +285,10 @@ pub(crate) fn complete_kkt(
             }
             k[row * dim + base] -= mu * that[i];
         }
-        slide[c] = Some(SlideTangent { map: cmap, t_rel: [0.0, 0.0] });
+        slide[c] = Some(SlideTangent {
+            map: cmap,
+            t_rel: [0.0, 0.0],
+        });
         that_dirs[c] = Some(that);
     }
 
