@@ -233,11 +233,19 @@ fn incline_sticking_below_the_friction_angle() {
 ///   direction and the cones cannot be disagreeing about it.
 ///
 /// So it is a real property of the multi-point path that the single-contact
-/// benchmark does not see, and it deserves its own investigation rather than a
-/// widened tolerance here. The assertion below is therefore a **regression
-/// guard on the measured value**, not a physics check — deliberately, and
-/// labelled as such, so that nobody reads a passing suite as agreement with
-/// theory.
+/// benchmark does not see.
+///
+/// **Resolved** (phyz `docs/contact-audit.md` section 3): the per-contact
+/// friction step scaled the unconstrained tangential impulse radially onto
+/// the disc, which is the exact block step only when the contact's tangential
+/// Delassus block is isotropic. A box corner's block has lever-arm coupling, so
+/// the four corners settled rotated off the slide direction and pinched
+/// against each other. The exact disc step (`convex::disc_block_step`) takes
+/// this case from 2.0912 to 1.8033 against the theory's 1.7968. The remaining
+/// 0.4 % is not investigated. This estimator (`2 x / t^2` from rest) includes
+/// the initial settle, and the audit's quadratic fit on the second half of a
+/// 2 s slide agrees with theory to 1e-12. The assertion is a physics check
+/// again, at 1 %.
 #[allow(clippy::doc_markdown)]
 #[test]
 fn incline_sliding_above_the_friction_angle() {
@@ -269,12 +277,13 @@ fn incline_sliding_above_the_friction_angle() {
          (gap {:.1}% — see this test's docs, open question)",
         rel * 100.0
     );
-    // Regression guard on the measured number, NOT agreement with theory.
+    // Agreement with theory. The 16 % gap this used to guard was the radial
+    // friction clamp (see the doc comment); the exact disc step closes it.
     assert!(
-        (a_measured - 2.0912).abs() < 5e-3,
-        "sliding acceleration moved from the recorded 2.0912 to {a_measured}; \
-         if this is a fix for the documented 16% gap, update the doc comment \
-         and this guard together"
+        rel < 0.01,
+        "sliding acceleration {a_measured} vs g(sin - mu cos) = {a_theory}: \
+         {:.2}% off, the bar is 1%",
+        rel * 100.0
     );
 
     check(&case);
