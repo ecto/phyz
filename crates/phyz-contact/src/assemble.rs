@@ -82,17 +82,44 @@ pub fn assemble(
         jacobians.push(rows);
     }
 
+    // Structural zeros. A contact's Jacobian is nonzero only on the DOFs of
+    // its bodies' ancestor chains — 12 of the K1's 28 for a foot corner — and
+    // every sum below ran over all `nv` columns anyway. Skipping a column
+    // whose Jacobian entry is exactly zero drops a term `x * 0.0 = ±0` with
+    // `x` finite, and that cannot change a running sum: it starts at `+0`,
+    // round-to-nearest never turns a sum into `-0` unless both addends are
+    // `-0`, and `s + ±0 = s` for every other `s`. The kept terms are summed in
+    // the same increasing column order, so the result is **bit-identical**.
+    // (`inf * 0` would be NaN, not zero, so any non-finite input keeps every
+    // column — the dense path, NaN propagation and all.)
+    let finite = |xs: &[f64]| xs.iter().all(|x| x.is_finite());
+    let dense = !(finite(inv_mass.as_slice())
+        && finite(free_qd.as_slice())
+        && finite(state.v.as_slice())
+        && jacobians.iter().all(|j| finite(j.as_slice())));
+    let all_cols: Vec<usize> = (0..nv).collect();
+    let cols: Vec<Vec<usize>> = jacobians
+        .iter()
+        .map(|j| {
+            if dense {
+                all_cols.clone()
+            } else {
+                (0..nv).filter(|&c| (0..3).any(|r| j[(r, c)] != 0.0)).collect()
+            }
+        })
+        .collect();
+
     // A = J M^-1 J^T, assembled block by block.
     let dim = 3 * n;
     let mut delassus = vec![0.0; dim * dim];
     // Precompute M^-1 J_c^T for each contact (nv x 3).
     let mut minv_jt: Vec<DMat> = Vec::with_capacity(n);
-    for jc in &jacobians {
+    for (jc, cc) in jacobians.iter().zip(&cols) {
         let mut m = DMat::zeros(nv, 3);
         for r in 0..nv {
             for k in 0..3 {
                 let mut acc = 0.0;
-                for col in 0..nv {
+                for &col in cc {
                     acc += inv_mass[(r, col)] * jc[(k, col)];
                 }
                 m[(r, k)] = acc;
@@ -100,12 +127,16 @@ pub fn assemble(
         }
         minv_jt.push(m);
     }
+    // The Delassus sums multiply by `M^-1 J^T`, which is finite whenever its
+    // inputs are, except by overflow; check rather than assume.
+    let dense_a = dense || !minv_jt.iter().all(|m| finite(m.as_slice()));
     for a in 0..n {
+        let ca: &[usize] = if dense_a { &all_cols } else { &cols[a] };
         for b in 0..n {
             for r in 0..3 {
                 for k in 0..3 {
                     let mut acc = 0.0;
-                    for col in 0..nv {
+                    for &col in ca {
                         acc += jacobians[a][(r, col)] * minv_jt[b][(col, k)];
                     }
                     delassus[(3 * a + r) * dim + 3 * b + k] = acc;
@@ -120,7 +151,7 @@ pub fn assemble(
     for (ci, c) in contacts.iter().enumerate() {
         for r in 0..3 {
             let mut acc = 0.0;
-            for col in 0..nv {
+            for &col in &cols[ci] {
                 acc += jacobians[ci][(r, col)] * free_qd[col];
             }
             free_velocity[3 * ci + r] = acc;
@@ -137,7 +168,7 @@ pub fn assemble(
         // (The impulse is still solved against the free velocity; only the
         // restitution target and the impact ramp read the pre-kick speed.)
         let mut normal_pre = 0.0;
-        for col in 0..nv {
+        for &col in &cols[ci] {
             normal_pre += jacobians[ci][(0, col)] * state.v[col];
         }
         let approach = (-normal_pre).max(0.0);
