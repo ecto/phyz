@@ -84,12 +84,19 @@ pub fn crba(model: &Model, state: &State) -> DMat {
                     mass_matrix[(v_i, v_j)] = s_j.dot(&f);
                     mass_matrix[(v_j, v_i)] = mass_matrix[(v_i, v_j)];
                 } else if ndof_j > 1 {
-                    let s_j = joint_j.motion_subspace_matrix();
-                    let f_vec = crate::aba::sv_to_dvec(&f);
-                    let block = s_j.transpose().mul_vec(&f_vec); // ndof_j x 1
-                    for kj in 0..ndof_j {
-                        mass_matrix[(v_i, v_j + kj)] = block[kj];
-                        mass_matrix[(v_j + kj, v_i)] = block[kj];
+                    if let Some(block) = subspace_t_force(joint_j, &f) {
+                        for kj in 0..ndof_j {
+                            mass_matrix[(v_i, v_j + kj)] = block[kj];
+                            mass_matrix[(v_j + kj, v_i)] = block[kj];
+                        }
+                    } else {
+                        let s_j = joint_j.motion_subspace_matrix();
+                        let f_vec = crate::aba::sv_to_dvec(&f);
+                        let block = s_j.transpose().mul_vec(&f_vec); // ndof_j x 1
+                        for kj in 0..ndof_j {
+                            mass_matrix[(v_i, v_j + kj)] = block[kj];
+                            mass_matrix[(v_j + kj, v_i)] = block[kj];
+                        }
                     }
                 }
 
@@ -129,12 +136,19 @@ pub fn crba(model: &Model, state: &State) -> DMat {
                         mass_matrix[(v_i + col, v_j)] = val;
                         mass_matrix[(v_j, v_i + col)] = val;
                     } else if ndof_j > 1 {
-                        let s_j = joint_j.motion_subspace_matrix();
-                        let f_vec = crate::aba::sv_to_dvec(&f);
-                        let block = s_j.transpose().mul_vec(&f_vec);
-                        for kj in 0..ndof_j {
-                            mass_matrix[(v_i + col, v_j + kj)] = block[kj];
-                            mass_matrix[(v_j + kj, v_i + col)] = block[kj];
+                        if let Some(block) = subspace_t_force(joint_j, &f) {
+                            for kj in 0..ndof_j {
+                                mass_matrix[(v_i + col, v_j + kj)] = block[kj];
+                                mass_matrix[(v_j + kj, v_i + col)] = block[kj];
+                            }
+                        } else {
+                            let s_j = joint_j.motion_subspace_matrix();
+                            let f_vec = crate::aba::sv_to_dvec(&f);
+                            let block = s_j.transpose().mul_vec(&f_vec);
+                            for kj in 0..ndof_j {
+                                mass_matrix[(v_i + col, v_j + kj)] = block[kj];
+                                mass_matrix[(v_j + kj, v_i + col)] = block[kj];
+                            }
                         }
                     }
 
@@ -153,4 +167,34 @@ pub fn crba(model: &Model, state: &State) -> DMat {
     }
 
     mass_matrix
+}
+
+/// `Sᵀ f` for a multi-DOF joint, on the stack.
+///
+/// Bit-identical to `joint.motion_subspace_matrix().transpose()
+/// .mul_vec(&sv_to_dvec(f))`, which it replaces on CRBA's walk up the tree:
+/// the same entries (`S = I₆` for a free joint, `[I₃; 0]` for a ball), the
+/// same `j`-outer / `i`-inner accumulation `tang_la::DMat::mul_vec` runs, from
+/// the same `+0`. What it drops is the four heap allocations that call made —
+/// for every body whose ancestry reaches a free base, which on a humanoid is
+/// every body, every step (contact-speed row 4). Other joint types return
+/// `None` and keep the allocating path.
+fn subspace_t_force(joint: &phyz_model::Joint, f: &phyz_math::SpatialVec) -> Option<[f64; 6]> {
+    use phyz_model::JointType;
+    let n = joint.ndof();
+    // s[row][col]: the 6 x n motion subspace.
+    let mut s = [[0.0f64; 6]; 6];
+    match joint.joint_type {
+        JointType::Free => (0..6).for_each(|i| s[i][i] = 1.0),
+        JointType::Spherical | JointType::Ball => (0..3).for_each(|i| s[i][i] = 1.0),
+        _ => return None,
+    }
+    let x = f.as_array();
+    let mut y = [0.0f64; 6];
+    for (j, &xj) in x.iter().enumerate() {
+        for (i, yi) in y.iter_mut().enumerate().take(n) {
+            *yi += s[j][i] * xj;
+        }
+    }
+    Some(y)
 }

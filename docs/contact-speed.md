@@ -123,6 +123,8 @@ no consumer steps this model, and ipse's rig fits boxes to those meshes.
 | 0 | baseline | 144.8 | 124.0 | 103.4 | — |
 | 1 | GJK stops at the margin; stack simplex | 102.9 (1.41x) | 90.5 (1.37x) | 68.4 (1.51x) | yes, every scene |
 | 2 | assembly skips structurally zero Jacobian columns | 89.7 (1.15x) | 70.1 (1.29x) | 61.5 (1.11x) | yes, every scene |
+| 3 | inverse on slices + flat temporaries | **slower**, 0.89–0.97x (A/B) | | | yes — not applied |
+| 4 | CRBA `Sᵀf` on the stack | 1.10x (A/B) | 1.08x (A/B) | 1.08x (A/B) | yes, every scene |
 
 **Row 1** (`r1_gjk_cutoff.jsonl`). `gjk_rot_until(cutoff)` returns `None`
 once GJK's own lower bound `v·w/|v|` reaches the cutoff;
@@ -167,3 +169,48 @@ binaries alternate, 8 rounds, min and median of per-round mins):
 A 3–11 % regression, exact or not. Row 3 was never committed; the rows and
 the A/B stay in the directory as the record. (Every row from here on is
 judged by an interleaved A/B against its parent, not by a standalone bench.)
+
+### Row 4 — CRBA's `Sᵀf` on the stack (`ab_r2_crba_inv.txt`)
+
+CRBA walks every body up to the root to fill the mass matrix's off-diagonal
+column. When the ancestor is a multi-DOF joint — the K1's free base, which is
+every body's last ancestor — it formed `Sᵀf` as
+`motion_subspace_matrix().transpose().mul_vec(&sv_to_dvec(f))`: four heap
+allocations and a 6x6 product, 22 times a step. `subspace_t_force` computes
+the same thing on the stack with the same entries (`S = I₆` for a free joint,
+`[I₃; 0]` for a ball) and tang-la's own `j`-outer / `i`-inner accumulation
+from the same `+0` (tang-la is built without `accelerate`, so `mul_vec` *is*
+that loop). Other joint types keep the allocating path. Exact by construction.
+
+Interleaved A/B, 8 rounds (min / median of per-round mins, µs):
+
+| k1u | r2 | r2 + CRBA (row 4) | r2 + CRBA + row 3's inverse |
+|---|---|---|---|
+| stance | 79.0 / 82.6 | **71.6 / 77.7** (1.10x) | 81.9 / 83.6 |
+| single | 71.7 / 74.4 | **66.5 / 69.6** (1.08x) | 73.0 / 76.9 |
+| step | 55.6 / 60.9 | **51.7 / 54.9** (1.08x) | 60.8 / 63.6 |
+
+Same `state_hash` in all three arms. The third arm isolates row 3's
+regression: it is the inverse rewrite, not the flattened temporaries — a
+slice-and-zip Gauss-Jordan that skips half of `a`'s updates is slower than
+the indexed original on a 28x28 matrix. Not investigated further; the dense
+inverse stays as it was.
+
+## What `phyz-gpu` inherits
+
+Nothing directly: every change on this lane is **CPU-only**. `phyz-gpu` runs
+its own WGSL pipeline — its own ground-contact pass (plane only; its
+`contact_pipeline` is deliberately not general body-body contact), its own
+Delassus assembly and contact solve, and `invert_small` for the per-joint `D`
+blocks in its ABA. It never calls `phyz_collision`'s GJK/manifold,
+`phyz_contact::assemble` or `phyz_rigid::crba` on the host.
+
+| change | GPU |
+|---|---|
+| GJK stops at the margin; stack simplex | not applicable — the GPU has no body-body narrowphase. If it ever gains one, the margin cutoff is the same exact early-out and matters more there (divergent iteration counts cost a whole warp). |
+| assembly skips structurally zero Jacobian columns | not inherited. The same identity (a contact touches only its chain's DOFs, 12 of 28 on the K1) applies to the GPU's own Delassus build and is the obvious next thing to try there. |
+| CRBA `Sᵀf` on the stack | not inherited (allocation removal has no GPU analogue). |
+
+What the GPU does get is a faster CPU reference: its parity tests that step
+the CPU contact path to compare against (`contact_impulse_parity`,
+`multi_collision_parity`, `heightfield`) run on the code changed here.
