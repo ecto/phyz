@@ -2191,4 +2191,3 @@ pub fn convex_adjoint_gradient(
         d_restitution,
     })
 }
-

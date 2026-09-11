@@ -32,7 +32,14 @@ struct Stats {
 }
 impl Stats {
     fn new() -> Self {
-        Stats { iters: vec![], nonconv: 0, resid_max: 0.0, solve_ns: 0, step_ns: 0, steps: 0 }
+        Stats {
+            iters: vec![],
+            nonconv: 0,
+            resid_max: 0.0,
+            solve_ns: 0,
+            step_ns: 0,
+            steps: 0,
+        }
     }
     fn json(&self) -> String {
         let n = self.iters.len().max(1) as f64;
@@ -73,7 +80,15 @@ impl World {
     fn new(model: Model, q: &[f64], mat: ContactMaterial) -> Self {
         let mut state = model.default_state();
         state.q = DVec::from_slice(q);
-        World { model, state, mat, cfg: audit_cfg(), cache: ContactCache::default(), last: vec![], stats: Stats::new() }
+        World {
+            model,
+            state,
+            mat,
+            cfg: audit_cfg(),
+            cache: ContactCache::default(),
+            last: vec![],
+            stats: Stats::new(),
+        }
     }
 
     fn step(&mut self, ctrl: &[(usize, f64)]) {
@@ -168,7 +183,12 @@ fn boxes(dt: f64, g: Vec3, specs: &[(Vec3, f64)]) -> Model {
             m / 3.0 * (h.x * h.x + h.z * h.z),
             m / 3.0 * (h.x * h.x + h.y * h.y),
         );
-        b = b.add_free_body("box", -1, SpatialTransform::identity(), SpatialInertia::new(*m, Vec3::zeros(), Mat3::from_diagonal(&i)));
+        b = b.add_free_body(
+            "box",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::new(*m, Vec3::zeros(), Mat3::from_diagonal(&i)),
+        );
     }
     let mut model = b.build();
     for (k, (h, _)) in specs.iter().enumerate() {
@@ -182,30 +202,55 @@ fn down() -> Vec3 {
 }
 
 fn row(name: &str, dt: f64, body: String, w: &World) {
-    println!("{{\"scenario\":\"{name}\",\"dt\":{dt},\"engine\":\"phyz {}\",{body},{}}}", env!("CARGO_PKG_VERSION"), w.stats.json());
+    println!(
+        "{{\"scenario\":\"{name}\",\"dt\":{dt},\"engine\":\"phyz {}\",{body},{}}}",
+        env!("CARGO_PKG_VERSION"),
+        w.stats.json()
+    );
 }
 
 fn rest(dt: f64) {
     let a = 0.1;
-    let mut w = World::new(boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a],
+        ContactMaterial::default(),
+    );
     for _ in 0..(10.0 / dt).round() as usize {
         w.step(&[]);
     }
     let fns: Vec<f64> = w.last.iter().map(|s| s.fn_).collect();
     let tot: f64 = fns.iter().sum();
-    let cerr = fns.iter().map(|f| (f - GRAVITY / 4.0).abs()).fold(0.0, f64::max);
+    let cerr = fns
+        .iter()
+        .map(|f| (f - GRAVITY / 4.0).abs())
+        .fold(0.0, f64::max);
     let ft = w.last.iter().map(|s| s.ft).fold(0.0, f64::max);
     let q = &w.state.q;
-    row("a_rest", dt, format!(
-        "\"n_contacts\":{},\"total_fn\":{tot},\"mg\":{},\"corner_fn_err_max\":{cerr:e},\"tangential_max\":{ft:e},\"drift_xy\":{:e},\"sink\":{:e},\"rot\":{:e}",
-        fns.len(), GRAVITY, (q[3] * q[3] + q[4] * q[4]).sqrt(), a - q[5], (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()), &w);
+    row(
+        "a_rest",
+        dt,
+        format!(
+            "\"n_contacts\":{},\"total_fn\":{tot},\"mg\":{},\"corner_fn_err_max\":{cerr:e},\"tangential_max\":{ft:e},\"drift_xy\":{:e},\"sink\":{:e},\"rot\":{:e}",
+            fns.len(),
+            GRAVITY,
+            (q[3] * q[3] + q[4] * q[4]).sqrt(),
+            a - q[5],
+            (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt()
+        ),
+        &w,
+    );
 }
 
 fn incline(dt: f64, deg: f64) {
     let a = 0.1;
     let th = deg.to_radians();
     let g = Vec3::new(GRAVITY * th.sin(), 0.0, -GRAVITY * th.cos());
-    let mut w = World::new(boxes(dt, g, &[(Vec3::new(a, a, a), 1.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, g, &[(Vec3::new(a, a, a), 1.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a],
+        ContactMaterial::default(),
+    );
     let n = (2.0 / dt).round() as usize;
     let (mut ts, mut xs) = (vec![], vec![]);
     for _ in 0..n {
@@ -220,11 +265,47 @@ fn incline(dt: f64, deg: f64) {
     let fw = w.last.iter().fold(Vec3::zeros(), |a, s| a + s.f);
     if std::env::var("CA_CORNERS").is_ok() {
         for s in &w.last {
-            eprintln!("deg {deg} dt {dt} corner p=({:+.3},{:+.3}) fn={:.4} ft_world=({:+.4},{:+.4}) angle={:+.2}deg", s.p.x - w.state.q[3], s.p.y - w.state.q[4], s.fn_, s.f.x, s.f.y, s.f.y.atan2(-s.f.x).to_degrees());
+            eprintln!(
+                "deg {deg} dt {dt} corner p=({:+.3},{:+.3}) fn={:.4} ft_world=({:+.4},{:+.4}) angle={:+.2}deg",
+                s.p.x - w.state.q[3],
+                s.p.y - w.state.q[4],
+                s.fn_,
+                s.f.x,
+                s.f.y,
+                s.f.y.atan2(-s.f.x).to_degrees()
+            );
         }
     }
-    let rmax = w.last.iter().map(|s| s.ft / s.fn_.max(1e-12)).fold(0.0, f64::max);
-    row(&format!("b_incline_{deg}"), dt, format!("\"accel\":{acc},\"analytic\":{ana},\"err\":{:e},\"disp\":{:e},\"fn_total\":{fn_t},\"fn_ana\":{},\"ft_total\":{ft_t},\"ft_over_fn\":{},\"corner_ratio_max\":{rmax},\"n_contacts\":{},\"vz\":{:e},\"wy\":{:e},\"f_world\":[{},{},{}],\"y\":{:e},\"v\":[{},{},{},{},{},{}]", acc - ana, xs[n - 1], GRAVITY * th.cos(), ft_t / fn_t, w.last.len(), w.state.v[5], w.state.v[1], fw.x, fw.y, fw.z, w.state.q[4], w.state.v[0], w.state.v[1], w.state.v[2], w.state.v[3], w.state.v[4], w.state.v[5]), &w);
+    let rmax = w
+        .last
+        .iter()
+        .map(|s| s.ft / s.fn_.max(1e-12))
+        .fold(0.0, f64::max);
+    row(
+        &format!("b_incline_{deg}"),
+        dt,
+        format!(
+            "\"accel\":{acc},\"analytic\":{ana},\"err\":{:e},\"disp\":{:e},\"fn_total\":{fn_t},\"fn_ana\":{},\"ft_total\":{ft_t},\"ft_over_fn\":{},\"corner_ratio_max\":{rmax},\"n_contacts\":{},\"vz\":{:e},\"wy\":{:e},\"f_world\":[{},{},{}],\"y\":{:e},\"v\":[{},{},{},{},{},{}]",
+            acc - ana,
+            xs[n - 1],
+            GRAVITY * th.cos(),
+            ft_t / fn_t,
+            w.last.len(),
+            w.state.v[5],
+            w.state.v[1],
+            fw.x,
+            fw.y,
+            fw.z,
+            w.state.q[4],
+            w.state.v[0],
+            w.state.v[1],
+            w.state.v[2],
+            w.state.v[3],
+            w.state.v[4],
+            w.state.v[5]
+        ),
+        &w,
+    );
 }
 
 /// Least-squares leading coefficient of a quadratic fit.
@@ -244,7 +325,11 @@ fn quad_coeff(t: &[f64], x: &[f64]) -> f64 {
         }
     }
     // Cramer on the 3x3.
-    let det = |m: [[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
     let mut m2 = s;
     for i in 0..3 {
         m2[i][2] = r[i];
@@ -256,10 +341,18 @@ fn drop_sphere(dt: f64, e: f64) {
     let r = 0.05;
     let i = 0.4 * r * r;
     let mut model = builder(dt, down())
-        .add_free_body("ball", -1, SpatialTransform::identity(), SpatialInertia::new(1.0, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))))
+        .add_free_body(
+            "ball",
+            -1,
+            SpatialTransform::identity(),
+            SpatialInertia::new(1.0, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))),
+        )
         .build();
     model.bodies[0].geometry = Some(Geometry::Sphere { radius: r });
-    let mat = ContactMaterial { restitution: e, ..ContactMaterial::default() };
+    let mat = ContactMaterial {
+        restitution: e,
+        ..ContactMaterial::default()
+    };
     let h0 = 0.5;
     let mut w = World::new(model, &[0.0, 0.0, 0.0, 0.0, 0.0, r + h0], mat);
     let (mut maxpen, mut settle, mut bounces, mut vprev) = (0.0f64, None, 0, 0.0);
@@ -288,14 +381,25 @@ fn drop_sphere(dt: f64, e: f64) {
         }
     }
     let ratio = (first_apex / h0).sqrt();
-    row(&format!("c_sphere_drop_e{e}"), dt, format!(
-        "\"max_pen\":{maxpen:e},\"rest_pen\":{:e},\"settle_t\":{},\"rebounds\":{bounces},\"e_eff\":{ratio},\"e_nominal\":{e}",
-        r - w.state.q[5], settle.map_or("null".into(), |t: f64| format!("{t}"))), &w);
+    row(
+        &format!("c_sphere_drop_e{e}"),
+        dt,
+        format!(
+            "\"max_pen\":{maxpen:e},\"rest_pen\":{:e},\"settle_t\":{},\"rebounds\":{bounces},\"e_eff\":{ratio},\"e_nominal\":{e}",
+            r - w.state.q[5],
+            settle.map_or("null".into(), |t: f64| format!("{t}"))
+        ),
+        &w,
+    );
 }
 
 fn drop_box(dt: f64) {
     let a = 0.1;
-    let mut w = World::new(boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a + 0.3], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a + 0.3],
+        ContactMaterial::default(),
+    );
     let (mut maxpen, mut settle) = (0.0f64, None);
     for _ in 0..(3.0 / dt).round() as usize {
         w.step(&[]);
@@ -306,24 +410,67 @@ fn drop_box(dt: f64) {
     }
     let q = &w.state.q;
     let tilt = (q[0] * q[0] + q[1] * q[1]).sqrt().to_degrees();
-    let cerr = w.last.iter().map(|s| (s.fn_ - GRAVITY / 4.0).abs()).fold(0.0, f64::max);
-    row("c_box_drop", dt, format!(
-        "\"max_pen\":{maxpen:e},\"rest_pen\":{:e},\"settle_t\":{},\"tilt_deg\":{tilt:e},\"n_contacts\":{},\"corner_fn_err_max\":{cerr:e}",
-        a - q[5], settle.map_or("null".into(), |t: f64| format!("{t}")), w.last.len()), &w);
+    let cerr = w
+        .last
+        .iter()
+        .map(|s| (s.fn_ - GRAVITY / 4.0).abs())
+        .fold(0.0, f64::max);
+    row(
+        "c_box_drop",
+        dt,
+        format!(
+            "\"max_pen\":{maxpen:e},\"rest_pen\":{:e},\"settle_t\":{},\"tilt_deg\":{tilt:e},\"n_contacts\":{},\"corner_fn_err_max\":{cerr:e}",
+            a - q[5],
+            settle.map_or("null".into(), |t: f64| format!("{t}")),
+            w.last.len()
+        ),
+        &w,
+    );
 }
 
 fn push(dt: f64, f: f64) {
     let a = 0.1;
-    let mut w = World::new(boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a],
+        ContactMaterial::default(),
+    );
     for _ in 0..(2.0 / dt).round() as usize {
         w.step(&[(3, f)]);
     }
-    let fr: Vec<f64> = w.last.iter().filter(|s| s.p.x > w.state.q[3]).map(|s| s.fn_).collect();
-    let bk: Vec<f64> = w.last.iter().filter(|s| s.p.x < w.state.q[3]).map(|s| s.fn_).collect();
-    let mean = |v: &[f64]| if v.is_empty() { f64::NAN } else { v.iter().sum::<f64>() / v.len() as f64 };
-    row("d_push_loadshift", dt, format!(
-        "\"front_each\":{},\"back_each\":{},\"front_ana\":{},\"back_ana\":{},\"slide\":{:e},\"n_contacts\":{}",
-        mean(&fr), mean(&bk), (GRAVITY + f) / 4.0, (GRAVITY - f) / 4.0, w.state.q[3], w.last.len()), &w);
+    let fr: Vec<f64> = w
+        .last
+        .iter()
+        .filter(|s| s.p.x > w.state.q[3])
+        .map(|s| s.fn_)
+        .collect();
+    let bk: Vec<f64> = w
+        .last
+        .iter()
+        .filter(|s| s.p.x < w.state.q[3])
+        .map(|s| s.fn_)
+        .collect();
+    let mean = |v: &[f64]| {
+        if v.is_empty() {
+            f64::NAN
+        } else {
+            v.iter().sum::<f64>() / v.len() as f64
+        }
+    };
+    row(
+        "d_push_loadshift",
+        dt,
+        format!(
+            "\"front_each\":{},\"back_each\":{},\"front_ana\":{},\"back_ana\":{},\"slide\":{:e},\"n_contacts\":{}",
+            mean(&fr),
+            mean(&bk),
+            (GRAVITY + f) / 4.0,
+            (GRAVITY - f) / 4.0,
+            w.state.q[3],
+            w.last.len()
+        ),
+        &w,
+    );
 }
 
 fn tip(dt: f64, deg: f64) {
@@ -331,51 +478,120 @@ fn tip(dt: f64, deg: f64) {
     let th = deg.to_radians();
     let cx = -hx * th.cos() + hz * th.sin();
     let cz = hx * th.sin() + hz * th.cos();
-    let mut w = World::new(boxes(dt, down(), &[(Vec3::new(hx, 0.05, hz), 1.0)]), &[0.0, th, 0.0, cx, 0.0, cz + 1e-5], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(Vec3::new(hx, 0.05, hz), 1.0)]),
+        &[0.0, th, 0.0, cx, 0.0, cz + 1e-5],
+        ContactMaterial::default(),
+    );
     for _ in 0..(2.0 / dt).round() as usize {
         w.step(&[]);
     }
     let q = &w.state.q;
     let fin = (q[0] * q[0] + q[1] * q[1]).sqrt().to_degrees();
-    row(&format!("d_tip_{deg}"), dt, format!("\"final_tilt\":{fin},\"toppled\":{},\"analytic_critical\":{}", fin > 45.0, (hx / hz).atan().to_degrees()), &w);
+    row(
+        &format!("d_tip_{deg}"),
+        dt,
+        format!(
+            "\"final_tilt\":{fin},\"toppled\":{},\"analytic_critical\":{}",
+            fin > 45.0,
+            (hx / hz).atan().to_degrees()
+        ),
+        &w,
+    );
 }
 
 fn torsion(dt: f64, tau: f64) {
     let a = 0.1;
     let cap = MU * GRAVITY * a * 2f64.sqrt();
     let izz = (2.0 * a) * (2.0 * a) / 6.0;
-    let mut w = World::new(boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(Vec3::new(a, a, a), 1.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a],
+        ContactMaterial::default(),
+    );
     for _ in 0..(1.0 / dt).round() as usize {
         w.step(&[(2, tau)]);
     }
-    row(&format!("e_torsion_{tau}"), dt, format!("\"wz\":{},\"cap4corner\":{cap},\"wz_analytic\":{}", w.state.v[2], ((tau - cap) / izz).max(0.0)), &w);
+    row(
+        &format!("e_torsion_{tau}"),
+        dt,
+        format!(
+            "\"wz\":{},\"cap4corner\":{cap},\"wz_analytic\":{}",
+            w.state.v[2],
+            ((tau - cap) / izz).max(0.0)
+        ),
+        &w,
+    );
 }
 
 fn stack(dt: f64) {
     let a = 0.1;
     let h = Vec3::new(a, a, a);
-    let mut w = World::new(boxes(dt, down(), &[(h, 1.0), (h, 2.0)]), &[0.0, 0.0, 0.0, 0.0, 0.0, a, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0 * a], ContactMaterial::default());
+    let mut w = World::new(
+        boxes(dt, down(), &[(h, 1.0), (h, 2.0)]),
+        &[0.0, 0.0, 0.0, 0.0, 0.0, a, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0 * a],
+        ContactMaterial::default(),
+    );
     for _ in 0..(10.0 / dt).round() as usize {
         w.step(&[]);
     }
-    let g: Vec<&Seen> = w.last.iter().filter(|s| s.bj == WORLD || s.bi == WORLD).collect();
-    let it: Vec<&Seen> = w.last.iter().filter(|s| s.bj != WORLD && s.bi != WORLD).collect();
+    let g: Vec<&Seen> = w
+        .last
+        .iter()
+        .filter(|s| s.bj == WORLD || s.bi == WORLD)
+        .collect();
+    let it: Vec<&Seen> = w
+        .last
+        .iter()
+        .filter(|s| s.bj != WORLD && s.bi != WORLD)
+        .collect();
     let q = &w.state.q;
-    row("f_stack", dt, format!(
-        "\"ground_total\":{},\"ground_ana\":{},\"inter_total\":{},\"inter_ana\":{},\"n_ground\":{},\"n_inter\":{},\"top_drift_xy\":{:e},\"top_sink\":{:e}",
-        g.iter().map(|s| s.fn_).sum::<f64>(), 3.0 * GRAVITY, it.iter().map(|s| s.fn_).sum::<f64>(), 2.0 * GRAVITY, g.len(), it.len(),
-        (q[9] * q[9] + q[10] * q[10]).sqrt(), 3.0 * a - q[11]), &w);
+    row(
+        "f_stack",
+        dt,
+        format!(
+            "\"ground_total\":{},\"ground_ana\":{},\"inter_total\":{},\"inter_ana\":{},\"n_ground\":{},\"n_inter\":{},\"top_drift_xy\":{:e},\"top_sink\":{:e}",
+            g.iter().map(|s| s.fn_).sum::<f64>(),
+            3.0 * GRAVITY,
+            it.iter().map(|s| s.fn_).sum::<f64>(),
+            2.0 * GRAVITY,
+            g.len(),
+            it.len(),
+            (q[9] * q[9] + q[10] * q[10]).sqrt(),
+            3.0 * a - q[11]
+        ),
+        &w,
+    );
 }
 
 fn main() {
     let only: Option<String> = std::env::args().nth(1);
     for dt in [0.00025, 0.0005, 0.001] {
         let run = |n: &str| only.as_deref().is_none_or(|o| n.starts_with(o));
-        if run("a") { rest(dt); }
-        if run("b") { for d in [20.0, 26.0, 27.5, 35.0] { incline(dt, d); } }
-        if run("c") { drop_sphere(dt, 0.0); drop_sphere(dt, 0.5); drop_box(dt); }
-        if run("d") { push(dt, 2.0); tip(dt, 25.0); tip(dt, 28.0); }
-        if run("e") { torsion(dt, 0.5); torsion(dt, 0.9); }
-        if run("f") { stack(dt); }
+        if run("a") {
+            rest(dt);
+        }
+        if run("b") {
+            for d in [20.0, 26.0, 27.5, 35.0] {
+                incline(dt, d);
+            }
+        }
+        if run("c") {
+            drop_sphere(dt, 0.0);
+            drop_sphere(dt, 0.5);
+            drop_box(dt);
+        }
+        if run("d") {
+            push(dt, 2.0);
+            tip(dt, 25.0);
+            tip(dt, 28.0);
+        }
+        if run("e") {
+            torsion(dt, 0.5);
+            torsion(dt, 0.9);
+        }
+        if run("f") {
+            stack(dt);
+        }
     }
 }
