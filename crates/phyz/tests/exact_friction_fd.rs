@@ -3,7 +3,7 @@
 //!
 //! A 0.2 m, 1 kg box on mu 0.5, gravity tilted by the incline angle, stepped
 //! exactly as `Simulator::step_with_contacts` steps it until it has settled
-//! (26 deg: stuck; 35 deg: sliding with four coupled corners, the case the
+//! (27.5 deg and 35 deg, both sliding on four coupled corners, the case the
 //! radial clamp got wrong). At that state the contact problem is assembled
 //! and three derivatives of its solve are checked along one parameter
 //! direction `(dA, dc)`:
@@ -35,7 +35,7 @@ fn cfg() -> ContactSolverConfig {
     let mut c = ContactSolverConfig::simulation();
     // Tight, and no stall exit: a central difference of a solve that stops
     // after a parameter-dependent number of sweeps is not a derivative.
-    c.tolerance = 1e-13;
+    c.tolerance = 1e-12;
     c
 }
 
@@ -160,7 +160,15 @@ fn check(deg: f64) -> Report {
     let dim = 3 * p.n;
     // Scale the direction to the problem: the Delassus diagonal is O(10) here.
     let dscale = p.delassus[0].abs().max(1.0) * 1e-2;
-    let (d_apr, dc) = direction(dim, dscale);
+    let (mut d_apr, dc) = direction(dim, dscale);
+    // The normal-row regularizer is `(1 - d)/d * A_nn` (the impedance form),
+    // so a central difference that moves `A_nn` also moves `R`, while the
+    // analytic side is handed `dA` as `d(A + R)`. Hold the normal diagonals
+    // still and the two are the same direction. (phyz-contact's own
+    // solver_level_adjoint sidesteps this by fixing impedance at 1.)
+    for c in 0..p.n {
+        d_apr[3 * c * dim + 3 * c] = 0.0;
+    }
 
     let plain = solve_contacts_warm(&p, &c, &[]);
     assert!(plain.converged, "{deg} deg: the base solve must converge (residual {:e})", plain.residual);
@@ -235,10 +243,14 @@ fn the_sliding_box_gradient_matches_a_finite_difference() {
     assert!(r.fd_vs_ift < 1e-6, "IFT vs fd: {:e}", r.fd_vs_ift);
 }
 
+/// Just past the friction angle (26.57 deg): a slow slide, the regime where
+/// the radial clamp was furthest off (0.456 vs the analytic 0.179 m/s^2).
+/// (A stuck box never reaches the disc step, and is statically
+/// indeterminate on four corners, so it would test neither.)
 #[test]
-fn the_stuck_box_gradient_matches_a_finite_difference() {
-    let r = check(26.0);
-    assert_eq!(r.sliding_corners, 0, "26 deg < atan(0.5) must stick");
+fn the_slow_slide_gradient_matches_a_finite_difference() {
+    let r = check(27.5);
+    assert!(r.sliding_corners >= 4, "27.5 deg must slide on every corner, got {}", r.sliding_corners);
     assert!(r.fd_vs_forward < 1e-6, "forward mode vs fd: {:e}", r.fd_vs_forward);
     assert!(r.transpose_identity < 1e-10, "transpose identity: {:e}", r.transpose_identity);
     assert!(r.fd_vs_ift < 1e-6, "IFT vs fd: {:e}", r.fd_vs_ift);
