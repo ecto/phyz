@@ -69,7 +69,8 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
                 // `−ω × v` term in its update means), so it is rotated by
                 // `next`, not `current`. With `current` a body spinning at
                 // `ω` travels `cos(|ω| dt)` of its speed.
-                let world_lin = next.rotate(lin);
+                // AUDIT PROTOTYPE (PHYZ_INTEG_CURRENT=1): 21a33f91's frame.
+                let world_lin = if integ_current() { current.rotate(lin) } else { next.rotate(lin) };
                 q[q_off + 3] += dt * world_lin.x;
                 q[q_off + 4] += dt * world_lin.y;
                 q[q_off + 5] += dt * world_lin.z;
@@ -80,6 +81,11 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
             }
         }
     }
+}
+
+fn integ_current() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_INTEG_CURRENT").is_ok_and(|v| v == "1"))
 }
 
 /// Take the frame-turn term out of a free joint's linear acceleration.
