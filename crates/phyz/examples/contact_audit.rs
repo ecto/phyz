@@ -52,6 +52,7 @@ impl Stats {
 #[derive(Clone)]
 struct Seen {
     p: Vec3,
+    f: Vec3,
     fn_: f64,
     ft: f64,
     bi: usize,
@@ -72,7 +73,7 @@ impl World {
     fn new(model: Model, q: &[f64], mat: ContactMaterial) -> Self {
         let mut state = model.default_state();
         state.q = DVec::from_slice(q);
-        World { model, state, mat, cfg: ContactSolverConfig::simulation(), cache: ContactCache::default(), last: vec![], stats: Stats::new() }
+        World { model, state, mat, cfg: audit_cfg(), cache: ContactCache::default(), last: vec![], stats: Stats::new() }
     }
 
     fn step(&mut self, ctrl: &[(usize, f64)]) {
@@ -111,8 +112,10 @@ impl World {
             }
             self.stats.resid_max = self.stats.resid_max.max(sol.residual);
             for (c, imp) in contacts.iter().zip(&sol.impulses) {
+                let (nn, uu, ww) = phyz::phyz_contact::contact_frame(&c.contact_normal);
                 self.last.push(Seen {
                     p: c.contact_point,
+                    f: (nn * imp.x + uu * imp.y + ww * imp.z) / dt,
                     fn_: imp.x / dt,
                     ft: (imp.y * imp.y + imp.z * imp.z).sqrt() / dt,
                     bi: c.body_i,
@@ -138,6 +141,20 @@ fn rev_turn(model: &Model, v_before: &[f64], v: &mut [f64], dt: f64) {
     phyz::phyz_rigid::rotate_free_joint_velocities(model, v_before, v, dt);
 }
 // REV-SHIM-END
+
+fn audit_cfg() -> ContactSolverConfig {
+    let mut c = ContactSolverConfig::simulation();
+    match std::env::var("CA_CFG").as_deref() {
+        Ok("compat") => c.mujoco_compat = true,
+        Ok("nonewton") => c.newton = false,
+        Ok("block") => c.coupling = phyz::phyz_contact::ContactCoupling::BlockDiagonal,
+        Ok("perbody") => c.coupling = phyz::phyz_contact::ContactCoupling::PerBody,
+        Ok("gpu") => c = ContactSolverConfig::gpu_equivalent(),
+        Ok("reg") => c.regularization = 1e-3,
+        _ => {}
+    }
+    c
+}
 
 fn builder(dt: f64, g: Vec3) -> ModelBuilder {
     ModelBuilder::new().gravity(g).dt(dt)
@@ -198,7 +215,16 @@ fn incline(dt: f64, deg: f64) {
     }
     let acc = 2.0 * quad_coeff(&ts[n / 2..], &xs[n / 2..]);
     let ana = (GRAVITY * (th.sin() - MU * th.cos())).max(0.0);
-    row(&format!("b_incline_{deg}"), dt, format!("\"accel\":{acc},\"analytic\":{ana},\"err\":{:e},\"disp\":{:e}", acc - ana, xs[n - 1]), &w);
+    let fn_t: f64 = w.last.iter().map(|s| s.fn_).sum();
+    let ft_t: f64 = w.last.iter().map(|s| s.ft).sum();
+    let fw = w.last.iter().fold(Vec3::zeros(), |a, s| a + s.f);
+    if std::env::var("CA_CORNERS").is_ok() {
+        for s in &w.last {
+            eprintln!("deg {deg} dt {dt} corner p=({:+.3},{:+.3}) fn={:.4} ft_world=({:+.4},{:+.4}) angle={:+.2}deg", s.p.x - w.state.q[3], s.p.y - w.state.q[4], s.fn_, s.f.x, s.f.y, s.f.y.atan2(-s.f.x).to_degrees());
+        }
+    }
+    let rmax = w.last.iter().map(|s| s.ft / s.fn_.max(1e-12)).fold(0.0, f64::max);
+    row(&format!("b_incline_{deg}"), dt, format!("\"accel\":{acc},\"analytic\":{ana},\"err\":{:e},\"disp\":{:e},\"fn_total\":{fn_t},\"fn_ana\":{},\"ft_total\":{ft_t},\"ft_over_fn\":{},\"corner_ratio_max\":{rmax},\"n_contacts\":{},\"vz\":{:e},\"wy\":{:e},\"f_world\":[{},{},{}],\"y\":{:e},\"v\":[{},{},{},{},{},{}]", acc - ana, xs[n - 1], GRAVITY * th.cos(), ft_t / fn_t, w.last.len(), w.state.v[5], w.state.v[1], fw.x, fw.y, fw.z, w.state.q[4], w.state.v[0], w.state.v[1], w.state.v[2], w.state.v[3], w.state.v[4], w.state.v[5]), &w);
 }
 
 /// Least-squares leading coefficient of a quadratic fit.

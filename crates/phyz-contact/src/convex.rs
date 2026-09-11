@@ -1745,6 +1745,11 @@ const STALL_RATIO: f64 = 0.99;
 /// proposal rejected by the line search, say — does not end the solve.
 const STALL_BLOCKS: usize = 3;
 
+fn tr_clamp() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_TR_CLAMP").is_ok_and(|v| v == "1"))
+}
+
 /// One projected Gauss-Seidel sweep with the staged Coulomb update.
 ///
 /// Returns the largest per-contact movement, which is the fixed-point residual
@@ -1997,7 +2002,37 @@ fn sweep(
         // identically — the property a pyramidal cone gives up.
         let limit = row.mu * f_n;
         let t_norm = (t_u * t_u + t_w * t_w).sqrt();
-        if t_norm > limit {
+        // AUDIT PROTOTYPE (PHYZ_TR_CLAMP=1): the exact block step. The
+        // per-contact problem is min 1/2 t'Mt + r't over the disc |t| <= limit;
+        // its solution on the boundary is t = -(M + k I)^-1 r with k >= 0 set
+        // so |t| = limit. The radial clamp below is only that step when M is
+        // isotropic.
+        if tr_clamp() && t_norm > limit && limit > 0.0 && !normals_only {
+            let mut k = 0.0f64;
+            for _ in 0..60 {
+                let (a, b, c2, d2) = (m00 + k, m01, m10, m11 + k);
+                let det_k = a * d2 - b * c2;
+                let tu = -(d2 * r_u - b * r_w) / det_k;
+                let tw = -(a * r_w - c2 * r_u) / det_k;
+                let nrm = (tu * tu + tw * tw).sqrt();
+                t_u = tu;
+                t_w = tw;
+                if (nrm - limit).abs() <= 1e-14 * (1.0 + limit) {
+                    break;
+                }
+                // d|t|/dk = -t'(M+kI)^-1 t / |t|
+                let su = (d2 * tu - b * tw) / det_k;
+                let sw = (a * tw - c2 * tu) / det_k;
+                let dn = -(tu * su + tw * sw) / nrm;
+                // Newton on 1/|t| - 1/limit (the secular equation's good form).
+                let phi = 1.0 / nrm - 1.0 / limit;
+                let dphi = -dn / (nrm * nrm);
+                k = (k - phi / dphi).max(0.0);
+            }
+            let s = limit / (t_u * t_u + t_w * t_w).sqrt();
+            t_u *= s;
+            t_w *= s;
+        } else if t_norm > limit {
             if t_norm > 0.0 {
                 let s = limit / t_norm;
                 // Differentiate before overwriting: `t_u`/`t_w` below are the
