@@ -2191,7 +2191,6 @@ pub fn convex_adjoint_gradient(
     })
 }
 
-
 /// Mirror of `phyz_contact::assemble`'s `PHYZ_IMPACT_NEEDS_E` audit prototype.
 fn impact_needs_e() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

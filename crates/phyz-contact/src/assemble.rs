@@ -11,6 +11,12 @@ use phyz_collision::Collision;
 use phyz_math::{DMat, DVec, SpatialVec, Vec3};
 use phyz_model::{Model, State};
 
+/// Audit gate `PHYZ_IMPACT_NEEDS_E=1`: impact rows only when restitution > 0.
+fn impact_needs_e() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
+}
+
 /// Build the convex contact problem for `contacts` at the current state.
 ///
 /// `free_qd` is the generalized velocity the system would have after this step
@@ -39,11 +45,6 @@ use phyz_model::{Model, State};
 /// The pair is resolved by [`ContactMaterial::combine`], whose friction rule
 /// is `max`. That is what makes *which body* carries a material a physical
 /// decision — see the crate README's "which body to put one on".
-fn impact_needs_e() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PHYZ_IMPACT_NEEDS_E").is_ok_and(|v| v == "1"))
-}
-
 pub fn assemble(
     model: &Model,
     state: &State,

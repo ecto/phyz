@@ -70,7 +70,11 @@ pub fn integrate_configuration(model: &Model, q: &mut [f64], v: &[f64], dt: f64)
                 // `next`, not `current`. With `current` a body spinning at
                 // `ω` travels `cos(|ω| dt)` of its speed.
                 // AUDIT PROTOTYPE (PHYZ_INTEG_CURRENT=1): 21a33f91's frame.
-                let world_lin = if integ_current() { current.rotate(lin) } else { next.rotate(lin) };
+                let world_lin = if integ_current() {
+                    current.rotate(lin)
+                } else {
+                    next.rotate(lin)
+                };
                 q[q_off + 3] += dt * world_lin.x;
                 q[q_off + 4] += dt * world_lin.y;
                 q[q_off + 5] += dt * world_lin.z;
