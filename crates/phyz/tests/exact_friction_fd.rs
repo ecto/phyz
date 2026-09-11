@@ -16,10 +16,11 @@
 //!    against the same central difference.
 
 use phyz::phyz_contact::{
-    ContactMaterial, ContactProblem, ContactSolverConfig, FixedPointSensitivity, assemble,
+    ContactMaterial, ContactProblem, ContactSolverConfig, assemble,
     contact_solve_differential, contact_solve_differential_transpose, find_contacts,
     find_ground_contacts_model, solve_contacts_warm,
 };
+use phyz::phyz_contact::gradient::FixedPointSensitivity;
 use phyz::phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz::phyz_model::{Geometry, Model, ModelBuilder, State};
 use phyz::phyz_rigid::{
