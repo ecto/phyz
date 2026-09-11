@@ -12,11 +12,29 @@ use phyz_diff::{
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Geometry, Model, ModelBuilder};
 
+/// Cold-started, on purpose. The solver-level channel carries `(q, v)` between
+/// steps, not the warm-start seed, so a warm-started solve that stops at a
+/// finite tolerance leaves a seed-dependence the adjoint drops (named in
+/// `contact_adjoint.rs`, where `d_initial` is passed empty). This file gates
+/// the channel's *math*, so it removes that approximation rather than folding
+/// its size into the tolerance. Measured on `incline_slip_matches_fd`'s mass
+/// lane (relative error vs a central difference that is flat from h = 1e-4 to
+/// 3e-7):
+///
+/// | | warm start | cold start |
+/// |---|---|---|
+/// | radial friction clamp | 1.67e-5 | 4.2e-8 |
+/// | exact disc step | 4.62e-5 | 7.3e-9 |
+///
+/// The stiction lane reads 1.5e-7 in all four cells. So the warm-start
+/// residual is sliding-only, predates the exact step, and grows 2.8x with it,
+/// while the channel itself is 6x closer to FD under the exact step.
 fn enable() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
         std::env::set_var("PHYZ_SMOOTH_ADJOINT", "1");
         std::env::set_var("PHYZ_SOLVER_ADJOINT", "1");
+        std::env::set_var("PHYZ_CONTACT_COLD_START", "1");
     });
 }
 
