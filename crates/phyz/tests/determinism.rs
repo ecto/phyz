@@ -245,10 +245,19 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// velocity update changed at `O((ω dt)²)`; `spinning_free_body` gained the
 /// gates (a 74 rad/s wheel keeps its speed in free space and on the plane)
 /// in the same commit.
+///
+/// Moved on the commit that made the per-contact friction step exact
+/// (`convex::disc_block_step`: the trust-region minimizer of the contact's
+/// tangential block over the friction disc, replacing a radial scale of the
+/// unconstrained minimizer). Only scenes with a sliding, off-centre contact
+/// can see it: the radial scale was the exact step whenever a contact's
+/// tangential block was isotropic, so sticking and point-mass contacts are
+/// unchanged. The analytic incline gates (26 deg sticks, 27.5 and 35 deg
+/// match `g (sin - mu cos)`) are the physics check for the commit.
 const GOLDEN: &[(&str, u64)] = &[
-    ("box_tipping", 0xead6_7f1c_4306_7f06),
+    ("box_tipping", 0xaed9_aee0_10ab_a056),
     ("wheel_rolling", 0x444f_17c7_aefe_828a),
-    ("chain_falling", 0x818e_3134_cb67_007e),
+    ("chain_falling", 0x75e9_ec88_e8a1_425b),
 ];
 
 #[test]
