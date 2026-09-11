@@ -47,6 +47,7 @@ use crate::policy_pipeline::{
 use phyz_model::{Heightfield, Model, State};
 
 #[cfg(feature = "cuda-host")]
+pub mod census;
 pub mod host;
 #[cfg(feature = "cuda")]
 pub mod nvrtc;
@@ -57,6 +58,7 @@ pub mod train_host;
 pub mod train_nvrtc;
 
 #[cfg(feature = "cuda-host")]
+pub use census::LaunchCensus;
 pub use host::HostBackend;
 #[cfg(feature = "cuda")]
 pub use nvrtc::CudaBackend;
@@ -1036,10 +1038,12 @@ impl<B: KernelBackend> BatchSim<B> {
         let (geom_data, collidable) =
             pack_contact_geometry(&self.model, &contact, gains, planes, heightfield)?;
         let mut geometry = self.backend.alloc(geom_data.len().max(1))?;
+        census::upload();
         self.backend.upload(&mut geometry, &geom_data)?;
 
         let params = ContactParams::pack(&self.model, self.nworld, &contact, planes, heightfield);
         let mut params_buf = self.backend.alloc(params.as_f32s().len())?;
+        census::upload();
         self.backend.upload(&mut params_buf, params.as_f32s())?;
 
         // Heightfield nodes; a single placeholder when there is no terrain,
@@ -1047,6 +1051,7 @@ impl<B: KernelBackend> BatchSim<B> {
         let hf_capacity = heightfield.map_or(1, |h| h.heights.len().max(1));
         let mut hf_buf = self.backend.alloc(hf_capacity)?;
         if let Some(h) = heightfield {
+            census::upload();
             self.backend.upload(&mut hf_buf, &h.heights)?;
         }
 
@@ -1081,7 +1086,9 @@ impl<B: KernelBackend> BatchSim<B> {
             ));
         }
         c.params.set_heightfield(hf);
+        census::upload();
         self.backend.upload(&mut c.params_buf, c.params.as_f32s())?;
+        census::upload();
         self.backend.upload(&mut c.hf_buf, &hf.heights)
     }
 
@@ -1092,6 +1099,7 @@ impl<B: KernelBackend> BatchSim<B> {
         check_pd_dofs(dofs, self.model.nq, self.model.nv)?;
         let dof_data = pack_pd_dofs(dofs);
         let mut dof_buf = self.backend.alloc(dof_data.len())?;
+        census::upload();
         self.backend.upload(&mut dof_buf, &dof_data)?;
         // Re-enabling with the same servo count (a gain re-draw) keeps the
         // target buffer — the policy pass holds no reference to it, but the
@@ -1129,6 +1137,7 @@ impl<B: KernelBackend> BatchSim<B> {
             .as_mut()
             .ok_or("PD control not enabled — call enable_pd_control first")?;
         let data = pack_rows(targets, self.nworld, pd.n_dofs);
+        census::upload();
         self.backend.upload(&mut pd.targets, &data)
     }
 
@@ -1136,7 +1145,9 @@ impl<B: KernelBackend> BatchSim<B> {
     pub fn load_states(&mut self, states: &[State]) {
         assert_eq!(states.len(), self.nworld);
         let (q, v, ctrl) = pack_states(states, self.model.nq, self.model.nv);
+        census::upload();
         self.backend.upload(&mut self.q, &q).expect("upload q");
+        census::upload();
         self.backend.upload(&mut self.v, &v).expect("upload v");
         self.backend
             .upload(&mut self.ctrl, &ctrl)
@@ -1202,6 +1213,7 @@ impl<B: KernelBackend> BatchSim<B> {
             // Drop the stale recording before capturing: on backends that
             // hold a device-side instantiation this frees it first.
             self.graph = None;
+            census::capture();
             self.backend.capture_begin()?;
             let issued = if self.fuses(n) {
                 self.issue_fused(n)
@@ -1218,6 +1230,7 @@ impl<B: KernelBackend> BatchSim<B> {
             });
         }
         let g = self.graph.as_ref().expect("step graph captured just above");
+        census::graph();
         self.backend.graph_launch(&g.exec)
     }
 
@@ -1267,6 +1280,7 @@ impl<B: KernelBackend> BatchSim<B> {
             Some(pd) => (&pd.dofs, &pd.targets, &pd.tau_ff),
             None => (&self.bodies, &self.bodies, &self.bodies),
         };
+        census::kernel();
         self.backend.launch_step_impulse(
             args,
             pd_dofs,
@@ -1295,6 +1309,7 @@ impl<B: KernelBackend> BatchSim<B> {
         let dt = m.dt as f32;
 
         if let Some(pd) = &self.pd {
+            census::kernel();
             self.backend.launch_pd(
                 PdArgs {
                     nworld,
@@ -1353,6 +1368,7 @@ impl<B: KernelBackend> BatchSim<B> {
             self.launch_aba(aba_args)?;
         }
 
+        census::kernel();
         self.backend.launch_integrate(
             IntegrateArgs {
                 nworld,
@@ -1371,6 +1387,7 @@ impl<B: KernelBackend> BatchSim<B> {
         let Some(c) = &self.contact else {
             return Ok(());
         };
+        census::kernel();
         self.backend.launch_contact(
             ContactArgs { nworld },
             &c.params_buf,
@@ -1393,6 +1410,7 @@ impl<B: KernelBackend> BatchSim<B> {
             .fk_cache
             .as_mut()
             .ok_or("fissioned contact pass without an FK cache")?;
+        census::kernel();
         self.backend.launch_contact_c(
             ContactArgs { nworld },
             &c.params_buf,
@@ -1414,6 +1432,7 @@ impl<B: KernelBackend> BatchSim<B> {
             .aba_cache
             .as_mut()
             .ok_or("fissioned ABA pass without a cache")?;
+        census::kernel();
         self.backend.launch_aba_c(
             args,
             &self.bodies,
@@ -1428,6 +1447,7 @@ impl<B: KernelBackend> BatchSim<B> {
     }
 
     fn launch_aba(&mut self, args: AbaArgs) -> Result<(), String> {
+        census::kernel();
         self.backend.launch_aba(
             args,
             &self.bodies,
@@ -1441,8 +1461,11 @@ impl<B: KernelBackend> BatchSim<B> {
 
     /// Download states.
     pub fn readback_states(&self) -> Vec<State> {
+        census::sync();
         self.backend.synchronize().expect("synchronize");
+        census::download();
         let q = self.backend.download(&self.q).expect("download q");
+        census::download();
         let v = self.backend.download(&self.v).expect("download v");
         unpack_states(&self.model, self.nworld, &q, &v)
     }
@@ -1456,7 +1479,9 @@ impl<B: KernelBackend> BatchSim<B> {
                 "ground contact not enabled — call enable_ground_contact first".to_string(),
             );
         }
+        census::sync();
         self.backend.synchronize()?;
+        census::download();
         let data = self.backend.download(&self.contact_state)?;
         Ok(unpack_contacts(&data, self.nworld, self.model.nbodies()))
     }
@@ -1484,6 +1509,7 @@ impl<B: KernelBackend> BatchSim<B> {
             .kin
             .as_mut()
             .ok_or("kinematics not enabled — call enable_kinematics first")?;
+        census::kernel();
         self.backend.launch_fk(
             FkArgs {
                 nworld: self.nworld as u32,
@@ -1501,7 +1527,9 @@ impl<B: KernelBackend> BatchSim<B> {
     /// [`crate::policy_pipeline::XF_STRIDE`] for the row layout.
     pub fn readback_kinematics(&self) -> Result<Vec<f32>, String> {
         let kin = self.kin.as_ref().ok_or("kinematics not enabled")?;
+        census::sync();
         self.backend.synchronize()?;
+        census::download();
         self.backend.download(kin)
     }
 
@@ -1523,17 +1551,21 @@ impl<B: KernelBackend> BatchSim<B> {
 
         let (op_table, aux_table) = pack_obs_ops(&spec.obs);
         let mut ops = self.backend.alloc((n_in * OBS_OP_STRIDE).max(1))?;
+        census::upload();
         self.backend.upload(&mut ops, &op_table)?;
         let mut obs_aux = self.backend.alloc(aux_table.len().max(1))?;
         if !aux_table.is_empty() {
+            census::upload();
             self.backend.upload(&mut obs_aux, &aux_table)?;
         }
         let com_table = pack_com_table(&self.model);
         let mut com = self.backend.alloc(com_table.len().max(1))?;
         if !com_table.is_empty() {
+            census::upload();
             self.backend.upload(&mut com, &com_table)?;
         }
         let mut in_noise = self.backend.alloc(n_in.max(1))?;
+        census::upload();
         self.backend.upload(
             &mut in_noise,
             &spec
@@ -1543,11 +1575,13 @@ impl<B: KernelBackend> BatchSim<B> {
                 .collect::<Vec<_>>(),
         )?;
         let mut act_slots = self.backend.alloc(n_out.max(1))?;
+        census::upload();
         self.backend.upload(
             &mut act_slots,
             &spec.act_slots.iter().map(|&s| s as f32).collect::<Vec<_>>(),
         )?;
         let mut act_clamp_slots = self.backend.alloc(n_out.max(1))?;
+        census::upload();
         self.backend.upload(
             &mut act_clamp_slots,
             &spec
@@ -1731,6 +1765,7 @@ impl<B: KernelBackend> BatchSim<B> {
         if n_wc == 0 {
             return Ok(Vec::new());
         }
+        census::download();
         self.backend.download(&p.world_consts)
     }
 
@@ -1775,6 +1810,7 @@ impl<B: KernelBackend> BatchSim<B> {
         let (n_in, n_h, n_out) = (p.spec.n_in(), p.spec.hidden, p.spec.n_out());
         let obs_off = step * nworld * n_in;
         let out_off = step * nworld * (n_out + 1);
+        census::kernel();
         self.backend.launch_obs(
             ObsArgs {
                 nworld: nworld as u32,
@@ -1794,6 +1830,7 @@ impl<B: KernelBackend> BatchSim<B> {
             kin,
             &mut p.obs_hist,
         )?;
+        census::kernel();
         self.backend.launch_policy(
             PolicyArgs {
                 nworld: nworld as u32,
@@ -1842,12 +1879,15 @@ impl<B: KernelBackend> BatchSim<B> {
         }
         let (n_in, n_out) = (p.spec.n_in(), p.spec.n_out());
         let n = steps.len();
+        census::sync();
         self.backend.synchronize()?;
+        census::download();
         let obs = self.backend.download_range(
             &p.obs_hist,
             steps.start * self.nworld * n_in,
             n * self.nworld * n_in,
         )?;
+        census::download();
         let out = self.backend.download_range(
             &p.out_hist,
             steps.start * self.nworld * (n_out + 1),
@@ -1859,7 +1899,9 @@ impl<B: KernelBackend> BatchSim<B> {
     /// The policy pass's PD target rows, downloaded (`[world][slot]`).
     pub fn readback_targets(&self) -> Result<Vec<f32>, String> {
         let pd = self.pd.as_ref().ok_or("PD control not enabled")?;
+        census::sync();
         self.backend.synchronize()?;
+        census::download();
         self.backend.download(&pd.targets)
     }
 
@@ -1934,12 +1976,15 @@ impl<B: KernelBackend> BatchSim<B> {
         }
         let m = &self.model;
         let n = slots.len();
+        census::sync();
         self.backend.synchronize()?;
+        census::download();
         let q = self.backend.download_range(
             &h.q,
             slots.start * self.nworld * m.nq,
             n * self.nworld * m.nq,
         )?;
+        census::download();
         let v = self.backend.download_range(
             &h.v,
             slots.start * self.nworld * m.nv,
