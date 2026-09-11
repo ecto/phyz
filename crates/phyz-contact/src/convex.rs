@@ -1288,59 +1288,12 @@ fn tangential_dirs(
 ) -> Vec<Option<[f64; 2]>> {
     use crate::gradient::ContactRegime;
     let n = problem.n;
-    let dim = 3 * n;
-    let a = &problem.delassus;
     let mut out: Vec<Option<[f64; 2]>> = vec![None; n];
     for c in 0..n {
         if regimes[c] != ContactRegime::Sliding {
             continue;
         }
-        let base = 3 * c;
-        let reg = regularization_diag(problem, c, config);
-        let m = [
-            [
-                a[(base + 1) * dim + base + 1] + reg[1],
-                a[(base + 1) * dim + base + 2],
-            ],
-            [
-                a[(base + 2) * dim + base + 1],
-                a[(base + 2) * dim + base + 2] + reg[2],
-            ],
-        ];
-        let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-        if det.abs() < 1e-30 {
-            continue;
-        }
-        let minv = [
-            [m[1][1] / det, -m[0][1] / det],
-            [-m[1][0] / det, m[0][0] / det],
-        ];
-        // r_t = [(A + R) f + b]_t - M_t f_t, then t* = -M_t^-1 r_t.
-        let mut r = [0.0f64; 2];
-        for (i, ri) in r.iter_mut().enumerate() {
-            let row = base + 1 + i;
-            let mut acc = problem.free_velocity[row];
-            for k in 0..n {
-                let kb = 3 * k;
-                let fk = f[k];
-                acc += a[row * dim + kb] * fk.x
-                    + a[row * dim + kb + 1] * fk.y
-                    + a[row * dim + kb + 2] * fk.z;
-            }
-            let own = if i == 0 { f[c].y } else { f[c].z };
-            acc += reg[1 + i] * own;
-            acc -= m[i][0] * f[c].y + m[i][1] * f[c].z;
-            *ri = acc;
-        }
-        let t_star = [
-            -(minv[0][0] * r[0] + minv[0][1] * r[1]),
-            -(minv[1][0] * r[0] + minv[1][1] * r[1]),
-        ];
-        let t_norm = (t_star[0] * t_star[0] + t_star[1] * t_star[1]).sqrt();
-        if t_norm <= 1e-14 {
-            continue;
-        }
-        out[c] = Some([t_star[0] / t_norm, t_star[1] / t_norm]);
+        out[c] = crate::gradient::slip_direction(problem, config, f, c).map(|(that, _)| that);
     }
     out
 }
@@ -1758,11 +1711,6 @@ const STALL_RATIO: f64 = 0.99;
 /// proposal rejected by the line search, say — does not end the solve.
 const STALL_BLOCKS: usize = 3;
 
-fn tr_clamp() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("PHYZ_TR_CLAMP").is_ok_and(|v| v == "1"))
-}
-
 /// One projected Gauss-Seidel sweep with the staged Coulomb update.
 ///
 /// Returns the largest per-contact movement, which is the fixed-point residual
@@ -1815,6 +1763,121 @@ pub(crate) struct SweepDiff<'a> {
     /// The running differential of the impulses. Updated in place, exactly
     /// where `f` is.
     pub df: Vec<Vec3>,
+}
+
+/// The exact per-contact friction step: `argmin 1/2 t'Mt + r't` over the
+/// disc `|t| <= limit`, for an unconstrained minimizer outside the disc.
+///
+/// On the boundary the minimizer is `t = -(M + k I)^-1 r` with the
+/// multiplier `k >= 0` chosen so `|t| = limit` (the trust-region secular
+/// equation). Newton on `1/|t(k)| - 1/limit` from `k = 0` is the
+/// Moré–Sorensen form: for a positive-definite `M` it converges
+/// monotonically and quadratically, typically in three to five steps. The
+/// result is rescaled onto the circle so the cone test downstream is exact.
+/// Returns `(t, k)`.
+fn disc_block_step(m: [[f64; 2]; 2], r: [f64; 2], limit: f64) -> ([f64; 2], f64) {
+    let solve = |k: f64, rhs: [f64; 2]| {
+        let (a, b, c, d) = (m[0][0] + k, m[0][1], m[1][0], m[1][1] + k);
+        let det = a * d - b * c;
+        [
+            (d * rhs[0] - b * rhs[1]) / det,
+            (a * rhs[1] - c * rhs[0]) / det,
+        ]
+    };
+    let mut k = 0.0f64;
+    let mut t = solve(k, [-r[0], -r[1]]);
+    for _ in 0..60 {
+        let nrm = (t[0] * t[0] + t[1] * t[1]).sqrt();
+        if (nrm - limit).abs() <= 1e-14 * (1.0 + limit) {
+            break;
+        }
+        // d|t|/dk = -t'(M + kI)^-1 t / |t|.
+        let st = solve(k, t);
+        let dn = -(t[0] * st[0] + t[1] * st[1]) / nrm;
+        let phi = 1.0 / nrm - 1.0 / limit;
+        let dphi = -dn / (nrm * nrm);
+        let next = (k - phi / dphi).max(0.0);
+        if next == k {
+            break;
+        }
+        k = next;
+        t = solve(k, [-r[0], -r[1]]);
+    }
+    let nrm = (t[0] * t[0] + t[1] * t[1]).sqrt();
+    let s = limit / nrm;
+    ([t[0] * s, t[1] * s], k)
+}
+
+/// Differential of [`disc_block_step`] at its solution `(t, k)`.
+///
+/// Differentiating `(M + kI) t + r = 0`, `t't = limit^2` gives the bordered
+/// system
+///
+/// ```text
+/// [M + kI  t] [dt]   [-(dM t + dr)]
+/// [t'      0] [dk] = [limit dlimit]
+/// ```
+///
+/// solved here by elimination: with `N = M + kI`, `u = N^-1 t`,
+/// `g = -(dM t + dr)`, `dk = (t' N^-1 g - limit dlimit) / (t' u)` and
+/// `dt = N^-1 g - u dk`. [`disc_block_tangent_transpose`] is its adjoint.
+fn disc_block_tangent(
+    m: [[f64; 2]; 2],
+    k: f64,
+    t: [f64; 2],
+    dm: [[f64; 2]; 2],
+    dr: [f64; 2],
+    limit: f64,
+    dlimit: f64,
+) -> [f64; 2] {
+    let (a, b, c, d) = (m[0][0] + k, m[0][1], m[1][0], m[1][1] + k);
+    let det = a * d - b * c;
+    let ninv = |v: [f64; 2]| [(d * v[0] - b * v[1]) / det, (a * v[1] - c * v[0]) / det];
+    let g = [
+        -(dm[0][0] * t[0] + dm[0][1] * t[1] + dr[0]),
+        -(dm[1][0] * t[0] + dm[1][1] * t[1] + dr[1]),
+    ];
+    let ng = ninv(g);
+    let u = ninv(t);
+    let q = t[0] * u[0] + t[1] * u[1];
+    let dk = (t[0] * ng[0] + t[1] * ng[1] - limit * dlimit) / q;
+    [ng[0] - u[0] * dk, ng[1] - u[1] * dk]
+}
+
+/// Adjoint of [`disc_block_tangent`]: given `bar_dt`, returns
+/// `(bar_dm, bar_dr, bar_dlimit)` with
+/// `<bar_dt, dt> = <bar_dm, dm> + <bar_dr, dr> + bar_dlimit dlimit`.
+///
+/// Read off the elimination: with `w = N^-T t`,
+/// `bar_g = N^-T bar_dt - w (bar_dt' u) / q`, `bar_dlimit = limit (bar_dt' u) / q`,
+/// then `g = -(dM t + dr)` scatters `bar_dr = -bar_g`, `bar_dM = -bar_g t'`.
+fn disc_block_tangent_transpose(
+    m: [[f64; 2]; 2],
+    k: f64,
+    t: [f64; 2],
+    bar_dt: [f64; 2],
+    limit: f64,
+) -> ([[f64; 2]; 2], [f64; 2], f64) {
+    let (a, b, c, d) = (m[0][0] + k, m[0][1], m[1][0], m[1][1] + k);
+    let det = a * d - b * c;
+    let ninv = |v: [f64; 2]| [(d * v[0] - b * v[1]) / det, (a * v[1] - c * v[0]) / det];
+    // N^-T v: the inverse of the transposed 2x2.
+    let ninv_t = |v: [f64; 2]| [(d * v[0] - c * v[1]) / det, (a * v[1] - b * v[0]) / det];
+    let u = ninv(t);
+    let w = ninv_t(t);
+    let q = t[0] * u[0] + t[1] * u[1];
+    let proj = (bar_dt[0] * u[0] + bar_dt[1] * u[1]) / q;
+    let nb = ninv_t(bar_dt);
+    let bar_g = [nb[0] - w[0] * proj, nb[1] - w[1] * proj];
+    let bar_dm = [
+        [-bar_g[0] * t[0], -bar_g[0] * t[1]],
+        [-bar_g[1] * t[0], -bar_g[1] * t[1]],
+    ];
+    (
+        [[bar_dm[0][0], bar_dm[0][1]], [bar_dm[1][0], bar_dm[1][1]]],
+        [-bar_g[0], -bar_g[1]],
+        limit * proj,
+    )
 }
 
 fn sweep(
@@ -2010,50 +2073,37 @@ fn sweep(
             (dfc.y, dfc.z)
         };
 
-        // Clamp into the friction disc of radius mu*f_n. The clamp is
-        // isotropic, so a block sliding at any heading loses speed
-        // identically — the property a pyramidal cone gives up.
+        // Clamp into the friction disc of radius mu*f_n, *exactly*: the
+        // per-contact tangential problem is `min 1/2 t'Mt + r't` over the disc
+        // `|t| <= mu f_n`, and on the boundary its solution is
+        // `t = -(M + k I)^-1 r` with `k >= 0` set so `|t| = mu f_n`
+        // ([`disc_block_step`]). Scaling the unconstrained `t*` radially onto
+        // the disc is that minimizer only when `M` is isotropic; a box corner's
+        // tangential block has lever-arm coupling, and the radial scale left
+        // coupled corners rotated +-20.56 deg off the slide, pinching against
+        // each other (sliding friction 6.4 % weak, a 26 deg block on mu 0.5
+        // sliding; phyz docs/contact-audit.md section 3). `normals_only` holds
+        // the tangential impulses rather than minimizing them, and a zero-width
+        // disc has one point in it, so both keep the radial projection.
         let limit = row.mu * f_n;
         let t_norm = (t_u * t_u + t_w * t_w).sqrt();
-        // AUDIT PROTOTYPE (PHYZ_TR_CLAMP=1): the exact block step. The
-        // per-contact problem is min 1/2 t'Mt + r't over the disc |t| <= limit;
-        // its solution on the boundary is t = -(M + k I)^-1 r with k >= 0 set
-        // so |t| = limit. The radial clamp below is only that step when M is
-        // isotropic.
-        if tr_clamp() && t_norm > limit && limit > 0.0 && !normals_only {
-            let mut k = 0.0f64;
-            for _ in 0..60 {
-                let (a, b, c2, d2) = (m00 + k, m01, m10, m11 + k);
-                let det_k = a * d2 - b * c2;
-                let tu = -(d2 * r_u - b * r_w) / det_k;
-                let tw = -(a * r_w - c2 * r_u) / det_k;
-                let nrm = (tu * tu + tw * tw).sqrt();
-                t_u = tu;
-                t_w = tw;
-                if (nrm - limit).abs() <= 1e-14 * (1.0 + limit) {
-                    break;
-                }
-                // d|t|/dk = -t'(M+kI)^-1 t / |t|
-                let su = (d2 * tu - b * tw) / det_k;
-                let sw = (a * tw - c2 * tu) / det_k;
-                let dn = -(tu * su + tw * sw) / nrm;
-                // Newton on 1/|t| - 1/limit (the secular equation's good form).
-                let phi = 1.0 / nrm - 1.0 / limit;
-                let dphi = -dn / (nrm * nrm);
-                k = (k - phi / dphi).max(0.0);
+        if t_norm > limit && limit > 0.0 && !normals_only && det.abs() > 1e-18 {
+            let m = [[m00, m01], [m10, m11]];
+            let (t, k) = disc_block_step(m, [r_u, r_w], limit);
+            if diff.is_some() {
+                let dm = [[db[1][1], db[1][2]], [db[2][1], db[2][2]]];
+                let dt = disc_block_tangent(m, k, t, dm, [d_r_u, d_r_w], limit, row.mu * d_f_n);
+                d_t_u = dt[0];
+                d_t_w = dt[1];
             }
-            let s = limit / (t_u * t_u + t_w * t_w).sqrt();
-            t_u *= s;
-            t_w *= s;
+            t_u = t[0];
+            t_w = t[1];
         } else if t_norm > limit {
             if t_norm > 0.0 {
                 let s = limit / t_norm;
                 // Differentiate before overwriting: `t_u`/`t_w` below are the
                 // pre-scale values this derivative is taken at. Expanded, this
-                // is `s (I - t_hat t_hat^T) dt* + mu t_hat df_n` — the same
-                // projector `FixedPointSensitivity` carries for a converged
-                // sliding contact, here evaluated at whichever iterate the
-                // sweep is on rather than at an assumed fixed point.
+                // is `s (I - t_hat t_hat^T) dt* + mu t_hat df_n`.
                 if diff.is_some() {
                     let d_t_norm = (t_u * d_t_u + t_w * d_t_w) / t_norm;
                     let d_s = (row.mu * d_f_n - s * d_t_norm) / t_norm;
@@ -2812,6 +2862,9 @@ fn sweep_transpose(
         let limit = row.mu * f_n;
         let t_norm = (t_u * t_u + t_w * t_w).sqrt();
         let clamped = t_norm > limit;
+        // The forward's exact disc step (see `sweep`): same predicate, so the
+        // two passes cannot take different branches.
+        let exact = clamped && limit > 0.0 && !normals_only && solvable;
 
         // ----------------------------------------------------------- reverse
         let g = bar[c];
@@ -2821,10 +2874,41 @@ fn sweep_transpose(
         let mut a_fn = w * g.x;
         let (mut a_tu, mut a_tw) = (w * g.y, w * g.z);
 
+        // `db`'s adjoint, accumulated across steps 5, 4 and 3 before being
+        // scattered into `bar_apr`'s diagonal block once.
+        let mut bar_db = [[0.0f64; 3]; 3];
+        let mut bar_dr = [0.0f64; 3];
+
+        if exact {
+            // Steps 6 and 5 together: the exact disc step reads `(M, r_t,
+            // mu f_n)` directly, not the unconstrained `t*`, so its adjoint
+            // lands on those and step 5's solve is not on the path.
+            let m = [[m00, m01], [m10, m11]];
+            let (t, k) = disc_block_step(m, [r_u, r_w], limit);
+            let (bar_dm, bar_drt, bar_dlimit) =
+                disc_block_tangent_transpose(m, k, t, [a_tu, a_tw], limit);
+            for i in 0..2 {
+                for j in 0..2 {
+                    bar_db[1 + i][1 + j] += bar_dm[i][j];
+                }
+            }
+            a_fn += row.mu * bar_dlimit;
+            // Step 4.
+            let (bar_dru, bar_drw) = (bar_drt[0], bar_drt[1]);
+            bar_dr[1] += bar_dru;
+            bar_db[1][0] += f_n * bar_dru;
+            a_fn += a_un * bar_dru;
+            bar_dr[2] += bar_drw;
+            bar_db[2][0] += f_n * bar_drw;
+            a_fn += a_wn * bar_drw;
+            a_tu = 0.0;
+            a_tw = 0.0;
+        }
+
         // Step 6, the disc clamp. `t_norm == 0` with `limit == 0` is the
         // pinned-solid case the forward zeroes outright; its transpose is the
         // zero map, not a projector with a `0/0` in it.
-        if clamped {
+        if clamped && !exact {
             if t_norm > 0.0 {
                 let s = limit / t_norm;
                 let bar_ds = t_u * a_tu + t_w * a_tw;
@@ -2841,13 +2925,10 @@ fn sweep_transpose(
             }
         }
 
-        // `db`'s adjoint, accumulated across steps 5, 4 and 3 before being
-        // scattered into `bar_apr`'s diagonal block once.
-        let mut bar_db = [[0.0f64; 3]; 3];
-        let mut bar_dr = [0.0f64; 3];
-
         // Step 5, the tangential solve.
-        if normals_only {
+        if exact {
+            // Handled above.
+        } else if normals_only {
             // Held, not solved: the tangential differential passes straight
             // through from the incoming `df_c`, so its adjoint does too.
             bar_dfc.y += a_tu;

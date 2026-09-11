@@ -1,0 +1,157 @@
+# K1 stance FD of the exact friction step (phyz contact-friction-exact via a throwaway ipse [patch], never committed there)
+# test source:
+# //! THROWAWAY (lane contact-fixes, never committed): FD check of phyz PR C
+# //! (exact per-corner friction projection) on a K1 stance contact problem.
+# //! The state is captured at t = 1 s inside the unchanged milestone loop
+# //! (`run::stand_with_observer`, `JointSpacePd`), and the next step`s contact
+# //! problem is rebuilt exactly as `run.rs` builds it.
+# 
+# use ipse_sim::run::{self, JointSpacePd, Policy, StepObserver, StepView};
+# use ipse_sim::stand::GROUND_Z;
+# use ipse_sim::{K1, StandConfig, StandingRig, assets};
+# use phyz_contact::gradient::FixedPointSensitivity;
+# use phyz_contact::{
+#     ContactProblem, assemble, contact_solve_differential, contact_solve_differential_transpose,
+#     find_contacts, find_ground_contacts_model, solve_contacts_warm,
+# };
+# use phyz_math::Vec3;
+# use phyz_model::State;
+# 
+# struct Grab {
+#     at: usize,
+#     got: Option<State>,
+# }
+# impl StepObserver for Grab {
+#     fn observe_step(&mut self, view: StepView<'_>) {
+#         if view.step == self.at {
+#             self.got = Some(view.state.clone());
+#         }
+#     }
+# }
+# 
+# fn flat(v: &[Vec3]) -> Vec<f64> {
+#     v.iter().flat_map(|x| [x.x, x.y, x.z]).collect()
+# }
+# fn rel(a: &[f64], b: &[f64]) -> f64 {
+#     let s = a.iter().chain(b).fold(1e-300f64, |m, x| m.max(x.abs()));
+#     a.iter().zip(b).fold(0.0f64, |m, (x, y)| m.max((x - y).abs())) / s
+# }
+# 
+# #[test]
+# fn k1_stance_contact_gradient_matches_a_finite_difference() {
+#     if assets::k1_urdf().is_none() {
+#         eprintln!("{}", assets::missing_assets_message());
+#         return;
+#     }
+#     let dt = 1e-3;
+#     let k1 = K1::load(dt).expect("K1 loads");
+#     let rig = StandingRig::build(&k1, StandConfig { dt, duration: 1.2, ..StandConfig::default() })
+#         .expect("rig");
+#     let mut grab = Grab { at: 999, got: None };
+#     let mut pd = JointSpacePd;
+#     run::stand_with_observer(&rig, &mut pd, Some(&mut grab));
+#     let mut state = grab.got.expect("captured the t = 1 s state");
+# 
+#     let model = &rig.model;
+#     let margin = rig.config().material.margin;
+#     let mut contacts = find_ground_contacts_model(model, &state, GROUND_Z, margin);
+#     contacts.extend(find_contacts(model, &state, margin));
+#     JointSpacePd.torques(&rig, &mut state, &contacts);
+#     let mut qdd = phyz_rigid::aba(model, &state);
+#     let v_before = state.v.clone();
+#     phyz_rigid::strip_free_joint_coriolis(model, v_before.as_slice(), qdd.as_mut_slice());
+#     let free_qd = &state.v + &(&qdd * dt);
+#     let materials = rig.config().materials(model.bodies.len());
+#     let mut cfg = rig.config().solver;
+#     cfg.tolerance = 1e-12;
+#     let asm = assemble(model, &state, &contacts, &materials, &free_qd, dt, &cfg);
+#     let p: ContactProblem = asm.problem;
+#     let n = p.n;
+#     let dim = 3 * n;
+# 
+#     let plain = solve_contacts_warm(&p, &cfg, &[]);
+#     let sliding = plain
+#         .impulses
+#         .iter()
+#         .zip(&p.rows)
+#         .filter(|(f, r)| f.x > 0.0 && ((f.y * f.y + f.z * f.z).sqrt() - r.mu * f.x).abs() <= 1e-9 * f.x)
+#         .count();
+#     eprintln!(
+#         "K1 stance t=1s: {n} contacts, {sliding} sliding, converged {} (residual {:e}, {} iters)",
+#         plain.converged, plain.residual, plain.iterations
+#     );
+# 
+#     let scale = p.delassus[0].abs().max(1.0) * 1e-2;
+#     let mut d_apr = vec![0.0; dim * dim];
+#     for i in 0..dim {
+#         for j in 0..=i {
+#             let v = scale * 0.05 * ((i * 31 + j * 17) as f64 * 0.37).sin();
+#             d_apr[i * dim + j] = v;
+#             d_apr[j * dim + i] = v;
+#         }
+#     }
+#     for c in 0..n {
+#         d_apr[3 * c * dim + 3 * c] = 0.0; // R_n = (1-d)/d A_nn: hold A_nn still
+#     }
+#     let dc: Vec<f64> = (0..dim).map(|i| scale * 0.08 * ((i * 13) as f64 * 0.29).cos()).collect();
+# 
+#     let (sol, df) = contact_solve_differential(&p, &cfg, &[], &[], &d_apr, &dc);
+#     assert_eq!(sol.iterations, plain.iterations, "differentiation changed the primal");
+#     let df = flat(&df);
+#     let pert = |eps: f64| {
+#         let mut q = p.clone();
+#         for (a, da) in q.delassus.iter_mut().zip(&d_apr) {
+#             *a += eps * da;
+#         }
+#         for (b, db) in q.free_velocity.iter_mut().zip(&dc) {
+#             *b += eps * db;
+#         }
+#         q
+#     };
+#     let fds: Vec<(f64, Vec<f64>, bool)> = [1e-4, 1e-5, 1e-6, 1e-7]
+#         .iter()
+#         .map(|&h| {
+#             let up = solve_contacts_warm(&pert(h), &cfg, &[]);
+#             let dn = solve_contacts_warm(&pert(-h), &cfg, &[]);
+#             let d = flat(&up.impulses).iter().zip(flat(&dn.impulses)).map(|(a, b)| (a - b) / (2.0 * h)).collect();
+#             (h, d, up.converged && dn.converged && up.iterations == plain.iterations && dn.iterations == plain.iterations)
+#         })
+#         .collect();
+#     for (h, fd, same) in &fds {
+#         eprintln!("  h {h:e}: fd vs forward {:.3e} (perturbed solves converged with the same iteration count: {same})", rel(&df, fd));
+#     }
+#     let fd_vs_forward = fds.iter().map(|(_, fd, _)| rel(&df, fd)).fold(f64::INFINITY, f64::min);
+# 
+#     let bar: Vec<Vec3> = (0..n).map(|k| Vec3::new(0.3 + 0.1 * k as f64, -0.7 + 0.02 * k as f64, 0.5 - 0.03 * k as f64)).collect();
+#     let (_, adj) = contact_solve_differential_transpose(&p, &cfg, &[], &bar);
+#     let lhs: f64 = flat(&bar).iter().zip(&df).map(|(a, b)| a * b).sum();
+#     let (mut rhs, mut mag) = (0.0, lhs.abs());
+#     for (a, d) in adj.bar_apr.iter().zip(&d_apr) { rhs += a * d; mag += (a * d).abs(); }
+#     for (a, d) in adj.bar_c.iter().zip(&dc) { rhs += a * d; mag += (a * d).abs(); }
+#     let tr = (lhs - rhs).abs() / mag.max(1e-300);
+# 
+#     let ift = FixedPointSensitivity::at(&p, &plain, &cfg).map(|s| {
+#         let f = flat(&plain.impulses);
+#         let d_stat: Vec<f64> = (0..dim).map(|r| dc[r] + (0..dim).map(|k| d_apr[r * dim + k] * f[k]).sum::<f64>()).collect();
+#         flat(&s.apply(&d_stat, &vec![[0.0; 2]; n]))
+#     });
+#     let fd_vs_ift = ift.as_ref().map(|i| fds.iter().map(|(_, fd, _)| rel(i, fd)).fold(f64::INFINITY, f64::min));
+#     eprintln!("K1 stance: fd vs forward {fd_vs_forward:.3e} | transpose identity {tr:.3e} | fd vs IFT {fd_vs_ift:?}");
+#     assert!(fd_vs_forward < 1e-6, "forward vs fd {fd_vs_forward:e}");
+#     assert!(tr < 1e-10, "transpose identity {tr:e}");
+# }
+# output:
+K1 stance t=1s: 8 contacts, 0 sliding, converged true (residual 3.188394682847997e-17, 18 iters)
+  h 1e-4: fd vs forward 9.999e-1 (perturbed solves converged with the same iteration count: false)
+  h 1e-5: fd vs forward 3.144e-5 (perturbed solves converged with the same iteration count: true)
+  h 1e-6: fd vs forward 3.137e-7 (perturbed solves converged with the same iteration count: true)
+  h 1e-7: fd vs forward 6.842e-9 (perturbed solves converged with the same iteration count: true)
+K1 stance: fd vs forward 6.842e-9 | transpose identity 4.063e-11 | fd vs IFT Some(6.842209566101217e-9)
+test k1_stance_contact_gradient_matches_a_finite_difference ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+# incline box FD (crates/phyz/tests/exact_friction_fd.rs):
+incline 35 deg: n 4 sliding corners 4 | fd vs forward 2.583e-12 | transpose identity 5.870e-17 | fd vs IFT 1.319e-10
+test the_sliding_box_gradient_matches_a_finite_difference ... ok
+incline 27.5 deg: n 4 sliding corners 4 | fd vs forward 7.150e-12 | transpose identity 5.834e-17 | fd vs IFT 1.084e-11
+test the_slow_slide_gradient_matches_a_finite_difference ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
