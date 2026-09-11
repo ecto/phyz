@@ -243,9 +243,10 @@ fn incline_sticking_below_the_friction_angle() {
 /// against each other. The exact disc step (`convex::disc_block_step`) takes
 /// this case from 2.0912 to 1.8033 against the theory's 1.7968. The remaining
 /// 0.4 % is not investigated. This estimator (`2 x / t^2` from rest) includes
-/// the initial settle, and the audit's quadratic fit on the second half of a
-/// 2 s slide agrees with theory to 1e-12. The assertion is a physics check
-/// again, at 1 %.
+/// the initial settle; the audit's own incline rows (a quadratic fit on the
+/// second half of a 2 s slide, mu 0.5 at 27.5 and 35 deg, not this 40 deg /
+/// mu 0.6 case) agree with theory to 1e-12 after the fix. The assertion is a
+/// physics check again, at 1 %.
 #[allow(clippy::doc_markdown)]
 #[test]
 fn incline_sliding_above_the_friction_angle() {
