@@ -257,82 +257,35 @@ pub(crate) fn complete_kkt(
             // already say `df_t = 0`, and there is no direction to rotate.
             continue;
         }
-        let reg = crate::convex::regularization_diag(problem, c, config);
-        // M_t: the contact's own regularized tangential 2x2 block.
-        let m = [
-            [
-                a[(base + 1) * dim + base + 1] + reg[1],
-                a[(base + 1) * dim + base + 2],
-            ],
-            [
-                a[(base + 2) * dim + base + 1],
-                a[(base + 2) * dim + base + 2] + reg[2],
-            ],
-        ];
-        let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
-        if det.abs() < 1e-30 {
+        let Some((that, v_norm)) = slip_direction(problem, config, impulses, c) else {
             continue;
-        }
-        let minv = [
-            [m[1][1] / det, -m[0][1] / det],
-            [-m[1][0] / det, m[0][0] / det],
-        ];
-        // r_t = [(A + R) f + b]_t - M_t f_t, then t* = -M_t^-1 r_t.
-        let flat = flat_impulses(impulses);
-        let mut r = [0.0f64; 2];
-        for (i, ri) in r.iter_mut().enumerate() {
-            let row = base + 1 + i;
-            let mut acc = problem.free_velocity[row];
-            for (col, fc) in flat.iter().enumerate() {
-                acc += a[row * dim + col] * fc;
-            }
-            acc += reg[1 + i] * flat[row];
-            acc -= m[i][0] * f.y + m[i][1] * f.z;
-            *ri = acc;
-        }
-        let t_star = [
-            -(minv[0][0] * r[0] + minv[0][1] * r[1]),
-            -(minv[1][0] * r[0] + minv[1][1] * r[1]),
-        ];
-        let t_norm = (t_star[0] * t_star[0] + t_star[1] * t_star[1]).sqrt();
-        if t_norm <= 1e-14 {
-            continue;
-        }
-        let that = [t_star[0] / t_norm, t_star[1] / t_norm];
-        // s = ||f_t|| / ||t*||, clamped: at the clamp boundary the two
-        // coincide and s = 1; s > 1 would mean the contact was not
-        // actually clamped, i.e. a borderline-sticking classification.
-        let s = (ft / t_norm).min(1.0);
+        };
+        // C = (||f_t|| / ||v_t||) P, P = I - t_hat t_hat^T: the rotation of
+        // the max-dissipation direction `t_hat = -v_t / ||v_t||`.
+        let s = ft / v_norm;
         let p = [
             [1.0 - that[0] * that[0], -that[0] * that[1]],
             [-that[1] * that[0], 1.0 - that[1] * that[1]],
         ];
-        let mut cmap = [[0.0f64; 2]; 2];
-        for i in 0..2 {
-            for j in 0..2 {
-                cmap[i][j] = s * (p[i][0] * minv[0][j] + p[i][1] * minv[1][j]);
-            }
-        }
+        let cmap = [[s * p[0][0], s * p[0][1]], [s * p[1][0], s * p[1][1]]];
+        let reg = crate::convex::regularization_diag(problem, c, config);
 
         // Rewrite the two tangential rows of K:
-        //   df_t - mu t_hat df_n + C (sum_{cols != own t} A_{t,col} df_col) = -dF_theta
+        //   df_t - mu t_hat df_n + C (sum_cols (A + R)_{t,col} df_col) = -C dStat_t
+        // The sum runs over *every* column, the contact's own tangential ones
+        // included: `v_t` is the full tangential residual velocity.
         let mu = problem.rows[c].mu;
         for i in 0..2 {
             let row = base + 1 + i;
             for col in 0..dim {
-                let in_own_t = col == base + 1 || col == base + 2;
-                k[row * dim + col] = if in_own_t {
-                    if col == row { 1.0 } else { 0.0 }
-                } else {
-                    cmap[i][0] * a[(base + 1) * dim + col] + cmap[i][1] * a[(base + 2) * dim + col]
-                };
+                let a_u = a[(base + 1) * dim + col] + if col == base + 1 { reg[1] } else { 0.0 };
+                let a_w = a[(base + 2) * dim + col] + if col == base + 2 { reg[2] } else { 0.0 };
+                k[row * dim + col] =
+                    if col == row { 1.0 } else { 0.0 } + cmap[i][0] * a_u + cmap[i][1] * a_w;
             }
             k[row * dim + base] -= mu * that[i];
         }
-        slide[c] = Some(SlideTangent {
-            map: cmap,
-            t_rel: [t_star[0] - f.y, t_star[1] - f.z],
-        });
+        slide[c] = Some(SlideTangent { map: cmap, t_rel: [0.0, 0.0] });
         that_dirs[c] = Some(that);
     }
 
@@ -343,6 +296,49 @@ pub(crate) fn complete_kkt(
         regimes: regimes.to_vec(),
         that: that_dirs,
     }
+}
+
+/// The max-dissipation slip direction of sliding contact `c` at impulses `f`:
+/// `t_hat = -v_t / ||v_t||`, with `v_t = [(A + R) f + b]_t` the contact's full
+/// tangential residual velocity. Returns `(t_hat, ||v_t||)`, `None` where
+/// `v_t` vanishes (a borderline-sticking classification).
+///
+/// This is the fixed-point condition of the exact per-contact disc step
+/// (`convex::disc_block_step`): on the disc boundary `(M + kI) f_t = -r_t`,
+/// i.e. `v_t = M f_t + r_t = -k f_t`, so the friction impulse opposes the
+/// slip velocity it leaves — Coulomb's maximum-dissipation law. (The radial
+/// clamp this replaced pinned `f_t` along the unconstrained minimizer
+/// `t* = -M^-1 r_t` instead, which differs whenever `M` is anisotropic.)
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn slip_direction(
+    problem: &ContactProblem,
+    config: &ContactSolverConfig,
+    f: &[Vec3],
+    c: usize,
+) -> Option<([f64; 2], f64)> {
+    let n = problem.n;
+    let dim = 3 * n;
+    let a = &problem.delassus;
+    let base = 3 * c;
+    let reg = crate::convex::regularization_diag(problem, c, config);
+    let mut v = [0.0f64; 2];
+    for (i, vi) in v.iter_mut().enumerate() {
+        let row = base + 1 + i;
+        let mut acc = problem.free_velocity[row];
+        for k in 0..n {
+            let kb = 3 * k;
+            acc += a[row * dim + kb] * f[k].x
+                + a[row * dim + kb + 1] * f[k].y
+                + a[row * dim + kb + 2] * f[k].z;
+        }
+        acc += reg[1 + i] * if i == 0 { f[c].y } else { f[c].z };
+        *vi = acc;
+    }
+    let v_norm = (v[0] * v[0] + v[1] * v[1]).sqrt();
+    if v_norm <= 1e-14 {
+        return None;
+    }
+    Some(([-v[0] / v_norm, -v[1] / v_norm], v_norm))
 }
 
 impl FixedPointSensitivity {
@@ -573,16 +569,6 @@ impl FixedPointSensitivity {
         }
         out
     }
-}
-
-fn flat_impulses(impulses: &[Vec3]) -> Vec<f64> {
-    let mut out = Vec::with_capacity(3 * impulses.len());
-    for f in impulses {
-        out.push(f.x);
-        out.push(f.y);
-        out.push(f.z);
-    }
-    out
 }
 
 /// The sensitivity of the solved impulses to the free contact-space velocity.
