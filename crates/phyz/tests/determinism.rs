@@ -246,6 +246,14 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// gates (a 74 rad/s wheel keeps its speed in free space and on the plane)
 /// in the same commit.
 ///
+/// All three moved on the commit that made an impact row rigid only when the
+/// material can bounce (`ContactProblem::impact_weight_for`, e <= 0 -> no
+/// impact row). Every scene here uses `ContactMaterial::default()`, whose
+/// restitution is 0, and every scene begins with a drop, so each first
+/// contact step went back from a rigid bias-free row to the soft resting row.
+/// The e = 0.5 restitution gate in `contact_physics_benchmarks` is unaffected
+/// by construction and passes unchanged in the same commit.
+///
 /// Moved on the commit that made the per-contact friction step exact
 /// (`convex::disc_block_step`: the trust-region minimizer of the contact's
 /// tangential block over the friction disc, replacing a radial scale of the
@@ -254,10 +262,16 @@ fn fingerprint(scene: &Scene) -> u64 {
 /// tangential block was isotropic, so sticking and point-mass contacts are
 /// unchanged. The analytic incline gates (26 deg sticks, 27.5 and 35 deg
 /// match `g (sin - mu cos)`) are the physics check for the commit.
+///
+/// 2026-09-11 (lane contact-integration): re-pinned on the merge of both
+/// changes — ecto/phyz#105 (impact row only when e > 0) and ecto/phyz#106
+/// (exact per-corner friction projection). Each moved these bits on its own
+/// branch; the values below are the combined tree's, measured, not either
+/// branch's.
 const GOLDEN: &[(&str, u64)] = &[
-    ("box_tipping", 0xaed9_aee0_10ab_a056),
-    ("wheel_rolling", 0x444f_17c7_aefe_828a),
-    ("chain_falling", 0x75e9_ec88_e8a1_425b),
+    ("box_tipping", 0x45f0_5e7b_c620_7af6),
+    ("wheel_rolling", 0x03f6_f5bd_5708_23e5),
+    ("chain_falling", 0xc056_0ce9_c277_400b),
 ];
 
 #[test]

@@ -556,6 +556,19 @@ impl ContactProblem {
     pub fn impact_weight(approach_speed: f64, v_rest: f64) -> f64 {
         Self::effective_restitution(1.0, approach_speed, v_rest)
     }
+
+    /// The impact weight a row of material restitution `restitution` gets:
+    /// [`Self::impact_weight`] when the material can bounce, `0` when it
+    /// cannot. A rigid impact row exists so the soft resting model does not
+    /// eat a bounce; with `e <= 0` there is no bounce to protect, the
+    /// restitution target is `0` either way, and making the row rigid only
+    /// removes the compliance that spreads a landing over more than one step.
+    pub fn impact_weight_for(restitution: f64, approach_speed: f64, v_rest: f64) -> f64 {
+        if restitution <= 0.0 {
+            return 0.0;
+        }
+        Self::impact_weight(approach_speed, v_rest)
+    }
 }
 
 /// Diagonal regularizer `R` for contact `c`, one entry per row of its frame.
@@ -2348,7 +2361,8 @@ pub fn point_mass_problem(
         approach,
         restitution_threshold,
     );
-    let impact = ContactProblem::impact_weight(approach, restitution_threshold);
+    let impact =
+        ContactProblem::impact_weight_for(material.restitution, approach, restitution_threshold);
     ContactProblem {
         n: 1,
         delassus,
