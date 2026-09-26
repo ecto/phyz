@@ -11,8 +11,14 @@ categories = ["science", "simulation"]
 readme = "README.md"
 
 [dependencies]
-phyz-math.workspace = true
 rand = "0.8"
+rayon = { version = "1.10", optional = true }
+
+[features]
+default = ["parallel"]
+## Update checkerboard link sets in parallel with rayon. Each link has its own
+## RNG stream, so results are identical with the feature on or off.
+parallel = ["dep:rayon"]
 
 [dev-dependencies]
 approx = "0.5"
