@@ -122,7 +122,13 @@ impl Shape {
 
 /// Mass properties for a geom at `pos` with rotation `rot` (geom→body),
 /// given either an explicit `mass` or a `density`.
-pub fn mass_props(shape: Shape, pos: Vec3, rot: Mat3, density: f64, mass: Option<f64>) -> MassProps {
+pub fn mass_props(
+    shape: Shape,
+    pos: Vec3,
+    rot: Mat3,
+    density: f64,
+    mass: Option<f64>,
+) -> MassProps {
     let m = mass.unwrap_or_else(|| density * shape.volume());
     let principal = shape.principal_inertia(m);
     // Rotate the principal-axis tensor into body coordinates: I_b = R I R^T.
@@ -165,9 +171,15 @@ pub fn combine(parts: &[MassProps]) -> Option<SpatialInertia> {
 
 fn outer(a: Vec3, b: Vec3) -> Mat3 {
     Mat3::new(
-        a.x * b.x, a.x * b.y, a.x * b.z,
-        a.y * b.x, a.y * b.y, a.y * b.z,
-        a.z * b.x, a.z * b.y, a.z * b.z,
+        a.x * b.x,
+        a.x * b.y,
+        a.x * b.z,
+        a.y * b.x,
+        a.y * b.y,
+        a.y * b.z,
+        a.z * b.x,
+        a.z * b.y,
+        a.z * b.z,
     )
 }
 

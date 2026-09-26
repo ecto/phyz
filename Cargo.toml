@@ -9,8 +9,12 @@ members = [
     "crates/phyz-urdf",
     "crates/phyz-collision",
     "crates/phyz-contact",
+    "crates/phyz-loop",
     "crates/phyz-gpu",
+    "crates/phyz-camera",
     "crates/phyz-particle",
+    "crates/phyz-xpbd",
+    "crates/phyz-vbd",
     "crates/phyz-em",
     "crates/phyz-md",
     "crates/phyz-qft",
@@ -35,54 +39,72 @@ members = [
     "crates/phyz-bench",
 ]
 
+# Release plan (docs/publishing.md). crates.io has phyz 0.3.0 and every
+# sub-crate at 0.1.0, from before they shared the workspace version. The whole
+# workspace now moves together to 0.4.0, so the sub-crates jump 0.1.0 -> 0.4.0
+# in one step and the umbrella goes 0.3.0 -> 0.4.0. Releases are cut by pushing
+# a v0.4.0 tag; .github/workflows/release.yml refuses a tag that does not match
+# the version below, so the bump lands here first.
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
+rust-version = "1.89"
 repository = "https://github.com/ecto/phyz"
 homepage = "https://phyz.dev"
 
 [workspace.dependencies]
 # tang, tang-la and tang-expr are published on crates.io, so they are plain
 # registry deps: every phyz crate that depends on them is publishable, and CI
-# needs no sibling `tang` checkout. To develop against a local tang, uncomment
-# the [patch.crates-io] block at the bottom of this file.
+# needs no sibling `tang` checkout. To develop against a local tang, see
+# .cargo/config.toml.example.
 tang = { version = "0.2.0" }
 tang-la = { version = "0.1.0" }
 tang-expr = { version = "0.1.0" }
-# tang-mesh is NOT published. It is an optional dep of phyz-quantum only
-# (`mesh` feature, off by default); phyz-quantum is therefore publish = false
-# and building it still requires the sibling checkout.
-tang-mesh = { version = "0.1.0", path = "../tang/crates/tang-mesh" }
+# NOT published on crates.io yet, so the source of truth is still the git rev.
+# Each also carries the version tang plans to publish, so that `cargo publish`
+# of a dependent (phyz-gpu, phyz-env, phyz-dream) resolves once tang releases:
+#   -> tang-mesh 0.1.0, tang-tensor 0.1.0, tang-train 0.1.0,
+#      tang-safetensors 0.1.0, tang-compute 0.1.0
+# Drop the `git`/`rev` keys and keep the version once those are on the index.
+tang-mesh = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-tensor = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-train = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-safetensors = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-compute = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-phyz-math = { version = "0.3.1", path = "crates/phyz-math" }
-phyz-model = { version = "0.3.1", path = "crates/phyz-model" }
-phyz-rigid = { version = "0.3.1", path = "crates/phyz-rigid" }
-phyz-diff = { version = "0.3.1", path = "crates/phyz-diff" }
-phyz-mjcf = { version = "0.3.1", path = "crates/phyz-mjcf" }
-phyz-urdf = { version = "0.3.1", path = "crates/phyz-urdf" }
-phyz-collision = { version = "0.3.1", path = "crates/phyz-collision" }
-phyz-contact = { version = "0.3.1", path = "crates/phyz-contact" }
-phyz-gpu = { version = "0.3.1", path = "crates/phyz-gpu" }
-phyz-particle = { version = "0.3.1", path = "crates/phyz-particle" }
-phyz-em = { version = "0.3.1", path = "crates/phyz-em" }
-phyz-md = { version = "0.3.1", path = "crates/phyz-md" }
-phyz-qft = { version = "0.3.1", path = "crates/phyz-qft" }
-phyz-gravity = { version = "0.3.1", path = "crates/phyz-gravity" }
-phyz-coupling = { version = "0.3.1", path = "crates/phyz-coupling" }
-phyz-guardian = { version = "0.3.1", path = "crates/phyz-guardian" }
-phyz-lbm = { version = "0.3.1", path = "crates/phyz-lbm" }
-phyz-compile = { version = "0.3.1", path = "crates/phyz-compile" }
-phyz-prob = { version = "0.3.1", path = "crates/phyz-prob" }
-phyz-world = { version = "0.3.1", path = "crates/phyz-world" }
-phyz-real2sim = { version = "0.3.1", path = "crates/phyz-real2sim" }
-phyz-format = { version = "0.3.1", path = "crates/phyz-format" }
-phyz-regge = { version = "0.3.1", path = "crates/phyz-regge", default-features = false }
-phyz-quantum = { version = "0.3.1", path = "crates/phyz-quantum", default-features = false }
-phyz = { version = "0.3.1", path = "crates/phyz" }
-phyz-env = { version = "0.3.1", path = "crates/phyz-env" }
-phyz-validate = { version = "0.3.1", path = "crates/phyz-validate" }
+phyz-math = { version = "0.4.0", path = "crates/phyz-math" }
+phyz-model = { version = "0.4.0", path = "crates/phyz-model" }
+phyz-rigid = { version = "0.4.0", path = "crates/phyz-rigid" }
+phyz-diff = { version = "0.4.0", path = "crates/phyz-diff" }
+phyz-mjcf = { version = "0.4.0", path = "crates/phyz-mjcf" }
+phyz-urdf = { version = "0.4.0", path = "crates/phyz-urdf" }
+phyz-collision = { version = "0.4.0", path = "crates/phyz-collision" }
+phyz-contact = { version = "0.4.0", path = "crates/phyz-contact" }
+phyz-loop = { version = "0.4.0", path = "crates/phyz-loop" }
+phyz-gpu = { version = "0.4.0", path = "crates/phyz-gpu" }
+phyz-camera = { version = "0.4.0", path = "crates/phyz-camera" }
+phyz-particle = { version = "0.4.0", path = "crates/phyz-particle" }
+phyz-xpbd = { version = "0.4.0", path = "crates/phyz-xpbd" }
+phyz-vbd = { version = "0.4.0", path = "crates/phyz-vbd" }
+phyz-em = { version = "0.4.0", path = "crates/phyz-em" }
+phyz-md = { version = "0.4.0", path = "crates/phyz-md" }
+phyz-qft = { version = "0.4.0", path = "crates/phyz-qft" }
+phyz-gravity = { version = "0.4.0", path = "crates/phyz-gravity" }
+phyz-coupling = { version = "0.4.0", path = "crates/phyz-coupling" }
+phyz-guardian = { version = "0.4.0", path = "crates/phyz-guardian" }
+phyz-lbm = { version = "0.4.0", path = "crates/phyz-lbm" }
+phyz-compile = { version = "0.4.0", path = "crates/phyz-compile" }
+phyz-prob = { version = "0.4.0", path = "crates/phyz-prob" }
+phyz-world = { version = "0.4.0", path = "crates/phyz-world" }
+phyz-real2sim = { version = "0.4.0", path = "crates/phyz-real2sim" }
+phyz-format = { version = "0.4.0", path = "crates/phyz-format" }
+phyz-regge = { version = "0.4.0", path = "crates/phyz-regge", default-features = false }
+phyz-quantum = { version = "0.4.0", path = "crates/phyz-quantum", default-features = false }
+phyz = { version = "0.4.0", path = "crates/phyz" }
+phyz-env = { version = "0.4.0", path = "crates/phyz-env" }
+phyz-validate = { version = "0.4.0", path = "crates/phyz-validate" }
 
 # Optimize WASM builds even in dev (debug assertions cost ~19% of main-thread time)
 [profile.dev.package.phyz-home]
@@ -95,8 +117,24 @@ debug-assertions = false
 
 # phyz-dream's tests train a small network to convergence. Unoptimized that
 # takes tens of minutes and dominates `cargo test --workspace`; at opt-level 2
-# it is seconds. Same reasoning as phyz-lbm below.
+# it is seconds. Same reasoning as phyz-lbm below. The tang numerics carry the
+# actual training work, so they need the same treatment.
 [profile.dev.package.phyz-dream]
+opt-level = 2
+
+[profile.dev.package.tang]
+opt-level = 2
+
+[profile.dev.package.tang-tensor]
+opt-level = 2
+
+[profile.dev.package.tang-train]
+opt-level = 2
+
+# phyz-vbd's validation tests settle a cantilever beam to static equilibrium
+# and sweep the timestep for the stability bound; unoptimized that is minutes
+# of Gauss-Seidel sweeps instead of seconds. Same reasoning as phyz-lbm below.
+[profile.dev.package.phyz-vbd]
 opt-level = 2
 
 # The LBM validation benchmarks run flows to steady state on real grids;
@@ -110,13 +148,16 @@ opt-level = 3
 
 # The published tang 0.2.0 predates API the phyz crates rely on (notably
 # `impl Scalar for Dual<S>`, used by phyz-diff's dual-number ABA). Until tang
-# cuts a release carrying it, the workspace builds against a sibling checkout
+# cuts a release carrying it, the workspace builds against a pinned git rev
 # via this patch; `cargo publish` ignores [patch] and uses the registry
-# versions declared in [workspace.dependencies] above.
+# versions declared in [workspace.dependencies] above. Sourcing the patch
+# from git (not a sibling path) is what lets a fresh checkout — CI included —
+# resolve at all. To point it at a local tang instead, see
+# .cargo/config.toml.example.
 #
 # TODO: drop this patch once tang publishes the required version, then bump
 # the tang requirement in [workspace.dependencies] to match.
 [patch.crates-io]
-tang = { path = "../tang/crates/tang" }
-tang-la = { path = "../tang/crates/tang-la" }
-tang-expr = { path = "../tang/crates/tang-expr" }
+tang = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-la = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-expr = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }

@@ -180,11 +180,7 @@ impl Benchmark {
 }
 
 /// Build a benchmark environment, loading its MJCF from `models_dir`.
-pub fn make(
-    benchmark: Benchmark,
-    models_dir: &str,
-    num_envs: usize,
-) -> Result<BatchEnv, EnvError> {
+pub fn make(benchmark: Benchmark, models_dir: &str, num_envs: usize) -> Result<BatchEnv, EnvError> {
     let path = format!("{models_dir}/{}", benchmark.model_file());
     let loader = phyz_mjcf::MjcfLoader::from_file(&path)?;
 

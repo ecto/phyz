@@ -192,7 +192,7 @@ mod tests {
             axis: [0.0, 0.0, 1.0],
             position: [0.0, 0.0, 0.0],
             orientation: [1.0, 0.0, 0.0, 0.0],
-            limits: Some([-3.14, 3.14]),
+            limits: Some([-std::f64::consts::PI, std::f64::consts::PI]),
             damping: 0.1,
         };
 

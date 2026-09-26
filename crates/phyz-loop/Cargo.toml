@@ -1,0 +1,18 @@
+[package]
+name = "phyz-loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Kinematic-loop closure constraints and Proximal-ADMM constrained forward dynamics for phyz"
+keywords = ["kinematics", "constraints", "admm", "robotics", "simulation"]
+categories = ["simulation", "science::robotics", "science"]
+readme = "README.md"
+
+[dependencies]
+phyz-math.workspace = true
+phyz-model.workspace = true
+phyz-rigid.workspace = true
+tang-la.workspace = true

@@ -84,8 +84,8 @@ fn test_barnes_hut_vs_direct() {
     solver_direct.compute_forces(&mut particles_direct);
 
     // Check that forces were computed
-    for i in 0..3 {
-        assert!(particles_direct[i].f.norm() > 0.0);
+    for p in particles_direct.iter().take(3) {
+        assert!(p.f.norm() > 0.0);
     }
 }
 

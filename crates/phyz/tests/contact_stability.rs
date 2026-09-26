@@ -4,12 +4,17 @@
 //! a fixed host body and a free accessory body, body-pair contact detection,
 //! and penalty-based contact forces under gravity.
 
+// These tests still exercise the deprecated penalty path directly. They are
+// retained until it is deleted, so the old behaviour stays pinned while the
+// convex solve takes over the production stepper.
+#![allow(deprecated)]
+
 use approx::assert_relative_eq;
 use phyz::{
     ContactMaterial, Geometry, Mat3, ModelBuilder, SpatialInertia, SpatialTransform, SpatialVec,
     Vec3,
     collision::sweep_and_prune,
-    contact::{contact_forces, find_contacts, find_ground_contacts},
+    contact::{contact_forces, find_contacts, find_ground_contacts_model},
 };
 
 /// Goal 1 — body-pair contact force pushes the free body AWAY from the fixed body.
@@ -17,11 +22,6 @@ use phyz::{
 /// Mirrors `ball_drop_with_contacts` in `integration.rs` but uses two real bodies
 /// (one fixed host below, one free accessory above) instead of a ground plane.
 #[test]
-// BUG: find_contacts returns 0 contacts for an overlapping box/sphere body
-// pair that should report exactly 1. This file did not compile before the
-// documentation pass, so the assertion had never actually run. Needs a
-// narrow-phase fix; remove the ignore once it lands.
-#[ignore = "known bug: box/sphere body-pair contact is not detected"]
 fn body_drop_on_fixed_body_with_contacts() {
     let mut model = ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -9.81))
@@ -55,20 +55,17 @@ fn body_drop_on_fixed_body_with_contacts() {
     let mut state = model.default_state();
 
     // Place the accessory just slightly overlapping the host on the +z side.
-    // Free joint q layout = [x, y, z, wx, wy, wz]; we only set z so the
+    // Free joint q layout = [wx, wy, wz, x, y, z]; we only set z so the
     // sphere centre sits at z = 0.05, penetrating the box's top face (z = 0.1).
     let q_offset = model.q_offsets[model.bodies[1].joint_idx];
-    state.q[q_offset + 2] = 0.05;
+    state.q[q_offset + 5] = 0.05;
 
     // Manually populate body transforms instead of going through FK so we have
     // an unambiguous contact geometry independent of joint conventions.
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::new(Mat3::identity(), Vec3::new(0.0, 0.0, 0.05));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     assert_eq!(
         contacts.len(),
         1,
@@ -79,11 +76,15 @@ fn body_drop_on_fixed_body_with_contacts() {
     assert_eq!(contact.body_i, 0);
     assert_eq!(contact.body_j, 1);
 
-    // body_j is above body_i, so the normal (pos_j - pos_i).normalize() points +z.
-    assert_relative_eq!(contact.contact_normal.z, 1.0, epsilon = 1e-10);
+    // `contact_normal` is the direction `body_i` must move to separate from
+    // `body_j`. body_j sits above body_i, so body_i separates downward: −z.
+    // (This read `+1.0` while `find_contacts` passed the manifold normal
+    // through unnegated — the sign that made the solver pull overlapping
+    // bodies together.)
+    assert_relative_eq!(contact.contact_normal.z, -1.0, epsilon = 1e-10);
 
     // No ground contacts in this scenario.
-    let ground = find_ground_contacts(&state, &geometries, -10.0);
+    let ground = find_ground_contacts_model(&model, &state, -10.0, 0.0);
     assert!(ground.is_empty());
 
     let materials = vec![ContactMaterial::default()];
@@ -147,11 +148,8 @@ fn nan_body_xform_does_not_panic_broad_phase() {
     state.body_xform[1] =
         SpatialTransform::new(Mat3::identity(), Vec3::new(f64::NAN, f64::NAN, f64::NAN));
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
     // Must not panic.
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -191,10 +189,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
     state.body_xform[0] = SpatialTransform::identity();
     state.body_xform[1] = SpatialTransform::identity();
 
-    let geometries: Vec<Option<Geometry>> =
-        model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-    let contacts = find_contacts(&model, &state, &geometries);
+    let contacts = find_contacts(&model, &state, 0.0);
     for c in &contacts {
         assert!(
             c.contact_normal.x.is_finite()
@@ -223,9 +218,7 @@ fn coincident_bodies_produce_finite_contact_normal() {
 /// the cube's z-axis instead of going through the full ABA pipeline: this
 /// isolates the contact-force change and keeps the test independent of the
 /// free-joint integration conventions and of `find_contacts`'s broad/narrow
-/// phase (GJK returns -1 instead of the true penetration depth for
-/// overlapping boxes today — orthogonal to Goal 3). The geometry / depth
-/// computation is done analytically below.
+/// phase. The geometry / depth computation is done analytically below.
 #[test]
 fn low_mass_cube_settles_on_plate() {
     use phyz::collision::Collision;
@@ -415,7 +408,9 @@ fn contact_force_torque_at_contact_point() {
         body_i: 0,
         body_j: 1,
         contact_point: contact_point_world,
-        contact_normal: Vec3::z(),
+        // `contact_normal` is the direction `body_i` separates along. Body 0
+        // is the support, *below* the rod, so it separates downward.
+        contact_normal: -Vec3::z(),
         penetration_depth: 1e-3,
     };
     let materials = vec![ContactMaterial::default()];
@@ -463,11 +458,6 @@ fn contact_force_torque_at_contact_point() {
 /// We carry our own 2D rotational integrator (no ABA) so the assertion is
 /// about the wrench, not the full multibody machinery.
 #[test]
-// BUG: the far end of an offset-supported rod rises instead of dropping
-// (-18.3mm observed against an expected >+10mm), so the contact wrench
-// torque arm has the wrong sign or origin. Never ran before the
-// documentation pass. Remove the ignore once fixed.
-#[ignore = "known bug: offset contact torque drives the rod the wrong way"]
 fn rod_tips_off_support_when_contact_is_offset() {
     use phyz::collision::Collision;
 
@@ -493,6 +483,9 @@ fn rod_tips_off_support_when_contact_is_offset() {
     let mut vz = 0.0_f64;
     let mut omega = 0.0_f64;
     let initial_tip_z = z; // far end (+x) at θ=0 sits at the COM's z.
+    let mut max_tip_drop = 0.0_f64;
+    let mut final_theta = 0.0_f64;
+    let mut final_z = z;
 
     for _ in 0..((0.5_f64 / dt) as usize) {
         let cos_t = theta.cos();
@@ -563,20 +556,27 @@ fn rod_tips_off_support_when_contact_is_offset() {
         theta += omega * dt;
 
         assert!(theta.is_finite() && z.is_finite() && omega.is_finite());
+
+        // Track the tip while the rod is still tipping rather than freely
+        // spinning. `tip_z = z_com - (L/2)·sin θ` only describes a descending
+        // tip for |θ| <= π/2; past that the rod has long since left the
+        // support and sin θ folds back on itself. Sampling once at the end of
+        // a fixed 0.5 s window measured that fold, not the tipping.
+        if theta.abs() <= std::f64::consts::FRAC_PI_2 {
+            let tip_z = z - half_l * theta.sin();
+            max_tip_drop = max_tip_drop.max(initial_tip_z - tip_z);
+            final_theta = theta;
+            final_z = z;
+        }
     }
 
-    // Far end of the rod (+x side) world-z position. With our convention
-    // (positive θ ⇒ +x end down), the tip is at z_com − half_l · sin θ.
-    let tip_z_world = z - half_l * theta.sin();
-    let tip_drop = initial_tip_z - tip_z_world; // positive = went down
-
-    assert!(omega.abs() > 0.0, "rod should be rotating; got ω = {omega}",);
+    assert!(omega > 0.0, "rod should tip +x-end-down; got ω = {omega}");
     assert!(
-        tip_drop > 0.01,
+        max_tip_drop > 0.01,
         "far end of rod should drop > 1cm; got {:.4}mm (θ={:.3} rad, z={:.4} m)",
-        tip_drop * 1000.0,
-        theta,
-        z,
+        max_tip_drop * 1000.0,
+        final_theta,
+        final_z,
     );
 }
 

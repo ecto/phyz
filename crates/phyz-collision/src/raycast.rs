@@ -284,12 +284,12 @@ fn capsule_hit(o: &Vec3, d: &Vec3, r: f64, half_h: f64) -> Option<(f64, Vec3)> {
 
 fn plane_hit(o: &Vec3, d: &Vec3, normal: &Vec3) -> Option<(f64, Vec3)> {
     let n = normal.normalize();
-    let denom = d.dot(&n);
+    let denom = d.dot(n);
     if denom.abs() < 1e-12 {
         return None; // parallel
     }
     // Plane passes through the shape origin (already subtracted from `o`).
-    let t = -o.dot(&n) / denom;
+    let t = -o.dot(n) / denom;
     if t < T_EPS {
         return None;
     }
@@ -322,22 +322,22 @@ fn triangle_hit(o: &Vec3, d: &Vec3, v0: &Vec3, v1: &Vec3, v2: &Vec3) -> Option<f
     let e1 = *v1 - *v0;
     let e2 = *v2 - *v0;
     let p = d.cross(e2);
-    let det = e1.dot(&p);
+    let det = e1.dot(p);
     if det.abs() < EPS {
         return None;
     }
     let inv_det = 1.0 / det;
     let tvec = *o - *v0;
-    let u = tvec.dot(&p) * inv_det;
+    let u = tvec.dot(p) * inv_det;
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
     let q = tvec.cross(e1);
-    let v = d.dot(&q) * inv_det;
+    let v = d.dot(q) * inv_det;
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
-    let t = e2.dot(&q) * inv_det;
+    let t = e2.dot(q) * inv_det;
     if t < T_EPS { None } else { Some(t) }
 }
 

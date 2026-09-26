@@ -2,6 +2,7 @@
 name = "phyz-contact"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -13,4 +14,5 @@ readme = "README.md"
 [dependencies]
 phyz-math.workspace = true
 phyz-model.workspace = true
+phyz-rigid.workspace = true
 phyz-collision.workspace = true

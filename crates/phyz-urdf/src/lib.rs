@@ -35,6 +35,36 @@
 //!   silently replaced by a made-up primitive.
 //! - **`<mimic>` joints**: imported as independent DOFs, with a warning.
 //! - **Transmissions, gazebo tags, sensors**: ignored.
+//! - **Contact materials**: nothing is read, because URDF has nothing to
+//!   read. Every imported body comes back with `Body::material == None` and
+//!   therefore takes the scene material.
+//!
+//!   This is a gap in the format, not in the importer. URDF's `<material>`
+//!   element is *appearance only* — a colour and a texture on `<visual>` —
+//!   and the spec has no standard element anywhere for friction,
+//!   restitution, or contact stiffness. What exists in practice is
+//!   simulator-specific extension markup outside the URDF schema: Gazebo
+//!   writes `<gazebo><mu1>/<mu2>` (SDF's `<surface><friction>`), and some
+//!   toolchains attach Drake or MuJoCo blocks. Reading one of those would
+//!   mean picking a single downstream simulator's convention and calling it
+//!   "URDF", and it would not round-trip either — Gazebo's `mu1`/`mu2` are an
+//!   anisotropic pair with per-direction axes that phyz's isotropic friction
+//!   cone has no slot for.
+//!
+//!   So the supported path for a URDF robot is to set materials in code after
+//!   import, by name:
+//!
+//!   ```no_run
+//!   # use phyz_model::ContactMaterial;
+//!   # let mut robot = phyz_urdf::load_file("k1.urdf", &Default::default()).unwrap();
+//!   let sole = ContactMaterial { friction: 1.5, ..Default::default() };
+//!   robot.model.set_body_material("left_foot", sole.clone());
+//!   robot.model.set_body_material("right_foot", sole);
+//!   ```
+//!
+//!   MJCF *does* express this, and `phyz-mjcf` reads it off `<geom>`. If a
+//!   robot needs contact materials to come from its description file, MJCF is
+//!   the format that carries them.
 
 #![warn(missing_docs)]
 

@@ -1,0 +1,48 @@
+scratch written /private/tmp/claude-501/phyzfric/crates/phyz-diff/tests/zz_scratch_masslane.rs
+=== C_cold PHYZ_NO_STALL_EXIT=0
+test incline_slip_matches_fd ... SCRATCH alpha=0.35 mu=0.2 h=1e-4: adjoint 1.3720118959e-6 fd 1.3720118943e-6 rel 1.200e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-5: adjoint 1.3720118959e-6 fd 1.3720119015e-6 rel 4.035e-9
+SCRATCH alpha=0.35 mu=0.2 h=1e-5: adjoint 1.3720118959e-6 fd 1.3720119049e-6 rel 6.505e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-6: adjoint 1.3720118959e-6 fd 1.3720119401e-6 rel 3.219e-8
+SCRATCH alpha=0.35 mu=0.2 h=1e-6: adjoint 1.3720118959e-6 fd 1.3720118859e-6 rel 7.324e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-7: adjoint 1.3720118959e-6 fd 1.3720121773e-6 rel 2.050e-7
+SCRATCH alpha=0.35 mu=0.2 h=1e-7: adjoint 1.3720118959e-6 fd 1.3720097378e-6 rel 1.573e-6
+test incline_stiction_matches_fd ... SCRATCH alpha=0.15 mu=0.5 h=1e-4: adjoint 1.0881007036e-6 fd 1.0881007037e-6 rel 7.785e-11
+SCRATCH alpha=0.15 mu=0.5 h=3e-5: adjoint 1.0881007036e-6 fd 1.0881007055e-6 rel 1.764e-9
+SCRATCH alpha=0.15 mu=0.5 h=1e-5: adjoint 1.0881007036e-6 fd 1.0881007023e-6 rel 1.158e-9
+SCRATCH alpha=0.15 mu=0.5 h=3e-6: adjoint 1.0881007036e-6 fd 1.0881006951e-6 rel 7.804e-9
+SCRATCH alpha=0.15 mu=0.5 h=1e-6: adjoint 1.0881007036e-6 fd 1.0881008670e-6 rel 1.502e-7
+SCRATCH alpha=0.15 mu=0.5 h=3e-7: adjoint 1.0881007036e-6 fd 1.0881007708e-6 rel 6.177e-8
+SCRATCH alpha=0.15 mu=0.5 h=1e-7: adjoint 1.0881007036e-6 fd 1.0880995818e-6 rel 1.031e-6
+test resting_normal_channel_matches_fd ... SCRATCH alpha=0 mu=0.5 h=1e-4: adjoint -7.3022613780e-6 fd -7.3022613650e-6 rel 1.777e-9
+SCRATCH alpha=0 mu=0.5 h=3e-5: adjoint -7.3022613780e-6 fd -7.3022613419e-6 rel 4.944e-9
+SCRATCH alpha=0 mu=0.5 h=1e-5: adjoint -7.3022613780e-6 fd -7.3022622671e-6 rel 1.218e-7
+SCRATCH alpha=0 mu=0.5 h=3e-6: adjoint -7.3022613780e-6 fd -7.3022618045e-6 rel 5.840e-8
+SCRATCH alpha=0 mu=0.5 h=1e-6: adjoint -7.3022613780e-6 fd -7.3022629610e-6 rel 2.168e-7
+SCRATCH alpha=0 mu=0.5 h=3e-7: adjoint -7.3022613780e-6 fd -7.3022606480e-6 rel 9.997e-8
+SCRATCH alpha=0 mu=0.5 h=1e-7: adjoint -7.3022613780e-6 fd -7.3023531666e-6 rel 1.257e-5
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+=== C_cold PHYZ_NO_STALL_EXIT=1
+test incline_slip_matches_fd ... SCRATCH alpha=0.35 mu=0.2 h=1e-4: adjoint 1.3720118959e-6 fd 1.3720118943e-6 rel 1.200e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-5: adjoint 1.3720118959e-6 fd 1.3720119015e-6 rel 4.035e-9
+SCRATCH alpha=0.35 mu=0.2 h=1e-5: adjoint 1.3720118959e-6 fd 1.3720119049e-6 rel 6.505e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-6: adjoint 1.3720118959e-6 fd 1.3720119401e-6 rel 3.219e-8
+SCRATCH alpha=0.35 mu=0.2 h=1e-6: adjoint 1.3720118959e-6 fd 1.3720118859e-6 rel 7.324e-9
+SCRATCH alpha=0.35 mu=0.2 h=3e-7: adjoint 1.3720118959e-6 fd 1.3720121773e-6 rel 2.050e-7
+SCRATCH alpha=0.35 mu=0.2 h=1e-7: adjoint 1.3720118959e-6 fd 1.3720097378e-6 rel 1.573e-6
+test incline_stiction_matches_fd ... SCRATCH alpha=0.15 mu=0.5 h=1e-4: adjoint 1.0881007036e-6 fd 1.0881007037e-6 rel 7.785e-11
+SCRATCH alpha=0.15 mu=0.5 h=3e-5: adjoint 1.0881007036e-6 fd 1.0881007055e-6 rel 1.764e-9
+SCRATCH alpha=0.15 mu=0.5 h=1e-5: adjoint 1.0881007036e-6 fd 1.0881007023e-6 rel 1.158e-9
+SCRATCH alpha=0.15 mu=0.5 h=3e-6: adjoint 1.0881007036e-6 fd 1.0881006951e-6 rel 7.804e-9
+SCRATCH alpha=0.15 mu=0.5 h=1e-6: adjoint 1.0881007036e-6 fd 1.0881008670e-6 rel 1.502e-7
+SCRATCH alpha=0.15 mu=0.5 h=3e-7: adjoint 1.0881007036e-6 fd 1.0881007708e-6 rel 6.177e-8
+SCRATCH alpha=0.15 mu=0.5 h=1e-7: adjoint 1.0881007036e-6 fd 1.0880995818e-6 rel 1.031e-6
+test resting_normal_channel_matches_fd ... SCRATCH alpha=0 mu=0.5 h=1e-4: adjoint -7.3022613780e-6 fd -7.3022613650e-6 rel 1.777e-9
+SCRATCH alpha=0 mu=0.5 h=3e-5: adjoint -7.3022613780e-6 fd -7.3022613419e-6 rel 4.944e-9
+SCRATCH alpha=0 mu=0.5 h=1e-5: adjoint -7.3022613780e-6 fd -7.3022622671e-6 rel 1.218e-7
+SCRATCH alpha=0 mu=0.5 h=3e-6: adjoint -7.3022613780e-6 fd -7.3022618045e-6 rel 5.840e-8
+SCRATCH alpha=0 mu=0.5 h=1e-6: adjoint -7.3022613780e-6 fd -7.3022629610e-6 rel 2.168e-7
+SCRATCH alpha=0 mu=0.5 h=3e-7: adjoint -7.3022613780e-6 fd -7.3022606480e-6 rel 9.997e-8
+SCRATCH alpha=0 mu=0.5 h=1e-7: adjoint -7.3022613780e-6 fd -7.3023531666e-6 rel 1.257e-5
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+=== DONE C_cold

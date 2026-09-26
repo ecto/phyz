@@ -57,10 +57,6 @@ impl RealtimeClient {
         })
     }
 
-    pub fn status(&self) -> Status {
-        self.status.get()
-    }
-
     /// Connect to Supabase Realtime and subscribe to `contributors` + `results` changes.
     pub fn connect(self: &Rc<Self>, on_contributors: Rc<dyn Fn()>, on_results: Rc<dyn Fn()>) {
         *self.on_contributors_change.borrow_mut() = Some(on_contributors);

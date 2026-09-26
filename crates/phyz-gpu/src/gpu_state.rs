@@ -36,6 +36,10 @@ pub struct GpuState {
     // External forces buffer (nbodies × 6 per env, spatial force per body)
     /// Per-body external wrenches written by the contact pass.
     pub ext_forces_buffer: wgpu::Buffer,
+    /// Per-body contact state written by the contact pass,
+    /// `nworld * nbodies * CONTACT_STATE_STRIDE` f32
+    /// (see [`crate::layout::CONTACT_STATE_STRIDE`] for the layout).
+    pub contact_state_buffer: wgpu::Buffer,
     /// Body count per world.
     pub nbodies: usize,
 
@@ -44,6 +48,8 @@ pub struct GpuState {
     pub q_staging: wgpu::Buffer,
     /// Host-visible staging buffer for reading `v` back.
     pub v_staging: wgpu::Buffer,
+    /// Host-visible staging buffer for reading contact state back.
+    pub contact_staging: wgpu::Buffer,
 }
 
 /// GPU-friendly packed state data for a single environment.
@@ -109,6 +115,19 @@ impl GpuState {
             mapped_at_creation: false,
         });
 
+        // Contact state: CONTACT_STATE_STRIDE floats per body per environment.
+        let contact_state_size =
+            (nworld * nbodies * crate::layout::CONTACT_STATE_STRIDE * std::mem::size_of::<f32>())
+                .max(4) as u64;
+        let contact_state_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contact_state_buffer"),
+            size: contact_state_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
         // Staging buffers for readback
         let q_staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("q_staging"),
@@ -124,6 +143,13 @@ impl GpuState {
             mapped_at_creation: false,
         });
 
+        let contact_staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("contact_staging"),
+            size: contact_state_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             device,
             queue,
@@ -135,9 +161,11 @@ impl GpuState {
             ctrl_buffer,
             qdd_buffer,
             ext_forces_buffer,
+            contact_state_buffer,
             nbodies,
             q_staging,
             v_staging,
+            contact_staging,
         }
     }
 
@@ -145,20 +173,7 @@ impl GpuState {
     pub fn upload_states(&self, states: &[State]) {
         assert_eq!(states.len(), self.nworld);
 
-        // Pack states into flat f32 arrays
-        let mut q_data = vec![0.0f32; self.nworld * self.nq];
-        let mut v_data = vec![0.0f32; self.nworld * self.nv];
-        let mut ctrl_data = vec![0.0f32; self.nworld * self.nv];
-
-        for (i, state) in states.iter().enumerate() {
-            for j in 0..self.nq {
-                q_data[i * self.nq + j] = state.q[j] as f32;
-            }
-            for j in 0..self.nv {
-                v_data[i * self.nv + j] = state.v[j] as f32;
-                ctrl_data[i * self.nv + j] = state.ctrl[j] as f32;
-            }
-        }
+        let (q_data, v_data, ctrl_data) = crate::layout::pack_states(states, self.nq, self.nv);
 
         // Upload to GPU
         self.queue
@@ -211,7 +226,7 @@ impl GpuState {
             v_tx.send(result).ok();
         });
 
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
 
         q_rx.receive()
             .await
@@ -234,5 +249,52 @@ impl GpuState {
         self.v_staging.unmap();
 
         Ok((q_vec, v_vec))
+    }
+
+    /// Download the per-body contact state written by the contact pass.
+    ///
+    /// Returns `nworld * nbodies * CONTACT_STATE_STRIDE` f32 in body-major
+    /// order within each world (see
+    /// [`crate::layout::CONTACT_STATE_STRIDE`] for the layout).
+    pub async fn download_contact_states(&self) -> Result<Vec<f32>, String> {
+        let size = (self.nworld
+            * self.nbodies
+            * crate::layout::CONTACT_STATE_STRIDE
+            * std::mem::size_of::<f32>())
+        .max(4) as u64;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("contact_download_encoder"),
+            });
+        encoder.copy_buffer_to_buffer(
+            &self.contact_state_buffer,
+            0,
+            &self.contact_staging,
+            0,
+            size,
+        );
+        self.queue.submit(Some(encoder.finish()));
+
+        let slice = self.contact_staging.slice(..);
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).ok();
+        });
+
+        self.device.poll(wgpu::PollType::Wait).expect("device poll");
+
+        rx.receive()
+            .await
+            .ok_or("Failed to map contact buffer")?
+            .map_err(|e| format!("GPU buffer mapping failed: {:?}", e))?;
+
+        let data = slice.get_mapped_range();
+        let vec: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        drop(data);
+        self.contact_staging.unmap();
+
+        Ok(vec)
     }
 }

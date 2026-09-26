@@ -116,15 +116,18 @@ opt-in.
 | [`phyz`](crates/phyz) | Umbrella over the rigid-body stack: re-exports math, model, rigid, collision, contact, diff, plus the `sim` time loop |
 | [`phyz-math`](crates/phyz-math) | Spatial algebra: vectors, matrices, quaternions, spatial transforms and inertias |
 | [`phyz-model`](crates/phyz-model) | Articulated body models, joints, actuators, state |
-| [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, energy |
+| [`phyz-rigid`](crates/phyz-rigid) | Featherstone ABA, RNEA, CRBA, forward kinematics, inverse kinematics, energy |
 | [`phyz-diff`](crates/phyz-diff) | Per-step Jacobians (finite-difference, chain-rule, symbolic) and the exact trajectory adjoint |
 | [`phyz-collision`](crates/phyz-collision) | GJK/EPA narrow phase, ray casting, sweep-and-prune broad phase |
 | [`phyz-contact`](crates/phyz-contact) | Contact resolution, friction, implicit penalty forces |
+| [`phyz-loop`](crates/phyz-loop) | Kinematic loops: closure constraints and Proximal-ADMM constrained forward dynamics |
 | [`phyz-mjcf`](crates/phyz-mjcf) | MuJoCo MJCF model loading |
 | [`phyz-urdf`](crates/phyz-urdf) | URDF (ROS) robot description import |
 | [`phyz-gpu`](crates/phyz-gpu) | wgpu compute: batched simulation of many independent worlds |
 | [`phyz-compile`](crates/phyz-compile) | Physics IR → WGSL compute shaders, with kernel fusion |
 | [`phyz-particle`](crates/phyz-particle) | MPM solver, SPH fluids, granular media |
+| [`phyz-xpbd`](crates/phyz-xpbd) | XPBD position-based dynamics: cloth, tetrahedral soft bodies, cables |
+| [`phyz-vbd`](crates/phyz-vbd) | Vertex Block Descent: implicit deformable-body FEM, stable at large timesteps |
 | [`phyz-md`](crates/phyz-md) | Molecular dynamics, Lennard-Jones, field engine |
 | [`phyz-em`](crates/phyz-em) | Maxwell's equations on a Yee lattice |
 | [`phyz-lbm`](crates/phyz-lbm) | Lattice Boltzmann fluids: BGK/TRT/MRT, declarative boundaries, LES |
@@ -167,7 +170,8 @@ phyz/
 │   ├── phyz/             # Umbrella — re-exports everything
 │   ├── phyz-math/        # Spatial algebra, vectors, matrices
 │   ├── phyz-model/       # Articulated body models, joints, inertia
-│   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics
+│   ├── phyz-rigid/       # Featherstone ABA, forward/inverse dynamics, IK
+│   ├── phyz-loop/        # Kinematic loops, Proximal-ADMM constrained dynamics
 │   ├── phyz-diff/        # Analytical Jacobians, differentiable stepping
 │   ├── phyz-mjcf/        # MuJoCo MJCF model loading
 │   ├── phyz-urdf/        # URDF (ROS) robot description import
@@ -176,6 +180,8 @@ phyz/
 │   ├── phyz-gpu/         # WGPU compute, batched simulation
 │   ├── phyz-compile/     # Physics kernel compiler, op fusion
 │   ├── phyz-particle/    # SPH fluids, granular media
+│   ├── phyz-xpbd/        # XPBD: cloth, soft bodies, cables
+│   ├── phyz-vbd/         # Vertex Block Descent: implicit deformable FEM
 │   ├── phyz-em/          # Maxwell's equations on Yee lattice
 │   ├── phyz-md/          # Molecular dynamics: Lennard-Jones, PME electrostatics, cell lists
 │   ├── phyz-qft/         # Lattice QFT, Wilson action
@@ -208,31 +214,67 @@ That writes `target/validation/validation.md` and `validation.json`. See
 [VALIDATION.md](VALIDATION.md) for the current results, including the benchmarks
 that fail.
 
-## Development
+## Reproducibility
+
+A rollout is a **pure function of `(model, initial state, dt)`** and produces
+identical bits on x86-64 and aarch64, in debug and release, on one thread or
+eight. That is gated in CI by golden fingerprints of three contact-rich
+rollouts (`crates/phyz/tests/determinism.rs`) run across the whole matrix.
+
+Reproducibility is not stability. Perturb one input by a single representable
+step and a stack of eight boxes turns `7e-18` into `8.5e-5` in five seconds —
+so before concluding that an unexplained discrepancy is a bug, calibrate:
 
 ```bash
+cargo run --release -p phyz-bench -- --suite divergence
+```
+
+[docs/determinism.md](docs/determinism.md) is the document to cite when
+publishing numbers: what is guaranteed, what is not, and how to tell chaos from
+a bug. The same measurement is available as a library call —
+`phyz::determinism::{divergence, hash_rollout, state_distance}`.
+
+## Development
+
+Minimum supported Rust version: **1.89**. Edition 2024 sets the floor at 1.85,
+but the dependency tree raises it to 1.89 (iroh, via `tang-mesh`). It's declared
+as `rust-version` in `[workspace.package]` and checked by CI.
+
+```bash
+cargo fmt --all --check
 cargo test --workspace
 cargo build --workspace --examples
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo doc --workspace --no-deps
 ```
 
-`tang`, `tang-la` and `tang-expr` come from crates.io. The one exception is
-`tang-mesh`, which is unpublished and backs `phyz-quantum`'s default `mesh`
-feature, so a full workspace build still wants a sibling checkout:
-
-```bash
-git clone https://github.com/ecto/tang ../tang
-```
-
-To develop against a local `tang`, uncomment the `[patch.crates-io]` block at
-the bottom of the workspace `Cargo.toml`.
+A plain `git clone` is enough — no sibling directories required. `tang`,
+`tang-la` and `tang-expr` are declared as crates.io deps (so the phyz crates
+stay publishable) but resolve through a `[patch.crates-io]` pinned to a git rev,
+because the published `tang` predates the API these crates need. The unpublished
+tang crates — `tang-mesh`, which backs `phyz-quantum`'s default `mesh` feature,
+plus the ones `phyz-dream` uses — are git deps for the same reason.
 
 Build the WASM demos:
 
 ```bash
 wasm-pack build crates/phyz-wasm --target web --out-dir ../../site/pkg
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above plus an MSRV check on
+every push and pull request.
+
+### Working against a local `tang`
+
+To develop against your own tang tree instead of the pinned rev, copy the
+example cargo config and point it at your checkout:
+
+```bash
+cp .cargo/config.toml.example .cargo/config.toml
+```
+
+That file is gitignored, so it never affects CI. When tang changes land
+upstream, bump the `rev` in the root `Cargo.toml` instead.
 
 ## Status
 
@@ -251,9 +293,12 @@ Two numbers worth knowing before you adopt phyz:
 
 - The GPU path does not break even against a single CPU thread until roughly
   **batch 128**. Below that it is slower, substantially so at batch 1.
-- Gradient rollouts cost 18–54× a forward rollout, and that ratio grows with
-  parameter count. The derivatives are *exact*, which is the real benefit —
-  they are not asymptotically cheaper than finite differences today.
+- A gradient rollout costs **4–7× a forward rollout per degree of freedom** —
+  6.5× on a 1-DOF model, 78× on a 16-DOF one. The ratio is very nearly flat in
+  parameter count (160 parameters at one DOF cost 9.1×, against 6.5× for 10),
+  so the adjoint beats finite differences by a margin that widens as parameters
+  outnumber DOFs: 3.0× at 10 parameters, 18.4× at 80. It is still a long way
+  from reverse mode's textbook small constant.
 
 ## License
 

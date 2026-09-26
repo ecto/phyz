@@ -4,7 +4,7 @@ mod quantum;
 pub use quantum::*;
 
 use phyz_diff::semi_implicit_step_jacobians;
-use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
+use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
 
@@ -208,8 +208,7 @@ impl WasmSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let endpoint_body = body.inertia.com * 2.0;
-            let rotated = xf.rot.transpose() * endpoint_body;
-            let p = rotated + xf.pos;
+            let p = xf.body_to_world_point(endpoint_body);
             positions.push(p.x);
             positions.push(p.y);
             positions.push(p.z);
@@ -273,6 +272,9 @@ pub struct WasmParticleSim {
 impl WasmParticleSim {
     /// Custom particle sim with user-specified initial conditions.
     /// Arrays must all have the same length.
+    // This is the JS-facing constructor; the argument list is its public
+    // signature, so grouping them would change the exported API.
+    #[allow(clippy::too_many_arguments)]
     pub fn custom(
         px: Vec<f64>,
         py: Vec<f64>,
@@ -1310,6 +1312,12 @@ pub struct WasmHourglassSim {
     dt: f64,
 }
 
+impl Default for WasmHourglassSim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[wasm_bindgen]
 impl WasmHourglassSim {
     pub fn new() -> WasmHourglassSim {
@@ -1630,7 +1638,7 @@ impl WasmWorldSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let ep = body.inertia.com * 2.0;
-            let p = xf.rot.transpose() * ep + xf.pos;
+            let p = xf.body_to_world_point(ep);
             out.push(p.x);
             out.push(p.y);
             out.push(p.z);
@@ -2042,7 +2050,7 @@ impl WasmMdSim {
             let col = i % cols;
             let row = i / cols;
             px.push(sp * (col as f64 + 0.5 + 0.2 * ((i as f64 * 1.618).sin())));
-            py.push(sp * (row as f64 + 0.5 + 0.2 * ((i as f64 * 2.718).cos())));
+            py.push(sp * (row as f64 + 0.5 + 0.2 * ((i as f64 * std::f64::consts::E).cos())));
             // High initial velocities (hot gas)
             let s = (i as f64 + 0.5) * 2.3998;
             vx.push((s * 7.31).sin() * 6.0);
@@ -3751,14 +3759,14 @@ impl WasmProbSim {
         let py = vec![1.5; n];
         let mut vx = Vec::with_capacity(n);
         let mut vy = Vec::with_capacity(n);
-        for i in 0..n {
+        for (i, px_i) in px.iter_mut().enumerate() {
             // Wide spread of launch angles and speeds
             let t = (i as f64 / (n - 1) as f64) - 0.5; // -0.5 to 0.5
             let angle = 0.4 + t * 1.4; // ~-0.3 to ~1.1 rad
             let speed = 3.0 + t.abs() * 2.0;
             vx.push(speed * angle.cos());
             vy.push(speed * angle.sin());
-            px[i] = t * 0.1;
+            *px_i = t * 0.1;
         }
         WasmProbSim {
             n,
@@ -4151,10 +4159,9 @@ impl WasmRagdollSim {
                         && self.px[i] <= sx + sw
                         && self.py[i] < sy + r + 0.05
                         && self.py[i] > sy - 0.3
+                        && sy > surf
                     {
-                        if sy > surf {
-                            surf = sy;
-                        }
+                        surf = sy;
                     }
                 }
 
@@ -4451,10 +4458,10 @@ impl WasmRubeGoldbergSim {
                 let pend_bob_y = self.pend_anchor_y - self.pend_length * self.pend_angle.cos();
                 let dx = tip_x - pend_bob_x;
                 let dy = self.dom_y[last] - pend_bob_y;
-                if dx * dx + dy * dy < (self.pend_bob_r + self.dom_height) * 0.5 {
-                    if self.pend_angular_v < 0.5 {
-                        self.pend_angular_v += 0.03;
-                    }
+                if dx * dx + dy * dy < (self.pend_bob_r + self.dom_height) * 0.5
+                    && self.pend_angular_v < 0.5
+                {
+                    self.pend_angular_v += 0.03;
                 }
             }
 
@@ -4516,19 +4523,20 @@ impl WasmRubeGoldbergSim {
     ///  ramp_x0, ramp_y0, ramp_x1, ramp_y1,
     ///  bucket_x, bucket_y, bucket_w]
     pub fn state(&self) -> Vec<f64> {
-        let mut out = vec![];
-        // Balls
-        out.push(self.ball_x);
-        out.push(self.ball_y);
-        out.push(self.ball2_x);
-        out.push(self.ball2_y);
-        // Pendulum
-        out.push(self.pend_anchor_x);
-        out.push(self.pend_anchor_y);
         let pb_x = self.pend_anchor_x + self.pend_length * self.pend_angle.sin();
         let pb_y = self.pend_anchor_y - self.pend_length * self.pend_angle.cos();
-        out.push(pb_x);
-        out.push(pb_y);
+        let mut out = vec![
+            // Balls
+            self.ball_x,
+            self.ball_y,
+            self.ball2_x,
+            self.ball2_y,
+            // Pendulum
+            self.pend_anchor_x,
+            self.pend_anchor_y,
+            pb_x,
+            pb_y,
+        ];
         // Dominoes
         for i in 0..self.dom_x.len() {
             out.push(self.dom_x[i]);
@@ -4577,9 +4585,14 @@ pub struct WasmGripperSim {
     ox: Vec<f64>,
     oy: Vec<f64>,
     radius: Vec<f64>,
-    /// Distance constraints
+    /// Distance constraints. Built at construction but not yet solved by
+    /// `step` — the gripper is positionally driven. Kept so the rest lengths
+    /// are available when constraint solving is wired up.
+    #[allow(dead_code)]
     con_a: Vec<usize>,
+    #[allow(dead_code)]
     con_b: Vec<usize>,
+    #[allow(dead_code)]
     con_rest: Vec<f64>,
     /// Ball index
     ball_idx: usize,
@@ -5242,8 +5255,7 @@ impl WasmMjcfAntSim {
         for (i, xf) in xforms.iter().enumerate().take(nb) {
             let body = &self.model.bodies[i];
             let ep = body.inertia.com * 2.0;
-            let rotated = xf.rot.transpose() * ep;
-            let p = rotated + xf.pos;
+            let p = xf.body_to_world_point(ep);
             positions.push(p.x);
             positions.push(p.y);
             positions.push(p.z);
@@ -5354,10 +5366,10 @@ impl WasmMjcfEditorSim {
                 continue;
             }
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(l) = parts[1].parse::<f64>() {
-                    lengths.push(l.clamp(0.1, 3.0));
-                }
+            if parts.len() >= 2
+                && let Ok(l) = parts[1].parse::<f64>()
+            {
+                lengths.push(l.clamp(0.1, 3.0));
             }
         }
 

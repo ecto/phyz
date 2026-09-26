@@ -76,7 +76,7 @@ fn main() {
     let mut found_perihelion = false;
 
     // Simulation loop
-    for step in 0..total_steps {
+    for _step in 0..total_steps {
         // Velocity Verlet integration
         solver.compute_forces(&mut particles);
 

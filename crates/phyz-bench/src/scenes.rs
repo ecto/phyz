@@ -6,7 +6,11 @@
 //! makes the measurement representative of the library as it actually exists.
 
 use phyz_collision::Collision;
-use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+// The penalty path is deprecated but still what most callers run today, so the
+// benchmark deliberately measures it.
+#[allow(deprecated)]
+use phyz_contact::contact_forces;
+use phyz_contact::{ContactMaterial, find_contacts, find_ground_contacts};
 use phyz_math::{Mat3, SpatialInertia, SpatialTransform, SpatialVec, Vec3};
 use phyz_model::{Body, GeomInstance, Geometry, Model, ModelBuilder, State};
 use phyz_rigid::{aba_with_external_forces, forward_kinematics};
@@ -161,8 +165,7 @@ pub fn build_model(scene: Scene, dt: f64) -> Model {
                                 BOX_HALF_EXTENT,
                             ),
                         };
-                        let mut body =
-                            Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
+                        let mut body = Body::new("", box_inertia(BOX_MASS, BOX_HALF_EXTENT), -1, 0);
                         // `geometry` mirrors the first centred entry in
                         // `collisions`; set both so single-shape and
                         // multi-shape consumers agree.
@@ -209,8 +212,8 @@ pub fn initial_state(scene: Scene, model: &Model) -> State {
             state.q[1] = 0.5;
         }
         Scene::Ant => {
-            // Free joint q = [x, y, z, wx, wy, wz]; torso at its rest height.
-            state.q[2] = 0.75;
+            // Free joint q = [wx, wy, wz, x, y, z]; torso at its rest height.
+            state.q[5] = 0.75;
             for i in 6..model.nq {
                 state.q[i] = 0.1;
             }
@@ -218,7 +221,7 @@ pub fn initial_state(scene: Scene, model: &Model) -> State {
         Scene::BoxStack(n) => {
             for i in 0..n {
                 let base = model.q_offsets[i];
-                state.q[base + 2] = BOX_HALF_EXTENT + i as f64 * (2.0 * BOX_HALF_EXTENT + BOX_GAP);
+                state.q[base + 5] = BOX_HALF_EXTENT + i as f64 * (2.0 * BOX_HALF_EXTENT + BOX_GAP);
             }
         }
     }
@@ -284,8 +287,12 @@ impl PhyzSim {
             // cheap plane query against the ground, and the full broad-phase +
             // GJK/EPA path between boxes. Benchmarking only the former would
             // flatter the engine.
-            let mut contacts: Vec<Collision> = find_ground_contacts(&self.state, &self.geoms, 0.0);
-            contacts.extend(find_contacts(&self.model, &self.state, &self.geoms));
+            let mut contacts: Vec<Collision> = // Zero margin: the deprecated penalty force law this scene
+            // benchmarks ignores non-penetrating contacts anyway, so a margin
+            // would only add rows that contribute nothing.
+            find_ground_contacts(&self.state, &self.geoms, 0.0, 0.0);
+            contacts.extend(find_contacts(&self.model, &self.state, 0.0));
+            #[allow(deprecated)]
             let forces: Vec<SpatialVec> =
                 contact_forces(&contacts, &self.state, &self.materials, Some(&velocities));
             aba_with_external_forces(&self.model, &self.state, Some(&forces))
@@ -297,9 +304,13 @@ impl PhyzSim {
         for i in 0..self.model.nv {
             self.state.v[i] += dt * qdd[i];
         }
-        for i in 0..self.model.nq {
-            self.state.q[i] += dt * self.state.v[i];
-        }
+        let v = self.state.v.clone();
+        phyz_rigid::integrate_configuration(
+            &self.model,
+            self.state.q.as_mut_slice(),
+            v.as_slice(),
+            dt,
+        );
         self.state.time += dt;
     }
 

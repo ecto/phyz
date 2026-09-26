@@ -65,13 +65,11 @@ pub fn wilson_loop(hilbert: &U1HilbertSpace, state: &DVec, path: &[(usize, i32)]
             }
         }
 
-        if valid {
-            if let Some(j) = hilbert.config_to_index(&shifted) {
-                // ⟨ψ| (U + U†)/2 |ψ⟩ contributions:
-                // state[i] * state[j] from U, and state[j] * state[i] from U†.
-                // Together: state[i] * state[j] (real states, so this is correct).
-                expectation += state[i] * state[j];
-            }
+        if valid && let Some(j) = hilbert.config_to_index(&shifted) {
+            // ⟨ψ| (U + U†)/2 |ψ⟩ contributions:
+            // state[i] * state[j] from U, and state[j] * state[i] from U†.
+            // Together: state[i] * state[j] (real states, so this is correct).
+            expectation += state[i] * state[j];
         }
     }
 
@@ -117,6 +115,11 @@ pub fn fundamental_loops(complex: &SimplicialComplex) -> Vec<Vec<(usize, i32)>> 
 
     loops
 }
+
+/// Amplitudes bucketed by boundary config, then by b-interior config, as
+/// `(basis index, amplitude)` pairs.
+type SectorMap =
+    std::collections::HashMap<Vec<i32>, std::collections::HashMap<Vec<i32>, Vec<(usize, f64)>>>;
 
 /// BFS path in the tree from `start` to `end`.
 /// Returns path as `(edge_index, direction)` pairs.
@@ -217,7 +220,7 @@ pub fn entanglement_entropy_raw(
             .push((a_index[&a_configs[i]], state[i]));
     }
 
-    for (_bc, entries) in &b_groups {
+    for entries in b_groups.values() {
         for &(ai, amp_i) in entries {
             for &(aj, amp_j) in entries {
                 rho[(ai, aj)] += amp_i * amp_j;
@@ -295,7 +298,7 @@ pub fn entanglement_entropy_decomposed(
 
     // Group by (boundary_config, b_interior_config) → Vec<(a_index, amplitude)>.
     // Outer: boundary config q → inner: b-interior config → entries.
-    let mut sectors: HashMap<Vec<i32>, HashMap<Vec<i32>, Vec<(usize, f64)>>> = HashMap::new();
+    let mut sectors: SectorMap = HashMap::new();
 
     for (i, _) in basis.iter().enumerate() {
         sectors
@@ -309,7 +312,7 @@ pub fn entanglement_entropy_decomposed(
     let mut sector_probs = Vec::new();
     let mut sector_entropies = Vec::new();
 
-    for (_q, b_groups) in &sectors {
+    for b_groups in sectors.values() {
         // p_q = Σ |amplitude|² over all states in this sector.
         let p_q: f64 = b_groups
             .values()
@@ -479,6 +482,15 @@ mod tests {
         assert!(s >= -1e-10, "entropy should be non-negative: {s}");
     }
 
+    // S(A) == S(A^c) needs the physical Hilbert space to factorize as H_A ⊗ H_B,
+    // which a Gauss-law-constrained basis does not. Measured on the single
+    // pentachoron at size 2: dim(rho_A) = 9 but dim(rho_{A^c}) = 219, which is the
+    // whole basis — every basis state has a unique complement config, so the A
+    // config is *determined* by its complement. The two reduced density matrices
+    // therefore have different ranks and give S(A) = 1.6639 vs S(A^c) = 1.6980.
+    // Resolving this needs an extended-Hilbert-space prescription; the sector-aware
+    // `entanglement_entropy_decomposed` is the start of one.
+    #[ignore = "known limitation: naive entropy is not basis-symmetric on a gauge-constrained Hilbert space"]
     #[test]
     fn test_entropy_equals_complement_entropy() {
         // For a pure global state the Schmidt decomposition forces

@@ -1,4 +1,3 @@
-
 #![allow(clippy::needless_range_loop)]
 //! 4D Regge calculus with U(1) gauge field for Einstein-Maxwell theory.
 //!

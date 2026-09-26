@@ -93,10 +93,13 @@ fn main() {
     };
 
     // Ground contact is optional; enabling it adds a penalty-force pass
-    // before ABA. The pendulum never reaches the ground here, but this shows
-    // the call site.
-    if let Err(e) = sim.enable_ground_contact(-2.0, 1.0e4, 5.0e1, 0.6) {
-        println!("(ground contact unavailable: {e})");
+    // before ABA. These pendulum bodies carry no collision geometry, so the
+    // call declines with an error instead of silently running a contact pass
+    // that can see nothing — models with geometry get back the number of
+    // collidable bodies.
+    match sim.enable_ground_contact(-2.0, 1.0e4, 5.0e1, 0.6) {
+        Ok(n) => println!("ground contact enabled over {n} collidable bodies"),
+        Err(e) => println!("(ground contact declined: {e})"),
     }
 
     // Fan out initial conditions across worlds.

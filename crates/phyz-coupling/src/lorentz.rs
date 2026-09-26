@@ -55,9 +55,9 @@ pub fn magnetic_torque(dipole_moment: Vec3, b_field: &Vec3) -> Vec3 {
 pub fn electric_dipole_force(dipole_moment: Vec3, field_gradient: &[Vec3; 3]) -> Vec3 {
     // F_i = p_j * dE_i/dx_j (Einstein summation)
     Vec3::new(
-        dipole_moment.dot(&field_gradient[0]),
-        dipole_moment.dot(&field_gradient[1]),
-        dipole_moment.dot(&field_gradient[2]),
+        dipole_moment.dot(field_gradient[0]),
+        dipole_moment.dot(field_gradient[1]),
+        dipole_moment.dot(field_gradient[2]),
     )
 }
 

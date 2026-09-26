@@ -75,12 +75,12 @@ fn ball_joint_model() -> Model {
 /// The tolerance is loose because the GPU runs f32 against the CPU's f64 —
 /// that gap is the documented precision policy, not a bug.
 fn compare(model: &Model, state: &State, tol: f64, label: &str) {
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping {label}: no GPU adapter");
         return;
     };
 
-    sim.load_states(&[state.clone()]);
+    sim.load_states(std::slice::from_ref(state));
     sim.step();
     let gpu = sim.readback_states();
 
@@ -112,7 +112,8 @@ fn compare(model: &Model, state: &State, tol: f64, label: &str) {
 fn free_joint_matches_cpu() {
     let model = free_body();
     let mut s = model.default_state();
-    s.q[2] = 1.0; // 1 m up
+    // Free joint q = [wx, wy, wz, x, y, z].
+    s.q[5] = 1.0; // 1 m up
     s.v[0] = 0.3; // spin about x
     s.v[5] = -0.2; // moving along body z
     compare(&model, &s, 1e-4, "free_joint");
@@ -124,9 +125,9 @@ fn free_joint_matches_cpu() {
 fn free_body_actually_falls_on_gpu() {
     let model = free_body();
     let mut s = model.default_state();
-    s.q[2] = 5.0;
+    s.q[5] = 5.0;
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 1) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 1) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -136,7 +137,7 @@ fn free_body_actually_falls_on_gpu() {
     }
     let out = sim.readback_states();
 
-    let dropped = 5.0 - out[0].q[2];
+    let dropped = 5.0 - out[0].q[5];
     // 0.2 s of free fall ≈ 0.196 m.
     assert!(
         dropped > 0.15 && dropped < 0.25,
@@ -173,7 +174,7 @@ fn floating_base_with_limb_matches_cpu() {
 fn floating_base_batch_stays_independent() {
     let model = free_base_with_limb();
     let n = 8;
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), n) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), n) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
@@ -216,13 +217,13 @@ fn ant_runs_on_gpu() {
     };
     let model = loader.build_model();
 
-    let Ok(sim) = GpuBatchSimulator::new(model.clone(), 64) else {
+    let Ok(mut sim) = GpuBatchSimulator::new(model.clone(), 64) else {
         eprintln!("skipping: no GPU adapter");
         return;
     };
 
     let mut s = model.default_state();
-    s.q[2] = 0.75;
+    s.q[5] = 0.75; // free-joint z
     let states = vec![s; 64];
     sim.load_states(&states);
     for _ in 0..100 {
@@ -236,8 +237,8 @@ fn ant_runs_on_gpu() {
         "ant diverged on GPU"
     );
     assert!(
-        out[0].q[2] < 0.75,
+        out[0].q[5] < 0.75,
         "ant torso should fall without contact; z = {}",
-        out[0].q[2]
+        out[0].q[5]
     );
 }

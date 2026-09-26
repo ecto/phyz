@@ -1,6 +1,7 @@
 //! World container that combines model, state, sensors, and tendons.
 
 use crate::{Obstacle, Scene, Sensor, SensorContext, SensorOutput, Tendon};
+use phyz_math::DVec;
 use phyz_model::{Model, State};
 
 /// A complete simulation world with sensors and actuators.
@@ -82,19 +83,51 @@ impl World {
         self.sensor_history.push(readings);
     }
 
-    /// Read all sensors at the current state.
+    /// Read all sensors at the current state, using the **free-flight**
+    /// acceleration.
     ///
     /// The kinematics and dynamics passes the sensors need are computed once
     /// and shared, so this costs the same whether there is one sensor or twenty.
+    ///
+    /// [`World::step`] takes an arbitrary step function, so a `World` has no
+    /// way to know what contact impulses that function resolved. The inertial
+    /// sensors here therefore carry the caveat on
+    /// [`SensorContext::free_flight`]: a body resting on the ground reads the
+    /// specific force of free fall. If contacts are active, get the realized
+    /// acceleration from the stepper (`phyz::Simulator::contact_acceleration`,
+    /// or the value `phyz::Simulator::step_with_contacts` returns) and call
+    /// [`World::read_sensors_with_acceleration`].
     pub fn read_sensors(&self) -> Vec<SensorOutput> {
         if self.sensors.is_empty() {
             return Vec::new();
         }
-        let ctx = SensorContext::new(&self.model, &self.state, &self.scene);
+        let ctx = SensorContext::free_flight(&self.model, &self.state, &self.scene);
+        self.read_all(&ctx)
+    }
+
+    /// Read all sensors at the current state from a caller-supplied realized
+    /// acceleration.
+    ///
+    /// `qdd` must include contact and constraint effects; see
+    /// [`SensorContext::with_acceleration`]. This is the contact-correct way to
+    /// read [`Sensor::Imu`], [`Sensor::BodyAccel`] and [`Sensor::ForceTorque`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `qdd` does not have one entry per model degree of freedom.
+    pub fn read_sensors_with_acceleration(&self, qdd: &DVec) -> Vec<SensorOutput> {
+        if self.sensors.is_empty() {
+            return Vec::new();
+        }
+        let ctx = SensorContext::with_acceleration(&self.model, &self.state, &self.scene, qdd);
+        self.read_all(&ctx)
+    }
+
+    fn read_all(&self, ctx: &SensorContext<'_>) -> Vec<SensorOutput> {
         self.sensors
             .iter()
             .enumerate()
-            .map(|(id, sensor)| sensor.read(&ctx, id))
+            .map(|(id, sensor)| sensor.read(ctx, id))
             .collect()
     }
 

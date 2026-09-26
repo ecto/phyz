@@ -78,9 +78,9 @@ fn main() {
 
     // Initial condition: localized Gaussian pulse
     let mut macro_state = vec![0.0; nx_coarse];
-    for i in 0..nx_coarse {
+    for (i, m) in macro_state.iter_mut().enumerate() {
         let x = i as f64 / nx_coarse as f64;
-        macro_state[i] = 0.5 * (-((x - 0.5) * (x - 0.5)) / 0.01).exp();
+        *m = 0.5 * (-((x - 0.5) * (x - 0.5)) / 0.01).exp();
     }
 
     // Create equation-free wrapper

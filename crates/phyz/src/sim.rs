@@ -8,11 +8,18 @@
 //!
 //! Requires the `contact` and `diff` features (both on by default).
 
-use phyz_contact::{ContactMaterial, contact_forces, find_contacts, find_ground_contacts};
+use phyz_contact::{
+    ContactCache, ContactMaterial, ContactSolverConfig, find_contacts, find_ground_contacts_model,
+    solve_contacts_warm,
+};
 use phyz_diff::{StepJacobians, finite_diff_jacobians, semi_implicit_step_jacobians};
 use phyz_math::DVec;
-use phyz_model::{Geometry, Model, State};
-use phyz_rigid::{aba, aba_with_external_forces, forward_kinematics};
+use phyz_model::{Model, State};
+use phyz_rigid::{
+    aba, forward_kinematics, integrate_configuration, rotate_free_joint_velocities,
+    strip_free_joint_coriolis,
+};
+use std::cell::RefCell;
 
 /// Pluggable solver trait.
 ///
@@ -31,12 +38,19 @@ pub struct SemiImplicitEulerSolver;
 impl Solver for SemiImplicitEulerSolver {
     fn step(&self, model: &Model, state: &mut State) {
         let dt = model.dt;
-        let qdd = aba(model, state);
+        let mut qdd = aba(model, state);
+        let v_before = state.v.clone();
+        strip_free_joint_coriolis(model, v_before.as_slice(), qdd.as_mut_slice());
 
         // Semi-implicit Euler: update velocity first, then position
         state.v += &(&qdd * dt);
+        // A free joint's linear velocity is body-frame; the body has turned.
+        rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
         let v_clone = state.v.clone();
-        state.q += &(&v_clone * dt);
+        // NOT `q += v*dt`: free and ball joints parameterise rotation with
+        // exponential coordinates, and a free joint's linear velocity is
+        // body-frame. See `phyz_rigid::integrate_configuration`.
+        integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
         state.time += dt;
 
         // Update body transforms via FK
@@ -74,25 +88,31 @@ impl Solver for Rk4Solver {
 
         // k2
         let mut s2 = state.clone();
-        s2.q += &(&dq1 * (dt / 2.0));
+        integrate_configuration(model, s2.q.as_mut_slice(), dq1.as_slice(), dt / 2.0);
         s2.v += &(&dv1 * (dt / 2.0));
         let (dq2, dv2) = Self::derivatives(model, &s2);
 
         // k3
         let mut s3 = state.clone();
-        s3.q += &(&dq2 * (dt / 2.0));
+        integrate_configuration(model, s3.q.as_mut_slice(), dq2.as_slice(), dt / 2.0);
         s3.v += &(&dv2 * (dt / 2.0));
         let (dq3, dv3) = Self::derivatives(model, &s3);
 
         // k4
         let mut s4 = state.clone();
-        s4.q += &(&dq3 * dt);
+        integrate_configuration(model, s4.q.as_mut_slice(), dq3.as_slice(), dt);
         s4.v += &(&dv3 * dt);
         let (dq4, dv4) = Self::derivatives(model, &s4);
 
         // Combine
         let dq_sum = &(&(&dq1 + &(&dq2 * 2.0)) + &(&dq3 * 2.0)) + &dq4;
-        state.q += &(&dq_sum * (dt / 6.0));
+        // The RK4 weighted average is applied as a single configuration step so
+        // rotational sub-blocks stay on the manifold. This makes the *stage*
+        // combination first-order-ish for rotations rather than a true RK4 on
+        // the Lie group (a Munthe-Kaas scheme would be); it is still strictly
+        // better than adding angular rates into position slots.
+        let dq_avg = &dq_sum * (1.0 / 6.0);
+        integrate_configuration(model, state.q.as_mut_slice(), dq_avg.as_slice(), dt);
         let dv_sum = &(&(&dv1 + &(&dv2 * 2.0)) + &(&dv3 * 2.0)) + &dv4;
         state.v += &(&dv_sum * (dt / 6.0));
         state.time += dt;
@@ -113,13 +133,72 @@ impl Solver for Rk4Solver {
 /// Main simulation driver.
 pub struct Simulator {
     solver: Box<dyn Solver>,
+    /// Previous step's contact impulses, keyed by feature, for warm starting
+    /// [`Simulator::step_with_contacts`].
+    ///
+    /// Behind a `RefCell` because stepping takes `&self` — the cache is a
+    /// solver-internal accelerator, not simulation state, and making the whole
+    /// API `&mut self` for it would ripple through every caller.
+    ///
+    /// # It *does* change results, in the last bits
+    ///
+    /// This used to be documented as unable to change results, on the grounds
+    /// that the contact problem is strongly convex so the seed only moves the
+    /// iteration count. The convexity argument is sound about the *minimizer*
+    /// and wrong about what the solver returns: `solve_contacts_warm` stops at
+    /// `config.tolerance`, or at `max_iterations` if it never gets there, and
+    /// the PGS warm-up is also what hands the Newton stage its active set. Two
+    /// different seeds therefore stop at two different points inside the same
+    /// tolerance ball — and on a redundant manifold that has not converged,
+    /// they can stop at genuinely different active sets.
+    ///
+    /// So `step_with_contacts` is a pure function of `(model, state)` only for
+    /// a `Simulator` whose cache is in a known state. That is what
+    /// [`Simulator::reset_contact_cache`] is for, and what
+    /// [`Simulator::with_warm_start`]`(false)` removes the need for. See
+    /// `docs/determinism.md`.
+    contact_cache: RefCell<ContactCache>,
+    /// Tuning for the convex contact solve.
+    ///
+    /// A field rather than a constant so the *same* simulator code can be run
+    /// under [`ContactSolverConfig::gpu_equivalent`], which is how the GPU
+    /// path's approximation is measured: identical detection, identical
+    /// assembly, identical integration, and only the documented restriction
+    /// on the solve. Anything that differed outside this field would confound
+    /// the comparison.
+    contact_config: ContactSolverConfig,
+    /// Whether to seed the contact solve from [`Self::contact_cache`].
+    ///
+    /// `true` by default: warm starting is worth several times its cost on a
+    /// standing or walking model. Set `false` when you need `step_with_contacts`
+    /// to be a pure function of `(model, state)` with no dependence on the
+    /// history of this `Simulator` — a parameter search comparing candidates on
+    /// one shared `Simulator`, for instance, where otherwise the order you
+    /// evaluate candidates in perturbs their scores.
+    warm_start: bool,
 }
 
 impl Simulator {
+    /// Replace the contact solver configuration.
+    ///
+    /// See [`ContactSolverConfig::gpu_equivalent`] for the preset that makes
+    /// this simulator a CPU reference for the GPU contact pass.
+    pub fn with_contact_config(mut self, config: ContactSolverConfig) -> Self {
+        self.contact_config = config;
+        self
+    }
+
+    /// The contact solver configuration in force.
+    pub fn contact_config(&self) -> ContactSolverConfig {
+        self.contact_config
+    }
     /// Create a simulator with the default semi-implicit Euler solver.
     pub fn new() -> Self {
         Self {
             solver: Box::new(SemiImplicitEulerSolver),
+            contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
         }
     }
 
@@ -127,12 +206,52 @@ impl Simulator {
     pub fn rk4() -> Self {
         Self {
             solver: Box::new(Rk4Solver),
+            contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
         }
     }
 
     /// Create a simulator with a custom solver.
     pub fn with_solver(solver: Box<dyn Solver>) -> Self {
-        Self { solver }
+        Self {
+            solver,
+            contact_cache: RefCell::new(ContactCache::default()),
+            contact_config: ContactSolverConfig::simulation(),
+            warm_start: true,
+        }
+    }
+
+    /// Enable or disable warm starting of the contact solve.
+    ///
+    /// On by default. Turning it off makes [`Simulator::step_with_contacts`]
+    /// and its heightfield sibling **pure functions of `(model, state)`**: the
+    /// same state stepped by two different `Simulator`s, or by the same one at
+    /// two different points in its history, gives bit-identical results. The
+    /// price is iteration count — a resting stack can take several times as
+    /// many PGS sweeps from cold.
+    ///
+    /// Reach for this when a `Simulator` is shared across trials that must not
+    /// contaminate each other. If instead each trial gets its own simulator,
+    /// or you call [`Simulator::reset_contact_cache`] between them, leave warm
+    /// starting on: both give the same guarantee for less.
+    pub fn with_warm_start(mut self, on: bool) -> Self {
+        self.warm_start = on;
+        self
+    }
+
+    /// Whether warm starting is enabled. See [`Simulator::with_warm_start`].
+    pub fn warm_start(&self) -> bool {
+        self.warm_start
+    }
+
+    /// Forget the warm-start contact cache.
+    ///
+    /// Call after teleporting or resetting a state: last step's impulses are
+    /// then a guess about a world that no longer exists. Purely a performance
+    /// concern — the solve converges to the same answer either way.
+    pub fn reset_contact_cache(&self) {
+        self.contact_cache.borrow_mut().clear();
     }
 
     /// Advance simulation by one timestep.
@@ -159,53 +278,183 @@ impl Simulator {
     /// 3. Computes contact forces
     /// 4. Runs ABA with contact forces as external forces
     /// 5. Integrates and updates FK
+    ///
+    /// Returns the **realized** generalized acceleration `(v' − v) / dt` for
+    /// the *pre-step* state — free dynamics plus the contact impulses the
+    /// solver just found. That is what inertial sensors need: pass it to
+    /// `phyz_world::SensorContext::with_acceleration` together with a
+    /// snapshot of the pre-step state. To read sensors at the current state
+    /// without integrating, use [`Simulator::contact_acceleration`] instead.
     pub fn step_with_contacts(
         &self,
         model: &Model,
         state: &mut State,
         ground_height: f64,
         material: &ContactMaterial,
-    ) {
+    ) -> DVec {
+        self.step_with_ground(model, state, material, &|m, s| {
+            find_ground_contacts_model(m, s, ground_height, material.margin)
+        })
+    }
+
+    /// [`Simulator::step_with_contacts`] against a
+    /// [`phyz_model::Heightfield`] instead of a flat plane: same convex
+    /// contact solve, same body-body detection, but ground contacts come
+    /// from `phyz_contact::find_heightfield_contacts_model`, so each support
+    /// point pushes back along the local terrain normal. A
+    /// [`phyz_model::Heightfield::flat`] field reproduces
+    /// `step_with_contacts` exactly.
+    pub fn step_with_contacts_heightfield(
+        &self,
+        model: &Model,
+        state: &mut State,
+        heightfield: &phyz_model::Heightfield,
+        material: &ContactMaterial,
+    ) -> DVec {
+        self.step_with_ground(model, state, material, &|m, s| {
+            phyz_contact::find_heightfield_contacts_model(m, s, heightfield, material.margin)
+        })
+    }
+
+    /// The step body shared by the flat-plane and heightfield entry points;
+    /// `ground` runs after FK has refreshed `state.body_xform`.
+    fn step_with_ground(
+        &self,
+        model: &Model,
+        state: &mut State,
+        material: &ContactMaterial,
+        ground: &dyn Fn(&Model, &State) -> Vec<phyz_collision::Collision>,
+    ) -> DVec {
         let dt = model.dt;
+        let v_before = state.v.clone();
 
         // Run FK to get current transforms and velocities
-        let (xforms, velocities) = forward_kinematics(model, state);
+        let (xforms, _velocities) = forward_kinematics(model, state);
         state.body_xform = xforms;
 
-        // Collect body geometries
-        let geometries: Vec<Option<Geometry>> =
-            model.bodies.iter().map(|b| b.geometry.clone()).collect();
-
-        // Find ground contacts
-        let mut contacts = find_ground_contacts(state, &geometries, ground_height);
+        // Find ground contacts against the full collision set — every shape
+        // in `Body::collisions`, offsets included, not just the centred
+        // `Body::geometry`. The margin is what keeps a lightly-loaded support
+        // point from leaving the contact set while it is still carrying
+        // force; see `find_ground_contacts`.
+        let mut contacts = ground(model, state);
 
         // Find body-body contacts
-        let body_contacts = find_contacts(model, state, &geometries);
+        let body_contacts = find_contacts(model, state, material.margin);
         contacts.extend(body_contacts);
 
-        if contacts.is_empty() {
-            // No contacts — standard step
-            let qdd = aba(model, state);
-            state.v += &(&qdd * dt);
-            let v_clone = state.v.clone();
-            state.q += &(&v_clone * dt);
-        } else {
-            // Compute contact spatial forces per body
-            let materials = vec![material.clone()];
-            let spatial_forces = contact_forces(&contacts, state, &materials, Some(&velocities));
+        // Free velocity: where the system lands after one step with every
+        // force except contact. The contact solve then finds the impulses
+        // that correct it.
+        // In the frame the contacts were assembled in: a free joint's
+        // body-frame turn is taken out here and put back, exactly, below.
+        let mut qdd = aba(model, state);
+        strip_free_joint_coriolis(model, state.v.as_slice(), qdd.as_mut_slice());
+        let free_qd = &state.v + &(&qdd * dt);
 
-            // Run ABA with external forces
-            let qdd = aba_with_external_forces(model, state, Some(&spatial_forces));
-            state.v += &(&qdd * dt);
-            let v_clone = state.v.clone();
-            state.q += &(&v_clone * dt);
+        if contacts.is_empty() {
+            state.v = free_qd;
+        } else {
+            // Convex contact solve. Unlike the penalty law this replaces,
+            // every contact is solved *together* through the Delassus
+            // operator, so pressing on one corner of a box correctly unloads
+            // another — and friction is a real Coulomb cone with stiction
+            // rather than a viscous damper that vanished at low sliding speed.
+            let materials = model.contact_materials(material);
+            let config = self.contact_config;
+            let asm =
+                phyz_contact::assemble(model, state, &contacts, &materials, &free_qd, dt, &config);
+            // Seed from the previous step's impulses. A stance foot is solving
+            // nearly the same problem every step, and from a cold start PGS
+            // spends its whole iteration budget rediscovering `m g dt`.
+            let mut cache = self.contact_cache.borrow_mut();
+            let seed = if self.warm_start {
+                cache.warm_start(state, &contacts)
+            } else {
+                vec![phyz_math::Vec3::zeros(); contacts.len()]
+            };
+            let solution = solve_contacts_warm(&asm.problem, &config, &seed);
+            if self.warm_start {
+                cache.store(state, &contacts, &solution.impulses);
+            }
+            // v' = v_free + M^-1 J^T f.
+            state.v = &free_qd + &asm.velocity_delta(&solution.impulses);
         }
+
+        // Into the frame the step ends in, exactly.
+        rotate_free_joint_velocities(model, v_before.as_slice(), state.v.as_mut_slice(), dt);
+
+        // The acceleration the step actually realized, contacts included.
+        let realized_qdd = &(&state.v - &v_before) * (1.0 / dt);
+
+        let v_clone = state.v.clone();
+        integrate_configuration(model, state.q.as_mut_slice(), v_clone.as_slice(), dt);
 
         state.time += dt;
 
         // Update body transforms
         let (xforms, _) = forward_kinematics(model, state);
         state.body_xform = xforms;
+
+        realized_qdd
+    }
+
+    /// The **realized** generalized acceleration at `state`: free dynamics plus
+    /// whatever the contact solver produces for the contacts active right now.
+    ///
+    /// This is the acceleration inertial sensors are supposed to see, and the
+    /// one to hand to `phyz_world::SensorContext::with_acceleration`. Unlike
+    /// [`Simulator::step_with_contacts`] it does not advance or mutate the
+    /// state, so it can be called before or after a step to read sensors at
+    /// that exact configuration.
+    ///
+    /// It runs the same detection and solve a step does — same contact set,
+    /// same warm start — so it costs roughly one extra step's contact work.
+    /// When a step is happening anyway, prefer the value
+    /// [`Simulator::step_with_contacts`] returns.
+    ///
+    /// The contact solve is impulse-based over `model.dt`, so this is the
+    /// average acceleration across a step rather than an instantaneous one;
+    /// for a resting body the two agree to solver tolerance.
+    pub fn contact_acceleration(
+        &self,
+        model: &Model,
+        state: &State,
+        ground_height: f64,
+        material: &ContactMaterial,
+    ) -> DVec {
+        let dt = model.dt;
+        let mut probe = state.clone();
+        let (xforms, _) = forward_kinematics(model, &probe);
+        probe.body_xform = xforms;
+
+        let mut contacts =
+            find_ground_contacts_model(model, &probe, ground_height, material.margin);
+        contacts.extend(find_contacts(model, &probe, material.margin));
+
+        let qdd = aba(model, &probe);
+        if contacts.is_empty() {
+            return qdd;
+        }
+
+        let free_qd = &probe.v + &(&qdd * dt);
+        let materials = model.contact_materials(material);
+        let config = self.contact_config;
+        let asm =
+            phyz_contact::assemble(model, &probe, &contacts, &materials, &free_qd, dt, &config);
+        // Seed from the cache but never `store` back into it, so asking for
+        // sensor data cannot perturb the stepping trajectory. The solve is
+        // strongly convex, so the seed only moves the iteration count anyway.
+        let seed = if self.warm_start {
+            self.contact_cache
+                .borrow_mut()
+                .warm_start(&probe, &contacts)
+        } else {
+            vec![phyz_math::Vec3::zeros(); contacts.len()]
+        };
+        let solution = solve_contacts_warm(&asm.problem, &config, &seed);
+        let v_next = &free_qd + &asm.velocity_delta(&solution.impulses);
+        &(&v_next - &probe.v) * (1.0 / dt)
     }
 }
 

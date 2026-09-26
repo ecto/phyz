@@ -19,7 +19,7 @@ fn main() {
     println!("Initial height: {:.3} m", pos.z);
     println!("Radius: {:.3} m", radius);
     println!("Mass: {:.3} kg", mass);
-    println!("Bounce coefficient: {:.2}\n", material.bounce);
+    println!("Bounce coefficient: {:.2}\n", material.restitution);
 
     let ground_height = 0.0;
     let mut max_bounce_height = 0.0;
@@ -49,7 +49,7 @@ fn main() {
 
             // Bounce if hitting ground
             if normal_vel < -0.1 && penetration > 0.001 {
-                vel.z = -normal_vel * material.bounce;
+                vel.z = -normal_vel * material.restitution;
             }
         }
 

@@ -474,7 +474,7 @@ capsule was half its intended size.
 
 ### B3 — Free-joint `q`/`v` layout mismatch ✅ **fixed**
 
-`q` for a free joint is `[pos(3), exp-coords(3)]` while `v` is
+`q` for a free joint used to be `[pos(3), exp-coords(3)]` while `v` is
 `[angular(3), linear(3)]`. A flat `q += dt*v` adds angular velocity into
 position — wrong for every floating-base model, which is all four benchmarks.
 
@@ -483,6 +483,20 @@ one, `phyz-env` re-exports it, and the GPU `INTEGRATE_SHADER` was rewritten to
 match it exactly (one thread per (env, joint), quaternion compose-and-relog for
 ball and free joints). `GpuSimulator`, which is pendulum-only, keeps the flat
 version under the name `INTEGRATE_SIMPLE_SHADER`.
+
+**Follow-up (B3b).** That first pass fixed `phyz-env` and the GPU but left
+`phyz::Simulator`, `phyz-coupling`, `phyz-guardian`, `phyz-real2sim` and
+`phyz-bench` on the flat update, so the bug survived for anyone using the
+umbrella crate. Two changes closed it:
+
+1. A free joint's `q` is now `[exp-coords(3), pos(3)]` — **angular first**, so
+   it agrees slot for slot with `v`/`qdd`/`tau` and with `SpatialVec`. This is a
+   breaking change to a public data layout; see `Joint::joint_transform_slice`.
+2. The configuration update was extracted as
+   `phyz_rigid::integrate_configuration(model, q, v, dt)` and *every* `q +=
+   v*dt` in the workspace now calls it. Slot agreement is not a licence to go
+   back to a flat add: rotational slots need a Lie-group step and a free joint's
+   linear velocity is body-frame.
 
 ### B4 — GPU kernel supported only 1-DOF joints ✅ **fixed**
 

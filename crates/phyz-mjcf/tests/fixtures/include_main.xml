@@ -1,0 +1,10 @@
+<mujoco model="include_main">
+  <include file="include_defaults.xml"/>
+  <worldbody>
+    <body name="root" pos="0 0 1">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="j_root" class="shared"/>
+      <include file="include_child.xml"/>
+    </body>
+  </worldbody>
+</mujoco>

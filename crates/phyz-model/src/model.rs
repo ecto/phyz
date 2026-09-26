@@ -1,6 +1,6 @@
 //! Model definition — static description of a physical system.
 
-use crate::{Body, Joint, State};
+use crate::{Body, Joint, JointType, State};
 use phyz_math::{GRAVITY, SpatialInertia, SpatialTransform, Vec3};
 
 /// An actuator attached to a joint.
@@ -140,6 +140,17 @@ pub struct Model {
     pub v_offsets: Vec<usize>,
     /// Actuators (motors) acting on joints.
     pub actuators: Vec<Actuator>,
+    /// Body pairs that must never produce a contact, beyond the structural
+    /// exclusions [`Model::may_collide`] applies on its own.
+    ///
+    /// The escape hatch for authored geometry that overlaps across a *moving*
+    /// joint — common in URDFs, where a shoulder capsule is drawn long enough
+    /// to intersect the trunk box at some arm angles. Such a pair is a
+    /// modelling artifact, not an event, but no rule derivable from the tree
+    /// can tell it apart from a genuine self-touch, so it is data.
+    ///
+    /// Order within a pair does not matter.
+    pub contact_exclude: Vec<(usize, usize)>,
 }
 
 impl Model {
@@ -224,6 +235,46 @@ impl Model {
         self.bodies.len()
     }
 
+    /// One [`crate::ContactMaterial`] per body: each body's own material where
+    /// it has one, and `scene` everywhere else.
+    ///
+    /// This is what `phyz_contact::assemble` wants for its `materials`
+    /// argument. Callers used to write `vec![material.clone(); n_bodies]`
+    /// because there was no other way to fill the slice; that expression is
+    /// exactly `model.contact_materials(&material)` on a model whose bodies
+    /// all carry `None`, so switching to this call changes nothing until a
+    /// body is actually given a material.
+    ///
+    /// The result is always at least one element long, since `assemble` treats
+    /// an empty slice as "defaults everywhere".
+    ///
+    /// **Which body carries the material matters.** Friction combines by
+    /// `max` — see `ContactMaterial::combine` — so a grippy body grips
+    /// everything it touches, including surfaces you wanted it to slide on.
+    pub fn contact_materials(&self, scene: &crate::ContactMaterial) -> Vec<crate::ContactMaterial> {
+        if self.bodies.is_empty() {
+            return vec![scene.clone()];
+        }
+        self.bodies
+            .iter()
+            .map(|b| b.material.clone().unwrap_or_else(|| scene.clone()))
+            .collect()
+    }
+
+    /// Attach `material` to the body named `name`, returning whether it
+    /// existed. The ergonomic form of `model.bodies[i].material = Some(..)`
+    /// when you have a name rather than an index — which is the usual case
+    /// after importing a URDF or MJCF.
+    pub fn set_body_material(&mut self, name: &str, material: crate::ContactMaterial) -> bool {
+        match self.body_index(name) {
+            Some(i) => {
+                self.bodies[i].material = Some(material);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Look up a body index by name.
     pub fn body_index(&self, name: &str) -> Option<usize> {
         self.bodies.iter().position(|b| b.name == name)
@@ -232,6 +283,96 @@ impl Model {
     /// Look up a joint index by name.
     pub fn joint_index(&self, name: &str) -> Option<usize> {
         self.joints.iter().position(|j| j.name == name)
+    }
+
+    /// Weld-group id per body: bodies joined only by [`JointType::Fixed`]
+    /// joints share an id, because no configuration can ever move them
+    /// relative to one another.
+    ///
+    /// Used by contact filtering — see [`Model::may_collide`]. A welded pair
+    /// overlaps by construction (that is what a fixed joint usually
+    /// *expresses*: one physical part split across two links), and the
+    /// overlap is constant, so a contact between them is a permanent
+    /// unresolvable penetration rather than an event.
+    ///
+    /// Transitive, so a chain `A —fixed— B —fixed— C` puts all three in one
+    /// group even though `A` and `C` are not parent and child.
+    pub fn weld_groups(&self) -> Vec<usize> {
+        let n = self.bodies.len();
+        let mut group: Vec<usize> = (0..n).collect();
+
+        // Union-find with path halving; the tree is shallow so this is
+        // effectively linear.
+        fn find(group: &mut [usize], mut i: usize) -> usize {
+            while group[i] != i {
+                group[i] = group[group[i]];
+                i = group[i];
+            }
+            i
+        }
+
+        for (i, body) in self.bodies.iter().enumerate() {
+            if body.parent < 0 {
+                continue;
+            }
+            let Some(joint) = self.joints.get(body.joint_idx) else {
+                continue;
+            };
+            if joint.joint_type != JointType::Fixed {
+                continue;
+            }
+            let p = body.parent as usize;
+            if p >= n {
+                continue;
+            }
+            let (a, b) = (find(&mut group, i), find(&mut group, p));
+            if a != b {
+                group[a] = b;
+            }
+        }
+
+        (0..n).map(|i| find(&mut group, i)).collect()
+    }
+
+    /// May bodies `i` and `j` produce a contact with each other?
+    ///
+    /// `welds` is [`Model::weld_groups`], passed in so a detection loop
+    /// computes it once rather than per pair.
+    ///
+    /// Three structural exclusions, none of them tunable, because each one
+    /// describes a pair that is in contact in *every* configuration and so
+    /// carries no information:
+    ///
+    /// 1. **A body with itself.** Two shapes on one link cannot move relative
+    ///    to each other.
+    /// 2. **Parent and child.** The two links a joint connects overlap at the
+    ///    joint by construction — that is what a joint *is*. A humanoid has
+    ///    one such pair per joint, and left unfiltered they are the only
+    ///    contacts the narrow phase ever reports.
+    /// 3. **Welded bodies.** As (2), for links a fixed joint chain has made
+    ///    rigid with respect to each other.
+    ///
+    /// Anything else — a hand reaching its own thigh, an arm crossing the
+    /// trunk — is a real event and is allowed through. Models needing a
+    /// further exclusion (geometry that overlaps across a *moving* joint, a
+    /// common URDF authoring artifact) list it in [`Model::contact_exclude`].
+    pub fn may_collide(&self, i: usize, j: usize, welds: &[usize]) -> bool {
+        if i == j {
+            return false;
+        }
+        if welds.get(i).is_some() && welds.get(i) == welds.get(j) {
+            return false;
+        }
+        let parent_child = self.bodies.get(i).map(|b| b.parent) == Some(j as i32)
+            || self.bodies.get(j).map(|b| b.parent) == Some(i as i32);
+        if parent_child {
+            return false;
+        }
+        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+        !self
+            .contact_exclude
+            .iter()
+            .any(|&(a, b)| (a.min(b), a.max(b)) == (lo, hi))
     }
 }
 
@@ -404,6 +545,7 @@ impl ModelBuilder {
             q_offsets,
             v_offsets,
             actuators: Vec::new(),
+            contact_exclude: Vec::new(),
         }
     }
 }

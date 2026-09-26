@@ -591,7 +591,7 @@ fn main() {
         let su2_spec = diag::diagonalize(&su2_h, Some(1));
         let su2_gs = su2_spec.ground_state();
         let s_su2 =
-            su2_quantum::su2_entanglement_for_partition(&su2_hs1, &su2_gs, &pent1, &test_partition);
+            su2_quantum::su2_entanglement_for_partition(&su2_hs1, su2_gs, &pent1, &test_partition);
 
         let u1_gs = ground_state_simplicial(&hs1, &pent1, g_sq, None);
         let s_u1 = entanglement_for_partition(&hs1, &u1_gs, &pent1, &test_partition);

@@ -7,13 +7,18 @@
 //! Run:
 //!   cargo run -p phyz-quantum --features gpu --release --example su2_spectral_scaling
 
+#[cfg(feature = "gpu")]
 use phyz_quantum::diag;
+#[cfg(feature = "gpu")]
 use phyz_quantum::su2_quantum::{
     Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_for_partition, su2_fundamental_loops,
     su2_wilson_loop,
 };
+#[cfg(feature = "gpu")]
 use phyz_regge::SimplicialComplex;
+#[cfg(feature = "gpu")]
 use std::panic;
+#[cfg(feature = "gpu")]
 use std::time::Instant;
 
 #[cfg(feature = "gpu")]
@@ -26,7 +31,6 @@ fn main() {
         eprintln!(
             "Run with: cargo run -p phyz-quantum --features gpu --release --example su2_spectral_scaling"
         );
-        return;
     }
 
     #[cfg(feature = "gpu")]
@@ -330,6 +334,7 @@ fn run_scaling_study() {
 
 /// Log-log linear regression: y = A * x^(-beta).
 /// Returns (beta, R², intercept).
+#[cfg(feature = "gpu")]
 fn log_log_fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
     let n = points.len() as f64;
     let xs: Vec<f64> = points.iter().map(|(x, _)| x.ln()).collect();

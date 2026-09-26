@@ -9,26 +9,34 @@
 //! Run:
 //!   cargo run -p phyz-quantum --features gpu --release --example su2_rt_geometry
 
+#[cfg(feature = "gpu")]
 use phyz_quantum::diag;
+#[cfg(feature = "gpu")]
 use phyz_quantum::ryu_takayanagi::*;
+#[cfg(feature = "gpu")]
 use phyz_quantum::su2_quantum::{
     Su2HilbertSpace, build_su2_hamiltonian, su2_entanglement_decomposed,
     su2_entanglement_for_partition,
 };
+#[cfg(feature = "gpu")]
 use phyz_regge::complex::SimplicialComplex;
+#[cfg(feature = "gpu")]
 use phyz_regge::gauge::metric_weights;
+#[cfg(feature = "gpu")]
 use std::time::Instant;
 
 #[cfg(feature = "gpu")]
 use phyz_quantum::gpu_lanczos::gpu_lanczos_diagonalize_su2;
 
 /// A named geometry: edge lengths + description.
+#[cfg(feature = "gpu")]
 struct Geometry {
     name: String,
     lengths: Vec<f64>,
 }
 
 /// Build all candidate geometries for a given complex.
+#[cfg(feature = "gpu")]
 fn build_geometries(complex: &SimplicialComplex) -> Vec<Geometry> {
     let n_shared = if complex.n_vertices > 5 { 4 } else { 0 };
     let mut geos = Vec::new();
@@ -94,7 +102,6 @@ fn main() {
         eprintln!(
             "Run with: cargo run -p phyz-quantum --features gpu --release --example su2_rt_geometry"
         );
-        return;
     }
 
     #[cfg(feature = "gpu")]

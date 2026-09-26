@@ -21,7 +21,7 @@
 //! resolve over a few steps rather than exactly. `phyz-contact` (CPU) and
 //! `phyz_gpu::ContactPipeline` (GPU) remain the path to a real solver.
 
-use phyz_math::{SpatialTransform, SpatialVec, Vec3};
+use phyz_math::{SpatialTransform, SpatialTransformExt, SpatialVec, Vec3};
 use phyz_model::{Geometry, Model};
 
 /// Ground contact parameters.
@@ -130,8 +130,9 @@ impl GroundContact {
                     let pen = self.height + p.radius - p_world.z;
                     if pen > 0.0 {
                         depth[total] = pen;
-                        r_body[total] = xform[i].rot
-                            * (body_to_world * inst.origin.pos + geom_to_world * p.pos);
+                        r_body[total] = xform[i].world_to_body_dir(
+                            body_to_world * inst.origin.pos + geom_to_world * p.pos,
+                        );
                         active += 1;
                     }
                     total += 1;
@@ -183,7 +184,7 @@ impl GroundContact {
                 };
 
                 let f_world = Vec3::new(friction_world.x, friction_world.y, normal_mag);
-                let f_body = xform[i].rot * f_world;
+                let f_body = xform[i].world_to_body_dir(f_world);
                 out[i] = out[i] + SpatialVec::new(r.cross(f_body), f_body);
             }
         }

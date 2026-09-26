@@ -184,12 +184,7 @@ fn spinning_top(m: f64, l: f64, i1_pivot: f64, i3: f64) -> Model {
     let i1_com = i1_pivot - m * l * l;
     ModelBuilder::new()
         .gravity(Vec3::new(0.0, 0.0, -G))
-        .add_body(
-            "precess",
-            -1,
-            hinge(Vec3::new(0.0, 0.0, 1.0)),
-            ghost.clone(),
-        )
+        .add_body("precess", -1, hinge(Vec3::new(0.0, 0.0, 1.0)), ghost)
         .add_body("nutate", 0, hinge(Vec3::new(1.0, 0.0, 0.0)), ghost)
         .add_body(
             "spin",

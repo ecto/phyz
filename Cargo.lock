@@ -83,7 +83,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -446,6 +446,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codespan-reporting"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
+dependencies = [
+ "serde",
+ "termcolor",
+ "unicode-width",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,6 +641,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.19.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "804764d10e844da09765a7b2ca9641a0851523d1702efb0d7299d73e31b86e80"
+dependencies = [
+ "libloading 0.9.0",
 ]
 
 [[package]]
@@ -1436,6 +1456,7 @@ checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
  "cfg-if",
  "crunchy",
+ "num-traits",
  "zerocopy",
 ]
 
@@ -2191,7 +2212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -2224,6 +2245,16 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -2467,7 +2498,7 @@ dependencies = [
  "bit-set",
  "bitflags 2.11.0",
  "cfg_aliases 0.1.1",
- "codespan-reporting",
+ "codespan-reporting 0.11.1",
  "hexf-parse",
  "indexmap",
  "log",
@@ -2488,7 +2519,7 @@ dependencies = [
  "bit-set",
  "bitflags 2.11.0",
  "cfg_aliases 0.2.1",
- "codespan-reporting",
+ "codespan-reporting 0.11.1",
  "hexf-parse",
  "indexmap",
  "log",
@@ -2498,6 +2529,31 @@ dependencies = [
  "termcolor",
  "thiserror 2.0.18",
  "unicode-xid",
+]
+
+[[package]]
+name = "naga"
+version = "25.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b977c445f26e49757f9aca3631c3b8b836942cb278d69a92e7b80d3b24da632"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bitflags 2.11.0",
+ "cfg_aliases 0.2.1",
+ "codespan-reporting 0.12.0",
+ "half",
+ "hashbrown 0.15.5",
+ "hexf-parse",
+ "indexmap",
+ "log",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "spirv",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -3017,22 +3073,26 @@ dependencies = [
 
 [[package]]
 name = "phyz"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-collision",
  "phyz-contact",
  "phyz-diff",
  "phyz-math",
+ "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
+ "phyz-urdf",
+ "phyz-world",
 ]
 
 [[package]]
 name = "phyz-bench"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "criterion",
+ "phyz",
  "phyz-collision",
  "phyz-contact",
  "phyz-diff",
@@ -3047,8 +3107,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-camera"
+version = "0.4.0"
+dependencies = [
+ "bytemuck",
+ "phyz-collision",
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "phyz-urdf",
+ "phyz-world",
+ "pollster",
+ "thiserror 2.0.18",
+ "wgpu 25.0.2",
+]
+
+[[package]]
 name = "phyz-collision"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3056,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-compile"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "naga 23.1.0",
@@ -3066,16 +3142,17 @@ dependencies = [
 
 [[package]]
 name = "phyz-contact"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-collision",
  "phyz-math",
  "phyz-model",
+ "phyz-rigid",
 ]
 
 [[package]]
 name = "phyz-coupling"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-em",
@@ -3087,9 +3164,11 @@ dependencies = [
 
 [[package]]
 name = "phyz-diff"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "criterion",
+ "phyz-collision",
+ "phyz-contact",
  "phyz-math",
  "phyz-model",
  "phyz-rigid",
@@ -3100,7 +3179,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-dream"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3117,7 +3196,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-em"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3125,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-env"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-gpu",
  "phyz-math",
@@ -3138,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-examples"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz",
  "phyz-collision",
@@ -3167,7 +3246,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-format"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-mjcf",
@@ -3181,29 +3260,35 @@ dependencies = [
 
 [[package]]
 name = "phyz-gpu"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "bytemuck",
+ "cc",
+ "cudarc",
  "futures-intrusive",
+ "phyz",
+ "phyz-contact",
  "phyz-math",
  "phyz-mjcf",
  "phyz-model",
  "phyz-rigid",
  "pollster",
- "wgpu 23.0.1",
+ "tang-tensor",
+ "tang-train",
+ "wgpu 25.0.2",
 ]
 
 [[package]]
 name = "phyz-gravity"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-guardian"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3212,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-home"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3225,15 +3310,26 @@ dependencies = [
 
 [[package]]
 name = "phyz-lbm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
-name = "phyz-math"
-version = "0.3.1"
+name = "phyz-loop"
+version = "0.4.0"
 dependencies = [
+ "phyz-math",
+ "phyz-model",
+ "phyz-rigid",
+ "tang-la",
+]
+
+[[package]]
+name = "phyz-math"
+version = "0.4.0"
+dependencies = [
+ "libm",
  "proptest",
  "tang",
  "tang-la",
@@ -3241,7 +3337,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-md"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3253,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-mjcf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3264,14 +3360,14 @@ dependencies = [
 
 [[package]]
 name = "phyz-model"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-particle"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3279,7 +3375,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-prob"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3289,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-qft"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "rand 0.8.5",
@@ -3298,7 +3394,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-quantum"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "num-complex",
@@ -3318,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-real2sim"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-diff",
  "phyz-format",
@@ -3331,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-regge"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "approx",
  "phyz-math",
@@ -3341,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-rigid"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3349,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-urdf"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3360,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-validate"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-em",
  "phyz-gravity",
@@ -3372,8 +3468,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phyz-vbd"
+version = "0.4.0"
+dependencies = [
+ "phyz-math",
+]
+
+[[package]]
 name = "phyz-wasm"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.2.17",
  "js-sys",
@@ -3392,7 +3495,7 @@ dependencies = [
 
 [[package]]
 name = "phyz-world"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "phyz-collision",
  "phyz-math",
@@ -3401,6 +3504,13 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "phyz-xpbd"
+version = "0.4.0"
+dependencies = [
+ "phyz-math",
 ]
 
 [[package]]
@@ -4693,14 +4803,16 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "tang"
-version = "0.2.1"
+version = "0.2.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "paste",
 ]
 
 [[package]]
 name = "tang-ad"
-version = "0.1.1"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
  "tang-la",
@@ -4709,6 +4821,7 @@ dependencies = [
 [[package]]
 name = "tang-compute"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "bytemuck",
  "tang",
@@ -4717,7 +4830,8 @@ dependencies = [
 
 [[package]]
 name = "tang-expr"
-version = "0.1.1"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
 ]
@@ -4725,6 +4839,7 @@ dependencies = [
 [[package]]
 name = "tang-gpu"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "bytemuck",
  "pollster",
@@ -4736,7 +4851,8 @@ dependencies = [
 
 [[package]]
 name = "tang-la"
-version = "0.1.1"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
 ]
@@ -4744,6 +4860,7 @@ dependencies = [
 [[package]]
 name = "tang-mesh"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "futures-util",
  "iroh",
@@ -4764,7 +4881,8 @@ dependencies = [
 
 [[package]]
 name = "tang-optim"
-version = "0.1.1"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
  "tang-ad",
@@ -4774,6 +4892,7 @@ dependencies = [
 [[package]]
 name = "tang-safetensors"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "safetensors",
  "serde_json",
@@ -4785,6 +4904,7 @@ dependencies = [
 [[package]]
 name = "tang-tensor"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
  "tang-la",
@@ -4793,6 +4913,7 @@ dependencies = [
 [[package]]
 name = "tang-train"
 version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?rev=9d28b81067f1a416c73a9e84b7f4f9af29bbfa34#9d28b81067f1a416c73a9e84b7f4f9af29bbfa34"
 dependencies = [
  "tang",
  "tang-ad",
@@ -5667,6 +5788,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "wgpu"
+version = "25.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec8fb398f119472be4d80bc3647339f56eb63b2a331f6a3d16e25d8144197dd9"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.11.0",
+ "cfg_aliases 0.2.1",
+ "document-features",
+ "hashbrown 0.15.5",
+ "js-sys",
+ "log",
+ "naga 25.0.1",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core 25.0.2",
+ "wgpu-hal 25.0.2",
+ "wgpu-types 25.0.0",
+]
+
+[[package]]
 name = "wgpu-core"
 version = "23.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5717,6 +5866,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "wgpu-core"
+version = "25.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7b882196f8368511d613c6aeec80655160db6646aebddf8328879a88d54e500"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bit-vec",
+ "bitflags 2.11.0",
+ "cfg_aliases 0.2.1",
+ "document-features",
+ "hashbrown 0.15.5",
+ "indexmap",
+ "log",
+ "naga 25.0.1",
+ "once_cell",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wgpu-core-deps-apple",
+ "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-windows-linux-android",
+ "wgpu-hal 25.0.2",
+ "wgpu-types 25.0.0",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfd488b3239b6b7b185c3b045c39ca6bf8af34467a4c5de4e0b1a564135d093d"
+dependencies = [
+ "wgpu-hal 25.0.2",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09ad7aceb3818e52539acc679f049d3475775586f3f4e311c30165cf2c00445"
+dependencies = [
+ "wgpu-hal 25.0.2",
+]
+
+[[package]]
+name = "wgpu-core-deps-windows-linux-android"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cba5fb5f7f9c98baa7c889d444f63ace25574833df56f5b817985f641af58e46"
+dependencies = [
+ "wgpu-hal 25.0.2",
+]
+
+[[package]]
 name = "wgpu-hal"
 version = "23.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5739,7 +5946,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "metal 0.29.0",
  "naga 23.1.0",
@@ -5784,7 +5991,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "metal 0.31.0",
  "naga 24.0.0",
@@ -5803,6 +6010,53 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "wgpu-types 24.0.0",
+ "windows 0.58.0",
+ "windows-core 0.58.0",
+]
+
+[[package]]
+name = "wgpu-hal"
+version = "25.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f968767fe4d3d33747bbd1473ccd55bf0f6451f55d733b5597e67b5deab4ad17"
+dependencies = [
+ "android_system_properties",
+ "arrayvec",
+ "ash",
+ "bit-set",
+ "bitflags 2.11.0",
+ "block",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases 0.2.1",
+ "core-graphics-types",
+ "glow 0.16.0",
+ "glutin_wgl_sys",
+ "gpu-alloc",
+ "gpu-allocator",
+ "gpu-descriptor",
+ "hashbrown 0.15.5",
+ "js-sys",
+ "khronos-egl",
+ "libc",
+ "libloading 0.8.9",
+ "log",
+ "metal 0.31.0",
+ "naga 25.0.1",
+ "ndk-sys",
+ "objc",
+ "ordered-float 4.6.0",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "range-alloc",
+ "raw-window-handle",
+ "renderdoc-sys",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "web-sys",
+ "wgpu-types 25.0.0",
  "windows 0.58.0",
  "windows-core 0.58.0",
 ]
@@ -5827,6 +6081,20 @@ dependencies = [
  "bitflags 2.11.0",
  "js-sys",
  "log",
+ "web-sys",
+]
+
+[[package]]
+name = "wgpu-types"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2aa49460c2a8ee8edba3fca54325540d904dd85b2e086ada762767e17d06e8bc"
+dependencies = [
+ "bitflags 2.11.0",
+ "bytemuck",
+ "js-sys",
+ "log",
+ "thiserror 2.0.18",
  "web-sys",
 ]
 

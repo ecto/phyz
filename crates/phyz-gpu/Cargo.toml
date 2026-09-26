@@ -2,6 +2,7 @@
 name = "phyz-gpu"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -10,15 +11,72 @@ keywords = ["gpu", "wgpu", "physics", "simulation", "compute"]
 categories = ["simulation", "science", "graphics"]
 readme = "README.md"
 
+[features]
+# CUDA execution path (`phyz_gpu::cuda::CudaBatchSimulator`). Kernels are
+# compiled at runtime with NVRTC and the driver is dlopened, so this builds on
+# any machine; only *running* needs an NVIDIA driver >= the pinned CUDA
+# version. See docs/design/cuda-backend.md.
+cuda = ["dep:cudarc"]
+# Compile the CUDA C kernels as host C++ and run them on the CPU — the parity
+# harness for the CUDA port on machines without an NVIDIA GPU. Needs a C++
+# compiler at build time, nothing else.
+cuda-host = ["dep:cc"]
+
 [dependencies]
 phyz-math = { workspace = true }
 phyz-model = { workspace = true }
 phyz-rigid = { workspace = true }
-wgpu = "23.0"
+wgpu = "25.0"
 bytemuck = { version = "1.14", features = ["derive"] }
 pollster = "0.4"
 futures-intrusive = "0.5"
+# `cuda-12080` pins the driver API surface to CUDA 12.8 (the R570 driver a
+# Blackwell pod ships). Newer drivers are backwards compatible; an older one
+# fails at `CudaBatchSimulator::new` with a clear error rather than at link.
+cudarc = { version = "0.19", optional = true, default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-12080",
+] }
+
+[build-dependencies]
+cc = { version = "1.2", optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+# For the CPU-vs-GPU contact parity tests: the CPU impulse solver is the
+# referee the GPU penalty path is measured against.
+phyz = { workspace = true }
+phyz-contact = { workspace = true }
 phyz-mjcf = { workspace = true }
+# The PPO-update parity test's referee: the *actual* f64 CPU optimizer the
+# device pass replaces, not a re-derivation of it.
+tang-tensor = { workspace = true }
+tang-train = { workspace = true }
+
+[[example]]
+name = "cuda_batch"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda_train"
+required-features = ["cuda-host"]
+
+[[example]]
+name = "cuda_graph_bench"
+required-features = ["cuda"]
+
+# The launch census. Gated on the host mirror because that is the backend it
+# can always fall back to; add `cuda` alongside (`--features cuda,cuda-host`)
+# on a machine with a device and it runs there instead. The counts are what
+# `BatchSim` issues, which is backend-independent, so the host mirror gives
+# the same table minus the graph rows it cannot capture.
+[[example]]
+name = "launch_census"
+required-features = ["cuda-host"]
+
+[[example]]
+name = "cuda_impulse_roofline"
+required-features = ["cuda"]

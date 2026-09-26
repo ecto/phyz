@@ -57,23 +57,6 @@ pub fn load() -> Vec<CachedPoint> {
     CACHE.with(|c| c.borrow().as_ref().unwrap().clone())
 }
 
-/// Overwrite the cache (used by startup merge).
-pub fn save(points: &[CachedPoint]) {
-    CACHE.with(|c| {
-        *c.borrow_mut() = Some(points.to_vec());
-    });
-    DIRTY.with(|d| *d.borrow_mut() = true);
-}
-
-/// Append a single point (in-memory only — call flush() to persist).
-pub fn append(point: CachedPoint) {
-    ensure_loaded();
-    CACHE.with(|c| {
-        c.borrow_mut().as_mut().unwrap().push(point);
-    });
-    DIRTY.with(|d| *d.borrow_mut() = true);
-}
-
 /// Append multiple points (in-memory only — call flush() to persist).
 pub fn append_batch(new_points: &[CachedPoint]) {
     if new_points.is_empty() {
@@ -87,12 +70,6 @@ pub fn append_batch(new_points: &[CachedPoint]) {
             .extend_from_slice(new_points);
     });
     DIRTY.with(|d| *d.borrow_mut() = true);
-}
-
-/// Get the number of cached points (no deserialization).
-pub fn count() -> usize {
-    ensure_loaded();
-    CACHE.with(|c| c.borrow().as_ref().unwrap().len())
 }
 
 /// Flush dirty cache to localStorage. Call this on a timer, not every frame.

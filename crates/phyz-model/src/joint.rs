@@ -1,6 +1,6 @@
 //! Joint types and definitions.
 
-use phyz_math::{DMat, Mat3, Quat, SpatialTransform, SpatialVec, Vec3};
+use phyz_math::{DMat, Mat3, SpatialTransform, SpatialVec, Vec3, fp, quat_exp};
 
 /// Joint type enumeration.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -240,7 +240,7 @@ impl Joint {
                 // A proper implementation is a box constraint on the friction
                 // force, which lands with the constraint solver.
                 const FRICTION_VEL_SCALE: f64 = 1e-3;
-                f += -self.friction_loss * (qd / FRICTION_VEL_SCALE).tanh();
+                f += -self.friction_loss * fp::tanh(qd / FRICTION_VEL_SCALE);
             }
         }
         f
@@ -255,7 +255,7 @@ impl Joint {
             JointType::Revolute | JointType::Hinge => {
                 // Passive rotation: negate angle for coordinate transform
                 let angle = q[0];
-                let (s, c) = (-angle).sin_cos();
+                let (s, c) = fp::sin_cos(-angle);
                 let a = &self.axis;
                 let ax = phyz_math::skew(a);
                 let rot = Mat3::identity() + ax * s + ax * ax * (1.0 - c);
@@ -267,23 +267,44 @@ impl Joint {
                 SpatialTransform::new(Mat3::identity(), pos)
             }
             JointType::Spherical | JointType::Ball => {
-                // q = [qw, qx, qy, qz] (quaternion components)
-                // But we store as exponential coordinates in integration
-                // For now, interpret as axis-angle representation (3 DOF)
-                let wx = q[0];
-                let wy = q[1];
-                let wz = q[2];
-                let w = Vec3::new(wx, wy, wz);
-                let quat = Quat::exp(&w);
-                let rot = quat.to_matrix();
+                // q = exponential coordinates (3) of the child→parent
+                // rotation R, integrated as R ← R·exp(ω·dt) (body angular
+                // velocity composed on the right — see
+                // phyz_rigid::integrate). The joint transform is the
+                // *coordinate map* parent→child, i.e. Rᵀ: same negation the
+                // hinge branch applies to its angle. Using R here made the
+                // dynamics (which see q only through this map) disagree with
+                // the integrator by an inverse, which pumped energy into any
+                // passive spherical joint the moment its axis moved.
+                let w = Vec3::new(q[0], q[1], q[2]);
+                let rot = quat_exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, Vec3::zeros())
             }
             JointType::Free => {
-                // q = [x, y, z, wx, wy, wz] (position + exponential coordinates)
-                let pos = Vec3::new(q[0], q[1], q[2]);
-                let w = Vec3::new(q[3], q[4], q[5]);
-                let quat = Quat::exp(&w);
-                let rot = quat.to_matrix();
+                // ### FREE-JOINT DOF ORDER — ANGULAR FIRST. ###
+                //
+                // q = [wx, wy, wz, x, y, z]: exp-coords of the child→parent
+                // rotation, *then* position in parent coords. This matches
+                // `SpatialVec`'s `[angular; linear]` order, which is what the
+                // free joint's motion subspace (the 6×6 identity, see
+                // `motion_subspace_matrix`) and therefore `v`, `qdd`, `tau`,
+                // the Jacobians and the contact solver all use.
+                //
+                // It did NOT used to. Until this was fixed, `q` was
+                // `[x, y, z, wx, wy, wz]` — translation first — while `v` was
+                // angular first, so the flat `q += v·dt` that most callers
+                // performed fed the vertical acceleration into the yaw
+                // exponential coordinate: a free body released under gravity
+                // never fell, it spun up at 9.81 rad/s². If you are changing
+                // this, change `phyz_rigid::integrate_configuration` and the
+                // GPU `INTEGRATE_SHADER` in the same commit.
+                //
+                // Note this is *not* `phyz_diff`'s rollout layout, which packs
+                // a free joint as `[x, y, z, quat(4)]` in its own private
+                // `DofLayout` and never shares indices with `State::q`.
+                let w = Vec3::new(q[0], q[1], q[2]);
+                let pos = Vec3::new(q[3], q[4], q[5]);
+                let rot = quat_exp(&w).to_matrix().transpose();
                 SpatialTransform::new(rot, pos)
             }
             JointType::Fixed => {

@@ -14,7 +14,33 @@ struct Endpoint {
 }
 
 /// Sweep-and-prune broad phase collision detection.
-/// Returns pairs of body indices that have overlapping AABBs.
+///
+/// Returns pairs of body indices that have overlapping AABBs, **sorted
+/// ascending by `(i, j)`** — by identity, not by where the sweep happened to
+/// find them.
+///
+/// # Why the sort is not cosmetic
+///
+/// The sweep visits endpoints in order of their `x` coordinate, so the order
+/// pairs come out in is a function of *continuous positions*. That order is
+/// carried all the way to the solver: `find_contacts` emits contacts in pair
+/// order, `assemble` builds the Delassus rows in contact order, and projected
+/// Gauss-Seidel sweeps those rows in order. Gauss-Seidel is not
+/// order-invariant — its iterates differ, and since the solve terminates on a
+/// tolerance or an iteration cap rather than at the exact minimizer, so does
+/// its answer.
+///
+/// Which means: without this sort, two bodies whose x-extents cross swap the
+/// solver's sweep order mid-rollout, and a perturbation far below the
+/// discretization — one ulp — can flip that crossing a step early and change
+/// the trajectory discontinuously. That is indistinguishable from a bug, and
+/// it is the reason this repository could not reproduce a result across two
+/// machines. Sorting by index makes the solve order a function of the model's
+/// identity, which does not move under perturbation at all.
+///
+/// The sort is on `usize` pairs, so it introduces no floating-point comparison
+/// of its own, and `O(p log p)` on a pair list that the narrow phase is about
+/// to do `O(p)` GJK/EPA solves over is not a measurable cost.
 pub fn sweep_and_prune(aabbs: &[AABB]) -> Vec<CollisionPair> {
     if aabbs.len() < 2 {
         return Vec::new();
@@ -70,6 +96,13 @@ pub fn sweep_and_prune(aabbs: &[AABB]) -> Vec<CollisionPair> {
         }
     }
 
+    // Canonical order: by identity, so the narrow phase and the contact solver
+    // see the same sweep order for the same model regardless of where the
+    // bodies are. `sort_unstable` is fine — the keys are unique, because a
+    // pair is emitted at most once (only the `is_min` endpoint emits, and each
+    // body has exactly one).
+    pairs.sort_unstable();
+
     pairs
 }
 
@@ -108,6 +141,67 @@ mod tests {
         let pairs = sweep_and_prune(&aabbs);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0], (0, 1));
+    }
+
+    /// The pair list must be ordered by identity, not by position along the
+    /// sweep axis. Two boxes overlapping a third are laid out so the sweep
+    /// *discovers* them in the reverse of index order; the output must not
+    /// care. See the function docs for what depends on this.
+    #[test]
+    fn pairs_come_out_in_canonical_index_order() {
+        // Body 0 spans the whole line; bodies 1 and 2 sit inside it, with 2 to
+        // the left of 1 so the sweep reaches 2 first.
+        let aabbs = vec![
+            AABB::new(Vec3::new(-10.0, 0.0, 0.0), Vec3::new(10.0, 1.0, 1.0)),
+            AABB::new(Vec3::new(5.0, 0.0, 0.0), Vec3::new(6.0, 1.0, 1.0)),
+            AABB::new(Vec3::new(1.0, 0.0, 0.0), Vec3::new(2.0, 1.0, 1.0)),
+        ];
+        let pairs = sweep_and_prune(&aabbs);
+        assert_eq!(pairs, vec![(0, 1), (0, 2)]);
+
+        // Translating the whole scene, or swapping which of the two inner
+        // boxes is further left, must not change the output at all.
+        let shifted: Vec<AABB> = aabbs
+            .iter()
+            .map(|a| {
+                AABB::new(
+                    a.min + Vec3::new(37.5, 0.0, 0.0),
+                    a.max + Vec3::new(37.5, 0.0, 0.0),
+                )
+            })
+            .collect();
+        assert_eq!(sweep_and_prune(&shifted), pairs);
+
+        let swapped = vec![
+            aabbs[0],
+            AABB::new(Vec3::new(1.0, 0.0, 0.0), Vec3::new(2.0, 1.0, 1.0)),
+            AABB::new(Vec3::new(5.0, 0.0, 0.0), Vec3::new(6.0, 1.0, 1.0)),
+        ];
+        assert_eq!(sweep_and_prune(&swapped), pairs);
+    }
+
+    /// The invariant in general form: whatever the geometry, the list is
+    /// sorted and each pair has `i < j`.
+    #[test]
+    fn pair_list_is_sorted_and_lower_triangular() {
+        let mut aabbs = Vec::new();
+        for k in 0..12 {
+            // Deliberately non-monotone in the index so sweep order and index
+            // order disagree.
+            let x = ((k * 7) % 12) as f64 * 0.4;
+            aabbs.push(AABB::new(
+                Vec3::new(x, 0.0, 0.0),
+                Vec3::new(x + 1.0, 1.0, 1.0),
+            ));
+        }
+        let pairs = sweep_and_prune(&aabbs);
+        assert!(!pairs.is_empty());
+        for w in pairs.windows(2) {
+            assert!(w[0] < w[1], "not sorted: {:?} then {:?}", w[0], w[1]);
+        }
+        for &(i, j) in &pairs {
+            assert!(i < j, "pair ({i}, {j}) is not lower-triangular");
+        }
     }
 
     #[test]

@@ -2,6 +2,7 @@
 name = "phyz-diff"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -14,6 +15,8 @@ readme = "README.md"
 phyz-math.workspace = true
 phyz-model.workspace = true
 phyz-rigid.workspace = true
+phyz-collision.workspace = true
+phyz-contact.workspace = true
 tang.workspace = true
 tang-la.workspace = true
 tang-expr.workspace = true

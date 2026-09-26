@@ -86,7 +86,9 @@ impl DefaultsManager {
     pub fn resolve(&self, tag: &str, class: Option<&str>) -> AttrMap {
         // Collect the chain leaf → root, then apply root-first so the leaf wins.
         let mut chain = Vec::new();
-        let mut cursor = class.map(str::to_string).or_else(|| Some(ROOT_CLASS.into()));
+        let mut cursor = class
+            .map(str::to_string)
+            .or_else(|| Some(ROOT_CLASS.into()));
         let mut guard = 0;
         while let Some(name) = cursor {
             let Some(node) = self.classes.get(&name) else {
@@ -126,7 +128,11 @@ mod tests {
     #[test]
     fn child_class_overrides_root() {
         let mut d = DefaultsManager::new();
-        d.set(ROOT_CLASS, "geom", attrs(&[("density", "1000"), ("type", "sphere")]));
+        d.set(
+            ROOT_CLASS,
+            "geom",
+            attrs(&[("density", "1000"), ("type", "sphere")]),
+        );
         d.declare("leg", Some(ROOT_CLASS));
         d.set("leg", "geom", attrs(&[("density", "500")]));
 

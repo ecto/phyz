@@ -1,6 +1,6 @@
 # Differentiable Contact: Design
 
-**Status:** design (not implemented)
+**Status:** largely implemented — see [§8](#8-implementation-status) for what landed, what diverged, and what is still open
 **Scope:** replaces `crates/phyz-contact` and the vendored `crates/phyz/src/contact/`
 **Author:** design phase, 2026-07
 **Target integration point:** `crates/phyz-diff/src/rollout/`, `crates/phyz-rigid/src/aba.rs`
@@ -699,9 +699,20 @@ at any angle.
 ### 6.2 Restitution from drop height
 
 - Drop a sphere from `h₀`, measure apex `h₁`. Theory: `h₁/h₀ = e²`.
-- Assert for `e ∈ {0.0, 0.3, 0.5, 0.8, 0.95}` to `2%` (allowing for the soft-contact
-  energy loss, which is a real and documented effect — the test tolerance encodes the
-  approximation rather than hiding it).
+- Assert for `e ∈ {0.0, 0.3, 0.5, 0.8, 0.95}` to `2%`, or to the time-of-impact
+  quantization `v·dt + margin` where that is larger (a fixed step finds the sphere
+  anywhere from `v·dt` below the plane to `margin` above it, and the apex carries that
+  offset; at `e = 0.3` from 20 cm it is 11% of a 1.8 cm rebound).
+- **Impacts are rigid.** Soft contact (§4.5) is a resting-contact model: its impedance
+  delivers a velocity target scaled by `d`, its margin band tapers `d` to nothing, and
+  its stabilization bias adds `erp` to the effective `e`. All three ate the bounce
+  (measured: 77% of nominal `e` on a hard impact, and a 3.5 m/s impact detected half a
+  millimetre above the plane swallowed whole). So a contact row carries an `impact`
+  weight — the §4.3 ramp of the approach speed, on its own — that drives its impedance
+  to `0.999` and its bias to zero; a settled contact (`impact = 0`) is exactly the soft
+  contact it always was. Restitution and the ramp read the approach speed at the
+  *start* of the step, not off the free velocity with `g·dt` already in it: that `g·dt`
+  was `m·g·dt·|v|` of energy gained per bounce, 50% over thirty seconds at `e = 1`.
 - **Settling test:** with `e = 0.8`, assert the sphere is at rest (`|v| < 1e-3`) within
   10 s and stays there for another 5 s. This is what the restitution threshold ramp
   (§4.3) exists to guarantee, and it is where naive restitution implementations fail.
@@ -815,6 +826,107 @@ the stacking row, and this design does not try to.
 
 ---
 
+## 8. The GPU as a third instantiation
+
+The design above states one contact model to be instantiated at `f64` for
+simulation and at a dual type for gradients. `phyz-gpu` is a **third
+instantiation**, and it was previously a second *model*: penalty forces with
+slip-speed-regularized friction, which is the very law §0.1 rejects.
+
+That mattered practically. Policies trained on the GPU did not transfer to the
+CPU path — the one that matches the deployed controller — so the GPU speedup
+was buying invalid answers.
+
+### 8.1 What makes it the same model
+
+The GPU solves the same convex problem, with the same friction cone, the same
+staged Coulomb update, the same solref bias, solimp impedance and margin taper.
+The enabling observation is that **projected Gauss-Seidel never needs `A` as a
+matrix**. It needs two things: the residual `A f + b`, and a diagonal to divide
+by.
+
+The residual is obtained by *pass structure* rather than by assembly. The host
+interleaves `[contact, ABA]` once per sweep, so each contact pass reads a `qdd`
+that already carries the previous sweep's impulses through the full articulated
+chain. Reading `v + dt·qdd` at a contact point **is** evaluating `(A f + b)_c`
+— exactly, with the true `M⁻¹`, including every cross-contact and cross-chain
+coupling term. No Delassus operator is ever formed, and nothing is dropped.
+
+This is why the GPU is an instantiation rather than an approximation: the fixed
+point of the iteration is set by the residual alone.
+
+### 8.2 The deliberate approximations, and what they cost
+
+Two, both documented and measured.
+
+**1. The diagonal is a preconditioner.** The GPU divides by the isolated-body
+effective mass (scaled by the number of active points on the body — the
+within-body load sharing), not by the true `A_cc`. Because the residual is
+exact, this affects only the *rate* of convergence, not the answer. It also
+errs safe: an isolated body presents less mass than one backed by its chain, so
+the diagonal over-estimates `A_cc` and the update under-relaxes. Under-relaxing
+converges slowly; over-relaxing diverges.
+
+**2. The sweep budget is finite, with no early exit.** A workgroup cannot
+cheaply agree that every contact has converged, so the shader runs a fixed
+count. The iterate is therefore *not* a converged KKT point and must not anchor
+an IFT gradient — the same caveat §2 places on any truncated solve.
+
+`ContactSolverConfig::gpu_equivalent()` reproduces exactly that restriction on
+the CPU, in `f64`. This is what makes the comparison interpretable:
+
+- `simulation()` vs `gpu_equivalent()` is the **approximation**;
+- `gpu_equivalent()` vs the GPU is an **implementation bug**.
+
+Confounding those two is why the earlier GPU-vs-CPU numbers were unusable.
+`ContactCoupling` exists for the same reason and is measured the same way: on a
+box landing on its face, restricting to `BlockDiagonal` costs up to 78 mm,
+while `PerBody` — which keeps the blocks expressible from a single body's own
+spatial inertia — is within 0.1 mm. On a contact manifold nearly all the
+coupling is within-body, and within-body coupling is the cheap half.
+
+### 8.3 Measured agreement
+
+`crates/phyz-gpu/examples/contact_parity.rs`, settled gap against the CPU:
+
+| case | gap |
+|---|---|
+| box dropped flat | 2.7e-4 m |
+| box tumbling onto a corner | 1.4e-3 m |
+| box sliding, mu 0.8 | 6.6e-3 m |
+| box sliding, mu 0.05 | 4.7e-2 m (~1.5% of a 3 m slide) |
+
+In free flight the engines agree to 1e-13 despite f32-vs-f64, which is what
+localizes every gap above to the contact phase. The resting height is
+-0.39978 against the CPU's -0.40005; penalty contact sat at -0.40392, the
+`mg/k` sink that an impulse solve does not have.
+
+Two controls make those numbers mean something, and both are load-bearing:
+
+- a **chaos floor** — the CPU rolled against itself from a 1e-9 perturbation of
+  whichever channel each scenario actually excites. It sits at 1e-9, eight
+  orders below the gaps, so these are real disagreements rather than Lyapunov
+  noise. (Perturbing an *insensitive* coordinate reports a reassuring zero and
+  proves nothing; the tumble case needs its spin perturbed, not its position.)
+- a **vs-reference** column — the GPU against `gpu_equivalent()`. It tracks the
+  full-Delassus gap almost exactly, so what remains is implementation rather
+  than the coupling approximation.
+
+`crates/phyz-gpu/tests/contact_impulse_parity.rs` pins all of this. WGSL cannot
+share Rust code, so "one model" is not enforceable by the compiler across that
+boundary; that test is what enforces it, along with assertions on the two
+constants duplicated on purpose (the sweep budget and the solref formula).
+
+### 8.4 Still a separate model: `phyz-diff/src/rollout/step.rs`
+
+The differentiable rollout retains its own per-vertex penalty contact with **no
+friction at all**, described in its own module docs. It is untouched by this
+work and remains the last of the three models. Folding it in means running the
+convex solve at a dual scalar type through `phyz-contact::gradient`, which is
+what §2 of this document specifies and what the crate is already shaped for —
+but it is a separate piece of work, and until it lands, gradients and
+simulation still disagree about what contact is.
+
 ## References
 
 - [todorov2011]: E. Todorov, "A convex, smooth and invertible contact model for
@@ -852,3 +964,180 @@ the stacking row, and this design does not try to.
   Vectorizable Contact Manifold Construction," 2026.
   <https://arxiv.org/html/2604.17538>
 - "A Review of Differentiable Simulators," 2024. <https://arxiv.org/pdf/2407.05560>
+
+
+---
+
+## 8. Implementation status
+
+Added 2026-08-16. The header said "design (not implemented)" for months after most
+of this shipped, which is worse than no status line at all: it sent at least one
+reader off to build a solver that already existed. What follows is the state of
+the tree, and it should be updated in the same PR as any change below.
+
+Delivered across #28 (narrow phase, convex solver, IFT gradients), #37
+(stabilization, pair materials, warm starting), #39/#41 (redundant-manifold
+convergence), #42 (contact margin), #48 (trajectory adjoint), and this PR
+(body-body adjoint).
+
+### 8.1 Landed as designed
+
+- §1.1(c) convex soft contact, chosen over LCP/PGS and TGS — `phyz-contact/src/convex.rs`.
+- §2.1–2.2 gradients by the implicit function theorem on the converged solution,
+  not by unrolling — `phyz-contact/src/gradient.rs`, `FixedPointSensitivity`.
+- §2.4 restitution as a term in `b`, never a post-solve velocity reset.
+- §4.1 a real second-order friction cone with genuine stiction. The isotropy
+  test (§6.1 D) holds to `1e-9`, well inside the `0.1%` the plan asked for.
+- §4.3 restitution with the `smoothstep` low-speed ramp.
+- §4.4 multi-point manifolds, EPA normals, surface contact points, persistence.
+- §4.5 MuJoCo `solref`/`solimp` semantics — `phyz-contact/src/material.rs`.
+- §5.2 / stage 0 the vendored `crates/phyz/src/contact/` is gone; `phyz`
+  re-exports `phyz-contact`.
+- §6.1 the full block-on-incline battery A–D.
+
+### 8.2 Landed differently, on purpose
+
+- **§1.2 the solver is not a primal-dual interior-point SOCP.** It is an
+  alternating PGS / active-set Newton. Consequence: there is no central-path
+  parameter κ, and `ContactSolverConfig::regularization` plays the smoothing
+  role instead. The `simulation()` / `gradients()` presets of §2.5 exist and
+  mean what §2.5 says they mean; `cone: FrictionCone` and `anchors: bool` do not
+  exist, the cone being elliptic always.
+- **§3 generic-over-scalar did not happen, and the goal it served was met
+  another way.** `phyz-contact` is entirely `f64`; there is no `ContactScalar`,
+  no `tang` dependency. §0.1 wanted one thing from genericity — that the
+  simulated and differentiated contact models cannot drift apart — and
+  `phyz-diff/src/contact_adjoint.rs` secures it directly instead: its forward
+  pass *is* `Simulator::step_with_contacts`, operation for operation, asserted
+  bit-identical by `phyz/tests/diff_convex_contact.rs`. The derivative is then
+  analytic (IFT) through the solve and central-difference per lane through the
+  smooth blocks around it (ABA, FK, assembly, Φ).
+
+  This is a real trade, not a free substitution. It costs exactness in the
+  smooth blocks (`~1e-9` relative, against machine precision for a dual number)
+  and it costs speed — the measured gradient is `33.7x` one forward rollout on a
+  200-step box drop. Making the solver generic remains the right end state and
+  is the largest single open item; it is not, however, load-bearing for
+  correctness the way §3 implies, because the drift it was meant to prevent is
+  already prevented.
+- **§5.1 `GroundContact` / `vertex_wrench` were not removed.** The per-vertex
+  penalty model survives in `phyz-diff/src/rollout/` as the `d_vertices`
+  surface-gradient channel vcad integrates against, which the convex path does
+  not reproduce. So two contact models do still coexist — but their roles are
+  now disjoint and documented, rather than being two answers to the same
+  question. State/control/inertia gradients all route through the convex path.
+- **§5.1 the deprecated penalty API is still shipped** (`compute_contact_force`,
+  `contact_forces`), marked `#[deprecated]` rather than deleted. Stage 3 is
+  therefore only partly done.
+
+### 8.3 Measured shortfalls against §6
+
+Implementing §6.1–§6.5 as *trajectories* rather than as single solves turned up
+three places where the shipped engine does not meet the spec this document
+wrote. All three are invisible to `phyz-contact`'s `analytic_benchmarks.rs`,
+which exercises hand-built single-contact `ContactProblem`s. Each is now pinned
+by a regression guard whose doc comment states plainly that it guards a measured
+number rather than checking physics.
+
+| What | Spec | Measured | Issue |
+|---|---|---|---|
+| §6.1 C sliding acceleration, box on a 40° slope | within 1% | **16% excess** (`a = 2.0838` vs `1.7968`; effective `mu` `0.5618` vs `0.600`) | [#63] |
+| §6.2 restitution, dropped sphere | `h1/h0 = e²` within 2% | **fixed**: was 81% of nominal `e` from 20 cm, 92% from 80 cm, and no rebound from 5 cm; now within 0.2% of nominal above `e = 0.5` and within the time-of-impact quantization below it (see §6.2, `ContactRow::impact`) | [#64] |
+| §6.3 stacking at high mass ratio | degraded but bounded | **met, after `fix/clip-faces-manifolds`** — tilt after settling is 0.00° at every ratio from 1 to 100, with penetration rising smoothly 2.7e-4 m → 4.5e-3 m. Was 0.00° / 2.87° / 10.27° / 11.16° / **101.89°** / **145.82°** / **139.86°**; `PHYZ_LEGACY_CLIP=1` reproduces that | [#65] |
+
+The friction one is the most surprising, because three natural explanations are
+ruled out by measurement: it is not the solver preset, not the impedance
+regularizer (sweeping `solimp` over `0.9`…`0.9999` changes nothing), and not the
+box rotating (final pitch `4.2e-4 rad`). It is something the multi-point path
+does that the single-contact benchmark cannot see.
+
+The stacking one **is closed, and it was never the solver.** §7.4's table gives
+phyz *"stacking robustness: good, worse than TGS at high mass ratio"*, which
+reads as graceful degradation; a 20:1 stack standing perfectly while a 10:1
+stack fell flat was not degradation but an instability with a non-monotone
+onset, and a non-monotone onset is the signature of a *discrete* fault rather
+than a numerical one.
+
+It was one. `phyz_collision::manifold::clip_faces` measured each clipped
+vertex's separation along the **contact** normal rather than along the
+reference face's own normal, and always took the reference face from shape `A`
+whether or not that was the better-aligned one. A stack that settles even
+slightly out of parallel then reads its whole clipped polygon as metres-scale
+separation, rejects it, and falls back to a single support vertex chosen by the
+sign of a cancelled float. One point has no resistance to tipping — which is
+what §1 of `manifold.rs` says a manifold exists to provide — and a heavier top
+box tips faster. Measuring against the reference plane's own normal, and
+letting the better-aligned face be the reference, restores the manifold. What
+is left at 100:1 is soft contact degrading exactly as §7.4 describes:
+penetration grows with load, and the stack stays up. The row stands as
+written.
+
+What *does* meet spec, measured the same way: §6.1 A/B/D (stiction, the
+transition angle, isotropy to `1e-9`), §6.2's settling test (a bouncy sphere
+comes to rest inside 10 s and moves 0.000 m over the next 5 s), §6.3's
+equal-mass stack, and §6.4's energy bound (30 s of `e = 1` bouncing never
+exceeds the starting energy).
+
+### 8.4 Gradient validation, as it now stands
+
+Rollout-level FD gates, worst relative error per scenario:
+
+| Scenario | Worst lane |
+|---|---|
+| Block on an incline, sticking (20°, `mu = 0.6`) | `9.7e-9` |
+| Block on an incline, sliding (40°, `mu = 0.6`) | `3.0e-7` |
+| Box tipping on an edge (edge→face manifold change) | `1.5e-6` |
+| Block carried by friction on a driven plank (body-body) | `9.8e-4` |
+| Block sliding on a plank (body-body) | `4.3e-4` |
+| `dJ/dmu`, sliding box | `8.2e-8` |
+| `dJ/de`, bouncing sphere | `1.0e-7` |
+| Flat-ground box: impact / settled / slide / driven slide | `1e-3` gate |
+
+Note the pattern: the material channels and the single-body ground scenarios are
+four to five orders tighter than the body-body ones. That is the FD lanes of
+§8.2 showing up — `dJ/dmu` is analytic end to end, while a body-body lane
+accumulates central-difference error through assembly on both bodies. It is the
+clearest available argument for finishing §3.
+
+Two limits are pinned as tests rather than described:
+
+- The slip↔stick transition on a redundant eight-contact manifold stalls the
+  active-set Newton at `~1e-7` and the adjoint returns `Unconverged` rather than
+  differentiating a non-KKT point.
+- On an *exactly* symmetric manifold, the symmetry-breaking lane reports `0`
+  while the one-sided derivatives are `-5.457e-3` and `-1.391e-2` — so the
+  returned value is not merely the wrong branch, it is outside the Clarke
+  interval. Measure-zero, and 1 mrad off symmetry the lane agrees, but
+  hand-built initial conditions are frequently exactly symmetric.
+
+[#63]: https://github.com/ecto/phyz/issues/63
+[#64]: https://github.com/ecto/phyz/issues/64
+[#65]: https://github.com/ecto/phyz/issues/65
+
+### 8.5 Open
+
+Roughly in descending order of what a caller would actually notice.
+
+- §3 the generic-over-scalar solver, per §8.2.
+- The remaining §6 shortfalls of §8.3 — issues [#63] and [#65]. #63 is a
+  correctness bug in the shipped forward model, which makes it higher priority
+  than anything else on this list. #64 (restitution) is fixed.
+- `dJ/dsol_ref` is still unplumbed. `dJ/dmu` and `dJ/de` now reach the rollout;
+  `depth_sensitivity` exists at solver level and the stabilization parameters do
+  not.
+- §6.5 the contact-making discontinuity negative test exists only at solver
+  level (`depth_gradient_has_a_documented_hinge_at_zero_depth`), not as a
+  rollout. The body-body analogue now does exist —
+  `phyz-diff/tests/body_body_adjoint.rs::exact_symmetry_gives_a_lane_outside_the_clarke_set`.
+- §6.3's analytic-sink check (that the penetration matches `Σmg/k` to 20%) is
+  still not asserted; only the bound is. The measured sink is 342 µm for five
+  unit boxes.
+- §6.6 no recorded MuJoCo trajectory comparison, though `mujoco_compat` and the
+  creep-rate test exist to make one meaningful. Issues #63 and #65 are both
+  cases where an external oracle would settle the question quickly, so this has
+  become more valuable than it looked.
+- Stage 6 randomized smoothing / bundled gradients: not implemented anywhere.
+- §4.2 position-level friction anchors: not implemented. `convex.rs` argues the
+  solref bias removes the creep they were meant to fix, and the eight-box stack
+  holds to `1e-9` m over 3 s, so this may be a design item to retire rather than
+  build.

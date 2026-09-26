@@ -1,0 +1,39 @@
+# step-graph-capture — measured rows. One row per measurement, newest last.
+# host = Cam's laptop (no CUDA), via the cuda-host mirror; counts only.
+# Plant: models/ant.xml, 9 bodies, nv 14, impulse contact, 16 sweeps, PD on
+# every revolute DOF, control_every 20.
+#
+# date         where  worlds  mode      what                       kernel_launches  note
+2026-09-09     host      512  fused     step()                                   1  default mode
+2026-09-09     host      512  fused     period = 20x step()                     20  what the collector does today
+2026-09-09     host      512  fused     period = step_many(20)                   1  20x fewer host calls, same bits
+2026-09-09     host      512  fission   step()                                  35  3 + 2*sweeps
+2026-09-09     host      512  fission   period = 20x step()                    700
+2026-09-09     host      512  fission   period = step_many(20)                 700  no capture on the host mirror
+2026-09-09     host      512  unfused   step()                                  35
+2026-09-09     host      512  unfused   period = 20x step()                    700
+2026-09-09     host      512  unfused   period = step_many(20)                 700
+2026-09-09     host     4096  fused     step()                                   1  IDENTICAL to 512 — the finding
+2026-09-09     host     4096  fused     period = 20x step()                     20  identical to 512
+2026-09-09     host     4096  fused     period = step_many(20)                   1  identical to 512
+2026-09-09     host     4096  fission   step()                                  35  identical to 512
+2026-09-09     host     4096  unfused   step()                                  35  identical to 512
+2026-09-09     host      any  -         readback_states()                        0  + 2 downloads, 1 BLOCKING sync
+# mew = RTX 3090, --features cuda,cuda-host, graphs on. Counts are exact under
+# GPU contention, so these were taken while the walk arms held the device.
+2026-09-09     mew    8,512  fused     step() captured                 1 replay  0 kernel launches
+2026-09-09     mew    8,512  fused     period = 20x step() captured   20 replays capture cannot cross a step() call
+2026-09-09     mew    8,512  fused     period = step_many(20) capt.    1 replay  the one-call period
+2026-09-09     mew    8,512  fission   step() captured                 1 replay  35 -> 1: what #80 bought
+2026-09-09     mew    8,512  fission   period = 20x step() captured   20 replays
+2026-09-09     mew    8,512  fission   period = step_many(20) capt.    1 replay  700 -> 1
+2026-09-09     mew    8,512  unfused   step() captured                 1 replay
+2026-09-09     mew    8,512  unfused   period = 20x step() captured   20 replays
+2026-09-09     mew    8,512  unfused   period = step_many(20) capt.    1 replay  700 -> 1
+2026-09-09     mew    8,512  -         all of the above at 8 and 512            identical — flat in worlds on the device too
+#
+# Pending: every duration. mew's 3090 ran four walk arms
+# all session; ~/lanes/run-step-graph-capture.sh waits on /tmp/wsarms/pids and
+# writes /tmp/phyzgraph-gpu/{census.txt,bench-*.txt}. Nothing timed yet — do
+# not quote a speedup from this file until those rows exist. A launch count is
+# not a duration.

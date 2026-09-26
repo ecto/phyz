@@ -1,5 +1,6 @@
 //! Rigid body definition.
 
+use crate::material::ContactMaterial;
 use phyz_math::{SpatialInertia, SpatialTransform};
 
 /// A rigid body in the kinematic tree.
@@ -24,6 +25,40 @@ pub struct Body {
     pub collisions: Vec<GeomInstance>,
     /// Visual-only shapes attached to this body (not used for contact).
     pub visuals: Vec<GeomInstance>,
+    /// This body's own contact material, or `None` to use the scene default.
+    ///
+    /// The material applies to **every contact this body is part of** —
+    /// against the ground and against every other body — and the pair is
+    /// resolved by [`ContactMaterial::combine`]. `None` means "whatever the
+    /// scene is made of", which is what keeps existing models unchanged:
+    /// [`crate::Model::contact_materials`] fills those slots with the scene
+    /// material and the assembled problem is bit-identical to the old
+    /// `vec![one; n_bodies]`.
+    ///
+    /// **Which body you attach it to is a physical decision, not a
+    /// bookkeeping one.** `combine` takes the *maximum* friction of the pair,
+    /// so a grippy material grips everything the body touches. Putting grip
+    /// tape's `mu = 1.5` on a skateboard deck also makes the deck's underside
+    /// grab the asphalt when the tail scrapes — measured, that braked a board
+    /// from 0.6 to 0.39 m/s and killed the trick. Putting the same 1.5 on the
+    /// *shoes* raises only the foot-on-deck contacts and leaves the deck-on-
+    /// ground contact at wood's 0.6. See the crate docs on
+    /// [`ContactMaterial::combine`].
+    ///
+    /// # The ground has no material of its own
+    ///
+    /// A contact against the ground plane or a heightfield uses the touching
+    /// body's material **verbatim** — there is no second material to combine
+    /// with, so nothing is combined. That is easy to miss now that bodies
+    /// differ from one another: setting a deck to wood's `0.6` and passing
+    /// asphalt's `0.8` as the scene material gives a deck-on-ground friction
+    /// of `0.6`, not `max(0.6, 0.8)`. The scene material is a *default filler*
+    /// for bodies that carry none, not a property of the ground.
+    ///
+    /// So the friction a body has against the ground is exactly the friction
+    /// you wrote on that body, and a "road surface" is expressed by leaving
+    /// the bodies that touch it on the scene material.
+    pub material: Option<ContactMaterial>,
 }
 
 impl Body {
@@ -37,7 +72,18 @@ impl Body {
             geometry: None,
             collisions: Vec::new(),
             visuals: Vec::new(),
+            material: None,
         }
+    }
+
+    /// Attach a contact material to this body.
+    ///
+    /// Read [`Body::material`] before choosing which body gets it: friction
+    /// combines by `max`, so the material belongs on the part that should
+    /// grip, not on the part it touches.
+    pub fn with_material(mut self, material: ContactMaterial) -> Self {
+        self.material = Some(material);
+        self
     }
 }
 
@@ -119,4 +165,48 @@ pub enum Geometry {
         /// Outward unit normal of the plane, in body frame.
         normal: phyz_math::Vec3,
     },
+}
+
+/// What one side of a pairwise quantity is attached to: a body in the model,
+/// or the static world.
+///
+/// # Why this type exists
+///
+/// Contacts, constraints and relative Jacobians all need to express "body `i`
+/// against body `j`, where `j` may be the ground". The engine long spelled
+/// that as a plain `usize` with `usize::MAX` meaning the world — an *in-band
+/// sentinel*, and a hazardous one: `usize::MAX` is a perfectly valid-looking
+/// index, so a stale or miscomputed index that happens to land on it is
+/// silently reinterpreted as "the world" instead of panicking. The failure is
+/// not a crash but a contact that quietly stops pushing back on one side.
+///
+/// `Attachment` makes the two cases distinct at the type level, so the
+/// compiler forces every consumer to say which it means. It carries no
+/// sentinel and cannot be constructed from a bare index by accident — there is
+/// deliberately no `From<usize>` impl, because that would reintroduce exactly
+/// the ambiguity this type removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Attachment {
+    /// A body in the model, by index.
+    Body(usize),
+    /// The static world: infinitely massive, never moves, and contributes no
+    /// columns to a Jacobian.
+    World,
+}
+
+impl Attachment {
+    /// The body index, or `None` for [`Attachment::World`].
+    #[inline]
+    pub fn body(self) -> Option<usize> {
+        match self {
+            Attachment::Body(i) => Some(i),
+            Attachment::World => None,
+        }
+    }
+
+    /// Whether this is the static world.
+    #[inline]
+    pub fn is_world(self) -> bool {
+        matches!(self, Attachment::World)
+    }
 }

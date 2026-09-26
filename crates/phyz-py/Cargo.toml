@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for phyz physics engine"
+# a pyo3 extension module shipped through PyPI, not crates.io
+publish = false
 
 # Opt out of workspace
 [workspace]

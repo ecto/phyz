@@ -38,10 +38,7 @@ fn section1_phase_transition() {
 
     println!("# Section 1: Entanglement Phase Transition (U(1) lambda scan)");
     println!("# Complex: single pentachoron, partition {{0,1}}");
-    println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        "lambda", "g_squared", "dim", "S_total", "S_shannon", "S_distill", "n_sectors", "gap"
-    );
+    println!("lambda\tg_squared\tdim\tS_total\tS_shannon\tS_distill\tn_sectors\tgap");
 
     let g_squareds = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0];
     let dense_threshold = 1_000;
@@ -144,7 +141,7 @@ fn section2_emergent_metric() {
     let l_min = 0.1;
     let l_max = 5.0;
 
-    println!("{}\t{}\t{}", "iter", "loss", "R_squared");
+    println!("iter\tloss\tR_squared");
 
     for iter in 0..n_iter {
         // Compute areas for current lengths
@@ -194,10 +191,7 @@ fn section2_emergent_metric() {
 
     // Final comparison
     println!("# Final comparison");
-    println!(
-        "{}\t{}\t{}\t{}",
-        "edge", "target_length", "recovered_length", "relative_error"
-    );
+    println!("edge\ttarget_length\trecovered_length\trelative_error");
 
     for e in 0..n_edges {
         let rel_err = (lengths[e] - target_lengths[e]).abs() / target_lengths[e];
@@ -232,7 +226,7 @@ fn section3_page_curve() {
 
     println!("# Section 3: Page Curve in SU(2) Gauge Theory");
     println!("# Complex: single pentachoron, partition {{0,1}}");
-    println!("{}\t{}\t{}\t{}", "g_squared", "eigen_idx", "energy", "S_EE");
+    println!("g_squared\teigen_idx\tenergy\tS_EE");
 
     let g_squareds = [0.5, 1.0, 2.0, 5.0];
 

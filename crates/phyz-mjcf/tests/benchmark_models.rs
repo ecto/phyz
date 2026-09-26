@@ -77,7 +77,12 @@ fn shadow_hand_approximation() {
 /// which is the point of authoring it that way.
 #[test]
 fn benchmark_models_report_no_hidden_losses() {
-    for name in ["ant.xml", "half_cheetah.xml", "humanoid.xml", "shadow_hand.xml"] {
+    for name in [
+        "ant.xml",
+        "half_cheetah.xml",
+        "humanoid.xml",
+        "shadow_hand.xml",
+    ] {
         let l = loader(name);
         assert!(
             l.unsupported().is_empty(),

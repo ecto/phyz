@@ -1,16 +1,20 @@
 //! MJCF XML parser implementation.
 
+use crate::assets::{MeshAsset, parse_mesh};
 use crate::attrs::Attrs;
 use crate::defaults::{DefaultsManager, ROOT_CLASS};
 use crate::inertia::{self, MassProps, Shape};
+use crate::orientation::{AngleConfig, parse_orientation, rotation_z_to};
 use crate::{MjcfError, Result};
 use phyz_math::{GRAVITY, Mat3, Quat, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Actuator, Geometry, Joint, JointType, Model, ModelBuilder};
+use phyz_model::{
+    Actuator, ContactMaterial, Geometry, Joint, JointType, Model, ModelBuilder, SolImp, SolRef,
+};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// An MJCF feature present in the file that this parser does not implement.
 ///
@@ -30,7 +34,8 @@ pub struct UnsupportedFeature {
 struct BodyElement {
     name: String,
     pos: Vec3,
-    quat: [f64; 4],
+    /// Orientation in the parent frame, from any of MJCF's five spellings.
+    rot: Mat3,
     parent_idx: Option<usize>,
     inertial: Option<SpatialInertia>,
     joints: Vec<JointElement>,
@@ -69,6 +74,18 @@ struct GeomElement {
     /// Set when the geom is `contype="0" conaffinity="0"` — visual only, so it
     /// contributes inertia but never collides.
     collides: bool,
+    /// Name of the `<mesh>` asset this geom draws its shape from.
+    mesh: Option<String>,
+    /// Contact material read off this geom, or `None` when the geom — and the
+    /// `<default>` class it resolves through — named none of `friction`,
+    /// `solref`, `solimp` or `margin`.
+    ///
+    /// `None` rather than "MuJoCo's defaults" deliberately: MJCF's default
+    /// sliding friction is 1.0 and phyz's is 0.5, so materializing the
+    /// defaults here would silently double the friction of every model that
+    /// never mentioned it. A geom that says nothing leaves its body on the
+    /// scene material, exactly as before this existed.
+    material: Option<ContactMaterial>,
 }
 
 impl GeomElement {
@@ -136,37 +153,85 @@ pub struct MjcfLoader {
     bodies: Vec<BodyElement>,
     actuators: Vec<ActuatorElement>,
     sensors: Vec<SensorElement>,
+    meshes: Vec<MeshAsset>,
     unsupported: Vec<UnsupportedFeature>,
     gravity_vec: Vec3,
     timestep: f64,
-    angle_in_degrees: bool,
+    angles: AngleConfig,
     #[allow(dead_code)]
     coordinate: String,
+    /// Directory of the model file, for resolving asset paths.
+    model_dir: Option<PathBuf>,
+    /// `compiler/meshdir` (or `assetdir`), relative to `model_dir`.
+    meshdir: Option<String>,
 }
 
 impl MjcfLoader {
     /// Load MJCF from file path.
+    ///
+    /// `<include>` and asset paths resolve relative to this file's directory.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         let xml_content = fs::read_to_string(path)?;
-        Self::from_xml_str(&xml_content)
+        Self::load(&xml_content, path.parent())
     }
 
     /// Load MJCF from XML string.
+    ///
+    /// `<include>` resolves against the process working directory; use
+    /// [`MjcfLoader::from_file`] when a model refers to sibling files.
     pub fn from_xml_str(xml: &str) -> Result<Self> {
+        Self::load(xml, None)
+    }
+
+    fn load(xml: &str, dir: Option<&Path>) -> Result<Self> {
+        // Includes are spliced in before parsing, so the parser below never has
+        // to know they exist.
+        let xml = crate::include::expand(xml, dir)?;
+        let xml = xml.as_str();
         let mut loader = Self {
             defaults: DefaultsManager::new(),
             bodies: Vec::new(),
             actuators: Vec::new(),
             sensors: Vec::new(),
+            meshes: Vec::new(),
             unsupported: Vec::new(),
             gravity_vec: Vec3::new(0.0, 0.0, -GRAVITY),
             timestep: 0.002,
-            angle_in_degrees: false,
+            angles: AngleConfig::default(),
             coordinate: "local".to_string(),
+            model_dir: dir.map(Path::to_path_buf),
+            meshdir: None,
         };
 
         loader.parse_xml(xml)?;
         Ok(loader)
+    }
+
+    /// `<mesh>` assets, in document order.
+    pub fn meshes(&self) -> &[MeshAsset] {
+        &self.meshes
+    }
+
+    /// Directory that asset `file` attributes resolve against.
+    fn asset_dir(&self) -> Option<PathBuf> {
+        match (&self.model_dir, &self.meshdir) {
+            (Some(dir), Some(sub)) => Some(dir.join(sub)),
+            (Some(dir), None) => Some(dir.clone()),
+            (None, Some(sub)) => Some(PathBuf::from(sub)),
+            (None, None) => None,
+        }
+    }
+
+    fn parse_mesh_asset(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
+        let a = Attrs::read(e, Default::default())?;
+        let dir = self.asset_dir();
+        let mesh = parse_mesh(&a, dir.as_deref())?;
+        if let Some(err) = mesh.load_error.clone() {
+            self.note_unsupported("mesh", &format!("mesh '{}' not loaded: {err}", mesh.name));
+        }
+        self.meshes.push(mesh);
+        Ok(())
     }
 
     /// MJCF features present in the file that this parser dropped.
@@ -239,11 +304,12 @@ impl MjcfLoader {
                         "actuator" => in_actuator = true,
                         "sensor" => in_sensor = true,
                         "asset" => in_asset = true,
-                        "mesh" | "hfield" if in_asset => {
+                        "mesh" if in_asset => self.parse_mesh_asset(e)?,
+                        "hfield" if in_asset => {
                             self.note_unsupported(
-                                &tag,
-                                "mesh assets are not loaded; geoms referencing them are dropped \
-                                 and contribute no inertia or collision",
+                                "hfield",
+                                "heightfields are parsed but phyz-collision has no heightfield \
+                                 shape, so the geom is dropped",
                             );
                         }
                         "equality" => self.note_unsupported(
@@ -310,7 +376,7 @@ impl MjcfLoader {
             buf.clear();
         }
 
-        if self.angle_in_degrees {
+        if self.angles.degrees {
             for body in &mut self.bodies {
                 for joint in &mut body.joints {
                     if let Some(ref mut range) = joint.range {
@@ -362,10 +428,28 @@ impl MjcfLoader {
     fn parse_compiler(&mut self, e: &quick_xml::events::BytesStart) -> Result<()> {
         let a = Attrs::read(e, Default::default())?;
         if let Some(angle) = a.get("angle") {
-            self.angle_in_degrees = angle == "degree";
+            self.angles.degrees = angle == "degree";
+        }
+        if let Some(seq) = a.get("eulerseq") {
+            if seq.chars().count() != 3 || !seq.chars().all(|c| "xyzXYZ".contains(c)) {
+                return Err(MjcfError::invalid_attr(
+                    "compiler",
+                    "eulerseq",
+                    seq,
+                    "expected exactly 3 characters from x/y/z/X/Y/Z",
+                ));
+            }
+            self.angles.eulerseq = seq.to_string();
         }
         if let Some(c) = a.get("coordinate") {
             self.coordinate = c.to_string();
+        }
+        // meshdir wins over the more general assetdir, matching MuJoCo.
+        if let Some(d) = a.get("assetdir") {
+            self.meshdir = Some(d.to_string());
+        }
+        if let Some(d) = a.get("meshdir") {
+            self.meshdir = Some(d.to_string());
         }
         Ok(())
     }
@@ -387,17 +471,14 @@ impl MjcfLoader {
         let a = self.attrs_for(e, "body", parent_idx)?;
         let name = a.str_or("name", &format!("body_{}", self.bodies.len()));
         let pos = a.vec3_or("pos", Vec3::zeros());
-        let quat = match a.floats("quat") {
-            Some(v) if v.len() == 4 => [v[0], v[1], v[2], v[3]],
-            _ => [1.0, 0.0, 0.0, 0.0],
-        };
+        let rot = parse_orientation(&a, "body", &self.angles)?.unwrap_or_else(Mat3::identity);
         let childclass = a.get("childclass").map(str::to_string);
 
         let idx = self.bodies.len();
         self.bodies.push(BodyElement {
             name,
             pos,
-            quat,
+            rot,
             parent_idx,
             inertial: None,
             joints: Vec::new(),
@@ -471,11 +552,9 @@ impl MjcfLoader {
 
         // `fullinertia` is [xx, yy, zz, xy, xz, yz].
         let tensor = match a.floats("fullinertia") {
-            Some(v) if v.len() == 6 => Mat3::new(
-                v[0], v[3], v[4],
-                v[3], v[1], v[5],
-                v[4], v[5], v[2],
-            ),
+            Some(v) if v.len() == 6 => {
+                Mat3::new(v[0], v[3], v[4], v[3], v[1], v[5], v[4], v[5], v[2])
+            }
             _ => {
                 let d = a.vec3_or("diaginertia", Vec3::new(0.001, 0.001, 0.001));
                 let local = Mat3::from_diagonal(&d);
@@ -498,21 +577,28 @@ impl MjcfLoader {
         let name = a.str_or("name", &format!("geom_{body_idx}"));
         let geom_type = a.str_or("type", "sphere");
 
-        if geom_type == "mesh" || a.get("mesh").is_some() {
-            self.note_unsupported(
-                "geom",
-                "mesh geoms are dropped; the body loses that collision shape and its inertia \
-                 contribution",
-            );
-            return Ok(());
+        // A mesh geom is kept when its asset loaded; otherwise it is dropped and
+        // reported, since an unresolvable mesh has no shape to stand in for it.
+        let mesh = a.get("mesh").map(str::to_string);
+        if geom_type == "mesh" || mesh.is_some() {
+            let named = mesh.as_deref().unwrap_or_default();
+            if !self
+                .meshes
+                .iter()
+                .any(|m| m.name == named && m.data.is_some())
+            {
+                self.note_unsupported(
+                    "geom",
+                    "mesh geoms whose asset could not be loaded are dropped; the body loses \
+                     that collision shape and its inertia contribution",
+                );
+                return Ok(());
+            }
         }
 
         let mut size = a.floats("size").unwrap_or_else(|| vec![0.05]);
         let mut pos = a.vec3_or("pos", Vec3::zeros());
-        let mut rot = match a.floats("quat") {
-            Some(v) if v.len() == 4 => Quat::new(v[0], v[1], v[2], v[3]).normalize().to_matrix(),
-            _ => Mat3::identity(),
-        };
+        let mut rot = parse_orientation(&a, "geom", &self.angles)?.unwrap_or_else(Mat3::identity);
 
         // `fromto` gives the two endpoints of a capsule/cylinder axis; it
         // overrides pos/quat and supplies the half-length. Cheetah and humanoid
@@ -543,6 +629,8 @@ impl MjcfLoader {
             density: a.f64_or("density", 1000.0),
             mass: a.f64("mass"),
             collides,
+            mesh,
+            material: geom_material(&a),
         });
         Ok(())
     }
@@ -637,8 +725,7 @@ impl MjcfLoader {
                 .and_then(|p| body_map.get(&p).copied())
                 .unwrap_or(-1);
 
-            let quat = Quat::new(body.quat[0], body.quat[1], body.quat[2], body.quat[3]).normalize();
-            let parent_to_body = SpatialTransform::new(quat.to_matrix(), body.pos);
+            let parent_to_body = SpatialTransform::new(body.rot, body.pos);
 
             let inertia = self.body_inertia(body);
 
@@ -721,7 +808,7 @@ impl MjcfLoader {
             };
             let b = &mut model.bodies[model_idx as usize];
             for geom in &body.geoms {
-                let Some(geometry) = geom_to_geometry(geom) else {
+                let Some(geometry) = geom_to_geometry(geom, &self.meshes) else {
                     continue;
                 };
                 // `GeomInstance::origin` follows the `parent_to_joint`
@@ -738,6 +825,22 @@ impl MjcfLoader {
                     b.visuals.push(instance);
                 }
             }
+            // Fold the body's collision geoms into one body material. phyz's
+            // material is per body, MJCF's is per geom, so several geoms on
+            // one body have to agree on a single answer; they are combined by
+            // the same `ContactMaterial::combine` rule a contacting pair uses
+            // (max friction, geometric mean for the stiffness-like terms),
+            // which is the rule already documented as the way two materials
+            // become one. Geoms that named nothing are skipped rather than
+            // contributing MuJoCo's defaults, so one explicit geom does not
+            // get averaged away by its silent neighbours.
+            b.material = body
+                .geoms
+                .iter()
+                .filter(|g| g.collides)
+                .filter_map(|g| g.material.clone())
+                .reduce(|a, m| ContactMaterial::combine(&a, &m));
+
             // `geometry` mirrors the first centred collision shape so existing
             // single-shape consumers keep working.
             b.geometry = b
@@ -795,24 +898,57 @@ impl MjcfLoader {
     }
 }
 
-/// A rotation taking the local +Z axis onto `dir` (which must be unit length).
-fn rotation_z_to(dir: Vec3) -> Mat3 {
-    let z = Vec3::new(0.0, 0.0, 1.0);
-    let dot = z.x * dir.x + z.y * dir.y + z.z * dir.z;
-    if dot > 1.0 - 1e-12 {
-        return Mat3::identity();
+/// The contact material a geom's attributes describe, or `None` if it names
+/// none of them.
+///
+/// What is read, and what MuJoCo means by it:
+///
+/// - **`friction`** — MuJoCo gives three numbers, `slide spin roll`. phyz's
+///   friction cone is the sliding one only, so the first component is taken
+///   and the spin/roll torsional terms are dropped. For a foot or a wheel
+///   the sliding term is the one that decides whether it grips.
+/// - **`solref`** — `(timeconst, dampratio)`, straight across.
+/// - **`solimp`** — `(dmin, dmax, width[, midpoint, power])`; the trailing two
+///   keep [`SolImp::default`]'s values when the file gives only three, which
+///   is how MuJoCo's own shorthand reads.
+/// - **`margin`** — straight across.
+///
+/// Every field the geom does not name keeps [`ContactMaterial::default`]'s
+/// value, *not* MuJoCo's — notably `stiffness`, `damping` and `restitution`,
+/// which MJCF has no geom-level attribute for at all. MuJoCo expresses
+/// bounce through `solref` rather than a restitution coefficient, so an
+/// imported model's restitution is phyz's default (0, fully inelastic)
+/// unless set in code.
+///
+/// Also not read: `condim` (phyz's cone is always `condim=3` sliding
+/// friction), `priority` and `solmix` (the combine rule is fixed), and
+/// `gap`.
+fn geom_material(a: &Attrs) -> Option<ContactMaterial> {
+    let friction = a.floats("friction").and_then(|f| f.first().copied());
+    let solref = a.floats("solref").filter(|v| v.len() >= 2);
+    let solimp = a.floats("solimp").filter(|v| v.len() >= 3);
+    let margin = a.f64("margin");
+    if friction.is_none() && solref.is_none() && solimp.is_none() && margin.is_none() {
+        return None;
     }
-    if dot < -1.0 + 1e-12 {
-        // 180°: any axis perpendicular to Z works.
-        return Mat3::from_diagonal(&Vec3::new(1.0, -1.0, -1.0));
-    }
-    let axis = Vec3::new(
-        z.y * dir.z - z.z * dir.y,
-        z.z * dir.x - z.x * dir.z,
-        z.x * dir.y - z.y * dir.x,
-    );
-    let s = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
-    Quat::from_axis_angle(axis / s, dot.acos()).to_matrix()
+
+    let d = ContactMaterial::default();
+    Some(ContactMaterial {
+        friction: friction.unwrap_or(d.friction),
+        margin: margin.unwrap_or(d.margin),
+        solref: solref.map_or(d.solref, |v| SolRef {
+            timeconst: v[0],
+            dampratio: v[1],
+        }),
+        solimp: solimp.map_or(d.solimp, |v| SolImp {
+            dmin: v[0],
+            dmax: v[1],
+            width: v[2],
+            midpoint: v.get(3).copied().unwrap_or(d.solimp.midpoint),
+            power: v.get(4).copied().unwrap_or(d.solimp.power),
+        }),
+        ..d
+    })
 }
 
 /// Convert a parsed GeomElement to a phyz_model Geometry.
@@ -820,7 +956,15 @@ fn rotation_z_to(dir: Vec3) -> Mat3 {
 /// Note the capsule/cylinder unit change: MJCF `size` carries the **half**
 /// length, while `Geometry::Capsule::length` is the **full** length (downstream
 /// contact code computes `pos.z - length * 0.5 - radius`).
-fn geom_to_geometry(geom: &GeomElement) -> Option<Geometry> {
+fn geom_to_geometry(geom: &GeomElement, meshes: &[MeshAsset]) -> Option<Geometry> {
+    if geom.geom_type == "mesh" || geom.mesh.is_some() {
+        let name = geom.mesh.as_deref()?;
+        let data = meshes.iter().find(|m| m.name == name)?.data.as_ref()?;
+        return Some(Geometry::Mesh {
+            vertices: data.vertices.clone(),
+            faces: data.faces.clone(),
+        });
+    }
     let s = &geom.size;
     match geom.geom_type.as_str() {
         "sphere" => Some(Geometry::Sphere {
@@ -982,7 +1126,10 @@ mod tests {
         </mujoco>
         "#;
         let model = MjcfLoader::from_xml_str(mjcf).unwrap().build_model();
-        assert!((model.joints[0].damping - 0.5).abs() < 1e-12, "root default");
+        assert!(
+            (model.joints[0].damping - 0.5).abs() < 1e-12,
+            "root default"
+        );
         assert!((model.joints[1].damping - 9.0).abs() < 1e-12, "childclass");
         // Root default supplied `type=capsule`, so the geom is a capsule with
         // full length 2 * 0.2.
@@ -1067,7 +1214,11 @@ mod tests {
         </mujoco>
         "#;
         let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
-        let tags: Vec<&str> = loader.unsupported().iter().map(|u| u.tag.as_str()).collect();
+        let tags: Vec<&str> = loader
+            .unsupported()
+            .iter()
+            .map(|u| u.tag.as_str())
+            .collect();
         assert!(tags.contains(&"mesh"), "{tags:?}");
         assert!(tags.contains(&"tendon"), "{tags:?}");
         assert!(tags.contains(&"equality"), "{tags:?}");
@@ -1115,7 +1266,7 @@ mod tests {
         </mujoco>
         "#;
         let loader = MjcfLoader::from_xml_str(mjcf).unwrap();
-        assert!(loader.angle_in_degrees);
+        assert!(loader.angles.degrees);
         let model = loader.build_model();
         let range = model.joints[0].limits.unwrap();
         assert!((range[0] + std::f64::consts::FRAC_PI_2).abs() < 1e-10);

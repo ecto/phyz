@@ -19,16 +19,6 @@ fn batch_size_for_level(level: u32) -> usize {
     }
 }
 
-/// Round size per level: how many work units to fetch per round.
-fn round_size_for_level(level: u32) -> usize {
-    match level {
-        0 => 1024,
-        1 => 512,
-        2 => 100,
-        _ => 10, // L3+
-    }
-}
-
 /// Round lifecycle state machine.
 enum RoundState {
     Idle,
@@ -183,29 +173,8 @@ impl Coordinator {
         web_sys::console::log_1(&"coordinator: stopped".into());
     }
 
-    /// Enter draining state: stop fetching/dispatching, let in-flight workers finish.
-    pub fn drain(&self) {
-        let mut state = self.state.borrow_mut();
-        match &*state {
-            RoundState::Draining { .. } | RoundState::Complete => return,
-            _ => {}
-        }
-        // Take accumulated results from Computing state if present
-        let results = match std::mem::replace(&mut *state, RoundState::Idle) {
-            RoundState::Computing { results, .. } => results,
-            _ => Vec::new(),
-        };
-        *state = RoundState::Draining { results };
-        crate::dom::set_text("status-text", "finishing up");
-        web_sys::console::log_1(&"coordinator: draining".into());
-    }
-
     pub fn set_effort(&self, pct: u32) {
         *self.effort.borrow_mut() = pct.clamp(1, 100);
-    }
-
-    pub fn effort(&self) -> u32 {
-        *self.effort.borrow()
     }
 
     /// Max active workers based on effort percentage.
@@ -661,5 +630,5 @@ impl Coordinator {
 
 thread_local! {
     /// Stash for work units fetched asynchronously, consumed by tick_computing.
-    static FETCH_STASH: RefCell<Vec<WorkUnit>> = RefCell::new(Vec::new());
+    static FETCH_STASH: RefCell<Vec<WorkUnit>> = const { RefCell::new(Vec::new()) };
 }

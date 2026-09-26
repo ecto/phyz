@@ -82,7 +82,7 @@ fn main() {
     println!("\nActual ratios:");
     println!(
         "  Fast:Medium:Slow = {:.1}:{:.1}:{:.1}",
-        fast_count as f64 / fast_count as f64,
+        1.0,
         fast_count as f64 / medium_count as f64,
         fast_count as f64 / slow_count as f64
     );

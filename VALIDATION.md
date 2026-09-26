@@ -2,14 +2,7 @@
 
 Every entry compares a phyz solver against a closed-form solution or published reference data, and reports a quantitative error — not a pass/fail bit. Tolerances are declared before the measurement is taken and are never relaxed to make a benchmark pass.
 
-**40 passed · 2 failed · 4 reported (diagnostic)**
-
-## Failures
-
-| Benchmark | Metric | Measured | Expected | Error | Tolerance |
-|---|---|---:|---:|---:|---:|
-| `gravity.pn.mercury_precession` | precession of the eccentricity vector (arcsec/century), 400 orbits at 4000 steps/orbit | 1.433255e1 | 4.299726e1 | 6.667e-1 (rel) | 2.000e-2 |
-| `gravity.pn.mercury_convergence` | \|Δϖ_measured − Δϖ_GR\| / Δϖ_GR at 4000 steps/orbit (60 orbits) | 6.663155e-1 | 0.000000e0 | 6.663e-1 (abs) | 2.000e-2 |
+**42 passed · 0 failed · 4 reported (diagnostic)**
 
 ## Rigid-body dynamics — Featherstone ABA (`phyz-rigid`)
 
@@ -189,36 +182,38 @@ Every entry compares a phyz solver against a closed-form solution or published r
   | 5.000000e-4 | 1.008043e-4 | 4.000 |
   | 2.500000e-4 | 2.520140e-5 | 4.000 |
 
-### Mercury perihelion precession from integrated 1PN equations of motion — FAIL
+### Mercury perihelion precession from integrated 1PN equations of motion — PASS
 
 - **crate**: `phyz-gravity`
 - **id**: `gravity.pn.mercury_precession`
 - **reference**: Einstein (1915); Will, *Living Rev. Rel.* 17 (2014) — Δϖ = 6πGM/(c²a(1−e²)) = 42.98″/century for Mercury
 - **metric**: precession of the eccentricity vector (arcsec/century), 400 orbits at 4000 steps/orbit
-- **measured**: 1.433254917e1
+- **measured**: 4.299733929e1
 - **expected**: 4.299725816e1
-- **error**: 6.6666e-1 (rel) — tolerance 2.0000e-2
+- **error**: 1.8868e-6 (rel) — tolerance 2.0000e-2
 - _note_: Newtonian control run (same integrator, same Δt, 1PN term switched off) drifts -381.9085″/century; that baseline is subtracted from the 1PN run so the residual is the physical effect and not integrator error.
 - _note_: Closed-form check of the textbook formula alone: 6πGM/(c²a(1−e²)) = 42.997″/century — this is what the pre-existing `test_mercury_precession` (crates/phyz-gravity/src/pn.rs:321-334) asserted, without ever calling the solver.
-- _note_: The docstring at pn.rs:78-86 states a_1PN = Gm_j/r² [(4G(m_i+m_j)/r − v_i²)n + 4(v_i·v_j)n − (v_i·n)v_j]/c², which is not the standard EIH 1PN acceleration. The EIH form (Will 1993 eq. 6.80; Blanchet 2014 eq. 203) is a_1PN = −(Gm_j/r²c²){ n̂[4Gm_i/r + 5Gm_j/r − v_i² − 2v_j² + 4v_i·v_j + (3/2)(n̂·v_j)²] + (v_i − v_j)(4n̂·v_i − 3n̂·v_j) }, with n̂ pointing from j to i. The code at pn.rs:89-114 differs from EIH in three places: the mass coefficient is 4(m_i+m_j) rather than 4m_i + 5m_j; the velocity term multiplies v_j rather than (v_i − v_j); and the overall sign is positive in the code's n = (x_j − x_i)/r convention where EIH requires negative. Any one of those changes the precession.
+- _note_: This benchmark measured 14.33″/century — exactly one third of the GR value — until the 1PN force law was corrected to the EIH form. Two coefficients were wrong: the mass term read 4G(m_i+m_j)/r instead of 5G·m_i/r + 4G·m_j/r, and the velocity term multiplied v_j rather than (v_i − v_j), which made it vanish for a planet around a nearly stationary star. The sign is negative in phyz's n = (x_j − x_i)/r convention. The test-particle limit is what pins the mass coefficients: with m_i → 0 the bracket must reduce to 4GM/r, the Schwarzschild geodesic in harmonic gauge, which the other ordering cannot do.
 
-### Integrated Mercury precession converges to the GR value as Δt → 0 — FAIL
+### Integrated Mercury precession converges to the GR value as Δt → 0 — PASS
 
 - **crate**: `phyz-gravity`
 - **id**: `gravity.pn.mercury_convergence`
 - **reference**: Δϖ = 6πGM/(c²a(1−e²)); a correct 1PN force law makes the residual a pure integrator error that vanishes as Δt²
-- **metric**: |Δϖ_measured − Δϖ_GR| / Δϖ_GR at 4000 steps/orbit (60 orbits)
-- **measured**: 6.663155290e-1
+- **metric**: |Δϖ_measured − Δϖ_GR| / Δϖ_GR at 4000 steps/orbit (400 orbits)
+- **measured**: 1.886813697e-6
 - **expected**: 0.000000000e0
-- **error**: 6.6632e-1 (abs) — tolerance 2.0000e-2
-- **convergence in Δt/T**: measured order p = 0.000 (expected 2.0 ± 0.5) — MISMATCH
+- **error**: 1.8868e-6 (abs) — tolerance 2.0000e-2
+- **convergence in Δt/T**: measured order p = 4.149 (expected 4.0 ± 1.5) — OK
 
   | Δt/T | error | ratio |
   |---:|---:|---:|
-  | 1.000000e-3 | 6.663941e-1 | NaN |
-  | 5.000000e-4 | 6.663313e-1 | 1.000 |
-  | 2.500000e-4 | 6.663155e-1 | 1.000 |
-- _note_: If the residual does not shrink under refinement, the discrepancy is in the force law, not the integrator.
+  | 1.000000e-3 | 5.942312e-4 | NaN |
+  | 5.000000e-4 | 6.616427e-5 | 8.981 |
+  | 2.500000e-4 | 1.886814e-6 | 35.067 |
+- _note_: If the residual does not shrink under refinement, the discrepancy is in the force law, not the integrator. That is what this row is for, and it is the check that stayed red while the force law was wrong.
+- _note_: The expected order is 4, not the velocity-Verlet integrator's own 2, because the Newtonian control run is subtracted at the same Δt: the leading O(Δt²) apsidal drift is common to both runs and cancels in the difference, leaving a residual that falls faster than the integrator does. The measured exponent is indicative rather than asymptotic — the successive error ratios over this range are 9.0 and 35.1, not a single clean power — so the band is wide on purpose.
+- _note_: The sweep uses the same 400-orbit window as the headline row. Over 60 orbits the residual is dominated by the finite measurement window rather than by Δt (2.7e-4 against 1.9e-6 at the same Δt = T/4000), and an order fitted through a window-dominated residual measures nothing — it read p = −0.24.
 
 ## Electromagnetics — FDTD on a Yee grid (`phyz-em`)
 
@@ -230,7 +225,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the m=1 standing mode (rad/s)
 - **measured**: 1.471467353e10
 - **expected**: 1.471467353e10
-- **error**: 2.6877e-12 (rel) — tolerance 1.0000e-9
+- **error**: 1.5817e-12 (rel) — tolerance 1.0000e-9
 - _note_: For one spatial eigenmode the leapfrog is exactly E^{n+1} = 2cos(ωΔt)E^n − E^{n−1}, so a correct implementation matches the analytic Yee root to round-off. This directly tests the update coefficients Δt/(μΔx) and Δt/(εΔx).
 
 ### Numerical dispersion, 1-D PEC cavity mode m=3 (coarse, kΔx large) — PASS
@@ -241,7 +236,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the m=3 standing mode (rad/s)
 - **measured**: 8.800370794e10
 - **expected**: 8.800370794e10
-- **error**: 1.0473e-13 (rel) — tolerance 1.0000e-9
+- **error**: 1.0490e-13 (rel) — tolerance 1.0000e-9
 
 ### Phase-velocity error vanishes as Δx² under refinement — PASS
 
@@ -249,7 +244,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `em.dispersion_convergence`
 - **reference**: Second-order accuracy of the Yee scheme; ω/ck − 1 = −(kΔx)²(1 − S²)/24 + O(Δx⁴)
 - **metric**: |ω_num − ck| / ck at the finest grid (Δx = L/128)
-- **measured**: 2.300803253e-5
+- **measured**: 2.300802369e-5
 - **expected**: 0.000000000e0
 - **error**: 2.3008e-5 (abs) — tolerance 3.4508e-5
 - **convergence in Δx/L**: measured order p = 2.000 (expected 2.0 ± 0.1) — OK
@@ -259,7 +254,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
   | 6.250000e-2 | 1.472338e-3 | NaN |
   | 3.125000e-2 | 3.681179e-4 | 4.000 |
   | 1.562500e-2 | 9.203155e-5 | 4.000 |
-  | 7.812500e-3 | 2.300803e-5 | 4.000 |
+  | 7.812500e-3 | 2.300802e-5 | 4.000 |
 - _note_: Tolerance is 1.5 × (error at Δx = L/16) / 64 = 3.451e-5, derived from the measured coarse grid rather than chosen after the fact.
 
 ### TM₁₁₀ square-cavity resonance vs the discrete Yee root — PASS
@@ -270,7 +265,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **metric**: ω of the TM₁₁₀ mode (rad/s)
 - **measured**: 3.329143762e10
 - **expected**: 3.329143762e10
-- **error**: 5.3282e-13 (rel) — tolerance 1.0000e-9
+- **error**: 7.4904e-13 (rel) — tolerance 1.0000e-9
 - _note_: Exercises the x- and y-curl updates and the PEC boundary on four walls.
 
 ### TM₁₁₀ square-cavity resonance vs closed-form f = (c/2)√((m/Lx)²+(n/Ly)²) — PASS
@@ -290,7 +285,7 @@ Every entry compares a phyz solver against a closed-form solution or published r
 - **id**: `em.cavity_convergence`
 - **reference**: Second-order accuracy of the Yee scheme
 - **metric**: |f_num − f_exact| / f_exact at 81×81
-- **measured**: 5.354654448e-5
+- **measured**: 5.354654362e-5
 - **expected**: 0.000000000e0
 - **error**: 5.3547e-5 (abs) — tolerance 8.0368e-5
 - **convergence in Δx/L**: measured order p = 2.000 (expected 2.0 ± 0.1) — OK

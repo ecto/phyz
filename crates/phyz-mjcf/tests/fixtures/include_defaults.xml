@@ -1,0 +1,8 @@
+<mujocoinclude>
+  <default>
+    <default class="shared">
+      <joint damping="3.25"/>
+      <geom type="box" size="0.1 0.2 0.3"/>
+    </default>
+  </default>
+</mujocoinclude>

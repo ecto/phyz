@@ -2,10 +2,12 @@
 name = "phyz-examples"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Compile-checked runnable examples for the phyz workspace (not published)"
+# a target-only shell that compile-checks examples/; ships no library
 publish = false
 
 # This crate exists so that every file under the repository-root `examples/`
@@ -112,3 +114,7 @@ path = "../../examples/real2sim_pendulum.rs"
 [[example]]
 name = "world_generation"
 path = "../../examples/world_generation.rs"
+
+[[example]]
+name = "ik_reach"
+path = "../../examples/ik_reach.rs"

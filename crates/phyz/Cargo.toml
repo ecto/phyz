@@ -2,6 +2,7 @@
 name = "phyz"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -27,3 +28,14 @@ phyz-diff = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = "0.5"
+# Only the multi-DOF adjoint gate needs it: models/ant.xml is the free-floating
+# base regression case, and it lives in MJCF.
+phyz-mjcf.workspace = true
+# contact_speed example: the K1 as ipse builds it (URDF + vendor MJCF pads).
+phyz-urdf.workspace = true
+# The contact-aware sensor gate needs both halves of the seam: the contact solve
+# lives here, the sensors live in phyz-world. Dev-only, so no dependency cycle.
+phyz-world.workspace = true
+phyz-contact.workspace = true
+phyz-math.workspace = true
+phyz-model.workspace = true

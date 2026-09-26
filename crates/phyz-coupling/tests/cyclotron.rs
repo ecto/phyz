@@ -62,10 +62,10 @@ fn build(dt_rigid: f64) -> CoupledSystem<RigidSolver, EmSolver> {
         .build();
 
     let mut state = model.default_state();
-    // Free joint: q = [x, y, z, wx, wy, wz], v = [wx, wy, wz, vx, vy, vz].
-    state.q[0] = CENTER;
-    state.q[1] = CENTER;
-    state.q[2] = CENTER;
+    // Free joint: q = [wx, wy, wz, x, y, z], v = [wx, wy, wz, vx, vy, vz].
+    state.q[3] = CENTER;
+    state.q[4] = CENTER;
+    state.q[5] = CENTER;
     state.v[3] = SPEED;
 
     let mut matter = RigidSolver::new(model, state);

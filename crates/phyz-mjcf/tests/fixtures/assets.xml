@@ -1,0 +1,17 @@
+<mujoco model="assets">
+  <compiler meshdir="assets"/>
+  <asset>
+    <mesh name="tetra" file="tetra.obj"/>
+    <mesh name="missing" file="nope.obj"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.1 0.2 0.3" rgb2="0.9 0.9 0.9"/>
+    <material name="grid_mat" texture="grid" rgba="1 1 1 1" specular="0.2"/>
+    <hfield name="terrain" nrow="8" ncol="8" size="1 1 0.5 0.1"/>
+  </asset>
+  <worldbody>
+    <body name="mesh_body" pos="0 0 1">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="jm" type="hinge" axis="0 0 1"/>
+      <geom name="g_mesh" type="mesh" mesh="tetra"/>
+    </body>
+  </worldbody>
+</mujoco>

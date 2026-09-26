@@ -1,0 +1,15 @@
+[package]
+name = "phyz-xpbd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "XPBD (Extended Position-Based Dynamics) solver for cloth, soft bodies and cables"
+keywords = ["xpbd", "cloth", "soft-body", "physics", "simulation"]
+categories = ["simulation", "science", "graphics"]
+readme = "README.md"
+
+[dependencies]
+phyz-math.workspace = true

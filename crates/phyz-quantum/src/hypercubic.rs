@@ -304,11 +304,9 @@ pub fn build_hypercubic_hamiltonian(
                     break;
                 }
             }
-            if valid {
-                if let Some(j) = hilbert.config_to_index(&shifted) {
-                    h[(i, j)] += b_coeff;
-                    h[(j, i)] += b_coeff;
-                }
+            if valid && let Some(j) = hilbert.config_to_index(&shifted) {
+                h[(i, j)] += b_coeff;
+                h[(j, i)] += b_coeff;
             }
         }
     }

@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_differentiate_constant() {
-        let op = PhysicsOp::Constant(3.14);
+        let op = PhysicsOp::Constant(3.5);
         let d_op = AutoDiff::differentiate_op(&op).unwrap();
 
         match d_op {

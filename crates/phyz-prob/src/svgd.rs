@@ -249,7 +249,7 @@ mod tests {
         for _ in 0..5 {
             svgd_inference_step(
                 &mut particles,
-                &simulator,
+                simulator,
                 &observations,
                 0.1,
                 0.01,

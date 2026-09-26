@@ -34,7 +34,7 @@ impl GravitySolver for ConstantGravity {
 
     fn potential_energy(&self, particles: &[GravityParticle]) -> f64 {
         // U = -m * g · x (assuming g points down, so U = m*|g|*h)
-        particles.iter().map(|p| -p.m * self.g.dot(&p.x)).sum()
+        particles.iter().map(|p| -p.m * self.g.dot(p.x)).sum()
     }
 }
 

@@ -12,7 +12,16 @@ use phyz_bench::report::{Report, SCHEMA_VERSION, Suite};
 use phyz_bench::suites;
 use phyz_bench::{Budget, meta::RunMeta};
 
-const SUITE_NAMES: [&str; 5] = ["single-sim", "energy", "gradient", "gpu", "rapier"];
+const SUITE_NAMES: [&str; 8] = [
+    "single-sim",
+    "energy",
+    "divergence",
+    "gradient",
+    "adjoint-scaling",
+    "gpu",
+    "gpu-cuda",
+    "rapier",
+];
 
 fn usage() -> ! {
     eprintln!(
@@ -82,13 +91,25 @@ fn main() {
         eprintln!("running: energy drift...");
         suites.push(suites::energy::run(budget));
     }
+    if wants("divergence") {
+        eprintln!("running: 1-ulp divergence...");
+        suites.push(suites::divergence::run(budget));
+    }
     if wants("gradient") {
         eprintln!("running: gradient throughput...");
         suites.push(suites::gradient::run(budget));
     }
+    if wants("adjoint-scaling") {
+        eprintln!("running: adjoint scaling...");
+        suites.push(suites::adjoint_scaling::run(budget));
+    }
     if wants("gpu") {
         eprintln!("running: GPU batch sweep...");
         suites.push(suites::gpu_batch::run(budget));
+    }
+    if wants("gpu-cuda") {
+        eprintln!("running: GPU batch sweep (CUDA)...");
+        suites.push(suites::gpu_batch::run_cuda(budget));
     }
     if wants("rapier") {
         eprintln!("running: cross-library comparison...");

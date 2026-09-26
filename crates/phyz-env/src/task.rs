@@ -132,7 +132,11 @@ impl TaskSpec {
                     weight * axis.pick(view.vel[*body].linear)
                 }
                 RewardTerm::CtrlCost { weight } => {
-                    -weight * action.iter().map(|a| (*a as f64) * (*a as f64)).sum::<f64>()
+                    -weight
+                        * action
+                            .iter()
+                            .map(|a| (*a as f64) * (*a as f64))
+                            .sum::<f64>()
                 }
                 RewardTerm::HeightPenalty {
                     body,

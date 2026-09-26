@@ -593,10 +593,7 @@ pub fn local_lorentzian_regge_hessian(
     #[cfg(feature = "parallel")]
     let term2 = relevant_pents_vec
         .par_iter()
-        .fold(
-            || DMat::zeros(n_free, n_free),
-            |local_h, pi| accumulate(local_h, pi),
-        )
+        .fold(|| DMat::zeros(n_free, n_free), accumulate)
         .reduce(|| DMat::zeros(n_free, n_free), |a, b| &a + &b);
 
     #[cfg(not(feature = "parallel"))]

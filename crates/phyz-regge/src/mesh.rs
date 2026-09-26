@@ -72,7 +72,14 @@ pub fn flat_hypercubic(n: usize, spacing: f64) -> (SimplicialComplex, Vec<f64>) 
         }
     }
 
-    let pents: Vec<[usize; 5]> = pent_set.into_iter().collect();
+    // Sorted, because `HashSet` iteration order varies from process to process
+    // (`RandomState` is seeded per process). Without this the same call returns
+    // the same *set* of pentachorons in a different order each run, which
+    // renumbers every edge — so edge `i` is a different edge of the lattice on
+    // every execution. Anything that indexes by edge, or that perturbs "edge
+    // 63", is then measuring a different thing each time it runs.
+    let mut pents: Vec<[usize; 5]> = pent_set.into_iter().collect();
+    pents.sort_unstable();
 
     let complex = SimplicialComplex::from_pentachorons(n_vertices, &pents);
 

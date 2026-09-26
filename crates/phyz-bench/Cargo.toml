@@ -2,10 +2,12 @@
 name = "phyz-bench"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Benchmark harness for phyz: throughput, gradients, energy drift, and cross-library comparison"
+# benchmark harness and its recorded results, not a public API
 publish = false
 
 [lib]
@@ -14,6 +16,13 @@ name = "phyz_bench"
 [[bin]]
 name = "phyz-bench"
 path = "src/bin/phyz_bench.rs"
+
+# Trajectory dumper for the cross-engine agreement harness. Separate from the
+# benchmark binary because it is driven by a Python script, one invocation per
+# model, and emits a trajectory rather than a timing report.
+[[bin]]
+name = "phyz-traj"
+path = "src/bin/phyz_traj.rs"
 
 [[bench]]
 name = "single_sim"
@@ -26,6 +35,9 @@ rapier = ["dep:rapier3d-f64"]
 # GPU batch suite. Requires a working wgpu adapter at runtime; the suite
 # reports `skipped` rather than failing when none is available.
 gpu = ["dep:phyz-gpu"]
+# The same sweep on phyz-gpu's CUDA path. Builds anywhere; the suite reports
+# `skipped` when there is no NVIDIA driver at runtime.
+gpu-cuda = ["gpu", "phyz-gpu/cuda"]
 
 [dependencies]
 phyz-math.workspace = true
@@ -35,6 +47,9 @@ phyz-diff.workspace = true
 phyz-mjcf.workspace = true
 phyz-collision.workspace = true
 phyz-contact.workspace = true
+# The umbrella crate, for `phyz::determinism` — the reproducibility suite's
+# hasher, ulp arithmetic and divergence fit.
+phyz.workspace = true
 phyz-gpu = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true

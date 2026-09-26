@@ -169,5 +169,11 @@ fn libraries() -> Vec<Library> {
         version: "23.0 (per phyz-gpu manifest)".into(),
         note: None,
     });
+    #[cfg(feature = "gpu-cuda")]
+    v.push(Library {
+        name: "cudarc".into(),
+        version: "0.19 (per phyz-gpu manifest, CUDA 12.8 API)".into(),
+        note: Some("NVRTC-compiled kernels; driver dlopened at runtime".into()),
+    });
     v
 }

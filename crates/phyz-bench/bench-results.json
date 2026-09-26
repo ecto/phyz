@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "timestamp": "2026-08-18T21:53:15Z",
+    "hardware": {
+      "cpu": "Apple M4 Max",
+      "cores": 16,
+      "memory_gib": 48,
+      "gpu": null
+    },
+    "os": {
+      "family": "macos",
+      "release": "Darwin 25.5.0",
+      "arch": "aarch64"
+    },
+    "toolchain": {
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+      "profile": "release",
+      "rustflags": null
+    },
+    "libraries": [
+      {
+        "name": "phyz",
+        "version": "0.3.1",
+        "note": "workspace version; f64 throughout"
+      },
+      {
+        "name": "rapier3d-f64",
+        "version": "0.34.0",
+        "note": "f64 build, chosen to match phyz precision"
+      },
+      {
+        "name": "wgpu",
+        "version": "23.0 (per phyz-gpu manifest)",
+        "note": null
+      },
+      {
+        "name": "cudarc",
+        "version": "0.19 (per phyz-gpu manifest, CUDA 12.8 API)",
+        "note": "NVRTC-compiled kernels; driver dlopened at runtime"
+      }
+    ],
+    "git_commit": "2f922d9898c046c40893478aa16d818cd01e3f17"
+  },
+  "suites": [
+    {
+      "name": "batched GPU throughput (CUDA)",
+      "description": "Environment-steps per second on the phyz-gpu CUDA path, swept across batch size — the same sweep as the wgpu suite, on the backend a rented cloud GPU can actually open.",
+      "skipped": "no usable GPU device or pipeline: libcuda not found: no NVIDIA driver on this machine",
+      "results": []
+    }
+  ]
+}

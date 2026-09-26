@@ -204,9 +204,8 @@ pub fn aba_with_external_forces(
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt);
+            let d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -309,9 +308,8 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt);
+            let d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
@@ -368,7 +366,6 @@ pub fn aba_with_external_forces(
 
     qdd
 }
-
 
 /// Implicit-damping contribution to a joint's effective inertia.
 ///
@@ -537,7 +534,7 @@ mod tests {
         let state = model.default_state();
         let qdd = aba(&model, &state);
 
-        // Free joint DOFs: [wx, wy, wz, vx, vy, vz] mapping to q = [x, y, z, wx, wy, wz]
+        // Free joint DOFs: v = [wx, wy, wz, vx, vy, vz], q = [wx, wy, wz, x, y, z]
         // Accelerations: angular should be 0, linear z should be -g
         assert!(qdd[0].abs() < 1e-10, "ang_x accel = {}", qdd[0]);
         assert!(qdd[1].abs() < 1e-10, "ang_y accel = {}", qdd[1]);

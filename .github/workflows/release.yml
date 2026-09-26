@@ -14,16 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # [patch.crates-io] in the root Cargo.toml points tang at a sibling
-      # checkout, so the workspace cannot be resolved without it. See the TODO
-      # there: once tang publishes the API phyz-diff needs, drop the patch and
-      # this step goes away with it.
-      - name: Check out sibling tang
-        uses: actions/checkout@v4
-        with:
-          repository: ecto/tang
-          path: ../tang
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -50,8 +40,9 @@ jobs:
             exit 1
           fi
 
-      # Dependency order: math -> model -> rigid -> collision -> contact,
-      # diff -> phyz. `cargo publish` rewrites the path entries of
+      # Dependency order: math -> model -> collision -> rigid -> contact ->
+      # diff -> world -> camera -> phyz. kosm consumes every one of these, so
+      # every one has to ship. `cargo publish` rewrites the path entries of
       # [workspace.dependencies] to plain registry deps on upload, so each
       # crate resolves its phyz-* deps from the versions published just above.
       - name: Publish in dependency order
@@ -59,8 +50,8 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in phyz-math phyz-model phyz-rigid phyz-collision \
-                       phyz-contact phyz-diff phyz; do
+          for crate in phyz-math phyz-model phyz-collision phyz-rigid phyz-urdf phyz-mjcf \
+                       phyz-contact phyz-diff phyz-world phyz-camera phyz; do
             echo "::group::publish $crate"
             cargo publish -p "$crate"
             # Give the index a moment to serve the new version to the next crate.

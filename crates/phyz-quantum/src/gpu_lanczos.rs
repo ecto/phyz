@@ -135,7 +135,7 @@ impl QBank {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).ok();
         });
-        ops.device.poll(wgpu::Maintain::Wait);
+        ops.device.poll(wgpu::PollType::Wait).expect("device poll");
         rx.recv()
             .expect("channel closed")
             .expect("buffer map failed");

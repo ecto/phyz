@@ -6,9 +6,16 @@
 /bench-results.json
 /bench-results.md
 /mujoco-results.json
+/agreement-results.json
+/agreement-results.md
+# MuJoCo writes this next to the working directory on a solver warning.
+MUJOCO_LOG.TXT
 crates/phyz-bench/python/.venv/
 crates/phyz-bench/python/__pycache__/
 
 # Trunk copies wasm/.gitignore (which contains *) into dist — override it
 !crates/phyz-home/dist/wasm/*.js
 !crates/phyz-home/dist/wasm/*.wasm
+
+# Local-only tang path overrides (see .cargo/config.toml.example)
+/.cargo/config.toml

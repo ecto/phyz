@@ -65,7 +65,10 @@ fn main() {
     }
 
     // Wait for GPU to finish
-    gpu_sim.device.poll(wgpu::Maintain::Wait);
+    gpu_sim
+        .device
+        .poll(wgpu::PollType::Wait)
+        .expect("device poll");
 
     let elapsed = start.elapsed();
     println!("Completed in {:.3}s", elapsed.as_secs_f64());

@@ -2,10 +2,12 @@
 name = "phyz-wasm"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "WASM bindings for phyz physics engine"
+# a cdylib for the phyz.dev demos, not a library crate
 publish = false
 
 [lib]

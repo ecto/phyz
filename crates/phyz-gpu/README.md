@@ -21,7 +21,7 @@ use phyz_gpu::GpuBatchSimulator;
 # fn demo(model: phyz_model::Model, states: Vec<phyz_model::State>) -> Result<(), String> {
 let nworld = 1024;
 let mut sim = GpuBatchSimulator::new(model.clone(), nworld)?;
-sim.enable_ground_contact(0.0, 1.0e4, 5.0e1, 0.6)?;
+let collidable = sim.enable_ground_contact(0.0, 1.0e4, 5.0e1, 0.6)?;
 
 sim.load_states(&states);
 sim.set_controls(&vec![vec![0.0; model.nv]; nworld]);
@@ -31,9 +31,49 @@ for _ in 0..500 {
 }
 
 let final_states = sim.readback_states();
+let contacts = sim.readback_contacts()?; // contacts[env][body]: touching, force, point
 # Ok(())
 # }
 ```
+
+## Ground contact
+
+The contact pass collides each body's primary geometry (sphere, box, capsule,
+cylinder, or a mesh via its AABB) against a ground plane with penalty
+springs. `enable_ground_contact` returns how many bodies are collidable and
+errors when none are, so an empty contact pass cannot silently no-op.
+
+A single global stiffness has to hold the heaviest body up while staying
+integrable for the lightest — for mixed-mass models no value does both
+(`GroundContactParams::check_stability` reports when the window is empty).
+Use per-body gains instead:
+
+```rust,no_run
+use phyz_gpu::{BodyContactGains, GpuBatchSimulator};
+
+# fn demo(model: phyz_model::Model) -> Result<(), String> {
+let mut sim = GpuBatchSimulator::new(model.clone(), 1024)?;
+// Same contact frequency for every body: k = m*w^2, d = 2*zeta*m*w.
+let gains = BodyContactGains::uniform_frequency(&model, 200.0, 1.0);
+sim.enable_ground_contact_per_body(0.0, 0.6, &gains)?;
+# Ok(())
+# }
+```
+
+`readback_contacts` downloads per-body contact state — touch flag,
+penetration, contact point and normal force in world coordinates — which is
+the observation channel a contact-bearing RL task needs without recomputing
+contacts on the CPU.
+
+Each row also carries a `plane` block: what that body found on the
+body-attached faces (`BodyPlane`), reported separately because a body can rest
+on the ground and on a deck in the same step and one slot cannot hold both.
+Besides the aggregate (touching, deepest penetration and point, total face
+force) it lists the individual points — face index, depth, normal, normal
+force — so a foot on a deck can be compared point for point against the CPU
+narrow phase's manifold. Before this the face pass wrote no readback at all,
+and a foot pressing on a deck was indistinguishable from a body touching
+nothing.
 
 Use `with_device_queue` to share an existing `wgpu::Device`/`Queue` with the
 rest of your application instead of creating a private one.
@@ -50,6 +90,33 @@ comparison.
 A working wgpu adapter (Metal, Vulkan or DX12). `GpuBatchSimulator::new`
 returns `Err` rather than panicking when none is available, so callers can fall
 back to the CPU path.
+
+## CUDA
+
+Rented cloud GPUs often expose `/dev/nvidia*` but not `/dev/dri/renderD*`, so
+Vulkan cannot open a device while CUDA can. The `cuda` feature adds
+`CudaBatchSimulator` — the same physics and the same method surface, with the
+kernels in CUDA C compiled at runtime by NVRTC:
+
+```rust,no_run
+# #[cfg(feature = "cuda")]
+# fn demo(model: phyz_model::Model, states: Vec<phyz_model::State>) -> Result<(), String> {
+use phyz_gpu::CudaBatchSimulator;
+
+let mut sim = CudaBatchSimulator::new(model, 4096)?; // Err, not panic, without a driver
+sim.load_states(&states);
+for _ in 0..500 {
+    sim.step();
+}
+let out = sim.readback_states();
+# Ok(())
+# }
+```
+
+The crate builds without a CUDA toolkit (the driver is dlopened); running needs
+an NVIDIA driver with CUDA API ≥ 12.8 and `libnvrtc`. `--features cuda-host`
+compiles the same CUDA C as host C++ so the port can be checked against the CPU
+anywhere. See `docs/design/cuda-backend.md`.
 
 ## Part of phyz
 

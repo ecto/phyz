@@ -1,0 +1,30 @@
+<mujoco model="orientations">
+  <compiler angle="degree"/>
+  <worldbody>
+    <body name="by_quat" pos="0 0 0" quat="0.7071067811865476 0 0 0.7071067811865476">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="jq" type="hinge" axis="0 0 1"/>
+    </body>
+    <body name="by_euler" pos="0 0 0" euler="0 0 90">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="je" type="hinge" axis="0 0 1"/>
+    </body>
+    <body name="by_axisangle" pos="0 0 0" axisangle="0 0 1 90">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="ja" type="hinge" axis="0 0 1"/>
+    </body>
+    <body name="by_zaxis" pos="0 0 0" zaxis="1 0 0">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="jz" type="hinge" axis="0 0 1"/>
+    </body>
+    <body name="by_xyaxes" pos="0 0 0" xyaxes="0 1 0 -1 0 0">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="jx" type="hinge" axis="0 0 1"/>
+    </body>
+    <body name="capsule_fromto" pos="0 0 0">
+      <inertial mass="1" diaginertia="0.1 0.1 0.1"/>
+      <joint name="jf" type="hinge" axis="0 1 0"/>
+      <geom name="g_fromto" type="capsule" fromto="0 0 0 0 0 0.4" size="0.03"/>
+    </body>
+  </worldbody>
+</mujoco>

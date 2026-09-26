@@ -51,8 +51,27 @@
 #[doc = include_str!("../README.md")]
 pub struct ReadmeDocTests;
 
+pub mod contact_adjoint;
+pub(crate) mod model_generic;
+pub mod multidual;
+pub mod rev;
 pub mod rollout;
 pub mod symbolic;
+
+// The rollout adjoint API is the crate's headline surface; hoist it to the
+// root so callers can write `phyz_diff::AdjointRollout` (and so the `phyz`
+// facade's `phyz::diff::…` spelling keeps working).
+pub use rollout::{
+    AdjointGradients, AdjointRollout, CollisionMesh, ContactSetup, FinalStateObjective,
+    GroundContact, N_INERTIA_PARAMS, adjoint_rollout_gradient, inertia_params, rollout_objective,
+};
+
+// The unified adjoint through the convex contact solve — the same contact
+// model `phyz::Simulator::step_with_contacts` integrates forward.
+pub use contact_adjoint::{
+    ConvexAdjointError, ConvexAdjointGradients, ConvexContactRollout, convex_adjoint_gradient,
+    convex_rollout_objective, convex_rollout_objective_and_state,
+};
 
 use phyz_math::{DMat, DVec};
 use phyz_model::{Model, State};

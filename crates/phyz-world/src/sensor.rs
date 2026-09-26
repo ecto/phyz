@@ -5,10 +5,20 @@
 //! [`SensorContext`], which carries the collision scene along with a single
 //! shared kinematics/dynamics pass so that reading N sensors does not run
 //! forward kinematics N times.
+//!
+//! # Inertial sensors need the *realized* acceleration
+//!
+//! [`Sensor::Imu`], [`Sensor::BodyAccel`] and [`Sensor::ForceTorque`] are all
+//! functions of the generalized acceleration the [`SensorContext`] was built
+//! from. This crate cannot resolve contacts (it does not depend on
+//! `phyz-contact`), so the caller — who already solved them for the step — has
+//! to supply that acceleration via [`SensorContext::with_acceleration`].
+//! [`SensorContext::free_flight`] is the honest name for the alternative: the
+//! unconstrained acceleration, correct only when nothing is touching anything.
 
 use crate::scene::{PlacedShape, Scene, ShapeOwner, placed_shapes};
 use phyz_collision::{Ray, gjk_distance_rot, ray_intersect};
-use phyz_math::{Mat3, SpatialTransform, SpatialVec, Vec3};
+use phyz_math::{DVec, Mat3, SpatialTransform, SpatialVec, Vec3};
 use phyz_model::{Model, State};
 use phyz_rigid::{BodyKinematics, aba, body_wrenches, forward_kinematics_acc};
 
@@ -22,11 +32,24 @@ pub enum Sensor {
     /// This is a *kinematic* acceleration: a body in free fall reads `g`
     /// downward, not zero. For what an accelerometer would report, use
     /// [`Sensor::Imu`].
+    ///
+    /// **Only as correct as the context's `qdd`.** Built through
+    /// [`SensorContext::free_flight`] this ignores every contact, so a body
+    /// resting on the ground still reads `g` downward. Use
+    /// [`SensorContext::with_acceleration`] with the realized acceleration
+    /// (e.g. `phyz::Simulator::contact_acceleration`) whenever contacts exist.
     BodyAccel { body_idx: usize },
     /// Body angular velocity in the body frame.
     BodyAngularVel { body_idx: usize },
     /// Wrench transmitted through the body's joint, in the body frame.
     /// Output: `[τx, τy, τz, fx, fy, fz]`.
+    ///
+    /// **Only as correct as the context's `qdd`.** The wrench comes from an
+    /// inverse-dynamics pass driven by that acceleration, so a context built
+    /// through [`SensorContext::free_flight`] reports the reaction of a body
+    /// that nothing is touching. Build the context with
+    /// [`SensorContext::with_acceleration`] from the realized acceleration
+    /// (e.g. `phyz::Simulator::contact_acceleration`) to see contact loads.
     ForceTorque { body_idx: usize },
     /// Rangefinder: distance along a ray to the nearest geometry.
     ///
@@ -57,9 +80,142 @@ pub enum Sensor {
     },
     /// IMU: specific force (what an accelerometer reads, i.e. `a − g`) followed
     /// by angular velocity, both in the body frame.
+    ///
+    /// **Only as correct as the context's `qdd`.** The angular-velocity half is
+    /// always right; the specific force is exactly as contact-aware as the
+    /// acceleration the [`SensorContext`] was built from. Through
+    /// [`SensorContext::free_flight`] a robot standing on the floor reports
+    /// ≈0 specific force — the reading of free fall — because the free
+    /// acceleration has it accelerating downward at `g`. Build the context with
+    /// [`SensorContext::with_acceleration`] from the realized acceleration
+    /// (`phyz::Simulator::contact_acceleration`, or the value returned by
+    /// `phyz::Simulator::step_with_contacts`) and the same robot reports
+    /// ≈`+9.81 m/s²` along its up axis.
     Imu { body_idx: usize },
     /// Snapshot of body transform: `[x, y, z, qw, qx, qy, qz]` in world frame.
     FrameCapture { body_idx: usize },
+    /// A pinhole RGBD camera rigidly mounted on a body.
+    ///
+    /// This variant is a *descriptor only*. Images are far too large to travel
+    /// through [`SensorOutput::data`], so reading a camera through
+    /// [`Sensor::read`] yields an empty `data` vector; the pixels come from the
+    /// `phyz-camera` crate, which renders this descriptor against the same
+    /// [`SensorContext`] and returns a `CameraFrame`.
+    ///
+    /// See [`CameraIntrinsics`] for the optical-frame and depth conventions.
+    Camera {
+        /// Body the camera is bolted to.
+        body_idx: usize,
+        /// Placement of the *optical* frame within the body frame.
+        ///
+        /// Same convention as [`phyz_model::GeomInstance::origin`]:
+        /// `origin.pos` is the optical-frame origin expressed in body
+        /// coordinates, and `origin.rot` is the coordinate transform
+        /// *body → optical*, so the camera's orientation in the body frame is
+        /// `origin.rot.transpose()`.
+        origin: SpatialTransform,
+        /// Pinhole intrinsics and image size.
+        intrinsics: CameraIntrinsics,
+    },
+}
+
+/// Pinhole intrinsics for [`Sensor::Camera`].
+///
+/// # Conventions (read this before believing any pixel)
+///
+/// **Optical frame: OpenCV.** The camera looks down its own **+Z** axis, **+X**
+/// points right across the image, and **+Y** points *down* the image. This is
+/// *not* the ROS body convention (+X forward, +Z up) — a REP-103 style mount is
+/// expressed by putting that rotation into the camera's extrinsics
+/// ([`Sensor::Camera::origin`]), not by changing the optical frame.
+///
+/// **Pixel coordinates.** `u` increases to the right, `v` increases downward,
+/// and pixel *centres* sit at half-integers: the top-left pixel's centre is
+/// `(0.5, 0.5)`. Projection is `u = fx·X/Z + cx`, `v = fy·Y/Z + cy`.
+///
+/// **Depth is linear metres along the optical axis** — the camera-space `Z`
+/// coordinate of the surface, *not* the Euclidean ray length to it, and not a
+/// normalised or reciprocal depth-buffer value. A wall 2 m in front of the
+/// camera reads exactly `2.0` at every pixel that sees it, corners included.
+/// Pixels with no return read `0.0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraIntrinsics {
+    /// Focal length in pixels along `x`.
+    pub fx: f64,
+    /// Focal length in pixels along `y`.
+    pub fy: f64,
+    /// Principal point `x`, in pixels from the left image edge.
+    pub cx: f64,
+    /// Principal point `y`, in pixels from the top image edge.
+    pub cy: f64,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Near clip distance in metres. Surfaces closer than this are not drawn.
+    pub near: f64,
+    /// Far clip distance in metres. Surfaces beyond this are not drawn.
+    pub far: f64,
+}
+
+impl CameraIntrinsics {
+    /// Intrinsics from a vertical field of view, with a centred principal point
+    /// and square pixels.
+    pub fn from_vfov(width: u32, height: u32, vfov_rad: f64, near: f64, far: f64) -> Self {
+        let fy = 0.5 * height as f64 / (0.5 * vfov_rad).tan();
+        Self {
+            fx: fy,
+            fy,
+            cx: width as f64 / 2.0,
+            cy: height as f64 / 2.0,
+            width,
+            height,
+            near,
+            far,
+        }
+    }
+
+    /// Number of pixels in one image.
+    pub fn pixel_count(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// Project a point given in the *optical* frame to pixel coordinates.
+    ///
+    /// Returns `None` when the point is outside `[near, far]` along the optical
+    /// axis, where projection is meaningless. The returned coordinates are
+    /// continuous and may fall outside the image.
+    pub fn project(&self, p_optical: Vec3) -> Option<(f64, f64)> {
+        if !(p_optical.z >= self.near && p_optical.z <= self.far) {
+            return None;
+        }
+        Some((
+            self.fx * p_optical.x / p_optical.z + self.cx,
+            self.fy * p_optical.y / p_optical.z + self.cy,
+        ))
+    }
+
+    /// Inverse of [`Self::project`]: pixel plus linear depth back to a point in
+    /// the optical frame. `depth` is metres along the optical axis.
+    pub fn unproject(&self, u: f64, v: f64, depth: f64) -> Vec3 {
+        Vec3::new(
+            (u - self.cx) * depth / self.fx,
+            (v - self.cy) * depth / self.fy,
+            depth,
+        )
+    }
+
+    /// Whether these intrinsics describe a usable image.
+    pub fn is_valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && self.fx.is_finite()
+            && self.fy.is_finite()
+            && self.fx > 0.0
+            && self.fy > 0.0
+            && self.near > 0.0
+            && self.far > self.near
+    }
 }
 
 /// Output from a sensor reading.
@@ -90,18 +246,81 @@ pub struct SensorContext<'a> {
 }
 
 impl<'a> SensorContext<'a> {
-    /// Build a context for the given state and scene.
-    pub fn new(model: &'a Model, state: &'a State, scene: &'a Scene) -> Self {
-        // Accelerations and reaction forces both need the true qdd, which is
-        // whatever the current controls and constraints produce right now.
-        let qdd = aba(model, state);
+    /// Build a context from a caller-supplied generalized acceleration.
+    ///
+    /// This is the correct constructor whenever contacts exist. `qdd` must be
+    /// the **realized** acceleration for `state` — the one that includes
+    /// contact and constraint impulses, not the free-flight acceleration from
+    /// [`phyz_rigid::aba()`]. `phyz::Simulator::contact_acceleration` produces
+    /// exactly that; `phyz::Simulator::step_with_contacts` also returns the
+    /// acceleration it realized for the pre-step state.
+    ///
+    /// Getting this wrong is not a rounding error. A humanoid standing on the
+    /// floor has a free-flight `qdd` of roughly `−g` at the torso, so an
+    /// [`Sensor::Imu`] built from it reports ~0 specific force — indis-
+    /// tinguishable from free fall, which is the one distinction a vestibular
+    /// sense exists to make.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `qdd.len()` does not match the model's degree-of-freedom
+    /// count. A silently mismatched acceleration would be worse than a crash.
+    pub fn with_acceleration(
+        model: &'a Model,
+        state: &'a State,
+        scene: &'a Scene,
+        qdd: &DVec,
+    ) -> Self {
+        assert_eq!(
+            qdd.len(),
+            model.nv,
+            "SensorContext::with_acceleration: qdd has {} entries but the model has {} DOF",
+            qdd.len(),
+            model.nv
+        );
         Self {
             model,
             state,
             scene,
-            kinematics: forward_kinematics_acc(model, state, &qdd),
-            wrenches: body_wrenches(model, state, &qdd),
+            kinematics: forward_kinematics_acc(model, state, qdd),
+            wrenches: body_wrenches(model, state, qdd),
         }
+    }
+
+    /// Build a context using the **free-flight** acceleration from
+    /// [`phyz_rigid::aba()`] — no contacts, no constraints.
+    ///
+    /// Correct only when the body genuinely is unconstrained: a projectile, a
+    /// free-floating base, a pendulum swinging in air. If anything is touching
+    /// anything, [`Sensor::Imu`], [`Sensor::BodyAccel`] and
+    /// [`Sensor::ForceTorque`] read as though the contact were not there — a
+    /// resting robot reports the specific force of free fall. Use
+    /// [`SensorContext::with_acceleration`] instead.
+    ///
+    /// Non-inertial sensors ([`Sensor::JointState`], [`Sensor::Rangefinder`],
+    /// [`Sensor::Contact`], [`Sensor::FrameCapture`], [`Sensor::Camera`],
+    /// [`Sensor::BodyAngularVel`]) do not read `qdd` at all and are unaffected
+    /// by this choice.
+    pub fn free_flight(model: &'a Model, state: &'a State, scene: &'a Scene) -> Self {
+        let qdd = aba(model, state);
+        Self::with_acceleration(model, state, scene, &qdd)
+    }
+
+    /// Build a context for the given state and scene.
+    ///
+    /// Deprecated because the name gave no hint that it silently picks the
+    /// free-flight acceleration, which makes the inertial sensors
+    /// contact-blind. Pick explicitly: [`SensorContext::with_acceleration`]
+    /// when contacts may be active, [`SensorContext::free_flight`] when the
+    /// body really is in free flight.
+    #[deprecated(
+        since = "0.1.0",
+        note = "ambiguous: use `SensorContext::with_acceleration` for contact-aware inertial \
+                readings, or `SensorContext::free_flight` to keep the old free-acceleration \
+                behaviour explicitly"
+    )]
+    pub fn new(model: &'a Model, state: &'a State, scene: &'a Scene) -> Self {
+        Self::free_flight(model, state, scene)
     }
 
     /// World→body transforms for this state.
@@ -223,6 +442,15 @@ impl Sensor {
                 let (w, x, y, z) = mat3_to_quat(&xf.rot.transpose());
                 vec![xf.pos.x, xf.pos.y, xf.pos.z, w, x, y, z]
             }
+
+            // Images do not fit in a `Vec<f64>` observation and must not be
+            // smuggled through one. A camera reads as empty here; render it with
+            // `phyz-camera` to get pixels. `body_idx` is still validated so a
+            // mis-wired camera fails at the same place every other sensor does.
+            Sensor::Camera { body_idx, .. } => {
+                check_body(model, *body_idx);
+                Vec::new()
+            }
         };
 
         SensorOutput {
@@ -232,14 +460,20 @@ impl Sensor {
         }
     }
 
-    /// Read a sensor without any static scene geometry.
+    /// Read a sensor without any static scene geometry, using the
+    /// **free-flight** acceleration.
     ///
     /// Rangefinders and contact sensors still see the model's own bodies, but
     /// nothing else. Building the context is not free, so prefer
     /// [`SensorContext`] plus [`Sensor::read`] when reading several sensors.
+    ///
+    /// Because there is no scene and no caller-supplied acceleration, this
+    /// carries the caveat on [`SensorContext::free_flight`]: [`Sensor::Imu`],
+    /// [`Sensor::BodyAccel`] and [`Sensor::ForceTorque`] read as though nothing
+    /// were touching the body.
     pub fn read_state(&self, model: &Model, state: &State, sensor_id: usize) -> SensorOutput {
         let scene = Scene::empty();
-        self.read(&SensorContext::new(model, state, &scene), sensor_id)
+        self.read(&SensorContext::free_flight(model, state, &scene), sensor_id)
     }
 
     /// Full rangefinder result, including what was hit and where.
@@ -316,6 +550,9 @@ impl Sensor {
             Sensor::Contact { .. } => 5,      // count + depth + normal
             Sensor::Imu { .. } => 6,          // accel (3) + gyro (3)
             Sensor::FrameCapture { .. } => 7, // pos (3) + quat (4)
+            // Zero scalars by design: a camera's payload is an image, delivered
+            // out of band by `phyz-camera`, not packed into `SensorOutput`.
+            Sensor::Camera { .. } => 0,
         }
     }
 }
@@ -546,7 +783,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(5.0, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         let sensor = Sensor::Rangefinder {
             body_idx: 0,
@@ -572,7 +809,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(50.0, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         let sensor = Sensor::Rangefinder {
             body_idx: 0,
@@ -602,12 +839,12 @@ mod tests {
         };
 
         let state = model.default_state();
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
         assert_eq!(sensor.read(&ctx, 0).data[0], 10.0, "ray points away");
 
         let mut turned = model.default_state();
         turned.q[0] = std::f64::consts::FRAC_PI_2;
-        let ctx = SensorContext::new(&model, &turned, &scene);
+        let ctx = SensorContext::free_flight(&model, &turned, &scene);
         assert!(
             (sensor.read(&ctx, 0).data[0] - 4.0).abs() < 1e-9,
             "got {}",
@@ -620,7 +857,7 @@ mod tests {
         let model = one_link();
         let state = model.default_state();
         let scene = Scene::empty().with_ground(-2.0);
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         let out = Sensor::Rangefinder {
             body_idx: 0,
@@ -643,7 +880,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(5.0, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         let out = Sensor::Rangefinder {
             body_idx: 0,
@@ -661,7 +898,7 @@ mod tests {
         let model = one_link();
         let state = model.default_state();
         let scene = Scene::empty();
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
         Sensor::Rangefinder {
             body_idx: 0,
             origin: Vec3::zeros(),
@@ -691,7 +928,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(1.5, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
         let out = Sensor::Contact {
             body_idx: 0,
             margin: 0.0,
@@ -714,7 +951,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(5.0, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
         let out = Sensor::Contact {
             body_idx: 0,
             margin: 0.0,
@@ -735,7 +972,7 @@ mod tests {
             CGeom::Sphere { radius: 1.0 },
             Vec3::new(2.5, 0.0, 0.0),
         ));
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         let tight = Sensor::Contact {
             body_idx: 0,
@@ -841,7 +1078,7 @@ mod tests {
         let model = one_link();
         let state = model.default_state();
         let scene = Scene::empty();
-        let ctx = SensorContext::new(&model, &state, &scene);
+        let ctx = SensorContext::free_flight(&model, &state, &scene);
 
         for sensor in [
             Sensor::BodyAccel { body_idx: 0 },

@@ -472,8 +472,7 @@ mod tests {
             .complex
             .edges
             .iter()
-            .enumerate()
-            .map(|(_ei, e)| {
+            .map(|e| {
                 let (t0, x0, y0, z0) = vertex_coords_4d(e[0], fc.n_slices, fc.n_spatial);
                 let (t1, x1, y1, z1) = vertex_coords_4d(e[1], fc.n_slices, fc.n_spatial);
                 let dt = min_image(t0, t1, fc.n_slices) as f64;
@@ -509,7 +508,7 @@ mod tests {
         for pi in 0..fc.complex.n_pents() {
             let edge_indices = fc.complex.pent_edge_indices(pi);
             let types: Vec<EdgeType> = edge_indices.iter().map(|&ei| fc.edge_types[ei]).collect();
-            let has_spatial = types.iter().any(|&t| t == EdgeType::Spatial);
+            let has_spatial = types.contains(&EdgeType::Spatial);
             let has_time = types
                 .iter()
                 .any(|&t| t == EdgeType::Timelike || t == EdgeType::Diagonal);
