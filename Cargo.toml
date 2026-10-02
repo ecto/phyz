@@ -142,6 +142,10 @@ opt-level = 2
 [profile.dev.package.phyz-lbm]
 opt-level = 3
 
+# SU(3) heatbath tests thermalize real lattices.
+[profile.dev.package.phyz-qft]
+opt-level = 3
+
 # The published tang 0.2.0 predates API the phyz crates rely on (notably
 # `impl Scalar for Dual<S>`, used by phyz-diff's dual-number ABA). Until tang
 # cuts a release carrying it, the workspace builds against a pinned git rev

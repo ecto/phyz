@@ -3388,8 +3388,8 @@ name = "phyz-qft"
 version = "0.4.0"
 dependencies = [
  "approx",
- "phyz-math",
  "rand 0.8.5",
+ "rayon",
 ]
 
 [[package]]

@@ -41,8 +41,10 @@ pub mod group;
 pub mod hmc;
 pub mod lattice;
 pub mod observables;
+pub mod su3;
 
 pub use group::{Group, SU2, SU3, U1};
 pub use hmc::{HmcParams, HmcState};
 pub use lattice::Lattice;
 pub use observables::{Observables, PolyakovLoop, WilsonLoop};
+pub use su3::{Su3, Su3Lattice};
