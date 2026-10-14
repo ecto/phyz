@@ -67,11 +67,11 @@ tang-expr = { version = "0.1.0" }
 #   -> tang-mesh 0.1.0, tang-tensor 0.1.0, tang-train 0.1.0,
 #      tang-safetensors 0.1.0, tang-compute 0.1.0
 # Drop the `git`/`rev` keys and keep the version once those are on the index.
-tang-mesh = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-tensor = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-train = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-safetensors = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-compute = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang-mesh = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-tensor = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-train = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-safetensors = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-compute = { version = "0.1.0", git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 phyz-math = { version = "0.4.0", path = "crates/phyz-math" }
@@ -158,6 +158,6 @@ opt-level = 3
 # TODO: drop this patch once tang publishes the required version, then bump
 # the tang requirement in [workspace.dependencies] to match.
 [patch.crates-io]
-tang = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-la = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
-tang-expr = { git = "https://github.com/ecto/tang.git", rev = "9d28b81067f1a416c73a9e84b7f4f9af29bbfa34" }
+tang = { git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-la = { git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
+tang-expr = { git = "https://github.com/ecto/tang.git", rev = "5031263299d078f4801876c02737a00c8c567c61" }
