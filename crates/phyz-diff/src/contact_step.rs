@@ -39,9 +39,8 @@ use tang_expr::compile::CompiledMany;
 use tang_expr::{ExprGraph, ExprId, trace};
 
 use crate::forward::{
-    ancestors_fixed, eabs, eclamp, emax, motion_subspace_1, motion_subspace_n,
-    multi_joint_transform, traced_aba, traced_finish_step, traced_free_velocity,
-    traced_generalized_forces,
+    ancestors_fixed, motion_subspace_1, motion_subspace_n, multi_joint_transform, traced_aba,
+    traced_finish_step, traced_free_velocity, traced_generalized_forces,
 };
 use crate::symbolic::{
     lift_spatial_inertia, lift_spatial_transform, lift_vec3, sym_joint_transform,
@@ -154,6 +153,11 @@ impl ContactStep {
     pub fn kernel(&self, dialect: Dialect) -> ComputeKernel {
         self.graph.to_kernel(&self.out, self.n_inputs(), dialect)
     }
+
+    /// Emit a batched plain-C kernel in f64.
+    pub fn kernel_c_f64(&self) -> ComputeKernel {
+        self.graph.to_c_f64(&self.out, self.n_inputs())
+    }
 }
 
 /// Everything the contact solve reads, per environment: the contact-free
@@ -237,8 +241,8 @@ pub(crate) fn traced_kinematics(
     let mut dcoef = Vec::with_capacity(np);
     for d_i in &depth {
         let d = impedance_at(material, *d_i);
-        bias.push(d * lit(erp) * emax(*d_i, ExprId::ZERO) * lit(1.0 / dt));
-        let dc = eclamp(d, lit(1e-6), ExprId::ONE);
+        bias.push(d * lit(erp) * (*d_i).max(ExprId::ZERO) * lit(1.0 / dt));
+        let dc = d.clamp(lit(1e-6), ExprId::ONE);
         dcoef.push((ExprId::ONE - dc) / dc);
     }
     let _ = config;
@@ -293,12 +297,7 @@ pub(crate) fn traced_assembly(
     let b: Vec<ExprId> = jac.iter().map(|j| dot(j, &free_qd)).collect();
 
     let r_n = (0..np)
-        .map(|i| {
-            emax(
-                dcoef[i] * a[(3 * i) * dim + 3 * i],
-                lit(config.regularization),
-            )
-        })
+        .map(|i| (dcoef[i] * a[(3 * i) * dim + 3 * i]).max(lit(config.regularization)))
         .collect();
     Assembly {
         free_qd,
@@ -373,7 +372,7 @@ fn traced_contact_step(
             });
             let m = &blocks[c];
             let unclamped = (bias[c] - r[0] - m[0][1] * f[c][1] - m[0][2] * f[c][2]) / m[0][0];
-            let f_n = emax(unclamped, ExprId::ZERO);
+            let f_n = unclamped.max(ExprId::ZERO);
             let r_u = r[1] + m[1][0] * f_n;
             let r_w = r[2] + m[2][0] * f_n;
             let det = m[1][1] * m[2][2] - m[1][2] * m[2][1];
@@ -420,7 +419,7 @@ fn impedance_at(m: &ContactMaterial, depth: ExprId) -> ExprId {
     let inside = if s.width <= 0.0 {
         lit(dmax)
     } else {
-        let x = eclamp(eabs(depth) * lit(1.0 / s.width), ExprId::ZERO, ExprId::ONE);
+        let x = (depth.abs() * lit(1.0 / s.width)).clamp(ExprId::ZERO, ExprId::ONE);
         let mid = s.midpoint.clamp(1e-6, 1.0 - 1e-6);
         let p = s.power.max(1.0);
         let pow = |b: ExprId| b.powf(lit(p));
@@ -460,7 +459,7 @@ fn disc_block_step(m: [[ExprId; 2]; 2], r: [ExprId; 2], limit: ExprId) -> [ExprI
         let dn = -(t[0] * st[0] + t[1] * st[1]) / nrm;
         let phi = nrm.recip() - limit.recip();
         let dphi = -dn / (nrm * nrm);
-        k = emax(k - phi / dphi, ExprId::ZERO);
+        k = (k - phi / dphi).max(ExprId::ZERO);
         t = solve(k, [-r[0], -r[1]]);
     }
     let s = limit / (t[0] * t[0] + t[1] * t[1]).sqrt();

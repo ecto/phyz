@@ -83,12 +83,9 @@ fn main() {
     for (s, w) in states.iter().zip(&warms) {
         inputs.extend(step.inputs(s, w));
     }
-    // tang-expr at this rev emits `Neg(Lit(-x))` as `--x`.
-    let src = step.kernel(Dialect::C).source.replace("(--", "(- -");
-    std::fs::write(out.join("contact_f32.c"), &src).unwrap();
-    std::fs::write(out.join("contact_f64.c"), to_f64(&src)).unwrap();
-    let msl = step.kernel(Dialect::Msl).source.replace("(--", "(- -");
-    std::fs::write(out.join("contact.metal"), msl).unwrap();
+    std::fs::write(out.join("contact_f32.c"), step.kernel(Dialect::C).source).unwrap();
+    std::fs::write(out.join("contact_f64.c"), step.kernel_c_f64().source).unwrap();
+    std::fs::write(out.join("contact.metal"), step.kernel(Dialect::Msl).source).unwrap();
 
     // The split pipeline: traced kinematics, rolled solve, traced finish.
     let split = ContactKernels::build(&model, &points, &mat, &config);
@@ -229,32 +226,6 @@ fn cpu_step(
     let v = st.v.clone();
     phyz_rigid::integrate_configuration(model, st.q.as_mut_slice(), v.as_slice(), dt);
     (st.q.as_slice().to_vec(), st.v.as_slice().to_vec(), f)
-}
-
-/// The C dialect emits f32; for f64 swap the type and drop literal `f` suffixes.
-fn to_f64(src: &str) -> String {
-    let src = src.replace("float", "double");
-    let b = src.as_bytes();
-    let mut out = String::with_capacity(src.len());
-    for (i, &c) in b.iter().enumerate() {
-        let prev_digit = i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b'.');
-        let next_word = b
-            .get(i + 1)
-            .is_some_and(|n| n.is_ascii_alphanumeric() || *n == b'_');
-        if c == b'f' && prev_digit && !next_word && !is_ident_tail(b, i) {
-            continue;
-        }
-        out.push(c as char);
-    }
-    out
-}
-
-fn is_ident_tail(b: &[u8], i: usize) -> bool {
-    let mut j = i;
-    while j > 0 && (b[j - 1].is_ascii_digit() || b[j - 1] == b'.') {
-        j -= 1;
-    }
-    j > 0 && (b[j - 1].is_ascii_alphabetic() || b[j - 1] == b'_')
 }
 
 fn write_f64(path: &std::path::Path, xs: &[f64]) {

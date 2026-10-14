@@ -90,6 +90,11 @@ impl ForwardDynamics {
     pub fn kernel(&self, dialect: Dialect) -> ComputeKernel {
         self.graph.to_kernel(&self.qdd, self.n_inputs(), dialect)
     }
+
+    /// Emit a batched plain-C kernel in f64.
+    pub fn kernel_c_f64(&self) -> ComputeKernel {
+        self.graph.to_c_f64(&self.qdd, self.n_inputs())
+    }
 }
 
 /// One full rigid-body step, contact-free, as an expression graph.
@@ -167,6 +172,11 @@ impl Step {
     pub fn kernel(&self, dialect: Dialect) -> ComputeKernel {
         self.graph.to_kernel(&self.out, self.n_inputs(), dialect)
     }
+
+    /// Emit a batched plain-C kernel in f64.
+    pub fn kernel_c_f64(&self) -> ComputeKernel {
+        self.graph.to_c_f64(&self.out, self.n_inputs())
+    }
 }
 
 /// `phyz_rigid::actuation::generalized_forces`, traced.
@@ -193,13 +203,13 @@ pub(crate) fn traced_generalized_forces(
                 continue;
             }
             let c = match act.ctrl_range {
-                Some([lo, hi]) => eclamp(ctrl[a], lit(lo.min(hi)), lit(hi.max(lo))),
+                Some([lo, hi]) => ctrl[a].clamp(lit(lo.min(hi)), lit(hi.max(lo))),
                 None => ctrl[a],
             };
             let f = lit(act.gear)
                 * (lit(act.gain) * c + lit(act.bias_q) * q[qi] + lit(act.bias_v) * v[vi]);
             let f = match act.force_range {
-                Some([lo, hi]) => eclamp(f, lit(lo.min(hi)), lit(hi.max(lo))),
+                Some([lo, hi]) => f.clamp(lit(lo.min(hi)), lit(hi.max(lo))),
                 None => f,
             };
             qfrc[vi] += f;
@@ -216,8 +226,8 @@ pub(crate) fn traced_generalized_forces(
                     let (ks, kd) = (lit(joint.limit_stiffness), lit(joint.limit_damping));
                     let below = lit(lo) - qk;
                     let above = qk - lit(hi);
-                    let push_up = ks * below + kd * emax(-vk, ExprId::ZERO);
-                    let push_down = -(ks * above + kd * emax(vk, ExprId::ZERO));
+                    let push_up = ks * below + kd * (-vk).max(ExprId::ZERO);
+                    let push_down = -(ks * above + kd * vk.max(ExprId::ZERO));
                     f += ExprId::select(
                         below,
                         push_up,
@@ -225,7 +235,7 @@ pub(crate) fn traced_generalized_forces(
                     );
                 }
                 if joint.friction_loss > 0.0 {
-                    f += -(lit(joint.friction_loss) * etanh(vk * lit(1e3)));
+                    f += -(lit(joint.friction_loss) * (vk * lit(1e3)).tanh());
                 }
             }
             qfrc[vo + k] += f;
@@ -754,50 +764,6 @@ pub fn fold_constants(graph: &ExprGraph, outputs: &[ExprId]) -> (ExprGraph, Vec<
     }
     let outs = outputs.iter().map(|o| map[o.index() as usize]).collect();
     (g, outs)
-}
-
-/// `max(a, b)` as a select. tang-expr's `Scalar::max` lowers to
-/// `(a + b + sqrt((a - b)^2)) / 2`, which loses precision (and underflows in
-/// f32); this is exact and three nodes cheaper. Ties pick `b`.
-pub(crate) fn emax(a: ExprId, b: ExprId) -> ExprId {
-    ExprId::select(a - b, a, b)
-}
-
-/// `min(a, b)` as a select (see [`emax`]).
-pub(crate) fn emin(a: ExprId, b: ExprId) -> ExprId {
-    ExprId::select(a - b, b, a)
-}
-
-/// `x.clamp(lo, hi)` as selects (see [`emax`]).
-pub(crate) fn eclamp(x: ExprId, lo: ExprId, hi: ExprId) -> ExprId {
-    emin(emax(x, lo), hi)
-}
-
-/// `tanh(x)` that stays finite and accurate. tang-expr's `Scalar::tanh` is
-/// `sinh(x) / cosh(x)` from `exp(±x)`, which is `inf / inf = NaN` once
-/// `|x| > ~710`, which the smoothed friction term `tanh(1000 v)` reaches at
-/// 0.7 rad/s. Here, with `a = min(|x|, 20)` (past 20 tanh is 1 to f64
-/// precision, slope 0):
-/// - `a < 0.05`: the odd series to `a^9` (truncation < 1e-16 relative);
-/// - otherwise `1 - 2 / (e^(2a) + 1)`, whose cancellation costs at most
-///   ~2e-15 relative there (there is no `expm1` primitive).
-pub(crate) fn etanh(x: ExprId) -> ExprId {
-    let lit = ExprId::from_f64;
-    let a = emin(eabs(x), lit(20.0));
-    let e = (a * ExprId::TWO).exp();
-    let big = ExprId::ONE - ExprId::TWO / (e + ExprId::ONE);
-    let a2 = a * a;
-    let series = a
-        * (ExprId::ONE
-            + a2 * (lit(-1.0 / 3.0)
-                + a2 * (lit(2.0 / 15.0) + a2 * (lit(-17.0 / 315.0) + a2 * lit(62.0 / 2835.0)))));
-    let r = ExprId::select(a - lit(0.05), big, series);
-    ExprId::select(x, r, -r)
-}
-
-/// `|x|` as a select (`Scalar::abs` is `sqrt(x^2)`).
-pub(crate) fn eabs(x: ExprId) -> ExprId {
-    ExprId::select(x, x, -x)
 }
 
 /// The Jacobian `d outputs / d inputs` of a graph, as a new graph: outputs
