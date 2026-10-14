@@ -52,6 +52,7 @@
 pub struct ReadmeDocTests;
 
 pub mod contact_adjoint;
+pub mod contact_split;
 pub mod contact_step;
 pub mod forward;
 pub(crate) mod model_generic;

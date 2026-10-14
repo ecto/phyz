@@ -193,13 +193,13 @@ pub(crate) fn traced_generalized_forces(
                 continue;
             }
             let c = match act.ctrl_range {
-                Some([lo, hi]) => ctrl[a].clamp(lit(lo.min(hi)), lit(hi.max(lo))),
+                Some([lo, hi]) => eclamp(ctrl[a], lit(lo.min(hi)), lit(hi.max(lo))),
                 None => ctrl[a],
             };
             let f = lit(act.gear)
                 * (lit(act.gain) * c + lit(act.bias_q) * q[qi] + lit(act.bias_v) * v[vi]);
             let f = match act.force_range {
-                Some([lo, hi]) => f.clamp(lit(lo.min(hi)), lit(hi.max(lo))),
+                Some([lo, hi]) => eclamp(f, lit(lo.min(hi)), lit(hi.max(lo))),
                 None => f,
             };
             qfrc[vi] += f;
@@ -216,8 +216,8 @@ pub(crate) fn traced_generalized_forces(
                     let (ks, kd) = (lit(joint.limit_stiffness), lit(joint.limit_damping));
                     let below = lit(lo) - qk;
                     let above = qk - lit(hi);
-                    let push_up = ks * below + kd * (-vk).max(ExprId::ZERO);
-                    let push_down = -(ks * above + kd * vk.max(ExprId::ZERO));
+                    let push_up = ks * below + kd * emax(-vk, ExprId::ZERO);
+                    let push_down = -(ks * above + kd * emax(vk, ExprId::ZERO));
                     f += ExprId::select(
                         below,
                         push_up,
@@ -754,4 +754,26 @@ pub fn fold_constants(graph: &ExprGraph, outputs: &[ExprId]) -> (ExprGraph, Vec<
     }
     let outs = outputs.iter().map(|o| map[o.index() as usize]).collect();
     (g, outs)
+}
+
+/// `max(a, b)` as a select. tang-expr's `Scalar::max` lowers to
+/// `(a + b + sqrt((a - b)^2)) / 2`, which loses precision (and underflows in
+/// f32); this is exact and three nodes cheaper. Ties pick `b`.
+pub(crate) fn emax(a: ExprId, b: ExprId) -> ExprId {
+    ExprId::select(a - b, a, b)
+}
+
+/// `min(a, b)` as a select (see [`emax`]).
+pub(crate) fn emin(a: ExprId, b: ExprId) -> ExprId {
+    ExprId::select(a - b, b, a)
+}
+
+/// `x.clamp(lo, hi)` as selects (see [`emax`]).
+pub(crate) fn eclamp(x: ExprId, lo: ExprId, hi: ExprId) -> ExprId {
+    emin(emax(x, lo), hi)
+}
+
+/// `|x|` as a select (`Scalar::abs` is `sqrt(x^2)`).
+pub(crate) fn eabs(x: ExprId) -> ExprId {
+    ExprId::select(x, x, -x)
 }

@@ -474,3 +474,63 @@ fn k1_fixed_point_and_stand() {
         assert!(worst_z < 1e-3, "{sweeps} sweeps: trunk z gap {worst_z:e}");
     }
 }
+
+/// The split pipeline (traced kinematics, rolled f64 solve, traced finish)
+/// against the unrolled graph, on the biped and the K1, from nonzero warm
+/// starts. They compute the same expression, so they agree to round-off.
+#[test]
+fn split_matches_unrolled() {
+    use phyz_diff::contact_split::ContactKernels;
+    let mut cases = vec![biped()];
+    cases.extend(k1());
+    for (model, points) in cases {
+        let mat = material();
+        let config = ContactSolverConfig::default();
+        let sweeps = 5;
+        let unrolled = ContactStep::build(&model, &points, &mat, &config, sweeps);
+        let eval = unrolled.compile();
+        let split = ContactKernels::build(&model, &points, &mat, &config);
+        let (asm_fn, fin_fn) = split.compile();
+        let lay = split.layout();
+        let mut rng = Lcg(47);
+        let mut out = vec![0.0; unrolled.n_outputs()];
+        let mut asm = vec![0.0; lay.len];
+        let mut fin_out = vec![0.0; model.nq + model.nv];
+        let mut worst: f64 = 0.0;
+        for _ in 0..100 {
+            let s = standing_state(&model, &points, &mut rng);
+            let (_, _, f_cpu, _) = cpu_step(&model, &points, &mat, &config, &s, None);
+            let warm: Vec<f64> = f_cpu.iter().map(|x| x * (1.0 + 0.3 * rng.next())).collect();
+            eval(&unrolled.inputs(&s, &warm), &mut out);
+            let x: Vec<f64> =
+                s.q.as_slice()
+                    .iter()
+                    .chain(s.v.as_slice())
+                    .chain(s.ctrl.as_slice())
+                    .copied()
+                    .collect();
+            asm_fn(&x, &mut asm);
+            let (f, v1) = split.solve(&asm, &warm, sweeps);
+            let fin: Vec<f64> =
+                s.q.as_slice()
+                    .iter()
+                    .chain(s.v.as_slice())
+                    .chain(&v1)
+                    .copied()
+                    .collect();
+            fin_fn(&fin, &mut fin_out);
+            let scale = out.iter().fold(1.0f64, |m, x| m.max(x.abs()));
+            for (a, b) in fin_out.iter().chain(&f).zip(&out) {
+                worst = worst.max((a - b).abs() / scale);
+            }
+        }
+        let (na, nf) = split.live_nodes();
+        eprintln!(
+            "split vs unrolled (nv {}, {} points): worst {worst:e}; kinematics {na} + finish {nf} nodes vs {} unrolled",
+            model.nv,
+            points.len(),
+            unrolled.live_nodes()
+        );
+        assert!(worst < 1e-10, "worst {worst:e}");
+    }
+}

@@ -39,8 +39,9 @@ use tang_expr::compile::CompiledMany;
 use tang_expr::{ExprGraph, ExprId, trace};
 
 use crate::forward::{
-    ancestors_fixed, motion_subspace_1, motion_subspace_n, multi_joint_transform, traced_aba,
-    traced_finish_step, traced_free_velocity, traced_generalized_forces,
+    ancestors_fixed, eabs, eclamp, emax, motion_subspace_1, motion_subspace_n,
+    multi_joint_transform, traced_aba, traced_finish_step, traced_free_velocity,
+    traced_generalized_forces,
 };
 use crate::symbolic::{
     lift_spatial_inertia, lift_spatial_transform, lift_vec3, sym_joint_transform,
@@ -56,7 +57,7 @@ pub struct ContactPoint {
 }
 
 /// Newton iterations in the friction-disc step (the CPU path runs to 1e-14).
-const DISC_ITERS: usize = 8;
+pub(crate) const DISC_ITERS: usize = 8;
 
 /// One contact step for a model and a fixed set of contact points.
 pub struct ContactStep {
@@ -155,20 +156,47 @@ impl ContactStep {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn traced_contact_step(
+/// Everything the contact solve reads, per environment: the contact-free
+/// velocity, `A = J M⁻¹ Jᵀ` (row-major `3n x 3n`), `b = J qd_free`, the
+/// stabilization bias and normal regularizer per point, the activity mask, and
+/// `M⁻¹ Jᵀ` as one `nv`-vector per contact row (`3c + r`).
+pub(crate) struct Assembly {
+    pub free_qd: Vec<ExprId>,
+    pub a: Vec<ExprId>,
+    pub b: Vec<ExprId>,
+    pub bias: Vec<ExprId>,
+    pub r_n: Vec<ExprId>,
+    pub active: Vec<ExprId>,
+    pub minv_jt: Vec<Vec<ExprId>>,
+}
+
+/// The tree-structured half of a contact step (see [`traced_kinematics`]).
+pub(crate) struct Kinematics {
+    pub free_qd: Vec<ExprId>,
+    /// The joint-space mass matrix (CRBA, armature included).
+    pub mass: Vec<Vec<ExprId>>,
+    pub chol: Cholesky,
+    /// Contact rows of `J`, `3c + r` for point `c` and frame row `r`, each `nv`.
+    pub jac: Vec<Vec<ExprId>>,
+    pub bias: Vec<ExprId>,
+    pub dcoef: Vec<ExprId>,
+    pub active: Vec<ExprId>,
+}
+
+/// Trace the tree-structured half of a contact step: contact-free velocity,
+/// the mass matrix's Cholesky factor, contact rows of `J`, and per-point
+/// bias, impedance coefficient `(1-d)/d` and activity.
+pub(crate) fn traced_kinematics(
     model: &Model,
     points: &[ContactPoint],
     material: &ContactMaterial,
     config: &ContactSolverConfig,
-    sweeps: usize,
     q: &[ExprId],
     v: &[ExprId],
     ctrl: &[ExprId],
-    warm: &[ExprId],
-) -> Vec<ExprId> {
+) -> Kinematics {
     let lit = ExprId::from_f64;
-    let (nv, np, dt) = (model.nv, points.len(), model.dt);
+    let (np, dt) = (points.len(), model.dt);
 
     let qfrc = traced_generalized_forces(model, q, v, ctrl);
     let qdd = traced_aba(model, q, v, &qfrc);
@@ -204,11 +232,50 @@ fn traced_contact_step(
         depth.push(d);
     }
 
+    let erp = material.solref.error_reduction(dt);
+    let mut bias = Vec::with_capacity(np);
+    let mut dcoef = Vec::with_capacity(np);
+    for d_i in &depth {
+        let d = impedance_at(material, *d_i);
+        bias.push(d * lit(erp) * emax(*d_i, ExprId::ZERO) * lit(1.0 / dt));
+        let dc = eclamp(d, lit(1e-6), ExprId::ONE);
+        dcoef.push((ExprId::ONE - dc) / dc);
+    }
+    let _ = config;
+    Kinematics {
+        free_qd,
+        mass,
+        chol,
+        jac: jac.into_iter().flatten().collect(),
+        bias,
+        dcoef,
+        active,
+    }
+}
+
+/// Trace contact detection and assembly for one step (no solve).
+pub(crate) fn traced_assembly(
+    model: &Model,
+    points: &[ContactPoint],
+    material: &ContactMaterial,
+    config: &ContactSolverConfig,
+    q: &[ExprId],
+    v: &[ExprId],
+    ctrl: &[ExprId],
+) -> Assembly {
+    let lit = ExprId::from_f64;
+    let np = points.len();
+    let Kinematics {
+        free_qd,
+        chol,
+        jac,
+        bias,
+        dcoef,
+        active,
+        ..
+    } = traced_kinematics(model, points, material, config, q, v, ctrl);
     // M⁻¹ Jᵀ, then A = J M⁻¹ Jᵀ and b = J qd_free.
-    let minv_jt: Vec<[Vec<ExprId>; 3]> = jac
-        .iter()
-        .map(|j| std::array::from_fn(|r| chol.solve(&j[r])))
-        .collect();
+    let minv_jt: Vec<Vec<ExprId>> = jac.iter().map(|j| chol.solve(j)).collect();
     let dot = |a: &[ExprId], b: &[ExprId]| {
         let mut s = ExprId::ZERO;
         for (x, y) in a.iter().zip(b) {
@@ -218,42 +285,71 @@ fn traced_contact_step(
     };
     let dim = 3 * np;
     let mut a = vec![ExprId::ZERO; dim * dim];
-    for i in 0..np {
-        for k in 0..np {
-            for r in 0..3 {
-                for c in 0..3 {
-                    a[(3 * i + r) * dim + 3 * k + c] = dot(&jac[i][r], &minv_jt[k][c]);
-                }
-            }
+    for i in 0..dim {
+        for k in 0..dim {
+            a[i * dim + k] = dot(&jac[i], &minv_jt[k]);
         }
     }
-    let b: Vec<ExprId> = (0..dim)
-        .map(|i| dot(&jac[i / 3][i % 3], &free_qd))
-        .collect();
+    let b: Vec<ExprId> = jac.iter().map(|j| dot(j, &free_qd)).collect();
 
-    // Rows: impedance, bias, regularizer.
-    let erp = material.solref.error_reduction(dt);
-    let mut blocks = Vec::with_capacity(np);
-    let mut bias = Vec::with_capacity(np);
-    for i in 0..np {
-        let d = impedance_at(material, depth[i]);
-        bias.push(d * lit(erp) * depth[i].max(ExprId::ZERO) * lit(1.0 / dt));
-        let dc = d.clamp(lit(1e-6), ExprId::ONE);
-        let a_nn = a[(3 * i) * dim + 3 * i];
-        let reg = lit(config.regularization);
-        let r_n = ((ExprId::ONE - dc) / dc * a_nn).max(reg);
-        let blk: [[ExprId; 3]; 3] = std::array::from_fn(|r| {
-            std::array::from_fn(|c| {
-                let e = a[(3 * i + r) * dim + 3 * i + c];
-                match (r == c, r) {
-                    (true, 0) => e + r_n,
-                    (true, _) => e + reg,
-                    _ => e,
-                }
-            })
-        });
-        blocks.push(blk);
+    let r_n = (0..np)
+        .map(|i| {
+            emax(
+                dcoef[i] * a[(3 * i) * dim + 3 * i],
+                lit(config.regularization),
+            )
+        })
+        .collect();
+    Assembly {
+        free_qd,
+        a,
+        b,
+        bias,
+        r_n,
+        active,
+        minv_jt,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn traced_contact_step(
+    model: &Model,
+    points: &[ContactPoint],
+    material: &ContactMaterial,
+    config: &ContactSolverConfig,
+    sweeps: usize,
+    q: &[ExprId],
+    v: &[ExprId],
+    ctrl: &[ExprId],
+    warm: &[ExprId],
+) -> Vec<ExprId> {
+    let lit = ExprId::from_f64;
+    let (np, dt) = (points.len(), model.dt);
+    let dim = 3 * np;
+    let Assembly {
+        free_qd,
+        a,
+        b,
+        bias,
+        r_n,
+        active,
+        minv_jt,
+    } = traced_assembly(model, points, material, config, q, v, ctrl);
+    let reg = lit(config.regularization);
+    let blocks: Vec<[[ExprId; 3]; 3]> = (0..np)
+        .map(|i| {
+            std::array::from_fn(|r| {
+                std::array::from_fn(|c| {
+                    let e = a[(3 * i + r) * dim + 3 * i + c];
+                    match (r == c, r) {
+                        (true, 0) => e + r_n[i],
+                        (true, _) => e + reg,
+                        _ => e,
+                    }
+                })
+            })
+        })
+        .collect();
 
     // Staged-Coulomb PGS from the warm start.
     let mu = lit(material.friction);
@@ -277,7 +373,7 @@ fn traced_contact_step(
             });
             let m = &blocks[c];
             let unclamped = (bias[c] - r[0] - m[0][1] * f[c][1] - m[0][2] * f[c][2]) / m[0][0];
-            let f_n = unclamped.max(ExprId::ZERO);
+            let f_n = emax(unclamped, ExprId::ZERO);
             let r_u = r[1] + m[1][0] * f_n;
             let r_w = r[2] + m[2][0] * f_n;
             let det = m[1][1] * m[2][2] - m[1][2] * m[2][1];
@@ -302,14 +398,11 @@ fn traced_contact_step(
 
     // v1 = qd_free + M⁻¹ Jᵀ f, then the shared end of the step.
     let mut v1 = free_qd;
-    for (mj, fc) in minv_jt.iter().zip(&f) {
-        for (col, fr) in mj.iter().zip(fc) {
-            for (vk, x) in v1.iter_mut().zip(col) {
-                *vk += *x * *fr;
-            }
+    for (col, fr) in minv_jt.iter().zip(f.iter().flatten()) {
+        for (vk, x) in v1.iter_mut().zip(col) {
+            *vk += *x * *fr;
         }
     }
-    let _ = nv;
     let (q1, v1) = traced_finish_step(model, q, v, v1, dt);
     q1.into_iter()
         .chain(v1)
@@ -327,7 +420,7 @@ fn impedance_at(m: &ContactMaterial, depth: ExprId) -> ExprId {
     let inside = if s.width <= 0.0 {
         lit(dmax)
     } else {
-        let x = (depth.abs() * lit(1.0 / s.width)).clamp(ExprId::ZERO, ExprId::ONE);
+        let x = eclamp(eabs(depth) * lit(1.0 / s.width), ExprId::ZERO, ExprId::ONE);
         let mid = s.midpoint.clamp(1e-6, 1.0 - 1e-6);
         let p = s.power.max(1.0);
         let pow = |b: ExprId| b.powf(lit(p));
@@ -367,7 +460,7 @@ fn disc_block_step(m: [[ExprId; 2]; 2], r: [ExprId; 2], limit: ExprId) -> [ExprI
         let dn = -(t[0] * st[0] + t[1] * st[1]) / nrm;
         let phi = nrm.recip() - limit.recip();
         let dphi = -dn / (nrm * nrm);
-        k = (k - phi / dphi).max(ExprId::ZERO);
+        k = emax(k - phi / dphi, ExprId::ZERO);
         t = solve(k, [-r[0], -r[1]]);
     }
     let s = limit / (t[0] * t[0] + t[1] * t[1]).sqrt();
@@ -517,10 +610,78 @@ fn traced_crba(model: &Model, x_tree: &[SpatialTransform<ExprId>]) -> Vec<Vec<Ex
     m
 }
 
+/// Parent DOF of each velocity DOF in the kinematic tree (`-1` at a root):
+/// the previous DOF of the same joint, else the last DOF of the nearest
+/// ancestor body that has any. Parents always precede children.
+pub(crate) fn dof_parents(model: &Model) -> Vec<i32> {
+    let mut lambda = vec![-1i32; model.nv];
+    let mut last_dof = vec![-1i32; model.nbodies()];
+    for (i, body) in model.bodies.iter().enumerate() {
+        let joint = &model.joints[body.joint_idx];
+        let vi = model.v_offsets[body.joint_idx];
+        let inherited = if body.parent < 0 {
+            -1
+        } else {
+            last_dof[body.parent as usize]
+        };
+        let mut prev = inherited;
+        for k in 0..joint.ndof() {
+            lambda[vi + k] = prev;
+            prev = (vi + k) as i32;
+        }
+        last_dof[i] = prev;
+    }
+    lambda
+}
+
+/// Featherstone's LTL factorization `M = Lᵀ L` (RBDA §6.5), traced. In this
+/// DOF order `L` has no fill-in: `L[k][i] ≠ 0` only for `i` an ancestor of
+/// `k`. Returns `L` (lower triangle; other entries zero) and `1 / L[k][k]`.
+pub(crate) fn traced_ltl(mass: &[Vec<ExprId>], lambda: &[i32]) -> (Vec<Vec<ExprId>>, Vec<ExprId>) {
+    let n = mass.len();
+    let mut h = mass.to_vec();
+    let mut inv = vec![ExprId::ZERO; n];
+    for k in (0..n).rev() {
+        h[k][k] = h[k][k].sqrt();
+        inv[k] = h[k][k].recip();
+        let mut i = lambda[k];
+        while i >= 0 {
+            let iu = i as usize;
+            h[k][iu] *= inv[k];
+            i = lambda[iu];
+        }
+        let mut i = lambda[k];
+        while i >= 0 {
+            let iu = i as usize;
+            let mut j = i;
+            while j >= 0 {
+                let ju = j as usize;
+                let d = h[k][iu] * h[k][ju];
+                h[iu][ju] -= d;
+                j = lambda[ju];
+            }
+            i = lambda[iu];
+        }
+    }
+    let l = (0..n)
+        .map(|k| {
+            let mut row = vec![ExprId::ZERO; n];
+            row[k] = h[k][k];
+            let mut i = lambda[k];
+            while i >= 0 {
+                row[i as usize] = h[k][i as usize];
+                i = lambda[i as usize];
+            }
+            row
+        })
+        .collect();
+    (l, inv)
+}
+
 /// Unrolled Cholesky `M = L Lᵀ`, reused across right-hand sides.
-struct Cholesky {
-    l: Vec<Vec<ExprId>>,
-    inv_diag: Vec<ExprId>,
+pub(crate) struct Cholesky {
+    pub l: Vec<Vec<ExprId>>,
+    pub inv_diag: Vec<ExprId>,
 }
 
 impl Cholesky {

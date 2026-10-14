@@ -5,7 +5,9 @@
 //! cargo run -p phyz-diff --release --example contact_bench -- OUT_DIR [SWEEPS]
 //! ```
 //!
-//! Also writes `contact.metal` for `bench-c/metal_bench.m`.
+//! Also writes `contact.metal` for `bench-c/metal_bench.m`, and `split.c` /
+//! `split.metal` (kinematics, rolled solve, finish) for `bench-c/split_bench.c`
+//! and `bench-c/metal_split.m`.
 //!
 //! States come from a 1 s CPU standing rollout (1 cm drop, servos at the
 //! default pose, dt = 1 ms), so every one has realistic foot contact. Writes
@@ -19,6 +21,7 @@ use std::time::Instant;
 
 use phyz_collision::Collision;
 use phyz_contact::{ContactMaterial, ContactSolverConfig};
+use phyz_diff::contact_split::ContactKernels;
 use phyz_diff::contact_step::{ContactPoint, ContactStep};
 use phyz_math::{DVec, SpatialTransformExt as _, Vec3};
 use phyz_model::{Actuator, Model, State};
@@ -86,12 +89,31 @@ fn main() {
     std::fs::write(out.join("contact_f64.c"), to_f64(&src)).unwrap();
     let msl = step.kernel(Dialect::Msl).source.replace("(--", "(- -");
     std::fs::write(out.join("contact.metal"), msl).unwrap();
+
+    // The split pipeline: traced kinematics, rolled solve, traced finish.
+    let split = ContactKernels::build(&model, &points, &mat, &config);
+    let (kin, fin) = split.traced_sources(Dialect::C);
+    let src = format!("{kin}\n{}\n{fin}", split.solve_source(Dialect::C));
+    std::fs::write(out.join("split.c"), src).unwrap();
+    // The GPU pipeline is structure-of-arrays throughout.
+    let (kin, fin) = split.traced_sources_soa();
+    let src = format!("{kin}\n{}\n{fin}", split.solve_source(Dialect::Msl));
+    std::fs::write(out.join("split.metal"), src).unwrap();
+    let lay = split.layout();
+    let (nk, nf) = split.live_nodes();
     write_f64(&out.join("contact_inputs.bin"), &inputs);
     write_f64(&out.join("contact_reference.bin"), &reference);
 
     let meta = format!(
-        "contact: sweeps {sweeps} points {} n_inputs {} n_out {} n_check {} live_nodes {} trace_ms {trace_ms:.0}\n\
+        "split: nx {} nrec {} nscr {} nfin {} dim {} nout {} kinematics_nodes {nk} finish_nodes {nf}\n\
+         contact: sweeps {sweeps} points {} n_inputs {} n_out {} n_check {} live_nodes {} trace_ms {trace_ms:.0}\n\
          phyz CPU contact step us: median {:.2} p99 {:.2}\n",
+        split.kinematics_inputs(),
+        lay.len,
+        lay.scratch,
+        split.finish_inputs(),
+        3 * points.len(),
+        model.nq + model.nv,
         points.len(),
         step.n_inputs(),
         step.n_outputs(),
