@@ -74,6 +74,7 @@ fn main() {
         &out,
         "aba",
         &fd.kernel(Dialect::C).source,
+        &fd.kernel_c_f64().source,
         &fd.kernel(Dialect::Msl).source,
         &inputs,
         &reference,
@@ -105,6 +106,7 @@ fn main() {
         &out,
         "step",
         &step.kernel(Dialect::C).source,
+        &step.kernel_c_f64().source,
         &step.kernel(Dialect::Msl).source,
         &inputs,
         &reference,
@@ -134,20 +136,15 @@ fn phyz_step(model: &phyz_model::Model, s: &mut phyz_model::State) {
 fn emit(
     out: &std::path::Path,
     name: &str,
-    src: &str,
+    c32: &str,
+    c64: &str,
     msl: &str,
     inputs: &[f64],
     reference: &[f64],
 ) {
-    std::fs::write(
-        out.join(format!("{name}.metal")),
-        msl.replace("(--", "(- -"),
-    )
-    .unwrap();
-    // tang-expr emits `Neg(Lit(-x))` as `--x`, which C parses as a decrement.
-    let src = src.replace("(--", "(- -");
-    std::fs::write(out.join(format!("{name}_f32.c")), &src).unwrap();
-    std::fs::write(out.join(format!("{name}_f64.c")), to_f64(&src)).unwrap();
+    std::fs::write(out.join(format!("{name}.metal")), msl).unwrap();
+    std::fs::write(out.join(format!("{name}_f32.c")), c32).unwrap();
+    std::fs::write(out.join(format!("{name}_f64.c")), c64).unwrap();
     write_f64(&out.join(format!("{name}_inputs.bin")), inputs);
     write_f64(&out.join(format!("{name}_reference.bin")), reference);
 }
@@ -165,33 +162,6 @@ fn time_us(states: &[phyz_model::State], mut f: impl FnMut(&phyz_model::State)) 
     ns.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let pct = |p: f64| ns[((ns.len() - 1) as f64 * p) as usize] / 1e3;
     format!("median {:.2} p99 {:.2}", pct(0.5), pct(0.99))
-}
-
-/// The C dialect emits f32; for f64 swap the type and drop literal `f` suffixes.
-fn to_f64(src: &str) -> String {
-    let src = src.replace("float", "double");
-    let b = src.as_bytes();
-    let mut out = String::with_capacity(src.len());
-    for (i, &c) in b.iter().enumerate() {
-        let prev_digit = i > 0 && (b[i - 1].is_ascii_digit() || b[i - 1] == b'.');
-        let next_word = b
-            .get(i + 1)
-            .is_some_and(|n| n.is_ascii_alphanumeric() || *n == b'_');
-        if c == b'f' && prev_digit && !next_word && !is_ident_tail(b, i) {
-            continue;
-        }
-        out.push(c as char);
-    }
-    out
-}
-
-/// True if `b[i]` ends an identifier like `t12f`, not a numeric literal.
-fn is_ident_tail(b: &[u8], i: usize) -> bool {
-    let mut j = i;
-    while j > 0 && (b[j - 1].is_ascii_digit() || b[j - 1] == b'.') {
-        j -= 1;
-    }
-    j > 0 && (b[j - 1].is_ascii_alphabetic() || b[j - 1] == b'_')
 }
 
 fn write_f64(path: &std::path::Path, xs: &[f64]) {

@@ -248,12 +248,7 @@ impl ContactKernels {
 
     /// Emitted kinematics and finish kernels, renamed `k_kin` / `k_finish`.
     pub fn traced_sources(&self, dialect: Dialect) -> (String, String) {
-        let rename = |k: ComputeKernel, name: &str| {
-            // tang-expr at phyz's pinned rev emits `Neg(Lit(-x))` as `--x`.
-            k.source
-                .replace(" k0(", &format!(" {name}("))
-                .replace("(--", "(- -")
-        };
+        let rename = |k: ComputeKernel, name: &str| k.source.replace(" k0(", &format!(" {name}("));
         (
             rename(
                 self.kinematics
