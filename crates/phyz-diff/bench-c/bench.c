@@ -48,6 +48,9 @@ int main(int argc, char **argv) {
     if (argc < 5) { fprintf(stderr, "usage: bench DIR NAME N_INPUTS N_OUT\n"); return 1; }
     const char *dir = argv[1], *name = argv[2];
     int ni = atoi(argv[3]), nv = atoi(argv[4]);
+    // Optional: compare only the first n_check outputs (e.g. q', v' and not
+    // contact impulses, whose null-space part is not unique).
+    int n_check = argc > 5 ? atoi(argv[5]) : nv;
     char fin[256], fref[256];
     snprintf(fin, sizeof fin, "%s_inputs.bin", name);
     snprintf(fref, sizeof fref, "%s_reference.bin", name);
@@ -65,9 +68,9 @@ int main(int argc, char **argv) {
     double worst = 0, sum = 0;
     for (int s = 0; s < n; s++) {
         double scale = 1;
-        for (int k = 0; k < nv; k++) scale = fmax(scale, fabs(ref[s * nv + k]));
+        for (int k = 0; k < n_check; k++) scale = fmax(scale, fabs(ref[s * nv + k]));
         double w = 0;
-        for (int k = 0; k < nv; k++) w = fmax(w, fabs(out[s * nv + k] - ref[s * nv + k]) / scale);
+        for (int k = 0; k < n_check; k++) w = fmax(w, fabs(out[s * nv + k] - ref[s * nv + k]) / scale);
         worst = fmax(worst, w);
         sum += w;
     }

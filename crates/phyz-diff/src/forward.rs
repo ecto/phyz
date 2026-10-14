@@ -58,6 +58,7 @@ impl ForwardDynamics {
             let qfrc: Vec<ExprId> = (0..nv).map(|i| ExprId::var((nq + nv + i) as u16)).collect();
             traced_aba(model, &q, &v, &qfrc)
         });
+        let (graph, qdd) = fold_constants(&graph, &qdd);
         Self { graph, qdd, nq, nv }
     }
 
@@ -128,6 +129,7 @@ impl Step {
             let (q1, v1) = traced_semi_implicit_euler(model, &q, &v, &qdd, model.dt);
             q1.into_iter().chain(v1).collect::<Vec<_>>()
         });
+        let (graph, out) = fold_constants(&graph, &out);
         Self {
             graph,
             out,
@@ -168,7 +170,7 @@ impl Step {
 }
 
 /// `phyz_rigid::actuation::generalized_forces`, traced.
-fn traced_generalized_forces(
+pub(crate) fn traced_generalized_forces(
     model: &Model,
     q: &[ExprId],
     v: &[ExprId],
@@ -240,6 +242,18 @@ fn traced_semi_implicit_euler(
     qdd: &[ExprId],
     dt: f64,
 ) -> (Vec<ExprId>, Vec<ExprId>) {
+    let v1 = traced_free_velocity(model, v, qdd, dt);
+    traced_finish_step(model, q, v, v1, dt)
+}
+
+/// `v + dt * qdd` with the free-joint Coriolis term stripped first
+/// (`phyz_rigid::strip_free_joint_coriolis`): the contact-free velocity.
+pub(crate) fn traced_free_velocity(
+    model: &Model,
+    v: &[ExprId],
+    qdd: &[ExprId],
+    dt: f64,
+) -> Vec<ExprId> {
     let lit = ExprId::from_f64;
     let mut qdd = qdd.to_vec();
     for (j, joint) in model.joints.iter().enumerate() {
@@ -252,7 +266,19 @@ fn traced_semi_implicit_euler(
             qdd[o + 5] += c.z;
         }
     }
-    let mut v1: Vec<ExprId> = (0..model.nv).map(|i| v[i] + lit(dt) * qdd[i]).collect();
+    (0..model.nv).map(|i| v[i] + lit(dt) * qdd[i]).collect()
+}
+
+/// `rotate_free_joint_velocities` then `integrate_configuration`: from the
+/// step's updated velocity `v1` (in the start frame) to `(q', v')`.
+pub(crate) fn traced_finish_step(
+    model: &Model,
+    q: &[ExprId],
+    v: &[ExprId],
+    mut v1: Vec<ExprId>,
+    dt: f64,
+) -> (Vec<ExprId>, Vec<ExprId>) {
+    let lit = ExprId::from_f64;
     for (j, joint) in model.joints.iter().enumerate() {
         if joint.joint_type == JointType::Free {
             let o = model.v_offsets[j];
@@ -295,7 +321,7 @@ fn traced_semi_implicit_euler(
 }
 
 /// `phyz_math::quat_log` with its small-angle branch as a select.
-fn quat_log(q: Quat<ExprId>) -> Vec3<ExprId> {
+pub(crate) fn quat_log(q: Quat<ExprId>) -> Vec3<ExprId> {
     let n = (q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z).sqrt();
     let big = n - ExprId::from_f64(f64::EPSILON);
     let safe = ExprId::select(big, n, ExprId::ONE);
@@ -305,7 +331,12 @@ fn quat_log(q: Quat<ExprId>) -> Vec3<ExprId> {
 
 type Sym6 = [[ExprId; 6]; 6];
 
-fn traced_aba(model: &Model, q: &[ExprId], v: &[ExprId], qfrc: &[ExprId]) -> Vec<ExprId> {
+pub(crate) fn traced_aba(
+    model: &Model,
+    q: &[ExprId],
+    v: &[ExprId],
+    qfrc: &[ExprId],
+) -> Vec<ExprId> {
     let nb = model.nbodies();
     let zero_sv: SpatialVec<ExprId> = SpatialVec::zero();
 
@@ -453,7 +484,7 @@ fn traced_aba(model: &Model, q: &[ExprId], v: &[ExprId], qfrc: &[ExprId]) -> Vec
     qdd
 }
 
-fn ancestors_fixed(model: &Model, i: usize) -> bool {
+pub(crate) fn ancestors_fixed(model: &Model, i: usize) -> bool {
     let mut p = model.bodies[i].parent;
     while p >= 0 {
         let b = &model.bodies[p as usize];
@@ -465,7 +496,7 @@ fn ancestors_fixed(model: &Model, i: usize) -> bool {
     true
 }
 
-fn motion_subspace_1(joint: &phyz_model::Joint) -> SpatialVec<ExprId> {
+pub(crate) fn motion_subspace_1(joint: &phyz_model::Joint) -> SpatialVec<ExprId> {
     let axis = lift_vec3(joint.axis);
     match joint.joint_type {
         JointType::Revolute | JointType::Hinge => SpatialVec::new(axis, Vec3::zero()),
@@ -475,14 +506,14 @@ fn motion_subspace_1(joint: &phyz_model::Joint) -> SpatialVec<ExprId> {
 }
 
 /// Columns of the constant motion subspace, each a 6-vector `[ang; lin]`.
-fn motion_subspace_n(joint: &phyz_model::Joint) -> Vec<[f64; 6]> {
+pub(crate) fn motion_subspace_n(joint: &phyz_model::Joint) -> Vec<[f64; 6]> {
     let s = joint.motion_subspace_matrix();
     (0..s.ncols())
         .map(|k| std::array::from_fn(|r| s[(r, k)]))
         .collect()
 }
 
-fn joint_velocity(joint: &phyz_model::Joint, qd: &[ExprId]) -> SpatialVec<ExprId> {
+pub(crate) fn joint_velocity(joint: &phyz_model::Joint, qd: &[ExprId]) -> SpatialVec<ExprId> {
     let axis = lift_vec3(joint.axis);
     match joint.joint_type {
         JointType::Revolute | JointType::Hinge => SpatialVec::new(axis * qd[0], Vec3::zero()),
@@ -500,7 +531,10 @@ fn joint_velocity(joint: &phyz_model::Joint, qd: &[ExprId]) -> SpatialVec<ExprId
 
 /// Parent→child coordinate map of a ball or free joint: `exp(w)ᵀ`, plus the
 /// free joint's translation. Mirrors `Joint::joint_transform_slice`.
-fn multi_joint_transform(joint_type: JointType, q: &[ExprId]) -> SpatialTransform<ExprId> {
+pub(crate) fn multi_joint_transform(
+    joint_type: JointType,
+    q: &[ExprId],
+) -> SpatialTransform<ExprId> {
     let rot = quat_exp(Vec3::new(q[0], q[1], q[2]))
         .to_matrix()
         .transpose();
@@ -512,7 +546,7 @@ fn multi_joint_transform(joint_type: JointType, q: &[ExprId]) -> SpatialTransfor
 }
 
 /// `phyz_math::quat_exp` with its small-angle branch as a select.
-fn quat_exp(w: Vec3<ExprId>) -> Quat<ExprId> {
+pub(crate) fn quat_exp(w: Vec3<ExprId>) -> Quat<ExprId> {
     let angle = (w.x * w.x + w.y * w.y + w.z * w.z).sqrt();
     let big = angle - ExprId::from_f64(f64::EPSILON);
     let safe = ExprId::select(big, angle, ExprId::ONE);
@@ -523,7 +557,7 @@ fn quat_exp(w: Vec3<ExprId>) -> Quat<ExprId> {
 }
 
 /// Solve `D x = b` for symmetric positive definite `D`, unrolled.
-fn cholesky_solve(d: &[Vec<ExprId>], b: &[ExprId]) -> Vec<ExprId> {
+pub(crate) fn cholesky_solve(d: &[Vec<ExprId>], b: &[ExprId]) -> Vec<ExprId> {
     let n = b.len();
     let mut l = vec![vec![ExprId::ZERO; n]; n];
     let mut inv_diag = vec![ExprId::ZERO; n];
@@ -573,7 +607,7 @@ fn mat3_get(m: &Mat3<ExprId>, r: usize, c: usize) -> ExprId {
     }
 }
 
-fn to_sym6(m: &SpatialMat<ExprId>) -> Sym6 {
+pub(crate) fn to_sym6(m: &SpatialMat<ExprId>) -> Sym6 {
     std::array::from_fn(|r| {
         std::array::from_fn(|c| {
             let blk = match (r < 3, c < 3) {
@@ -587,7 +621,7 @@ fn to_sym6(m: &SpatialMat<ExprId>) -> Sym6 {
     })
 }
 
-fn sv_arr(v: &SpatialVec<ExprId>) -> [ExprId; 6] {
+pub(crate) fn sv_arr(v: &SpatialVec<ExprId>) -> [ExprId; 6] {
     [
         v.angular.x,
         v.angular.y,
@@ -598,7 +632,7 @@ fn sv_arr(v: &SpatialVec<ExprId>) -> [ExprId; 6] {
     ]
 }
 
-fn arr_sv(a: &[ExprId; 6]) -> SpatialVec<ExprId> {
+pub(crate) fn arr_sv(a: &[ExprId; 6]) -> SpatialVec<ExprId> {
     SpatialVec::new(Vec3::new(a[0], a[1], a[2]), Vec3::new(a[3], a[4], a[5]))
 }
 
@@ -613,7 +647,7 @@ fn mat6_vec(m: &Sym6, x: &[ExprId; 6]) -> [ExprId; 6] {
 }
 
 /// `a · s` for a constant `s`, skipping its zeros.
-fn dot6_const(a: &[ExprId; 6], s: &[f64; 6]) -> ExprId {
+pub(crate) fn dot6_const(a: &[ExprId; 6], s: &[f64; 6]) -> ExprId {
     let mut sum = ExprId::ZERO;
     for r in 0..6 {
         if s[r] == 1.0 {
@@ -623,4 +657,101 @@ fn dot6_const(a: &[ExprId; 6], s: &[f64; 6]) -> ExprId {
         }
     }
     sum
+}
+
+/// Rebuild `graph` keeping only what `outputs` need, folding constants on
+/// the way: literal arithmetic, `x + 0`, `x * 0`, `x * 1`, `-(-x)`, and a
+/// select on a literal condition. One forward pass over the node list, so it
+/// is linear and does not recurse (the traced graphs are ~10⁵ nodes deep).
+///
+/// `x * 0 → 0` drops NaN/inf propagation through structurally zero terms
+/// (a Jacobian column of a non-ancestor DOF, say); every other rewrite is
+/// exact in IEEE arithmetic up to the sign of a zero.
+// Float comparisons as guards rather than literal patterns, for clarity.
+#[allow(clippy::redundant_guards)]
+pub fn fold_constants(graph: &ExprGraph, outputs: &[ExprId]) -> (ExprGraph, Vec<ExprId>) {
+    use tang_expr::Node;
+    let live = graph.live_set(outputs);
+    let n = graph.len();
+    let mut g = ExprGraph::new();
+    let mut map: Vec<ExprId> = vec![ExprId::ZERO; n];
+    let lit_of = |g: &ExprGraph, id: ExprId| match g.node(id) {
+        Node::Lit(bits) => Some(f64::from_bits(bits)),
+        _ => None,
+    };
+    for i in 0..n {
+        if !live.contains(&i) {
+            continue;
+        }
+        let m = |e: ExprId| map[e.index() as usize];
+        let id = match graph.node(ExprId::from_index(i as u32)) {
+            Node::Var(v) => g.var(v),
+            Node::Lit(bits) => g.lit(f64::from_bits(bits)),
+            Node::Add(a, b) => {
+                let (a, b) = (m(a), m(b));
+                match (lit_of(&g, a), lit_of(&g, b)) {
+                    (Some(x), Some(y)) => g.lit(x + y),
+                    (Some(x), _) if x == 0.0 => b,
+                    (_, Some(y)) if y == 0.0 => a,
+                    _ => g.add(a, b),
+                }
+            }
+            Node::Mul(a, b) => {
+                let (a, b) = (m(a), m(b));
+                match (lit_of(&g, a), lit_of(&g, b)) {
+                    (Some(x), Some(y)) => g.lit(x * y),
+                    (Some(x), _) | (_, Some(x)) if x == 0.0 => g.lit(0.0),
+                    (Some(x), _) if x == 1.0 => b,
+                    (_, Some(y)) if y == 1.0 => a,
+                    (Some(x), _) if x == -1.0 => g.neg(b),
+                    (_, Some(y)) if y == -1.0 => g.neg(a),
+                    _ => g.mul(a, b),
+                }
+            }
+            Node::Neg(a) => {
+                let a = m(a);
+                match (lit_of(&g, a), g.node(a)) {
+                    (Some(x), _) => g.lit(-x),
+                    (_, Node::Neg(inner)) => inner,
+                    _ => g.neg(a),
+                }
+            }
+            Node::Recip(a) => {
+                let a = m(a);
+                match lit_of(&g, a) {
+                    Some(x) => g.lit(1.0 / x),
+                    None => g.recip(a),
+                }
+            }
+            Node::Sqrt(a) => {
+                let a = m(a);
+                match lit_of(&g, a) {
+                    Some(x) => g.lit(x.sqrt()),
+                    None => g.sqrt(a),
+                }
+            }
+            Node::Sin(a) => {
+                let a = m(a);
+                match lit_of(&g, a) {
+                    Some(x) => g.lit(x.sin()),
+                    None => g.sin(a),
+                }
+            }
+            Node::Atan2(y, x) => g.atan2(m(y), m(x)),
+            Node::Exp2(a) => g.exp2(m(a)),
+            Node::Log2(a) => g.log2(m(a)),
+            Node::Select(c, a, b) => {
+                let (c, a, b) = (m(c), m(a), m(b));
+                match lit_of(&g, c) {
+                    Some(x) if x > 0.0 => a,
+                    Some(_) => b,
+                    None if a == b => a,
+                    None => g.select(c, a, b),
+                }
+            }
+        };
+        map[i] = id;
+    }
+    let outs = outputs.iter().map(|o| map[o.index() as usize]).collect();
+    (g, outs)
 }
