@@ -385,7 +385,7 @@ fn symbolic_aba(model: &Model, q: &[ExprId], v: &[ExprId], ctrl: &[ExprId]) -> V
 // ---------------------------------------------------------------------------
 
 /// Lift a concrete Vec3<f64> to Vec3<ExprId> (as literals).
-fn lift_vec3(v: Vec3<f64>) -> Vec3<ExprId> {
+pub(crate) fn lift_vec3(v: Vec3<f64>) -> Vec3<ExprId> {
     Vec3::new(
         ExprId::from_f64(v.x),
         ExprId::from_f64(v.y),
@@ -394,7 +394,7 @@ fn lift_vec3(v: Vec3<f64>) -> Vec3<ExprId> {
 }
 
 /// Lift a concrete Mat3<f64> to Mat3<ExprId> (as literals).
-fn lift_mat3(m: Mat3<f64>) -> Mat3<ExprId> {
+pub(crate) fn lift_mat3(m: Mat3<f64>) -> Mat3<ExprId> {
     Mat3::new(
         ExprId::from_f64(m.c0.x),
         ExprId::from_f64(m.c1.x),
@@ -409,12 +409,12 @@ fn lift_mat3(m: Mat3<f64>) -> Mat3<ExprId> {
 }
 
 /// Lift a concrete SpatialTransform<f64> to SpatialTransform<ExprId>.
-fn lift_spatial_transform(xf: &tang::SpatialTransform<f64>) -> SpatialTransform<ExprId> {
+pub(crate) fn lift_spatial_transform(xf: &tang::SpatialTransform<f64>) -> SpatialTransform<ExprId> {
     SpatialTransform::new(lift_mat3(xf.rot), lift_vec3(xf.pos))
 }
 
 /// Lift a concrete SpatialInertia<f64> to SpatialInertia<ExprId>.
-fn lift_spatial_inertia(si: &tang::SpatialInertia<f64>) -> SpatialInertia<ExprId> {
+pub(crate) fn lift_spatial_inertia(si: &tang::SpatialInertia<f64>) -> SpatialInertia<ExprId> {
     SpatialInertia::new(
         ExprId::from_f64(si.mass),
         lift_vec3(si.com),
@@ -427,7 +427,7 @@ fn lift_spatial_inertia(si: &tang::SpatialInertia<f64>) -> SpatialInertia<ExprId
 // ---------------------------------------------------------------------------
 
 /// Compute the symbolic joint transform for a single-DOF joint.
-fn sym_joint_transform(
+pub(crate) fn sym_joint_transform(
     joint_type: JointType,
     axis: &Vec3<ExprId>,
     q: ExprId,
@@ -476,7 +476,10 @@ fn sym_motion_subspace(joint_type: JointType, axis: &Vec3<ExprId>) -> SpatialVec
 }
 
 /// Outer product of two spatial vectors, returning a SpatialMat.
-fn sym_outer_product_6(a: &SpatialVec<ExprId>, b: &SpatialVec<ExprId>) -> SpatialMat<ExprId> {
+pub(crate) fn sym_outer_product_6(
+    a: &SpatialVec<ExprId>,
+    b: &SpatialVec<ExprId>,
+) -> SpatialMat<ExprId> {
     fn vec3_outer(a: Vec3<ExprId>, b: Vec3<ExprId>) -> Mat3<ExprId> {
         Mat3::new(
             a.x * b.x,

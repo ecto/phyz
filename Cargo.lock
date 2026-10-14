@@ -3172,6 +3172,7 @@ dependencies = [
  "phyz-math",
  "phyz-model",
  "phyz-rigid",
+ "phyz-urdf",
  "tang",
  "tang-expr",
  "tang-la",
