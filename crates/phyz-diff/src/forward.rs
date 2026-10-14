@@ -225,7 +225,7 @@ pub(crate) fn traced_generalized_forces(
                     );
                 }
                 if joint.friction_loss > 0.0 {
-                    f += -(lit(joint.friction_loss) * (vk * lit(1e3)).tanh());
+                    f += -(lit(joint.friction_loss) * etanh(vk * lit(1e3)));
                 }
             }
             qfrc[vo + k] += f;
@@ -773,7 +773,189 @@ pub(crate) fn eclamp(x: ExprId, lo: ExprId, hi: ExprId) -> ExprId {
     emin(emax(x, lo), hi)
 }
 
+/// `tanh(x)` that stays finite and accurate. tang-expr's `Scalar::tanh` is
+/// `sinh(x) / cosh(x)` from `exp(±x)`, which is `inf / inf = NaN` once
+/// `|x| > ~710`, which the smoothed friction term `tanh(1000 v)` reaches at
+/// 0.7 rad/s. Here, with `a = min(|x|, 20)` (past 20 tanh is 1 to f64
+/// precision, slope 0):
+/// - `a < 0.05`: the odd series to `a^9` (truncation < 1e-16 relative);
+/// - otherwise `1 - 2 / (e^(2a) + 1)`, whose cancellation costs at most
+///   ~2e-15 relative there (there is no `expm1` primitive).
+pub(crate) fn etanh(x: ExprId) -> ExprId {
+    let lit = ExprId::from_f64;
+    let a = emin(eabs(x), lit(20.0));
+    let e = (a * ExprId::TWO).exp();
+    let big = ExprId::ONE - ExprId::TWO / (e + ExprId::ONE);
+    let a2 = a * a;
+    let series = a
+        * (ExprId::ONE
+            + a2 * (lit(-1.0 / 3.0)
+                + a2 * (lit(2.0 / 15.0) + a2 * (lit(-17.0 / 315.0) + a2 * lit(62.0 / 2835.0)))));
+    let r = ExprId::select(a - lit(0.05), big, series);
+    ExprId::select(x, r, -r)
+}
+
 /// `|x|` as a select (`Scalar::abs` is `sqrt(x^2)`).
 pub(crate) fn eabs(x: ExprId) -> ExprId {
     ExprId::select(x, x, -x)
+}
+
+/// The Jacobian `d outputs / d inputs` of a graph, as a new graph: outputs
+/// row-major (`outputs.len() x n_inputs`), folded.
+///
+/// Forward mode in one linear pass over the node list (no recursion), with
+/// each node's tangent kept sparse: only the inputs it actually depends on.
+/// `Select` differentiates as `select(c, da, db)`: piecewise, with the
+/// condition's own derivative zero, which is what a clamp or a contact switch
+/// means away from its kink.
+pub fn jacobian(
+    graph: &ExprGraph,
+    outputs: &[ExprId],
+    n_inputs: usize,
+) -> (ExprGraph, Vec<ExprId>) {
+    use std::collections::BTreeMap;
+    use tang_expr::Node;
+    let live = graph.live_set(outputs);
+    let n = graph.len();
+    let mut g = ExprGraph::new();
+    let mut map: Vec<ExprId> = vec![ExprId::ZERO; n];
+    let mut tan: Vec<BTreeMap<u16, ExprId>> = vec![BTreeMap::new(); n];
+    let ln2 = std::f64::consts::LN_2;
+    for i in 0..n {
+        if !live.contains(&i) {
+            continue;
+        }
+        let m = |e: ExprId| map[e.index() as usize];
+        let t = |e: ExprId| &tan[e.index() as usize];
+        // Combine two sparse tangents: ka * ta + kb * tb (None = coefficient 1).
+        let combine = |g: &mut ExprGraph,
+                       ta: &BTreeMap<u16, ExprId>,
+                       ka: Option<ExprId>,
+                       tb: &BTreeMap<u16, ExprId>,
+                       kb: Option<ExprId>| {
+            let mut out = BTreeMap::new();
+            let scale = |g: &mut ExprGraph, x: ExprId, k: Option<ExprId>| match k {
+                Some(k) => g.mul(k, x),
+                None => x,
+            };
+            for (v, d) in ta {
+                let x = scale(g, *d, ka);
+                out.insert(*v, x);
+            }
+            for (v, d) in tb {
+                let x = scale(g, *d, kb);
+                let y = match out.get(v) {
+                    Some(prev) => g.add(*prev, x),
+                    None => x,
+                };
+                out.insert(*v, y);
+            }
+            out
+        };
+        let (id, d) = match graph.node(ExprId::from_index(i as u32)) {
+            Node::Var(v) => {
+                let id = g.var(v);
+                let mut d = BTreeMap::new();
+                if (v as usize) < n_inputs {
+                    d.insert(v, ExprId::ONE);
+                }
+                (id, d)
+            }
+            Node::Lit(bits) => (g.lit(f64::from_bits(bits)), BTreeMap::new()),
+            Node::Add(a, b) => {
+                let id = g.add(m(a), m(b));
+                let d = combine(&mut g, t(a), None, t(b), None);
+                (id, d)
+            }
+            Node::Mul(a, b) => {
+                let id = g.mul(m(a), m(b));
+                let d = combine(&mut g, t(a), Some(m(b)), t(b), Some(m(a)));
+                (id, d)
+            }
+            Node::Neg(a) => {
+                let id = g.neg(m(a));
+                let k = g.lit(-1.0);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Recip(a) => {
+                // d(1/a) = -(1/a)^2 da
+                let id = g.recip(m(a));
+                let sq = g.mul(id, id);
+                let k = g.neg(sq);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Sqrt(a) => {
+                // d sqrt(a) = da / (2 sqrt(a))
+                let id = g.sqrt(m(a));
+                let two = g.mul(ExprId::TWO, id);
+                let k = g.recip(two);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Sin(a) => {
+                // d sin(a) = cos(a) da, cos(a) = sin(a + pi/2)
+                let id = g.sin(m(a));
+                let h = g.lit(std::f64::consts::FRAC_PI_2);
+                let shifted = g.add(m(a), h);
+                let k = g.sin(shifted);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Atan2(y, x) => {
+                // d atan2(y, x) = (x dy - y dx) / (x^2 + y^2)
+                let id = g.atan2(m(y), m(x));
+                let xx = g.mul(m(x), m(x));
+                let yy = g.mul(m(y), m(y));
+                let r2 = g.add(xx, yy);
+                let inv = g.recip(r2);
+                let ky = g.mul(m(x), inv);
+                let ny = g.neg(m(y));
+                let kx = g.mul(ny, inv);
+                let d = combine(&mut g, t(y), Some(ky), t(x), Some(kx));
+                (id, d)
+            }
+            Node::Exp2(a) => {
+                // d 2^a = ln2 2^a da
+                let id = g.exp2(m(a));
+                let l = g.lit(ln2);
+                let k = g.mul(l, id);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Log2(a) => {
+                // d log2(a) = da / (a ln2)
+                let id = g.log2(m(a));
+                let l = g.lit(ln2);
+                let al = g.mul(m(a), l);
+                let k = g.recip(al);
+                let d = combine(&mut g, t(a), Some(k), &BTreeMap::new(), None);
+                (id, d)
+            }
+            Node::Select(c, a, b) => {
+                let id = g.select(m(c), m(a), m(b));
+                let mut d = BTreeMap::new();
+                let keys: std::collections::BTreeSet<u16> =
+                    t(a).keys().chain(t(b).keys()).copied().collect();
+                for v in keys {
+                    let da = t(a).get(&v).copied().unwrap_or(ExprId::ZERO);
+                    let db = t(b).get(&v).copied().unwrap_or(ExprId::ZERO);
+                    let x = g.select(m(c), da, db);
+                    d.insert(v, x);
+                }
+                (id, d)
+            }
+        };
+        map[i] = id;
+        tan[i] = d;
+    }
+    let mut outs = Vec::with_capacity(outputs.len() * n_inputs);
+    for o in outputs {
+        let to = &tan[o.index() as usize];
+        for v in 0..n_inputs {
+            outs.push(to.get(&(v as u16)).copied().unwrap_or(ExprId::ZERO));
+        }
+    }
+    fold_constants(&g, &outs)
 }

@@ -4,6 +4,16 @@ use phyz_diff::forward::{ForwardDynamics, Step};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
 use phyz_model::{Actuator, Model, ModelBuilder, State};
 
+/// `a.max(b)` that propagates NaN (`f64::max` drops it, which once hid a
+/// NaN-producing trace from these checks).
+fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> f64 {
@@ -72,7 +82,7 @@ fn worst_error(model: &Model, n: usize, seed: u64) -> f64 {
         eval(&fd.inputs(&state, qfrc.as_slice()), &mut out);
         let scale = want.as_slice().iter().fold(1.0f64, |m, x| m.max(x.abs()));
         for k in 0..model.nv {
-            worst = worst.max((out[k] - want[k]).abs() / scale);
+            worst = nan_max(worst, (out[k] - want[k]).abs() / scale);
         }
     }
     worst
@@ -184,7 +194,7 @@ fn worst_step_error(model: &Model, n: usize, seed: u64) -> f64 {
                 .collect();
         let scale = want.iter().fold(1.0f64, |m, x| m.max(x.abs()));
         for (a, b) in out.iter().zip(&want) {
-            worst = worst.max((a - b).abs() / scale);
+            worst = nan_max(worst, (a - b).abs() / scale);
         }
     }
     worst
@@ -197,8 +207,12 @@ fn actuated_tree_step_matches_phyz() {
     assert!(err < 1e-12, "worst step error {err:e}");
 }
 
-/// 1000 steps (2 s) from rest under a fixed servo command: the traced and
-/// reference trajectories stay together.
+/// 1000 steps (2 s) from rest under a fixed servo command. The motion is
+/// chaotic (joints reach ~19 rad/s; phyz against itself from a 1e-15
+/// perturbation drifts ~1e-4), so the bar is relative: NaN-free, and within
+/// 10x of phyz's own sensitivity. (This test used to demand 1e-9 and passed
+/// only because `f64::max` dropped the NaNs tang-expr's `tanh` produced past
+/// 0.7 rad/s.)
 #[test]
 fn actuated_tree_rollout_matches_phyz() {
     let model = actuated_tree();
@@ -210,18 +224,26 @@ fn actuated_tree_rollout_matches_phyz() {
         s.ctrl[k] = 0.5 * rng.next();
     }
     let mut t = s.clone();
+    let mut p = s.clone();
+    p.q[7] += 1e-15;
     let mut out = vec![0.0; model.nq + model.nv];
-    let mut worst: f64 = 0.0;
+    let (mut worst, mut own): (f64, f64) = (0.0, 0.0);
     for _ in 0..1000 {
         eval(&step.inputs(&t), &mut out);
         t.q.as_mut_slice().copy_from_slice(&out[..model.nq]);
         t.v.as_mut_slice().copy_from_slice(&out[model.nq..]);
         phyz_step(&model, &mut s);
+        phyz_step(&model, &mut p);
         for k in 0..model.nq {
-            worst = worst.max((t.q[k] - s.q[k]).abs());
+            worst = nan_max(worst, (t.q[k] - s.q[k]).abs());
+            own = nan_max(own, (p.q[k] - s.q[k]).abs());
         }
     }
-    assert!(worst < 1e-9, "rollout drift {worst:e}");
+    eprintln!("actuated rollout: traced drift {worst:e}, phyz self-sensitivity {own:e}");
+    assert!(
+        worst <= 10.0 * own,
+        "traced drift {worst:e} vs phyz's own {own:e}"
+    );
 }
 
 #[test]
@@ -232,4 +254,63 @@ fn k1_step_matches_phyz() {
     let err = worst_step_error(&model, 1000, 37);
     eprintln!("K1 step worst error {err:e}");
     assert!(err < 1e-12, "worst step error {err:e}");
+}
+
+/// The exact Jacobian of the traced step (`forward::jacobian`) against central
+/// differences of `phyz_rigid`'s own step. Columns are `(q, v, ctrl)`, rows
+/// `(q', v')`. Central differences carry `O(h^2)` truncation and `O(eps/h)`
+/// round-off, so the bar is set by `h`, not by the Jacobian.
+fn jacobian_vs_fd(model: &Model, states: usize, seed: u64) -> (f64, usize) {
+    let step = Step::build(model);
+    let (jg, jo) = phyz_diff::forward::jacobian(&step.graph, &step.out, step.n_inputs());
+    let jac = jg.compile_many(&jo);
+    let (nq, nv, ni) = (model.nq, model.nv, step.n_inputs());
+    let no = nq + nv;
+    let mut rng = Lcg(seed);
+    let mut j = vec![0.0; no * ni];
+    let mut worst: f64 = 0.0;
+    let h = 1e-6;
+    let run = |s: &State| {
+        let mut s = s.clone();
+        phyz_step(model, &mut s);
+        s.q.as_slice()
+            .iter()
+            .chain(s.v.as_slice())
+            .copied()
+            .collect::<Vec<f64>>()
+    };
+    for _ in 0..states {
+        let s = random_state(model, &mut rng);
+        jac(&step.inputs(&s), &mut j);
+        for c in 0..ni {
+            let bump = |d: f64| {
+                let mut t = s.clone();
+                match c {
+                    c if c < nq => t.q[c] += d,
+                    c if c < nq + nv => t.v[c - nq] += d,
+                    c => t.ctrl[c - nq - nv] += d,
+                }
+                run(&t)
+            };
+            let (p, m) = (bump(h), bump(-h));
+            for r in 0..no {
+                let fd = (p[r] - m[r]) / (2.0 * h);
+                let err = (j[r * ni + c] - fd).abs() / (1.0 + fd.abs());
+                worst = nan_max(worst, err);
+            }
+        }
+    }
+    (worst, jg.live_set(&jo).len())
+}
+
+#[test]
+fn step_jacobian_matches_finite_differences() {
+    let model = actuated_tree();
+    let (err, nodes) = jacobian_vs_fd(&model, 20, 53);
+    eprintln!("actuated tree step Jacobian: {nodes} nodes, worst vs FD {err:e}");
+    assert!(err < 1e-5, "worst {err:e}");
+    let Some(model) = k1() else { return };
+    let (err, nodes) = jacobian_vs_fd(&model, 5, 59);
+    eprintln!("K1 step Jacobian (56 x 84): {nodes} nodes, worst vs FD {err:e}");
+    assert!(err < 1e-5, "worst {err:e}");
 }

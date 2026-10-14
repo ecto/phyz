@@ -12,6 +12,16 @@ use phyz_model::{Actuator, Model, ModelBuilder, State};
 /// CPU solves that stopped short of `config.tolerance` (ipse does not check).
 static NOT_CONVERGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// `a.max(b)` that propagates NaN (`f64::max` drops it, which once hid a
+/// NaN-producing trace from these checks).
+fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> f64 {
@@ -200,10 +210,10 @@ fn worst_v_error(sweeps: usize, warm_from_cpu: bool, n: usize) -> (f64, f64) {
         };
         eval(&step.inputs(&s, &warm), &mut out);
         for k in 0..model.nq {
-            worst_q = worst_q.max((out[k] - q1[k]).abs());
+            worst_q = nan_max(worst_q, (out[k] - q1[k]).abs());
         }
         for k in 0..model.nv {
-            worst_v = worst_v.max((out[model.nq + k] - v1[k]).abs());
+            worst_v = nan_max(worst_v, (out[model.nq + k] - v1[k]).abs());
         }
     }
     (worst_v, worst_q)
@@ -296,12 +306,12 @@ fn standing_rollout_tracks_cpu() {
             t.v.as_mut_slice()
                 .copy_from_slice(&out[model.nq..model.nq + model.nv]);
             f.copy_from_slice(&out[model.nq + model.nv..]);
-            worst_z = worst_z.max((t.q[5] - z).abs());
+            worst_z = nan_max(worst_z, (t.q[5] - z).abs());
             let _ = k;
         }
         let dq = (6..model.nq)
             .map(|k| (t.q[k] - cpu_q[k]).abs())
-            .fold(0.0, f64::max);
+            .fold(0.0, nan_max);
         eprintln!(
             "{sweeps:>2} sweeps, {} nodes: worst trunk-z gap {:.2e} m, final joint gap {:.2e} rad",
             step.live_nodes(),
@@ -415,7 +425,7 @@ fn k1_fixed_point_and_stand() {
         used += 1;
         eval(&step.inputs(&s, &f), &mut out);
         for k in 0..model.nv {
-            worst = worst.max((out[model.nq + k] - v1[k]).abs());
+            worst = nan_max(worst, (out[model.nq + k] - v1[k]).abs());
         }
     }
     eprintln!("K1 fixed point: worst |dv| {worst:e} over {used} converged states");
@@ -465,7 +475,7 @@ fn k1_fixed_point_and_stand() {
             t.v.as_mut_slice()
                 .copy_from_slice(&out[model.nq..model.nq + model.nv]);
             f.copy_from_slice(&out[model.nq + model.nv..]);
-            worst_z = worst_z.max((t.q[5] - z).abs());
+            worst_z = nan_max(worst_z, (t.q[5] - z).abs());
         }
         eprintln!(
             "K1 stand, {sweeps} sweeps ({} nodes): worst trunk-z gap {worst_z:.2e} m",
@@ -521,7 +531,7 @@ fn split_matches_unrolled() {
             fin_fn(&fin, &mut fin_out);
             let scale = out.iter().fold(1.0f64, |m, x| m.max(x.abs()));
             for (a, b) in fin_out.iter().chain(&f).zip(&out) {
-                worst = worst.max((a - b).abs() / scale);
+                worst = nan_max(worst, (a - b).abs() / scale);
             }
         }
         let (na, nf) = split.live_nodes();
