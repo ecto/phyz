@@ -236,8 +236,8 @@ a bug. The same measurement is available as a library call —
 
 ## Development
 
-Minimum supported Rust version: **1.89**. Edition 2024 sets the floor at 1.85,
-but the dependency tree raises it to 1.89 (iroh, via `tang-mesh`). It's declared
+Minimum supported Rust version: **1.94**. Edition 2024 sets the floor at 1.85,
+but the dependency tree raises it to 1.94 (tang declares `rust-version = "1.94"`). It's declared
 as `rust-version` in `[workspace.package]` and checked by CI.
 
 ```bash

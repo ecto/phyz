@@ -118,14 +118,14 @@ jobs:
         run: cargo doc --workspace --no-deps
 
   # MSRV. Edition 2024 sets the floor at 1.85, but the dependency tree raises it
-  # to 1.89 (iroh, via tang-mesh). Mirrored as `rust-version` in
+  # to 1.94 (tang declares rust-version 1.94). Mirrored as `rust-version` in
   # [workspace.package] so cargo enforces it for consumers — bump both together.
   msrv:
-    name: msrv (1.89)
+    name: msrv (1.94)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.89
+      - uses: dtolnay/rust-toolchain@1.94
       - uses: Swatinem/rust-cache@v2
         with:
           key: msrv
