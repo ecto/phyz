@@ -31,6 +31,9 @@ static void diff(const char *what, const float *g, const float *c, size_t n, int
 }
 #endif
 
+// Threads per threadgroup (TG env var, default 64).
+static NSUInteger g_tg = 64;
+
 static double *load(const char *dir, const char *name, size_t *n) {
     char p[1024];
     snprintf(p, sizeof p, "%s/%s", dir, name);
@@ -94,6 +97,7 @@ int main(int argc, char **argv) {
         id<MTLComputePipelineState> kin = make_pipeline(dev, lib, @"k_kin"), sol = make_pipeline(dev, lib, @"k_solve"),
                                     fin = make_pipeline(dev, lib, @"k_finish");
         printf("split on %s, %u sweeps: compile %.1f s\n", dev.name.UTF8String, sweeps, -[t0 timeIntervalSinceNow]);
+        if (getenv("TG")) g_tg = (NSUInteger)atoi(getenv("TG"));
         id<MTLCommandQueue> q = [dev newCommandQueue];
 
         int sizes[16] = {4096, 16384, 65536};
@@ -126,7 +130,7 @@ int main(int argc, char **argv) {
             for (int rep = 0; rep < 6; rep++) {
                 id<MTLCommandBuffer> cb = [q commandBuffer];
                 id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
-                MTLSize grid = MTLSizeMake(n, 1, 1), tg = MTLSizeMake(64, 1, 1);
+                MTLSize grid = MTLSizeMake(n, 1, 1), tg = MTLSizeMake(g_tg, 1, 1);
                 [enc setComputePipelineState:kin];
                 [enc setBuffer:bx offset:0 atIndex:0];
                 [enc setBuffer:brec offset:0 atIndex:1];
@@ -219,7 +223,7 @@ int main(int argc, char **argv) {
                             [enc setBuffer:bout offset:0 atIndex:1];
                             [enc setBytes:&count length:4 atIndex:2];
                         }
-                        [enc dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                        [enc dispatchThreads:MTLSizeMake(n, 1, 1) threadsPerThreadgroup:MTLSizeMake(g_tg, 1, 1)];
                         [enc endEncoding];
                         [cb commit];
                         [cb waitUntilCompleted];
