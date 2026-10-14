@@ -1,9 +1,9 @@
 // Bench the emitted ABA kernel: batch-1 latency, batched throughput, and
 // worst relative error against phyz_rigid::aba.
 //
-//   cc -O2 -DREAL=float  bench.c OUT/k1_f32.c -lm -o bench32
-//   cc -O2 -DREAL=double bench.c OUT/k1_f64.c -lm -o bench64
-//   ./bench32 OUT N_INPUTS NV
+//   cc -O2 -DREAL=float  bench.c OUT/step_f32.c -lm -o step32
+//   cc -O2 -DREAL=double bench.c OUT/step_f64.c -lm -o step64
+//   ./step32 OUT step N_INPUTS N_OUT   (sizes from OUT/meta.txt)
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,12 +45,15 @@ static int cmp(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) { fprintf(stderr, "usage: bench DIR N_INPUTS NV\n"); return 1; }
-    const char *dir = argv[1];
-    int ni = atoi(argv[2]), nv = atoi(argv[3]);
+    if (argc < 5) { fprintf(stderr, "usage: bench DIR NAME N_INPUTS N_OUT\n"); return 1; }
+    const char *dir = argv[1], *name = argv[2];
+    int ni = atoi(argv[3]), nv = atoi(argv[4]);
+    char fin[256], fref[256];
+    snprintf(fin, sizeof fin, "%s_inputs.bin", name);
+    snprintf(fref, sizeof fref, "%s_reference.bin", name);
     size_t nin, nref;
-    double *in64 = load(dir, "inputs.bin", &nin);
-    double *ref = load(dir, "reference.bin", &nref);
+    double *in64 = load(dir, fin, &nin);
+    double *ref = load(dir, fref, &nref);
     int n = (int)(nin / ni);
 
     REAL *in = malloc(nin * sizeof(REAL));

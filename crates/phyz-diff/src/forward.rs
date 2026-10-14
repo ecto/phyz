@@ -91,6 +91,218 @@ impl ForwardDynamics {
     }
 }
 
+/// One full rigid-body step, contact-free, as an expression graph.
+///
+/// Mirrors `phyz_rigid::actuation::generalized_forces` → `phyz_rigid::aba` →
+/// `phyz_rigid::semi_implicit_euler`: actuator laws with their clamps, passive
+/// joint terms (damping, spring, soft limits, smoothed friction), forward
+/// dynamics, then the joint-aware integrator (free-joint Coriolis strip, frame
+/// turn, and the Lie-group update of exp coordinates).
+///
+/// Inputs `[q (nq), v (nv), ctrl (nu)]`; outputs `[q' (nq), v' (nv)]`.
+pub struct Step {
+    /// The traced graph.
+    pub graph: ExprGraph,
+    /// Outputs: `q'` then `v'`.
+    pub out: Vec<ExprId>,
+    /// Position DOFs.
+    pub nq: usize,
+    /// Velocity DOFs.
+    pub nv: usize,
+    /// Controls (`State::ctrl` length).
+    pub nu: usize,
+}
+
+impl Step {
+    /// Trace one step of `model` at `model.dt`.
+    pub fn build(model: &Model) -> Self {
+        let (nq, nv) = (model.nq, model.nv);
+        let nu = model.default_state().ctrl.len();
+        let (graph, out) = trace(|| {
+            let var = |i: usize| ExprId::var(i as u16);
+            let q: Vec<ExprId> = (0..nq).map(var).collect();
+            let v: Vec<ExprId> = (nq..nq + nv).map(var).collect();
+            let ctrl: Vec<ExprId> = (nq + nv..nq + nv + nu).map(var).collect();
+            let qfrc = traced_generalized_forces(model, &q, &v, &ctrl);
+            let qdd = traced_aba(model, &q, &v, &qfrc);
+            let (q1, v1) = traced_semi_implicit_euler(model, &q, &v, &qdd, model.dt);
+            q1.into_iter().chain(v1).collect::<Vec<_>>()
+        });
+        Self {
+            graph,
+            out,
+            nq,
+            nv,
+            nu,
+        }
+    }
+
+    /// Inputs per evaluation: `nq + nv + nu`.
+    pub fn n_inputs(&self) -> usize {
+        self.nq + self.nv + self.nu
+    }
+
+    /// Pack a state into the graph's input layout.
+    pub fn inputs(&self, state: &State) -> Vec<f64> {
+        let mut x = Vec::with_capacity(self.n_inputs());
+        x.extend_from_slice(state.q.as_slice());
+        x.extend_from_slice(state.v.as_slice());
+        x.extend_from_slice(state.ctrl.as_slice());
+        x
+    }
+
+    /// Live nodes in the graph.
+    pub fn live_nodes(&self) -> usize {
+        self.graph.live_set(&self.out).len()
+    }
+
+    /// Compile to an f64 closure `(inputs, [q', v'])`.
+    pub fn compile(&self) -> CompiledMany {
+        self.graph.compile_many(&self.out)
+    }
+
+    /// Emit a batched kernel: one environment per work item.
+    pub fn kernel(&self, dialect: Dialect) -> ComputeKernel {
+        self.graph.to_kernel(&self.out, self.n_inputs(), dialect)
+    }
+}
+
+/// `phyz_rigid::actuation::generalized_forces`, traced.
+fn traced_generalized_forces(
+    model: &Model,
+    q: &[ExprId],
+    v: &[ExprId],
+    ctrl: &[ExprId],
+) -> Vec<ExprId> {
+    let lit = ExprId::from_f64;
+    let mut qfrc = vec![ExprId::ZERO; model.nv];
+    if model.actuators.is_empty() {
+        let n = model.nv.min(ctrl.len());
+        qfrc[..n].copy_from_slice(&ctrl[..n]);
+    } else {
+        for (a, act) in model.actuators.iter().enumerate().take(ctrl.len()) {
+            let (Some(&vi), Some(&qi)) = (
+                model.v_offsets.get(act.joint_idx),
+                model.q_offsets.get(act.joint_idx),
+            ) else {
+                continue;
+            };
+            if vi >= model.nv || qi >= q.len() {
+                continue;
+            }
+            let c = match act.ctrl_range {
+                Some([lo, hi]) => ctrl[a].clamp(lit(lo.min(hi)), lit(hi.max(lo))),
+                None => ctrl[a],
+            };
+            let f = lit(act.gear)
+                * (lit(act.gain) * c + lit(act.bias_q) * q[qi] + lit(act.bias_v) * v[vi]);
+            let f = match act.force_range {
+                Some([lo, hi]) => f.clamp(lit(lo.min(hi)), lit(hi.max(lo))),
+                None => f,
+            };
+            qfrc[vi] += f;
+        }
+    }
+    for (j, joint) in model.joints.iter().enumerate() {
+        let (qo, vo) = (model.q_offsets[j], model.v_offsets[j]);
+        for k in 0..joint.ndof() {
+            let (qk, vk) = (q[qo + k], v[vo + k]);
+            let mut f = -(lit(joint.damping) * vk);
+            if joint.ndof() == 1 {
+                f += -(lit(joint.stiffness) * (qk - lit(joint.spring_ref)));
+                if let Some([lo, hi]) = joint.limits {
+                    let (ks, kd) = (lit(joint.limit_stiffness), lit(joint.limit_damping));
+                    let below = lit(lo) - qk;
+                    let above = qk - lit(hi);
+                    let push_up = ks * below + kd * (-vk).max(ExprId::ZERO);
+                    let push_down = -(ks * above + kd * vk.max(ExprId::ZERO));
+                    f += ExprId::select(
+                        below,
+                        push_up,
+                        ExprId::select(above, push_down, ExprId::ZERO),
+                    );
+                }
+                if joint.friction_loss > 0.0 {
+                    f += -(lit(joint.friction_loss) * (vk * lit(1e3)).tanh());
+                }
+            }
+            qfrc[vo + k] += f;
+        }
+    }
+    qfrc
+}
+
+/// `phyz_rigid::semi_implicit_euler`, traced (without `PHYZ_INTEG_CURRENT`).
+fn traced_semi_implicit_euler(
+    model: &Model,
+    q: &[ExprId],
+    v: &[ExprId],
+    qdd: &[ExprId],
+    dt: f64,
+) -> (Vec<ExprId>, Vec<ExprId>) {
+    let lit = ExprId::from_f64;
+    let mut qdd = qdd.to_vec();
+    for (j, joint) in model.joints.iter().enumerate() {
+        if joint.joint_type == JointType::Free {
+            let o = model.v_offsets[j];
+            let w = Vec3::new(v[o], v[o + 1], v[o + 2]);
+            let c = w.cross(Vec3::new(v[o + 3], v[o + 4], v[o + 5]));
+            qdd[o + 3] += c.x;
+            qdd[o + 4] += c.y;
+            qdd[o + 5] += c.z;
+        }
+    }
+    let mut v1: Vec<ExprId> = (0..model.nv).map(|i| v[i] + lit(dt) * qdd[i]).collect();
+    for (j, joint) in model.joints.iter().enumerate() {
+        if joint.joint_type == JointType::Free {
+            let o = model.v_offsets[j];
+            let w = Vec3::new(v[o], v[o + 1], v[o + 2]);
+            let theta = (w.x * w.x + w.y * w.y + w.z * w.z).sqrt() * lit(dt);
+            let lin = Vec3::new(v1[o + 3], v1[o + 4], v1[o + 5]);
+            let turned = quat_exp(w * lit(-dt)).rotate(lin);
+            let on = theta - lit(1e-12);
+            v1[o + 3] = ExprId::select(on, turned.x, lin.x);
+            v1[o + 4] = ExprId::select(on, turned.y, lin.y);
+            v1[o + 5] = ExprId::select(on, turned.z, lin.z);
+        }
+    }
+    let mut q1 = q.to_vec();
+    for (j, joint) in model.joints.iter().enumerate() {
+        let (qo, vo) = (model.q_offsets[j], model.v_offsets[j]);
+        match joint.joint_type {
+            JointType::Fixed => {}
+            JointType::Revolute | JointType::Hinge | JointType::Prismatic | JointType::Slide => {
+                q1[qo] = q[qo] + lit(dt) * v1[vo];
+            }
+            JointType::Spherical | JointType::Ball | JointType::Free => {
+                let w = Vec3::new(v1[vo], v1[vo + 1], v1[vo + 2]);
+                let cur = quat_exp(Vec3::new(q[qo], q[qo + 1], q[qo + 2]));
+                let next = cur.mul(&quat_exp(w * lit(dt))).normalize();
+                if joint.joint_type == JointType::Free {
+                    let lin = next.rotate(Vec3::new(v1[vo + 3], v1[vo + 4], v1[vo + 5]));
+                    q1[qo + 3] = q[qo + 3] + lit(dt) * lin.x;
+                    q1[qo + 4] = q[qo + 4] + lit(dt) * lin.y;
+                    q1[qo + 5] = q[qo + 5] + lit(dt) * lin.z;
+                }
+                let log = quat_log(next);
+                q1[qo] = log.x;
+                q1[qo + 1] = log.y;
+                q1[qo + 2] = log.z;
+            }
+        }
+    }
+    (q1, v1)
+}
+
+/// `phyz_math::quat_log` with its small-angle branch as a select.
+fn quat_log(q: Quat<ExprId>) -> Vec3<ExprId> {
+    let n = (q.v.x * q.v.x + q.v.y * q.v.y + q.v.z * q.v.z).sqrt();
+    let big = n - ExprId::from_f64(f64::EPSILON);
+    let safe = ExprId::select(big, n, ExprId::ONE);
+    let k = ExprId::from_f64(2.0) * safe.atan2(q.w) / safe;
+    q.v * ExprId::select(big, k, ExprId::from_f64(2.0))
+}
+
 type Sym6 = [[ExprId; 6]; 6];
 
 fn traced_aba(model: &Model, q: &[ExprId], v: &[ExprId], qfrc: &[ExprId]) -> Vec<ExprId> {

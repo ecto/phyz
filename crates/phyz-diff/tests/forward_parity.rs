@@ -1,8 +1,8 @@
 //! The traced ABA graph must match `phyz_rigid::aba` on random states.
 
-use phyz_diff::forward::ForwardDynamics;
+use phyz_diff::forward::{ForwardDynamics, Step};
 use phyz_math::{GRAVITY, Mat3, SpatialInertia, SpatialTransform, Vec3};
-use phyz_model::{Model, ModelBuilder};
+use phyz_model::{Actuator, Model, ModelBuilder, State};
 
 struct Lcg(u64);
 impl Lcg {
@@ -87,8 +87,7 @@ fn floating_tree_matches_phyz_aba() {
 
 /// The real K1, when its assets are installed (`IPSE_K1_ASSETS` or
 /// `~/Developer/booster_assets/robots/K1`).
-#[test]
-fn k1_matches_phyz_aba() {
+fn k1() -> Option<Model> {
     let root = std::env::var_os("IPSE_K1_ASSETS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -98,14 +97,19 @@ fn k1_matches_phyz_aba() {
     let path = root.join("K1_22dof_floating.urdf");
     if !path.exists() {
         eprintln!("skipping: {} not found", path.display());
-        return;
+        return None;
     }
     let opts = phyz_urdf::UrdfOptions {
         base: phyz_urdf::BaseKind::Fixed,
         dt: Some(0.002),
         gravity: None,
     };
-    let model = phyz_urdf::load_file(&path, &opts).unwrap().model;
+    Some(phyz_urdf::load_file(&path, &opts).unwrap().model)
+}
+
+#[test]
+fn k1_matches_phyz_aba() {
+    let Some(model) = k1() else { return };
     let fd = ForwardDynamics::build(&model);
     eprintln!(
         "K1: nq {} nv {} bodies {} live nodes {}",
@@ -117,4 +121,115 @@ fn k1_matches_phyz_aba() {
     let err = worst_error(&model, 1000, 13);
     eprintln!("K1 worst relative error {err:e}");
     assert!(err < 1e-9, "worst relative error {err:e}");
+}
+
+/// `floating_tree` plus position servos with clamps, soft limits, springs and
+/// dry friction, so every branch of the force law is live.
+fn actuated_tree() -> Model {
+    let mut model = floating_tree();
+    let mut rng = Lcg(23);
+    for j in 1..model.joints.len() {
+        let joint = &mut model.joints[j];
+        joint.limits = Some([-0.4, 0.5]);
+        joint.limit_stiffness = 200.0;
+        joint.limit_damping = 2.0;
+        joint.stiffness = 3.0 * rng.next().abs();
+        joint.spring_ref = 0.1 * rng.next();
+        joint.friction_loss = 0.2 * rng.next().abs();
+        let name = joint.name.clone();
+        let mut act = Actuator::position(&name, &name, j, 1.0, 40.0, 1.5);
+        act.ctrl_range = Some([-0.6, 0.6]);
+        act.force_range = Some([-15.0, 15.0]);
+        model.actuators.push(act);
+    }
+    model
+}
+
+fn random_state(model: &Model, rng: &mut Lcg) -> State {
+    let mut s = model.default_state();
+    for k in 0..model.nq {
+        s.q[k] = rng.next();
+    }
+    for k in 0..model.nv {
+        s.v[k] = 2.0 * rng.next();
+    }
+    for k in 0..s.ctrl.len() {
+        s.ctrl[k] = rng.next();
+    }
+    s
+}
+
+fn phyz_step(model: &Model, s: &mut State) {
+    let qdd = phyz_rigid::aba(model, s);
+    phyz_rigid::semi_implicit_euler(model, s, qdd.as_slice(), model.dt);
+}
+
+/// Worst error of one traced step against phyz over `n` random states, scaled
+/// per state by `max(1, |x|_inf)` over `[q', v']`.
+fn worst_step_error(model: &Model, n: usize, seed: u64) -> f64 {
+    let step = Step::build(model);
+    let eval = step.compile();
+    let mut rng = Lcg(seed);
+    let mut out = vec![0.0; model.nq + model.nv];
+    let mut worst: f64 = 0.0;
+    for _ in 0..n {
+        let mut s = random_state(model, &mut rng);
+        eval(&step.inputs(&s), &mut out);
+        phyz_step(model, &mut s);
+        let want: Vec<f64> =
+            s.q.as_slice()
+                .iter()
+                .chain(s.v.as_slice())
+                .copied()
+                .collect();
+        let scale = want.iter().fold(1.0f64, |m, x| m.max(x.abs()));
+        for (a, b) in out.iter().zip(&want) {
+            worst = worst.max((a - b).abs() / scale);
+        }
+    }
+    worst
+}
+
+#[test]
+fn actuated_tree_step_matches_phyz() {
+    let model = actuated_tree();
+    let err = worst_step_error(&model, 1000, 29);
+    assert!(err < 1e-12, "worst step error {err:e}");
+}
+
+/// 1000 steps (2 s) from rest under a fixed servo command: the traced and
+/// reference trajectories stay together.
+#[test]
+fn actuated_tree_rollout_matches_phyz() {
+    let model = actuated_tree();
+    let step = Step::build(&model);
+    let eval = step.compile();
+    let mut rng = Lcg(31);
+    let mut s = model.default_state();
+    for k in 0..s.ctrl.len() {
+        s.ctrl[k] = 0.5 * rng.next();
+    }
+    let mut t = s.clone();
+    let mut out = vec![0.0; model.nq + model.nv];
+    let mut worst: f64 = 0.0;
+    for _ in 0..1000 {
+        eval(&step.inputs(&t), &mut out);
+        t.q.as_mut_slice().copy_from_slice(&out[..model.nq]);
+        t.v.as_mut_slice().copy_from_slice(&out[model.nq..]);
+        phyz_step(&model, &mut s);
+        for k in 0..model.nq {
+            worst = worst.max((t.q[k] - s.q[k]).abs());
+        }
+    }
+    assert!(worst < 1e-9, "rollout drift {worst:e}");
+}
+
+#[test]
+fn k1_step_matches_phyz() {
+    let Some(model) = k1() else { return };
+    let step = Step::build(&model);
+    eprintln!("K1 step: nu {} live nodes {}", step.nu, step.live_nodes());
+    let err = worst_step_error(&model, 1000, 37);
+    eprintln!("K1 step worst error {err:e}");
+    assert!(err < 1e-12, "worst step error {err:e}");
 }
