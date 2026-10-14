@@ -20,6 +20,11 @@ phyz-contact.workspace = true
 tang.workspace = true
 tang-la.workspace = true
 tang-expr.workspace = true
+# the Vulkan contact bench (example contact_vulkan): tang-gpu's GLSL path
+tang-gpu = { git = "https://github.com/ecto/tang.git", branch = "claude/vulkan-decode", features = ["glsl"], optional = true }
+
+[features]
+vulkan = ["dep:tang-gpu"]
 
 [dev-dependencies]
 phyz-urdf.workspace = true
@@ -28,3 +33,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "jacobians"
 harness = false
+
+[[example]]
+name = "contact_vulkan"
+required-features = ["vulkan"]

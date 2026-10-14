@@ -363,6 +363,9 @@ impl ContactKernels {
     /// runs one environment per thread with every buffer slot-major
     /// (`slot * count + env`, structure of arrays) so neighbouring threads
     /// read neighbouring words. Pair it with [`Self::traced_sources_soa`].
+    /// `Dialect::Wgsl` gives GLSL 450 for Vulkan instead (WGSL has no
+    /// preprocessor), array of structs to pair with
+    /// `traced_sources(Dialect::Wgsl)`.
     pub fn solve_source(&self, dialect: Dialect) -> String {
         let lay = self.layout();
         let (nq, nv, np) = (self.nq, self.nv, self.n_points);
@@ -374,7 +377,8 @@ impl ContactKernels {
                  #define WARM(i) warm[(IDX)e * DIM + (i)]\n\
                  #define FOUT(i) f_out[(IDX)e * DIM + (i)]\n\
                  #define XIN(i) x[(IDX)e * NX + (i)]\n\
-                 #define FIN(i) fin[(IDX)e * NFIN + (i)]\n",
+                 #define FIN(i) fin[(IDX)e * NFIN + (i)]\n\
+                 #define SWEEPS ((int)sweeps)\n",
                 "void k_solve(const float* rec_, const float* warm, const float* x, float* scratch_, float* f_out, float* fin, int count, int sweeps)",
                 "    for (int e = 0; e < count; e++) {\n",
                 "    }\n",
@@ -386,16 +390,40 @@ impl ContactKernels {
                  #define WARM(i) warm[(IDX)(i) * count + e]\n\
                  #define FOUT(i) f_out[(IDX)(i) * count + e]\n\
                  #define XIN(i) x[(IDX)(i) * count + e]\n\
-                 #define FIN(i) fin[(IDX)(i) * count + e]\n",
+                 #define FIN(i) fin[(IDX)(i) * count + e]\n\
+                 #define SWEEPS ((int)sweeps)\n",
                 "kernel void k_solve(device const float* rec_ [[buffer(0)]], device const float* warm [[buffer(1)]], device const float* x [[buffer(2)]], device float* scratch_ [[buffer(3)]], device float* f_out [[buffer(4)]], device float* fin [[buffer(5)]], constant uint& count [[buffer(6)]], constant uint& sweeps [[buffer(7)]], uint e [[thread_position_in_grid]])",
                 "    if (e >= count) { return; }\n    {\n",
+                "    }\n",
+            ),
+            // GLSL 450 compute for Vulkan (tang-gpu's SPIR-V path), array
+            // of structs like the WGSL traced kernels: bindings rec, warm,
+            // x, scratch, f_out, fin, then a uniform (count, sweeps)
+            Dialect::Wgsl => (
+                "#version 450\n\
+                 layout(local_size_x = 64) in;\n\
+                 layout(std430, set = 0, binding = 0) readonly buffer B0 { float rec_[]; };\n\
+                 layout(std430, set = 0, binding = 1) readonly buffer B1 { float warm[]; };\n\
+                 layout(std430, set = 0, binding = 2) readonly buffer B2 { float x[]; };\n\
+                 layout(std430, set = 0, binding = 3) buffer B3 { float scratch_[]; };\n\
+                 layout(std430, set = 0, binding = 4) buffer B4 { float f_out[]; };\n\
+                 layout(std430, set = 0, binding = 5) buffer B5 { float fin[]; };\n\
+                 layout(std140, set = 0, binding = 6) uniform Params { uint count; uint sweeps; uint p2; uint p3; } params;\n\
+                 #define REC(i) rec_[e * NREC + uint(i)]\n\
+                 #define SCR(i) scratch_[e * NSCR + uint(i)]\n\
+                 #define WARM(i) warm[e * DIM + uint(i)]\n\
+                 #define FOUT(i) f_out[e * DIM + uint(i)]\n\
+                 #define XIN(i) x[e * NX + uint(i)]\n\
+                 #define FIN(i) fin[e * NFIN + uint(i)]\n\
+                 #define SWEEPS int(params.sweeps)\n",
+                "void main()",
+                "    uint e = gl_GlobalInvocationID.x;\n    if (e >= params.count) { return; }\n    {\n",
                 "    }\n",
             ),
             d => panic!("solve_source: no {d:?} template"),
         };
         format!(
-            r#"// Rolled contact solve (phyz-diff contact_split).
-{prelude}
+            r#"{prelude}// Rolled contact solve (phyz-diff contact_split).
 #define NP {np}
 #define DIM {dim}
 #define NV {nv}
@@ -426,7 +454,7 @@ impl ContactKernels {
 {sig} {{
 {open}        float f[DIM];
         for (int i = 0; i < DIM; i++) f[i] = WARM(i) * REC(OFF_ACT + i / 3);
-        for (int s = 0; s < (int)sweeps; s++) {{
+        for (int s = 0; s < SWEEPS; s++) {{
             for (int c = 0; c < NP; c++) {{
                 int base = 3 * c;
                 float r[3];

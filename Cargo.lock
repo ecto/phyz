@@ -2267,6 +2267,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "link-cplusplus"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f78c730aaa7d0b9336a299029ea49f9ee53b0ed06e9202e8cb7db9bae7b8c82"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3151,8 +3160,9 @@ dependencies = [
  "phyz-model",
  "phyz-rigid",
  "phyz-urdf",
- "tang",
- "tang-expr",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-gpu 0.1.0 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
  "tang-la",
 ]
 
@@ -3165,9 +3175,9 @@ dependencies = [
  "phyz-rigid",
  "serde",
  "serde_json",
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-compute",
- "tang-expr",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-safetensors",
  "tang-tensor",
  "tang-train",
@@ -3310,7 +3320,7 @@ version = "0.4.0"
 dependencies = [
  "libm",
  "proptest",
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-la",
 ]
 
@@ -3383,8 +3393,8 @@ dependencies = [
  "pollster",
  "rand 0.8.5",
  "serde_json",
- "tang",
- "tang-expr",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-la",
  "tang-mesh",
  "ureq",
@@ -4163,6 +4173,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 
 [[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
 name = "rstar"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4503,6 +4519,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "shaderc"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ab2a6e36d1c1e2320c87e2b806a3e7b0dffaa67b82c14a39dad6cf7637208ae"
+dependencies = [
+ "libc",
+ "shaderc-sys",
+]
+
+[[package]]
+name = "shaderc-sys"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdceb85b2c6d2c27b95ffe2d341063dfded0aca8046f7f60c544bbeaeaf8bcae"
+dependencies = [
+ "cmake",
+ "libc",
+ "link-cplusplus",
+ "pkg-config",
+ "roxmltree",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4783,6 +4822,14 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 [[package]]
 name = "tang"
 version = "0.2.1"
+source = "git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode#5db964ed4dcdba11ebf0cca5c84088dd27c6c5d0"
+dependencies = [
+ "paste",
+]
+
+[[package]]
+name = "tang"
+version = "0.2.1"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
  "paste",
@@ -4793,8 +4840,17 @@ name = "tang-ad"
 version = "0.1.1"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-la",
+]
+
+[[package]]
+name = "tang-compile"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode#5db964ed4dcdba11ebf0cca5c84088dd27c6c5d0"
+dependencies = [
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
 ]
 
 [[package]]
@@ -4802,8 +4858,8 @@ name = "tang-compile"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
- "tang-expr",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
 ]
 
 [[package]]
@@ -4812,8 +4868,16 @@ version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
  "bytemuck",
- "tang",
- "tang-expr",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+]
+
+[[package]]
+name = "tang-expr"
+version = "0.1.1"
+source = "git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode#5db964ed4dcdba11ebf0cca5c84088dd27c6c5d0"
+dependencies = [
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
 ]
 
 [[package]]
@@ -4821,7 +4885,24 @@ name = "tang-expr"
 version = "0.1.1"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+]
+
+[[package]]
+name = "tang-gpu"
+version = "0.1.0"
+source = "git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode#5db964ed4dcdba11ebf0cca5c84088dd27c6c5d0"
+dependencies = [
+ "bytemuck",
+ "libloading 0.8.9",
+ "naga 25.0.1",
+ "pollster",
+ "safetensors",
+ "shaderc",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
+ "tang-compile 0.1.0 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?branch=claude%2Fvulkan-decode)",
+ "wgpu 25.0.2",
 ]
 
 [[package]]
@@ -4833,9 +4914,9 @@ dependencies = [
  "libloading 0.8.9",
  "pollster",
  "safetensors",
- "tang",
- "tang-compile",
- "tang-expr",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-compile 0.1.0 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "wgpu 25.0.2",
 ]
 
@@ -4844,7 +4925,7 @@ name = "tang-la"
 version = "0.1.1"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
 ]
 
 [[package]]
@@ -4858,9 +4939,9 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
- "tang",
- "tang-expr",
- "tang-gpu",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-expr 0.1.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
+ "tang-gpu 0.1.0 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-tensor",
  "tarpc",
  "tokio",
@@ -4874,7 +4955,7 @@ name = "tang-optim"
 version = "0.1.1"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-ad",
  "tang-la",
 ]
@@ -4886,7 +4967,7 @@ source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a
 dependencies = [
  "safetensors",
  "serde_json",
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-la",
  "tang-tensor",
 ]
@@ -4896,7 +4977,7 @@ name = "tang-tensor"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-la",
 ]
 
@@ -4905,7 +4986,7 @@ name = "tang-train"
 version = "0.1.0"
 source = "git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61#5031263299d078f4801876c02737a00c8c567c61"
 dependencies = [
- "tang",
+ "tang 0.2.1 (git+https://github.com/ecto/tang.git?rev=5031263299d078f4801876c02737a00c8c567c61)",
  "tang-ad",
  "tang-la",
  "tang-optim",
