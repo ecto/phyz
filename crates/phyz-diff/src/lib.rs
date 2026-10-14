@@ -52,6 +52,7 @@
 pub struct ReadmeDocTests;
 
 pub mod contact_adjoint;
+pub mod forward;
 pub(crate) mod model_generic;
 pub mod multidual;
 pub mod rev;
