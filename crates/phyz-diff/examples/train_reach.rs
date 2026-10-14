@@ -476,6 +476,7 @@ fn gradient_check(task: &Task, pol: &mut Mlp, rng: &mut Lcg) {
 
 pub struct Lcg(pub u64);
 impl Lcg {
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f64 {
         self.0 = self
             .0
