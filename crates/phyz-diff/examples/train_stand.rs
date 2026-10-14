@@ -14,7 +14,7 @@
 
 #[path = "train_reach.rs"]
 #[allow(dead_code)]
-mod reach;
+pub mod reach;
 
 use std::time::Instant;
 
@@ -26,16 +26,16 @@ use reach::{Adam, Lcg, Mlp, TORQUE};
 use tang_expr::compile::CompiledMany;
 
 /// Steps per episode (`STAND_H`, default 300 = 0.3 s at dt 1 ms).
-fn horizon() -> usize {
+pub fn horizon() -> usize {
     std::env::var("STAND_H")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(300)
 }
-const BATCH: usize = 32;
-const HIDDEN: usize = 64;
-const OFFSET: f64 = 0.3; // policy output scale (rad)
-const SWEEPS: usize = 5;
+pub const BATCH: usize = 32;
+pub const HIDDEN: usize = 64;
+pub const OFFSET: f64 = 0.3; // policy output scale (rad)
+pub const SWEEPS: usize = 5;
 
 fn main() {
     let iters: usize = std::env::args()
@@ -142,7 +142,7 @@ fn main() {
 
 /// The K1 at dt = 1 ms with position servos and the sole corners (the
 /// `contact_bench` model).
-fn k1() -> (Model, Vec<ContactPoint>) {
+pub fn k1() -> (Model, Vec<ContactPoint>) {
     let root = std::env::var_os("IPSE_K1_ASSETS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -187,20 +187,20 @@ fn k1() -> (Model, Vec<ContactPoint>) {
     (model, points)
 }
 
-struct Stand {
-    nq: usize,
-    nv: usize,
-    nu: usize,
-    nf: usize,
-    fwd: CompiledMany,
-    back: CompiledMany,
+pub struct Stand {
+    pub nq: usize,
+    pub nv: usize,
+    pub nu: usize,
+    pub nf: usize,
+    pub fwd: CompiledMany,
+    pub back: CompiledMany,
     /// Settled standing input `[q, v, ctrl, warm]` (ctrl = nominal targets).
-    rest: Vec<f64>,
-    z0: f64,
+    pub rest: Vec<f64>,
+    pub z0: f64,
 }
 
 impl Stand {
-    fn new(model: &Model, fwd: CompiledMany, back: CompiledMany, nu: usize, np: usize) -> Self {
+    pub fn new(model: &Model, fwd: CompiledMany, back: CompiledMany, nu: usize, np: usize) -> Self {
         let (nq, nv, nf) = (model.nq, model.nv, 3 * np);
         let mut s = model.default_state();
         let (xf, _) = phyz_rigid::forward_kinematics(model, &s);
@@ -242,11 +242,11 @@ impl Stand {
 
     /// Observation: pose error (orientation, height, joints; not x, y) and
     /// velocity.
-    fn n_obs(&self) -> usize {
+    pub fn n_obs(&self) -> usize {
         self.nq - 2 + self.nv
     }
 
-    fn obs(&self, x: &[f64]) -> Vec<f64> {
+    pub fn obs(&self, x: &[f64]) -> Vec<f64> {
         let (nq, nv) = (self.nq, self.nv);
         (0..nq)
             .filter(|&i| i != 3 && i != 4)
@@ -256,7 +256,7 @@ impl Stand {
     }
 
     /// Indices into `x` of each observation entry (for the adjoint).
-    fn obs_index(&self) -> Vec<usize> {
+    pub fn obs_index(&self) -> Vec<usize> {
         (0..self.nq)
             .filter(|&i| i != 3 && i != 4)
             .chain(self.nq..self.nq + self.nv)
@@ -264,7 +264,7 @@ impl Stand {
     }
 
     /// A shove: the standing state with a random trunk velocity.
-    fn push(&self, rng: &mut Lcg) -> Vec<f64> {
+    pub fn push(&self, rng: &mut Lcg) -> Vec<f64> {
         let mut x = self.rest.clone();
         let nq = self.nq;
         // v[0..3] angular, v[3..6] linear (free joint)
@@ -276,7 +276,7 @@ impl Stand {
         x
     }
 
-    fn act(&self, pol: &Mlp, obs: &[f64], u: &mut [f64]) {
+    pub fn act(&self, pol: &Mlp, obs: &[f64], u: &mut [f64]) {
         let c = pol.forward(obs);
         for (o, a) in u.iter_mut().zip(&c.out) {
             *o = a * (OFFSET / TORQUE);
@@ -284,7 +284,7 @@ impl Stand {
     }
 
     /// Per-step loss on the state after the step, and its gradient.
-    fn step_loss(&self, x: &[f64], g: Option<&mut [f64]>) -> f64 {
+    pub fn step_loss(&self, x: &[f64], g: Option<&mut [f64]>) -> f64 {
         let (nq, nv) = (self.nq, self.nv);
         let dz = x[5] - self.z0;
         let tilt = x[0] * x[0] + x[1] * x[1];
@@ -307,7 +307,7 @@ impl Stand {
 
     /// Mean loss and trunk drop at the end over `pushes` under `policy`
     /// (offsets).
-    fn evaluate(&self, pushes: &[Vec<f64>], policy: &dyn Fn(&[f64], &mut [f64])) -> (f64, f64) {
+    pub fn evaluate(&self, pushes: &[Vec<f64>], policy: &dyn Fn(&[f64], &mut [f64])) -> (f64, f64) {
         let (nq, nv, nu) = (self.nq, self.nv, self.nu);
         let (mut loss, mut drop) = (0.0, 0.0);
         let mut out = vec![0.0; nq + nv + self.nf];
@@ -330,7 +330,7 @@ impl Stand {
         (loss / n, drop / n)
     }
 
-    fn loss_and_grad(&self, pol: &Mlp, pushes: &[Vec<f64>], threads: usize) -> (f64, Vec<f64>) {
+    pub fn loss_and_grad(&self, pol: &Mlp, pushes: &[Vec<f64>], threads: usize) -> (f64, Vec<f64>) {
         let chunk = pushes.len().div_ceil(threads);
         let parts: Vec<(f64, Vec<f64>)> = std::thread::scope(|sc| {
             let hs: Vec<_> = pushes
@@ -361,7 +361,7 @@ impl Stand {
 
     /// Forward rollout keeping each step's input, then the reverse sweep:
     /// `λ` is the adjoint of the state `(q, v, warm)` after each step.
-    fn episode_grad(&self, pol: &Mlp, x0: &[f64], grad: &mut [f64]) -> f64 {
+    pub fn episode_grad(&self, pol: &Mlp, x0: &[f64], grad: &mut [f64]) -> f64 {
         let (nq, nv, nu, nf) = (self.nq, self.nv, self.nu, self.nf);
         let (ns, ni) = (nq + nv, nq + nv + nu + nf);
         let idx = self.obs_index();
