@@ -5,6 +5,8 @@
 //! cargo run -p phyz-diff --release --example contact_bench -- OUT_DIR [SWEEPS]
 //! ```
 //!
+//! Also writes `contact.metal` for `bench-c/metal_bench.m`.
+//!
 //! States come from a 1 s CPU standing rollout (1 cm drop, servos at the
 //! default pose, dt = 1 ms), so every one has realistic foot contact. Writes
 //! `contact_f32.c`, `contact_f64.c`, `contact_inputs.bin` (state + the CPU's
@@ -82,6 +84,8 @@ fn main() {
     let src = step.kernel(Dialect::C).source.replace("(--", "(- -");
     std::fs::write(out.join("contact_f32.c"), &src).unwrap();
     std::fs::write(out.join("contact_f64.c"), to_f64(&src)).unwrap();
+    let msl = step.kernel(Dialect::Msl).source.replace("(--", "(- -");
+    std::fs::write(out.join("contact.metal"), msl).unwrap();
     write_f64(&out.join("contact_inputs.bin"), &inputs);
     write_f64(&out.join("contact_reference.bin"), &reference);
 

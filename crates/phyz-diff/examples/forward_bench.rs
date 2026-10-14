@@ -74,6 +74,7 @@ fn main() {
         &out,
         "aba",
         &fd.kernel(Dialect::C).source,
+        &fd.kernel(Dialect::Msl).source,
         &inputs,
         &reference,
     );
@@ -104,6 +105,7 @@ fn main() {
         &out,
         "step",
         &step.kernel(Dialect::C).source,
+        &step.kernel(Dialect::Msl).source,
         &inputs,
         &reference,
     );
@@ -128,8 +130,20 @@ fn phyz_step(model: &phyz_model::Model, s: &mut phyz_model::State) {
     phyz_rigid::semi_implicit_euler(model, s, qdd.as_slice(), model.dt);
 }
 
-/// Write `{name}_f32.c`, `{name}_f64.c`, `{name}_inputs.bin`, `{name}_reference.bin`.
-fn emit(out: &std::path::Path, name: &str, src: &str, inputs: &[f64], reference: &[f64]) {
+/// Write `{name}.metal`, `{name}_f32.c`, `{name}_f64.c`, `{name}_inputs.bin`, `{name}_reference.bin`.
+fn emit(
+    out: &std::path::Path,
+    name: &str,
+    src: &str,
+    msl: &str,
+    inputs: &[f64],
+    reference: &[f64],
+) {
+    std::fs::write(
+        out.join(format!("{name}.metal")),
+        msl.replace("(--", "(- -"),
+    )
+    .unwrap();
     // tang-expr emits `Neg(Lit(-x))` as `--x`, which C parses as a decrement.
     let src = src.replace("(--", "(- -");
     std::fs::write(out.join(format!("{name}_f32.c")), &src).unwrap();
