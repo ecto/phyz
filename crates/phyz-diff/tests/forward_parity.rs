@@ -314,3 +314,44 @@ fn step_jacobian_matches_finite_differences() {
     eprintln!("K1 step Jacobian (56 x 84): {nodes} nodes, worst vs FD {err:e}");
     assert!(err < 1e-5, "worst {err:e}");
 }
+
+/// The reverse-mode step adjoint is `λᵀ J` for the forward-mode Jacobian:
+/// two derivations of one graph, so they agree to round-off.
+fn adjoint_vs_jacobian(model: &Model, states: usize, seed: u64) -> (f64, usize) {
+    use phyz_diff::forward::StepAdjoint;
+    let step = Step::build(model);
+    let adj = StepAdjoint::build(&step);
+    let (jg, jo) = phyz_diff::forward::jacobian(&step.graph, &step.out, step.n_inputs());
+    let jac = jg.compile_many(&jo);
+    let vjp = adj.compile();
+    let (ni, no) = (step.n_inputs(), model.nq + model.nv);
+    let mut rng = Lcg(seed);
+    let mut j = vec![0.0; no * ni];
+    let mut got = vec![0.0; ni];
+    let mut worst: f64 = 0.0;
+    for _ in 0..states {
+        let s = random_state(model, &mut rng);
+        let x = step.inputs(&s);
+        let lam: Vec<f64> = (0..no).map(|_| rng.next()).collect();
+        jac(&x, &mut j);
+        let xin: Vec<f64> = x.iter().chain(&lam).copied().collect();
+        vjp(&xin, &mut got);
+        for c in 0..ni {
+            let want: f64 = (0..no).map(|r| lam[r] * j[r * ni + c]).sum();
+            worst = nan_max(worst, (got[c] - want).abs() / (1.0 + want.abs()));
+        }
+    }
+    (worst, adj.live_nodes())
+}
+
+#[test]
+fn step_adjoint_matches_jacobian() {
+    let model = actuated_tree();
+    let (err, nodes) = adjoint_vs_jacobian(&model, 20, 61);
+    eprintln!("actuated tree step adjoint: {nodes} nodes, worst vs λᵀJ {err:e}");
+    assert!(err < 1e-10, "worst {err:e}");
+    let Some(model) = k1() else { return };
+    let (err, nodes) = adjoint_vs_jacobian(&model, 5, 67);
+    eprintln!("K1 step adjoint: {nodes} nodes, worst vs λᵀJ {err:e}");
+    assert!(err < 1e-10, "worst {err:e}");
+}

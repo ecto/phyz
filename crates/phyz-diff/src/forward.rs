@@ -180,6 +180,63 @@ impl Step {
 }
 
 /// `phyz_rigid::actuation::generalized_forces`, traced.
+/// The reverse-mode adjoint of a [`Step`]: one graph from
+/// `[q, v, ctrl, λ_q', λ_v']` to `λᵀ ∂[q', v']/∂[q, v, ctrl]`, the
+/// vector-Jacobian product backpropagation through a rollout needs per step
+/// (built with tang-expr's `vjp` and folded, so it compiles and emits
+/// kernels like the forward step).
+pub struct StepAdjoint {
+    /// The traced adjoint graph.
+    pub graph: ExprGraph,
+    /// Outputs: `λ_q`, `λ_v`, `λ_ctrl` (lengths `nq`, `nv`, `nu`).
+    pub out: Vec<ExprId>,
+    /// Position DOFs.
+    pub nq: usize,
+    /// Velocity DOFs.
+    pub nv: usize,
+    /// Controls.
+    pub nu: usize,
+}
+
+impl StepAdjoint {
+    /// Differentiate `step` in reverse.
+    pub fn build(step: &Step) -> Self {
+        let (nq, nv, nu) = (step.nq, step.nv, step.nu);
+        let nx = nq + nv + nu;
+        let mut g = step.graph.clone();
+        let seeds: Vec<ExprId> = (0..nq + nv).map(|i| g.var((nx + i) as u16)).collect();
+        let grad = g.vjp(&step.out, &seeds, nx);
+        let (graph, out) = fold_constants(&g, &grad);
+        Self {
+            graph,
+            out,
+            nq,
+            nv,
+            nu,
+        }
+    }
+
+    /// Inputs per evaluation: the step's inputs then the output adjoint.
+    pub fn n_inputs(&self) -> usize {
+        2 * (self.nq + self.nv) + self.nu
+    }
+
+    /// Live nodes in the graph.
+    pub fn live_nodes(&self) -> usize {
+        self.graph.live_set(&self.out).len()
+    }
+
+    /// Compile to an f64 closure `([x, λ], [λ_q, λ_v, λ_ctrl])`.
+    pub fn compile(&self) -> CompiledMany {
+        self.graph.compile_many(&self.out)
+    }
+
+    /// Emit a batched kernel: one environment per work item.
+    pub fn kernel(&self, dialect: Dialect) -> ComputeKernel {
+        self.graph.to_kernel(&self.out, self.n_inputs(), dialect)
+    }
+}
+
 pub(crate) fn traced_generalized_forces(
     model: &Model,
     q: &[ExprId],
