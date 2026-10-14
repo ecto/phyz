@@ -25,7 +25,13 @@ use phyz_model::{Actuator, Model};
 use reach::{Adam, Lcg, Mlp, TORQUE};
 use tang_expr::compile::CompiledMany;
 
-const HORIZON: usize = 300; // 0.3 s at dt 1 ms
+/// Steps per episode (`STAND_H`, default 300 = 0.3 s at dt 1 ms).
+fn horizon() -> usize {
+    std::env::var("STAND_H")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300)
+}
 const BATCH: usize = 32;
 const HIDDEN: usize = 64;
 const OFFSET: f64 = 0.3; // policy output scale (rad)
@@ -69,6 +75,37 @@ fn main() {
     let tail = pol.params.len();
     pol.params[w..tail].iter_mut().for_each(|p| *p = 0.0);
 
+    if std::env::args().any(|a| a == "--check") {
+        // the chained gradient against central differences of the episode
+        // loss, with random (nonzero) head weights
+        for p in pol.params.iter_mut() {
+            if *p == 0.0 {
+                *p = 0.01 * rng.next();
+            }
+        }
+        let x0 = task.push(&mut rng);
+        let mut grad = vec![0.0; pol.params.len()];
+        task.episode_grad(&pol, &x0, &mut grad);
+        let n = pol.params.len();
+        for k in [0, 101, n / 2, n - 200, n - 30, n - 1] {
+            let mut scratch = vec![0.0; n];
+            let p0 = pol.params[k];
+            let mut fd = Vec::new();
+            for h in [1e-4, 1e-5, 1e-6] {
+                pol.params[k] = p0 + h;
+                let lp = task.episode_grad(&pol, &x0, &mut scratch);
+                pol.params[k] = p0 - h;
+                let lm = task.episode_grad(&pol, &x0, &mut scratch);
+                fd.push((lp - lm) / (2.0 * h));
+            }
+            pol.params[k] = p0;
+            println!(
+                "weight {k:5}: backprop {:+.5e}  FD h=1e-4 {:+.5e}  1e-5 {:+.5e}  1e-6 {:+.5e}",
+                grad[k], fd[0], fd[1], fd[2]
+            );
+        }
+        return;
+    }
     let eval: Vec<Vec<f64>> = (0..64).map(|_| task.push(&mut rng)).collect();
     let zero = |_: &[f64], u: &mut [f64]| u.iter_mut().for_each(|x| *x = 0.0);
     let (base_loss, base_drop) = task.evaluate(&eval, &zero);
@@ -99,7 +136,7 @@ fn main() {
         "push recovery after {iters} iters x {BATCH} episodes: loss {l:.4} vs PD {base_loss:.4}, trunk drop {:.1} mm vs {:.1} mm; {:.1} k env-steps/s forward+backward",
         drop * 1e3,
         base_drop * 1e3,
-        (iters * BATCH * HORIZON) as f64 / t.elapsed().as_secs_f64() / 1e3
+        (iters * BATCH * horizon()) as f64 / t.elapsed().as_secs_f64() / 1e3
     );
 }
 
@@ -253,7 +290,7 @@ impl Stand {
         let tilt = x[0] * x[0] + x[1] * x[1];
         let vb: f64 = x[nq..nq + 6].iter().map(|v| v * v).sum();
         let vj: f64 = x[nq + 6..nq + nv].iter().map(|v| v * v).sum();
-        let s = 1.0 / HORIZON as f64;
+        let s = 1.0 / horizon() as f64;
         if let Some(g) = g {
             g[5] += s * 200.0 * dz;
             g[0] += s * 20.0 * x[0];
@@ -277,7 +314,7 @@ impl Stand {
         let mut off = vec![0.0; nu];
         for x0 in pushes {
             let mut x = x0.clone();
-            for _ in 0..HORIZON {
+            for _ in 0..horizon() {
                 policy(&self.obs(&x), &mut off);
                 for i in 0..nu {
                     x[nq + nv + i] = self.rest[nq + nv + i] + off[i];
@@ -328,12 +365,12 @@ impl Stand {
         let (nq, nv, nu, nf) = (self.nq, self.nv, self.nu, self.nf);
         let (ns, ni) = (nq + nv, nq + nv + nu + nf);
         let idx = self.obs_index();
-        let mut xs = Vec::with_capacity(HORIZON + 1);
-        let mut caches = Vec::with_capacity(HORIZON);
+        let mut xs = Vec::with_capacity(horizon() + 1);
+        let mut caches = Vec::with_capacity(horizon());
         let mut x = x0.to_vec();
         let mut out = vec![0.0; ns + nf];
         let mut loss = 0.0;
-        for _ in 0..HORIZON {
+        for _ in 0..horizon() {
             let obs = self.obs(&x);
             let c = pol.forward(&obs);
             for i in 0..nu {
@@ -352,7 +389,7 @@ impl Stand {
         let mut xin = vec![0.0; ni + ns + nf];
         let mut back = vec![0.0; ni];
         let mut gx = vec![0.0; ni];
-        for t in (0..HORIZON).rev() {
+        for t in (0..horizon()).rev() {
             gx.iter_mut().for_each(|g| *g = 0.0);
             self.step_loss(&xs[t + 1], Some(&mut gx));
             for i in 0..ns {
