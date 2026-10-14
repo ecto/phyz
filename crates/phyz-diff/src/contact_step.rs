@@ -144,6 +144,21 @@ impl ContactStep {
         self.graph.live_set(&self.out).len()
     }
 
+    /// The step's reverse-mode adjoint, folded: inputs `[x, λ]` (this
+    /// step's inputs, then an adjoint of its outputs `q', v', f`), outputs
+    /// `λᵀ ∂out/∂x` (`n_inputs`). Gradient flows through the fixed PGS
+    /// sweeps as traced, including the warm start, and only down the taken
+    /// branch of each clamp.
+    pub fn adjoint(&self) -> (ExprGraph, Vec<ExprId>) {
+        let ni = self.n_inputs();
+        let mut g = self.graph.clone();
+        let seeds: Vec<ExprId> = (0..self.n_outputs())
+            .map(|i| g.var((ni + i) as u16))
+            .collect();
+        let grad = g.vjp(&self.out, &seeds, ni);
+        crate::forward::fold_constants(&g, &grad)
+    }
+
     /// Compile to an f64 closure.
     pub fn compile(&self) -> CompiledMany {
         self.graph.compile_many(&self.out)

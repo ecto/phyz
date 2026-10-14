@@ -544,3 +544,54 @@ fn split_matches_unrolled() {
         assert!(worst < 1e-10, "worst {worst:e}");
     }
 }
+
+/// The contact step's reverse-mode adjoint against central differences of
+/// the traced step itself, on near-ground states with warm starts (the
+/// graph is smooth away from clamp switches; a switch inside ±h shows up as
+/// an outlier, so the bar is the median, with a loose bound on the worst).
+#[test]
+fn contact_adjoint_matches_finite_differences() {
+    let mut cases = vec![biped()];
+    cases.extend(k1());
+    for (model, points) in cases {
+        let mat = material();
+        let config = ContactSolverConfig::default();
+        let step = ContactStep::build(&model, &points, &mat, &config, 5);
+        let (ag, ao) = step.adjoint();
+        let vjp = ag.compile_many(&ao);
+        let fwd = step.compile();
+        let (ni, no) = (step.n_inputs(), step.n_outputs());
+        let mut rng = Lcg(71);
+        let mut errs = Vec::new();
+        for _ in 0..10 {
+            let s = standing_state(&model, &points, &mut rng);
+            let (_, _, f, _) = cpu_step(&model, &points, &mat, &config, &s, None);
+            let x = step.inputs(&s, &f);
+            let lam: Vec<f64> = (0..no).map(|_| rng.next()).collect();
+            let mut got = vec![0.0; ni];
+            vjp(&x.iter().chain(&lam).copied().collect::<Vec<_>>(), &mut got);
+            let mut out = vec![0.0; no];
+            let h = 1e-7;
+            for c in 0..ni {
+                let mut xp = x.clone();
+                xp[c] += h;
+                fwd(&xp, &mut out);
+                let p: f64 = out.iter().zip(&lam).map(|(a, b)| a * b).sum();
+                xp[c] -= 2.0 * h;
+                fwd(&xp, &mut out);
+                let m: f64 = out.iter().zip(&lam).map(|(a, b)| a * b).sum();
+                let fd = (p - m) / (2.0 * h);
+                errs.push((got[c] - fd).abs() / (1.0 + fd.abs()));
+            }
+        }
+        errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (median, worst) = (errs[errs.len() / 2], errs[errs.len() - 1]);
+        eprintln!(
+            "contact adjoint (nv {}, {} points, {} nodes): median {median:.1e}, worst {worst:.1e} vs FD",
+            model.nv,
+            points.len(),
+            ag.live_set(&ao).len()
+        );
+        assert!(median < 1e-6, "median {median:e}");
+    }
+}
