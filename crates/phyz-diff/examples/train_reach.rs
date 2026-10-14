@@ -19,10 +19,10 @@ use phyz_diff::forward::{Step, StepAdjoint};
 use phyz_model::{Actuator, Model};
 use tang_expr::compile::CompiledMany;
 
-const HORIZON: usize = 150; // 0.3 s at dt 2 ms
-const BATCH: usize = 64;
-const HIDDEN: usize = 64;
-const TORQUE: f64 = 20.0; // output scale (N m)
+pub const HORIZON: usize = 150; // 0.3 s at dt 2 ms
+pub const BATCH: usize = 64;
+pub const HIDDEN: usize = 64;
+pub const TORQUE: f64 = 20.0; // output scale (N m)
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -113,7 +113,7 @@ fn main() {
 
 /// The K1 on a fixed base at dt 2 ms with a torque motor per joint and light
 /// joint damping.
-fn k1_fixed() -> Model {
+pub fn k1_fixed() -> Model {
     let root = std::env::var_os("IPSE_K1_ASSETS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -140,27 +140,27 @@ fn k1_fixed() -> Model {
 }
 
 /// `(q, v, q*, torques out)`.
-type Policy = dyn Fn(&[f64], &[f64], &[f64], &mut [f64]);
+pub type Policy<'a> = dyn Fn(&[f64], &[f64], &[f64], &mut [f64]) + 'a;
 
-struct Task {
-    nq: usize,
-    nv: usize,
-    nu: usize,
-    fwd: CompiledMany,
-    back: CompiledMany,
-    lo: Vec<f64>,
-    hi: Vec<f64>,
+pub struct Task {
+    pub nq: usize,
+    pub nv: usize,
+    pub nu: usize,
+    pub fwd: CompiledMany,
+    pub back: CompiledMany,
+    pub lo: Vec<f64>,
+    pub hi: Vec<f64>,
 }
 
 #[derive(Clone)]
-struct Episode {
-    q0: Vec<f64>,
-    target: Vec<f64>,
+pub struct Episode {
+    pub q0: Vec<f64>,
+    pub target: Vec<f64>,
 }
 
 impl Task {
     /// Start and target poses drawn from the middle half of each joint's range.
-    fn episode(&self, rng: &mut Lcg) -> Episode {
+    pub fn episode(&self, rng: &mut Lcg) -> Episode {
         let pose = |rng: &mut Lcg| -> Vec<f64> {
             (0..self.nq)
                 .map(|i| {
@@ -178,17 +178,13 @@ impl Task {
 
     /// Per-step loss weight on joint error: ramps up so the policy may move
     /// first and must hold at the end.
-    fn weight(t: usize) -> f64 {
+    pub fn weight(t: usize) -> f64 {
         let s = (t + 1) as f64 / HORIZON as f64;
         s * s
     }
 
     /// Mean absolute joint error at the end of each episode under `policy`.
-    fn mean_final_error(
-        &self,
-        eps: &[Episode],
-        policy: &Policy,
-    ) -> f64 {
+    pub fn mean_final_error(&self, eps: &[Episode], policy: &Policy<'_>) -> f64 {
         let (nq, nv, nu) = (self.nq, self.nv, self.nu);
         let mut total = 0.0;
         for ep in eps {
@@ -207,7 +203,7 @@ impl Task {
     }
 
     /// Batch loss and its exact gradient with respect to the policy weights.
-    fn loss_and_grad(&self, pol: &Mlp, eps: &[Episode], threads: usize) -> (f64, Vec<f64>) {
+    pub fn loss_and_grad(&self, pol: &Mlp, eps: &[Episode], threads: usize) -> (f64, Vec<f64>) {
         let chunk = eps.len().div_ceil(threads);
         let parts: Vec<(f64, Vec<f64>)> = std::thread::scope(|sc| {
             let hs: Vec<_> = eps
@@ -240,7 +236,7 @@ impl Task {
 
     /// One episode: forward rollout keeping every step's input, then the
     /// reverse sweep. Adds `∂loss/∂θ` into `grad`; returns the loss.
-    fn episode_grad(&self, pol: &Mlp, ep: &Episode, grad: &mut [f64]) -> f64 {
+    pub fn episode_grad(&self, pol: &Mlp, ep: &Episode, grad: &mut [f64]) -> f64 {
         let (nq, nv, nu) = (self.nq, self.nv, self.nu);
         let ns = nq + nv;
         let mut xs: Vec<Vec<f64>> = Vec::with_capacity(HORIZON);
@@ -305,7 +301,7 @@ impl Task {
     }
 }
 
-fn obs(q: &[f64], v: &[f64], target: &[f64]) -> Vec<f64> {
+pub fn obs(q: &[f64], v: &[f64], target: &[f64]) -> Vec<f64> {
     q.iter()
         .zip(target)
         .map(|(a, b)| a - b)
@@ -314,33 +310,33 @@ fn obs(q: &[f64], v: &[f64], target: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn step_loss(q: &[f64], v: &[f64], u: &[f64], target: &[f64], w: f64) -> f64 {
+pub fn step_loss(q: &[f64], v: &[f64], u: &[f64], target: &[f64], w: f64) -> f64 {
     let e: f64 = q.iter().zip(target).map(|(a, b)| (a - b) * (a - b)).sum();
     let vv: f64 = v.iter().map(|x| x * x).sum();
     let uu: f64 = u.iter().map(|x| x * x).sum();
     w * e + 1e-3 * vv + 1e-5 * uu
 }
 
-fn pd_policy(kp: f64, kd: f64, q: &[f64], v: &[f64], target: &[f64], u: &mut [f64]) {
+pub fn pd_policy(kp: f64, kd: f64, q: &[f64], v: &[f64], target: &[f64], u: &mut [f64]) {
     for i in 0..u.len() {
         u[i] = kp * (target[i] - q[i]) - kd * v[i];
     }
 }
 
 /// Two-hidden-layer tanh MLP with a linear head scaled by [`TORQUE`].
-struct Mlp {
-    sizes: [usize; 4],
-    params: Vec<f64>,
+pub struct Mlp {
+    pub sizes: [usize; 4],
+    pub params: Vec<f64>,
 }
 
-struct Cache {
-    h1: Vec<f64>,
-    h2: Vec<f64>,
-    out: Vec<f64>,
+pub struct Cache {
+    pub h1: Vec<f64>,
+    pub h2: Vec<f64>,
+    pub out: Vec<f64>,
 }
 
 impl Mlp {
-    fn new(nin: usize, nh: usize, nout: usize, rng: &mut Lcg) -> Self {
+    pub fn new(nin: usize, nh: usize, nout: usize, rng: &mut Lcg) -> Self {
         let sizes = [nin, nh, nh, nout];
         let mut params = Vec::new();
         for l in 0..3 {
@@ -353,7 +349,7 @@ impl Mlp {
     }
 
     /// `(weights offset, bias offset)` of layer `l` (weights `[out][in]`).
-    fn offsets(&self, l: usize) -> (usize, usize) {
+    pub fn offsets(&self, l: usize) -> (usize, usize) {
         let mut o = 0;
         for k in 0..l {
             o += self.sizes[k] * self.sizes[k + 1] + self.sizes[k + 1];
@@ -361,7 +357,7 @@ impl Mlp {
         (o, o + self.sizes[l] * self.sizes[l + 1])
     }
 
-    fn layer(&self, l: usize, x: &[f64]) -> Vec<f64> {
+    pub fn layer(&self, l: usize, x: &[f64]) -> Vec<f64> {
         let (w, b) = self.offsets(l);
         let (a, n) = (self.sizes[l], self.sizes[l + 1]);
         (0..n)
@@ -372,20 +368,20 @@ impl Mlp {
             .collect()
     }
 
-    fn forward(&self, x: &[f64]) -> Cache {
+    pub fn forward(&self, x: &[f64]) -> Cache {
         let h1: Vec<f64> = self.layer(0, x).into_iter().map(f64::tanh).collect();
         let h2: Vec<f64> = self.layer(1, &h1).into_iter().map(f64::tanh).collect();
         let out = self.layer(2, &h2).into_iter().map(|v| TORQUE * v).collect();
         Cache { h1, h2, out }
     }
 
-    fn act(&self, q: &[f64], v: &[f64], target: &[f64], u: &mut [f64]) {
+    pub fn act(&self, q: &[f64], v: &[f64], target: &[f64], u: &mut [f64]) {
         u.copy_from_slice(&self.forward(&obs(q, v, target)).out);
     }
 
     /// Backprop `gout = ∂L/∂out` (consumed): adds `∂L/∂θ` to `grad`,
     /// returns `∂L/∂x`.
-    fn backward(&self, x: &[f64], c: &Cache, gout: &mut [f64], grad: &mut [f64]) -> Vec<f64> {
+    pub fn backward(&self, x: &[f64], c: &Cache, gout: &mut [f64], grad: &mut [f64]) -> Vec<f64> {
         let back = |l: usize, input: &[f64], gz: &[f64], grad: &mut [f64]| -> Vec<f64> {
             let (w, b) = self.offsets(l);
             let (a, n) = (self.sizes[l], self.sizes[l + 1]);
@@ -416,7 +412,7 @@ impl Mlp {
     }
 }
 
-struct Adam {
+pub struct Adam {
     m: Vec<f64>,
     v: Vec<f64>,
     t: i32,
@@ -424,7 +420,7 @@ struct Adam {
 }
 
 impl Adam {
-    fn new(n: usize, lr: f64) -> Self {
+    pub fn new(n: usize, lr: f64) -> Self {
         Self {
             m: vec![0.0; n],
             v: vec![0.0; n],
@@ -433,7 +429,7 @@ impl Adam {
         }
     }
 
-    fn step(&mut self, p: &mut [f64], g: &[f64]) {
+    pub fn step(&mut self, p: &mut [f64], g: &[f64]) {
         self.t += 1;
         let (b1, b2) = (0.9f64, 0.999f64);
         // clip the global norm: long contact-free unrolls still spike
@@ -478,9 +474,9 @@ fn gradient_check(task: &Task, pol: &mut Mlp, rng: &mut Lcg) {
     println!("worst relative gradient error {worst:.1e}");
 }
 
-struct Lcg(u64);
+pub struct Lcg(pub u64);
 impl Lcg {
-    fn next(&mut self) -> f64 {
+    pub fn next(&mut self) -> f64 {
         self.0 = self
             .0
             .wrapping_mul(6364136223846793005)

@@ -3153,6 +3153,7 @@ dependencies = [
  "phyz-urdf",
  "tang",
  "tang-expr",
+ "tang-gpu",
  "tang-la",
 ]
 
