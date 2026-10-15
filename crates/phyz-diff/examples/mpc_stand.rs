@@ -201,51 +201,151 @@ fn run_episode(
     (loss, task.z0 - x[5], 1e3 * solve_s / solves as f64)
 }
 
-/// Improve `plan` (h x nu raw offsets) from state `x0` by Adam on the
-/// window's cost, exact gradients through the contact steps.
-pub fn solve(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
+/// Steps each planned offset is held (`MPC_KNOT`, default 1): `h` knots
+/// then look `h * knot` steps ahead for the same number of unknowns.
+pub fn knot() -> usize {
+    env("MPC_KNOT", 1).max(1)
+}
+
+/// The window's cost from `x0` under `plan` (h knots x nu raw offsets, each
+/// held `knot()` steps), the last
+/// step weighted 5x as a cheap terminal cost; with `grad`, also its exact
+/// gradient through the contact steps (one forward and one adjoint sweep).
+pub fn objective(
+    task: &Stand,
+    x0: &[f64],
+    plan: &[f64],
+    h: usize,
+    grad: Option<&mut [f64]>,
+) -> f64 {
     let (nq, nv, nu, nf) = (task.nq, task.nv, task.nu, task.nf);
     let (ns, ni) = (nq + nv, nq + nv + nu + nf);
-    let mut adam = Adam::new(plan.len(), 0.05);
-    let mut xs = vec![vec![0.0; ni]; h + 1];
+    let kn = knot();
+    let steps = h * kn;
+    let weight = |k: usize| if k + 1 == steps { 5.0 } else { 1.0 };
+    let mut xs = vec![vec![0.0; ni]; steps + 1];
     let mut out = vec![0.0; ns + nf];
+    let mut x = x0.to_vec();
+    let mut cost = 0.0;
+    for k in 0..steps {
+        for i in 0..nu {
+            x[ns + i] = task.rest[ns + i] + OFFSET * plan[(k / kn) * nu + i].tanh();
+        }
+        (task.fwd)(&x, &mut out);
+        xs[k].copy_from_slice(&x);
+        x[..ns].copy_from_slice(&out[..ns]);
+        x[ns + nu..].copy_from_slice(&out[ns..]);
+        cost += weight(k) * task.step_loss(&x, None);
+    }
+    xs[steps].copy_from_slice(&x);
+    let Some(grad) = grad else { return cost };
     let mut xin = vec![0.0; ni + ns + nf];
     let mut back = vec![0.0; ni];
     let mut gx = vec![0.0; ni];
+    let mut lam = vec![0.0; ns + nf];
+    grad.iter_mut().for_each(|g| *g = 0.0);
+    for k in (0..steps).rev() {
+        gx.iter_mut().for_each(|g| *g = 0.0);
+        task.step_loss(&xs[k + 1], Some(&mut gx));
+        for i in 0..ns {
+            lam[i] += weight(k) * gx[i];
+        }
+        xin[..ni].copy_from_slice(&xs[k]);
+        xin[ni..].copy_from_slice(&lam);
+        (task.back)(&xin, &mut back);
+        for i in 0..nu {
+            let j = (k / kn) * nu + i;
+            let th = plan[j].tanh();
+            grad[j] += back[ns + i] * OFFSET * (1.0 - th * th);
+        }
+        lam[..ns].copy_from_slice(&back[..ns]);
+        lam[ns..].copy_from_slice(&back[ns + nu..]);
+    }
+    cost
+}
+
+/// Improve `plan` from `x0`: `iters` steps of Adam, or of L-BFGS with a
+/// backtracking line search (`MPC_OPT=lbfgs`).
+pub fn solve(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
+    if std::env::var("MPC_OPT").as_deref() == Ok("lbfgs") {
+        return lbfgs(task, x0, plan, h, iters);
+    }
+    let mut adam = Adam::new(plan.len(), 0.05);
+    let mut grad = vec![0.0; plan.len()];
     for _ in 0..iters {
-        let mut x = x0.to_vec();
-        for k in 0..h {
-            for i in 0..nu {
-                x[ns + i] = task.rest[ns + i] + OFFSET * plan[k * nu + i].tanh();
-            }
-            (task.fwd)(&x, &mut out);
-            xs[k].copy_from_slice(&x);
-            x[..ns].copy_from_slice(&out[..ns]);
-            x[ns + nu..].copy_from_slice(&out[ns..]);
-        }
-        xs[h].copy_from_slice(&x);
-        let mut grad = vec![0.0; plan.len()];
-        let mut lam = vec![0.0; ns + nf];
-        for k in (0..h).rev() {
-            gx.iter_mut().for_each(|g| *g = 0.0);
-            // the window's last state counts extra: a cheap terminal cost
-            task.step_loss(&xs[k + 1], Some(&mut gx));
-            let w = if k + 1 == h { 5.0 } else { 1.0 };
-            for i in 0..ns {
-                lam[i] += w * gx[i];
-            }
-            xin[..ni].copy_from_slice(&xs[k]);
-            xin[ni..].copy_from_slice(&lam);
-            (task.back)(&xin, &mut back);
-            for i in 0..nu {
-                let th = plan[k * nu + i].tanh();
-                grad[k * nu + i] = back[ns + i] * OFFSET * (1.0 - th * th);
-            }
-            lam[..ns].copy_from_slice(&back[..ns]);
-            lam[ns..].copy_from_slice(&back[ns + nu..]);
-        }
+        objective(task, x0, plan, h, Some(&mut grad));
         if grad.iter().all(|g| g.is_finite()) {
             adam.step(plan, &grad);
         }
+    }
+}
+
+/// L-BFGS (memory 6) with Armijo backtracking: curvature from past
+/// gradients, so the step length is chosen by the cost, not a tuned rate.
+fn lbfgs(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
+    let n = plan.len();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let mut g = vec![0.0; n];
+    let mut f = objective(task, x0, plan, h, Some(&mut g));
+    let mut hist: std::collections::VecDeque<(Vec<f64>, Vec<f64>, f64)> = Default::default();
+    for _ in 0..iters {
+        if !g.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        // two-loop recursion: d = -H g
+        let mut q = g.clone();
+        let mut alphas = Vec::with_capacity(hist.len());
+        for (sk, yk, rho) in hist.iter().rev() {
+            let a = rho * dot(sk, &q);
+            q.iter_mut().zip(yk).for_each(|(qi, yi)| *qi -= a * yi);
+            alphas.push(a);
+        }
+        let gamma = hist.back().map_or_else(
+            // first step: a 0.05-rad move in the steepest coordinate, like Adam's
+            || 0.05 / g.iter().fold(0.0f64, |m, v| m.max(v.abs())).max(1e-12),
+            |(sk, yk, _)| dot(sk, yk) / dot(yk, yk),
+        );
+        q.iter_mut().for_each(|v| *v *= gamma);
+        for ((sk, yk, rho), a) in hist.iter().zip(alphas.iter().rev()) {
+            let b = rho * dot(yk, &q);
+            q.iter_mut()
+                .zip(sk)
+                .for_each(|(qi, si)| *qi += (a - b) * si);
+        }
+        let d: Vec<f64> = q.iter().map(|v| -v).collect();
+        let slope = dot(&g, &d);
+        if slope >= 0.0 {
+            hist.clear();
+            continue;
+        }
+        let mut t = 1.0;
+        let mut trial = vec![0.0; n];
+        let mut accepted = None;
+        for _ in 0..6 {
+            trial
+                .iter_mut()
+                .zip(plan.iter().zip(&d))
+                .for_each(|(o, (p, di))| *o = p + t * di);
+            let ft = objective(task, x0, &trial, h, None);
+            if ft.is_finite() && ft <= f + 1e-4 * t * slope {
+                accepted = Some(ft);
+                break;
+            }
+            t *= 0.5;
+        }
+        let Some(_) = accepted else { return };
+        let mut gn = vec![0.0; n];
+        let fnew = objective(task, x0, &trial, h, Some(&mut gn));
+        let sk: Vec<f64> = trial.iter().zip(plan.iter()).map(|(a, b)| a - b).collect();
+        let yk: Vec<f64> = gn.iter().zip(&g).map(|(a, b)| a - b).collect();
+        let sy = dot(&sk, &yk);
+        if sy > 1e-12 {
+            hist.push_back((sk, yk, 1.0 / sy));
+            if hist.len() > 6 {
+                hist.pop_front();
+            }
+        }
+        plan.copy_from_slice(&trial);
+        (f, g) = (fnew, gn);
     }
 }
