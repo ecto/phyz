@@ -186,3 +186,137 @@ impl Rig {
         })
     }
 }
+
+/// v indices of the ten DOFs ipse's CEM `LinearPolicy` commands, in its
+/// action order: per side (Left, Right) hip pitch, hip roll, knee, ankle
+/// pitch, ankle roll (`ipse_sim::learn::leg_act_dofs`).
+pub fn cem_dofs(model: &Model) -> Vec<usize> {
+    let v_of = |name: String| {
+        let j = model
+            .joints
+            .iter()
+            .position(|j| j.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        model.v_offsets[j]
+    };
+    ["Left", "Right"]
+        .iter()
+        .flat_map(|s| {
+            [
+                "Hip_Pitch",
+                "Hip_Roll",
+                "Knee_Pitch",
+                "Ankle_Pitch",
+                "Ankle_Roll",
+            ]
+            .map(|p| v_of(format!("{s}_{p}")))
+        })
+        .collect()
+}
+
+/// `ipse_sim::learn::observe_legs`: trunk pitch and roll, base gyro, COM
+/// velocity and centroidal angular momentum in the heading frame, then
+/// `(q - q_target, q̇)` over [`cem_dofs`]. 31 entries.
+pub fn observe_legs(
+    model: &Model,
+    q_target: &[f64],
+    q: &[f64],
+    v: &[f64],
+    dofs: &[usize],
+) -> Vec<f64> {
+    let mut st = model.default_state();
+    st.q.as_mut_slice().copy_from_slice(q);
+    st.v.as_mut_slice().copy_from_slice(v);
+    let (xf, vel) = phyz_rigid::forward_kinematics(model, &st);
+    let trunk = model
+        .bodies
+        .iter()
+        .position(|b| b.name == "Trunk")
+        .expect("Trunk");
+    let r = &xf[trunk].rot;
+    let pitch = (-r[(0, 2)]).atan2(r[(2, 2)]);
+    let roll = r[(1, 2)].atan2(r[(2, 2)]);
+    // COM and its velocity, then the centroidal angular momentum
+    let (mut com, mut cv, mut m) = (Vec3::zeros(), Vec3::zeros(), 0.0);
+    for (i, b) in model.bodies.iter().enumerate() {
+        if b.inertia.mass <= 0.0 {
+            continue;
+        }
+        let rw = xf[i].rot.transpose();
+        com += (xf[i].pos + rw * b.inertia.com) * b.inertia.mass;
+        cv += rw * (vel[i].linear + vel[i].angular.cross(b.inertia.com)) * b.inertia.mass;
+        m += b.inertia.mass;
+    }
+    com *= 1.0 / m;
+    cv *= 1.0 / m;
+    let mut cam = Vec3::zeros();
+    for (i, b) in model.bodies.iter().enumerate() {
+        if b.inertia.mass <= 0.0 {
+            continue;
+        }
+        let rw = xf[i].rot.transpose();
+        let ri = xf[i].pos + rw * b.inertia.com;
+        let vi = rw * (vel[i].linear + vel[i].angular.cross(b.inertia.com));
+        cam +=
+            (ri - com).cross(vi - cv) * b.inertia.mass + rw * (b.inertia.inertia * vel[i].angular);
+    }
+    let rt = r.transpose();
+    let (sy, cy) = rt[(1, 0)].atan2(rt[(0, 0)]).sin_cos();
+    let heading = |w: Vec3| [cy * w.x + sy * w.y, -sy * w.x + cy * w.y, w.z];
+    let mut obs = vec![pitch, roll, v[0], v[1], v[2]];
+    obs.extend(heading(cv));
+    obs.extend(heading(cam));
+    // q index = v index for the K1's 1-DOF joints after the free base
+    for &d in dofs {
+        obs.push(q[d] - q_target[d]);
+        obs.push(v[d]);
+    }
+    obs
+}
+
+/// ipse's CEM `LinearPolicy` action: `clamp(W obs + b, ±0.3)`.
+pub fn cem_action(params: &[f64], obs: &[f64]) -> Vec<f64> {
+    let (no, na) = (obs.len(), 10);
+    (0..na)
+        .map(|i| {
+            let w = &params[i * no..(i + 1) * no];
+            (w.iter().zip(obs).map(|(a, b)| a * b).sum::<f64>() + params[na * no + i])
+                .clamp(-0.3, 0.3)
+        })
+        .collect()
+}
+
+/// A CEM policy file: one parameter per non-comment line.
+pub fn read_cem(path: &str) -> Vec<f64> {
+    std::fs::read_to_string(path)
+        .expect("CEM policy file")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| l.trim().parse().unwrap())
+        .collect()
+}
+
+/// One recorded CEM row: `(t, v, obs, act)`.
+pub type CemRow = (f64, Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The recorded rows of a CEM dump.
+pub fn cem_rows(path: &str) -> Vec<CemRow> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut rows: Vec<CemRow> = Vec::new();
+    for line in text.lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let nums = || {
+            w[2..]
+                .iter()
+                .map(|v| v.parse().unwrap())
+                .collect::<Vec<f64>>()
+        };
+        match w.first().copied() {
+            Some("vel") => rows.push((w[1].parse().unwrap(), nums(), Vec::new(), Vec::new())),
+            Some("obs") => rows.last_mut().unwrap().2 = nums(),
+            Some("act") => rows.last_mut().unwrap().3 = nums(),
+            _ => {}
+        }
+    }
+    rows
+}
