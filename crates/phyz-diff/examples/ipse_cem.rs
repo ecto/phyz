@@ -187,6 +187,7 @@ fn survives(
     };
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action: Vec<f64> = Vec::new();
+    let mut lagged: Vec<f64> = Vec::new();
     for k in 0..shove_at + 2000 {
         for (s, &d) in pd.dofs.iter().enumerate() {
             x[nq + nv + s] = rig.q_target[d];
@@ -222,8 +223,19 @@ fn survives(
             while pending.front().is_some_and(|(t, _)| *t <= k) {
                 action = pending.pop_front().unwrap().1;
             }
-            for (i, a) in action.iter().enumerate() {
-                x[nq + nv + slot[i]] += a;
+            // IPSE_RAMP steps to fade the policy in, as hold does
+            let fade = ((k - settle) as f64 / env("IPSE_RAMP", 1.0).max(1.0)).min(1.0);
+            // IPSE_ACT_TAU steps: first-order lag from commanded to effective
+            // offset — an actuator that cannot follow a step
+            let tau = env("IPSE_ACT_TAU", 0.0);
+            if lagged.len() != action.len() {
+                lagged = vec![0.0; action.len()];
+            }
+            for (l, a) in lagged.iter_mut().zip(&action) {
+                *l += (a - *l) / (1.0 + tau);
+            }
+            for (i, a) in lagged.iter().enumerate() {
+                x[nq + nv + slot[i]] += fade * a;
             }
         }
         let w = &mut x[nq + nv + nt..nq + nv + nt + 6];
