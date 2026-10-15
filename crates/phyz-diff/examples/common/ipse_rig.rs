@@ -191,8 +191,14 @@ impl Rig {
     }
 
     pub fn material(&self) -> ContactMaterial {
+        // IPSE_FRICTION overrides ipse's 0.5: does a recovery survive a
+        // grippier floor than the one it was trained on?
+        let friction = std::env::var("IPSE_FRICTION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.friction);
         ContactMaterial {
-            friction: self.friction,
+            friction,
             margin: self.margin,
             ..ContactMaterial::default()
         }

@@ -23,7 +23,14 @@ fn main() {
             .next()
             .expect("usage: ipse_cem RIG.txt CEM.policy [CEM_DUMP.txt]"),
     );
-    let params = ipse_rig::read_cem(&args.next().expect("CEM.policy"));
+    // IPSE_POLICY_SCALE multiplies the weights (not the bias): how much
+    // loop gain the plant tolerates before the policy starts to chatter
+    let scale = std::env::var("IPSE_POLICY_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let mut params = ipse_rig::read_cem(&args.next().expect("CEM.policy"));
+    params[..310].iter_mut().for_each(|w| *w *= scale);
     let model = rig.model();
     let dofs = ipse_rig::cem_dofs(&model);
 
@@ -151,7 +158,35 @@ fn survives(
             .map(|d| pd.dofs.iter().position(|p| p == d).unwrap())
             .collect()
     });
-    let (settle, shove_at) = (1500usize, 1700usize);
+    // IPSE_CHATTER: 2 s of quiet stance under the policy before the shove,
+    // reporting peak base gyro and the fraction of action sign flips
+    let chatter = std::env::var("IPSE_CHATTER").is_ok();
+    let (settle, shove_at) = (1500usize, if chatter { 3500 } else { 1700usize });
+    let (mut peak, mut flips, mut queries) = (0.0f64, 0usize, 0usize);
+    let mut prev: Vec<f64> = Vec::new();
+    // the robot's loop, not the sim's: IPSE_POLICY_EVERY steps between
+    // policy queries (hold runs at 50 Hz), IPSE_LATENCY steps before an
+    // action lands, IPSE_GYRO_NOISE rad/s uniform on the base and joint
+    // rates, IPSE_CLAMP the deploy clamp
+    let env = |k: &str, d: f64| {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    let every = env("IPSE_POLICY_EVERY", 1.0) as usize;
+    let latency = env("IPSE_LATENCY", 0.0) as usize;
+    let noise = env("IPSE_GYRO_NOISE", 0.0);
+    let clamp = env("IPSE_CLAMP", 0.3);
+    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut uniform = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
+    let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
+    let mut action: Vec<f64> = Vec::new();
     for k in 0..shove_at + 2000 {
         for (s, &d) in pd.dofs.iter().enumerate() {
             x[nq + nv + s] = rig.q_target[d];
@@ -159,8 +194,35 @@ fn survives(
         if k >= settle
             && let Some((params, ds)) = cem
         {
-            let o = ipse_rig::observe_legs(model, &rig.q_target, &x[..nq], &x[nq..nq + nv], ds);
-            for (i, a) in ipse_rig::cem_action(params, &o).into_iter().enumerate() {
+            if (k - settle) % every == 0 {
+                let mut o =
+                    ipse_rig::observe_legs(model, &rig.q_target, &x[..nq], &x[nq..nq + nv], ds);
+                if noise > 0.0 {
+                    for i in (2..5).chain((12..o.len()).step_by(2)) {
+                        o[i] += noise * uniform();
+                    }
+                }
+                let a = ipse_rig::cem_action(params, &o);
+                if chatter && k < shove_at {
+                    if !prev.is_empty() {
+                        flips += a
+                            .iter()
+                            .zip(&prev)
+                            .filter(|(p, q)| p.signum() != q.signum())
+                            .count();
+                        queries += a.len();
+                    }
+                    prev = a.clone();
+                }
+                pending.push_back((
+                    k + latency,
+                    a.iter().map(|v| v.clamp(-clamp, clamp)).collect(),
+                ));
+            }
+            while pending.front().is_some_and(|(t, _)| *t <= k) {
+                action = pending.pop_front().unwrap().1;
+            }
+            for (i, a) in action.iter().enumerate() {
                 x[nq + nv + slot[i]] += a;
             }
         }
@@ -170,6 +232,15 @@ fn survives(
             for a in 0..3 {
                 w[3 + a] = impulse[a] / 0.02;
             }
+        }
+        if chatter && k == shove_at {
+            println!(
+                "chatter: peak gyro {peak:.2} rad/s, sign flips {:.0}%",
+                100.0 * flips as f64 / queries.max(1) as f64
+            );
+        }
+        if k >= settle && k < shove_at {
+            peak = x[nq..nq + 3].iter().fold(peak, |m, v| m.max(v.abs()));
         }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);
