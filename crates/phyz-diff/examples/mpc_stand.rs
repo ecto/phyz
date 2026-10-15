@@ -74,6 +74,27 @@ fn main() {
         (fwd, back)
     };
     let task = Stand::new(&model, fwd, back, step.nu, points.len());
+    if std::env::var_os("MPC_BENCH").is_some() {
+        // per-call cost of the native step and adjoint
+        let x = task.rest.clone();
+        let mut out = vec![0.0; step.n_outputs()];
+        let mut xin = x.clone();
+        xin.extend(std::iter::repeat_n(0.1, step.n_outputs()));
+        let mut back = vec![0.0; step.n_inputs()];
+        let n = 2000;
+        let t = Instant::now();
+        for _ in 0..n {
+            (task.fwd)(std::hint::black_box(&x), &mut out);
+        }
+        let f_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+        let t = Instant::now();
+        for _ in 0..n {
+            (task.back)(std::hint::black_box(&xin), &mut back);
+        }
+        let b_us = t.elapsed().as_secs_f64() * 1e6 / n as f64;
+        println!("native step {f_us:.1} us, adjoint {b_us:.1} us per call");
+        return;
+    }
 
     let mut rng = Lcg(29);
     let pushes: Vec<Vec<f64>> = (0..n_eval).map(|_| task.push(&mut rng)).collect();
@@ -83,7 +104,10 @@ fn main() {
         "{n_eval} pushes, {episode} steps; PD: loss {base:.4}, trunk drop {:.2} mm",
         base_drop * 1e3
     );
-    eprintln!("MPC: horizon {h}, replan every {replan}, {iters} Adam iterations per solve");
+    eprintln!(
+        "MPC: horizon {h}, replan every {replan}, {iters} {} iterations per solve",
+        std::env::var("MPC_OPT").unwrap_or_else(|_| "L-BFGS".into())
+    );
 
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let t = Instant::now();
@@ -121,7 +145,10 @@ fn main() {
 pub fn native(src: &str, n_out: usize) -> tang_expr::compile::CompiledMany {
     use std::hash::{Hash, Hasher};
     let mut hs = std::collections::hash_map::DefaultHasher::new();
+    // MPC_CFLAGS (default -O1): part of the cache key
+    let flags = std::env::var("MPC_CFLAGS").unwrap_or_else(|_| "-O1".into());
     src.hash(&mut hs);
+    flags.hash(&mut hs);
     let dir = std::env::temp_dir().join("phyz-mpc-native");
     std::fs::create_dir_all(&dir).unwrap();
     let base = dir.join(format!("k{:016x}", hs.finish()));
@@ -134,7 +161,8 @@ pub fn native(src: &str, n_out: usize) -> tang_expr::compile::CompiledMany {
         let c = base.with_extension("c");
         std::fs::write(&c, src).unwrap();
         let ok = std::process::Command::new("cc")
-            .args(["-O1", "-shared", "-fPIC", "-o"])
+            .args(flags.split_whitespace())
+            .args(["-shared", "-fPIC", "-o"])
             .arg(&lib)
             .arg(&c)
             .arg("-lm")
@@ -179,7 +207,7 @@ fn run_episode(
         solves += 1;
         for k in 0..replan.min(episode - t) {
             for i in 0..nu {
-                x[ns + i] = task.rest[ns + i] + OFFSET * plan[k * nu + i].tanh();
+                x[ns + i] = task.rest[ns + i] + bound() * plan[k * nu + i].tanh();
             }
             (task.fwd)(&x, &mut out);
             x[..ns].copy_from_slice(&out[..ns]);
@@ -203,6 +231,14 @@ fn run_episode(
 
 /// Steps each planned offset is held (`MPC_KNOT`, default 1): `h` knots
 /// then look `h * knot` steps ahead for the same number of unknowns.
+/// The offset bound in rad (`MPC_OFFSET`, default the trainers' 0.3).
+pub fn bound() -> f64 {
+    std::env::var("MPC_OFFSET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(OFFSET)
+}
+
 pub fn knot() -> usize {
     env("MPC_KNOT", 1).max(1)
 }
@@ -229,7 +265,7 @@ pub fn objective(
     let mut cost = 0.0;
     for k in 0..steps {
         for i in 0..nu {
-            x[ns + i] = task.rest[ns + i] + OFFSET * plan[(k / kn) * nu + i].tanh();
+            x[ns + i] = task.rest[ns + i] + bound() * plan[(k / kn) * nu + i].tanh();
         }
         (task.fwd)(&x, &mut out);
         xs[k].copy_from_slice(&x);
@@ -256,7 +292,7 @@ pub fn objective(
         for i in 0..nu {
             let j = (k / kn) * nu + i;
             let th = plan[j].tanh();
-            grad[j] += back[ns + i] * OFFSET * (1.0 - th * th);
+            grad[j] += back[ns + i] * bound() * (1.0 - th * th);
         }
         lam[..ns].copy_from_slice(&back[..ns]);
         lam[ns..].copy_from_slice(&back[ns + nu..]);
@@ -264,10 +300,10 @@ pub fn objective(
     cost
 }
 
-/// Improve `plan` from `x0`: `iters` steps of Adam, or of L-BFGS with a
-/// backtracking line search (`MPC_OPT=lbfgs`).
+/// Improve `plan` from `x0`: `iters` steps of L-BFGS with a
+/// backtracking line search (the default; `MPC_OPT=adam` for Adam).
 pub fn solve(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
-    if std::env::var("MPC_OPT").as_deref() == Ok("lbfgs") {
+    if std::env::var("MPC_OPT").as_deref() != Ok("adam") {
         return lbfgs(task, x0, plan, h, iters);
     }
     let mut adam = Adam::new(plan.len(), 0.05);
@@ -318,24 +354,30 @@ fn lbfgs(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
             hist.clear();
             continue;
         }
+        // the full step usually passes, so it is evaluated with its gradient
+        // straight away; backtracking steps are forward-only
         let mut t = 1.0;
         let mut trial = vec![0.0; n];
+        let mut gn = vec![0.0; n];
         let mut accepted = None;
-        for _ in 0..6 {
+        for attempt in 0..6 {
             trial
                 .iter_mut()
                 .zip(plan.iter().zip(&d))
                 .for_each(|(o, (p, di))| *o = p + t * di);
-            let ft = objective(task, x0, &trial, h, None);
+            let ft = objective(task, x0, &trial, h, (attempt == 0).then_some(&mut gn[..]));
             if ft.is_finite() && ft <= f + 1e-4 * t * slope {
-                accepted = Some(ft);
+                accepted = Some((ft, attempt == 0));
                 break;
             }
             t *= 0.5;
         }
-        let Some(_) = accepted else { return };
-        let mut gn = vec![0.0; n];
-        let fnew = objective(task, x0, &trial, h, Some(&mut gn));
+        let Some((fnew, have_grad)) = accepted else {
+            return;
+        };
+        if !have_grad {
+            objective(task, x0, &trial, h, Some(&mut gn));
+        }
         let sk: Vec<f64> = trial.iter().zip(plan.iter()).map(|(a, b)| a - b).collect();
         let yk: Vec<f64> = gn.iter().zip(&g).map(|(a, b)| a - b).collect();
         let sy = dot(&sk, &yk);

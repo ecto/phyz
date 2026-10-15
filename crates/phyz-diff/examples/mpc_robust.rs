@@ -9,7 +9,7 @@
 #[allow(dead_code)]
 mod mpc;
 
-use mpc::stand::{OFFSET, SWEEPS, Stand, k1};
+use mpc::stand::{SWEEPS, Stand, k1};
 use phyz_contact::{ContactMaterial, ContactSolverConfig};
 use phyz_diff::contact_step::ContactStep;
 
@@ -39,6 +39,31 @@ fn main() {
         ao.len(),
     );
     let task = Stand::new(&model, fwd, back, step.nu, points.len());
+    // MPC_MODEL_SWEEPS: the planner's own model with fewer PGS sweeps than
+    // the plant (cheaper step and adjoint); it plans around the plant's
+    // standing state
+    let planner = std::env::var("MPC_MODEL_SWEEPS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|sw| {
+            let st = ContactStep::build(&model, &points, &mat, &config, sw);
+            let (ag, ao) = st.adjoint();
+            let fwd = mpc::native(&st.kernel_c_f64().source, st.n_outputs());
+            let back = mpc::native(
+                &ag.to_c_f64(&ao, st.n_inputs() + st.n_outputs()).source,
+                ao.len(),
+            );
+            let mut p = Stand::new(&model, fwd, back, st.nu, points.len());
+            p.rest = task.rest.clone();
+            p.z0 = task.z0;
+            eprintln!(
+                "planner model: {sw} sweeps ({} + {} nodes)",
+                st.live_nodes(),
+                ag.live_set(&ao).len()
+            );
+            p
+        });
+    let planner = planner.as_ref().unwrap_or(&task);
 
     let mut cases = Vec::new();
     for s in [1.0, 1.1, 1.2, 1.3, 1.4] {
@@ -55,12 +80,12 @@ fn main() {
         let hs: Vec<_> = cases
             .chunks(chunk)
             .map(|c| {
-                let task = &task;
+                let (task, planner) = (&task, planner);
                 sc.spawn(move || {
                     c.iter()
                         .map(|(s, x0)| {
-                            let (pd, _) = drop_under(task, x0, None);
-                            let (mp, ms) = drop_under(task, x0, Some((h, replan, iters)));
+                            let (pd, _) = drop_under(task, task, x0, None);
+                            let (mp, ms) = drop_under(task, planner, x0, Some((h, replan, iters)));
                             (*s, pd, mp, ms)
                         })
                         .collect::<Vec<_>>()
@@ -93,14 +118,20 @@ fn main() {
     let ms = results.iter().map(|r| r.3).sum::<f64>() / results.len() as f64;
     println!(
         "{}: {iters} iters, horizon {h}, replan {replan}: MPC holds {mp}/{n}, PD {pd}/{n}; {ms:.1} ms per solve",
-        std::env::var("MPC_OPT").unwrap_or_else(|_| "adam".into()),
+        std::env::var("MPC_OPT").unwrap_or_else(|_| "lbfgs".into()),
         n = results.len()
     );
 }
 
 /// The trunk's largest drop over the episode under PD (`None`) or MPC, and
 /// the mean ms per solve.
-fn drop_under(task: &Stand, x0: &[f64], mpc_cfg: Option<(usize, usize, usize)>) -> (f64, f64) {
+/// `task` is the plant; `planner` is the model MPC optimises through.
+fn drop_under(
+    task: &Stand,
+    planner: &Stand,
+    x0: &[f64],
+    mpc_cfg: Option<(usize, usize, usize)>,
+) -> (f64, f64) {
     let (nq, nv, nu, nf) = (task.nq, task.nv, task.nu, task.nf);
     let ns = nq + nv;
     let (h, replan, iters) = mpc_cfg.unwrap_or((16, 10, 0));
@@ -123,14 +154,14 @@ fn drop_under(task: &Stand, x0: &[f64], mpc_cfg: Option<(usize, usize, usize)>) 
                 }
             }
             let start = std::time::Instant::now();
-            mpc::solve(task, &x, &mut plan, h, iters);
+            mpc::solve(planner, &x, &mut plan, h, iters);
             secs += start.elapsed().as_secs_f64();
             solves += 1;
         }
         let k = (t % replan) / kn;
         for i in 0..nu {
             let off = if mpc_cfg.is_some() {
-                OFFSET * plan[k * nu + i].tanh()
+                mpc::bound() * plan[k * nu + i].tanh()
             } else {
                 0.0
             };
