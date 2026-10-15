@@ -81,6 +81,7 @@ fn main() {
     // measured hip pitch q, for actual / commanded
     let mut hq: Vec<f64> = Vec::new();
     let mut res = ipse_rig::ActRes::from_env(dt);
+    let mut sea = ipse_rig::Sea::from_env(&rig, &pd);
     let mut tsv = std::env::var("IPSE_CHIRP_TSV")
         .ok()
         .map(|p| std::io::BufWriter::new(std::fs::File::create(p).unwrap()));
@@ -107,6 +108,9 @@ fn main() {
         x[nq + nv + nt..nq + nv + nt + 6]
             .iter_mut()
             .for_each(|v| *v = 0.0);
+        if let Some(sea) = sea.as_mut() {
+            sea.apply(&mut x, nq, nv);
+        }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);
         x[nq + nv + nu..].copy_from_slice(&out[nq + nv..]);

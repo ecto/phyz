@@ -293,6 +293,7 @@ fn rollout(
     let clamp = env("IPSE_CLAMP", 0.15);
     let ramp = env("IPSE_RAMP", 500.0).max(1.0);
     let mut res = ipse_rig::ActRes::from_env(rig.dt);
+    let mut sea = ipse_rig::Sea::from_env(&rig, &pd);
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action = vec![0.0; dofs.len()];
     let mut prev: Vec<f64> = Vec::new();
@@ -347,6 +348,9 @@ fn rollout(
             for a in 0..3 {
                 w[3 + a] = imp[a] / 0.02;
             }
+        }
+        if let Some(sea) = sea.as_mut() {
+            sea.apply(&mut x, nq, nv);
         }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);

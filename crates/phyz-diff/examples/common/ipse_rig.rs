@@ -137,6 +137,11 @@ impl Rig {
             joint.damping = 0.0;
             let leg = ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n));
             joint.friction_loss = if leg { leg_friction } else { 0.0 };
+            // with series-elastic legs the rotor inertia lives on the motor
+            // side of the spring ([`Sea`]), not on the link
+            if leg && Sea::enabled() {
+                joint.armature = 0.0;
+            }
         }
         model
     }
@@ -406,5 +411,99 @@ impl ActRes {
             *y += h * *v;
         }
         &self.y
+    }
+}
+
+/// Series-elastic leg joints: a rotor (the rig's armature as its inertia)
+/// under the servo's PD, coupled to the link through a spring-damper.
+///
+/// The traced step only knows a PD on the link, `kp (target - q) - kd q̇`,
+/// so each step the link target is chosen to make that equal the spring
+/// torque; the rotor itself is integrated here, semi-implicitly. Set by
+/// `IPSE_SEA_HZ` (the rotor-on-spring frequency, k = J ω²) and
+/// `IPSE_SEA_ZETA` (c = 2ζ√(kJ)); off when unset. The K1's standing chirp
+/// (chirp-03) shows an 8–9 Hz trunk-pitch peak with the hips following
+/// ~10% of the command, which a rigid link cannot do.
+pub struct Sea {
+    /// (PD slot, v index, J, k, c, kp, kd, effort)
+    joints: Vec<(usize, usize, f64, f64, f64, f64, f64, f64)>,
+    theta: Vec<f64>,
+    omega: Vec<f64>,
+    h: f64,
+    started: bool,
+}
+
+impl Sea {
+    pub fn enabled() -> bool {
+        std::env::var("IPSE_SEA_HZ")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .is_some_and(|f| f > 0.0)
+    }
+
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        if !Self::enabled() {
+            return None;
+        }
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(d)
+        };
+        let w = std::f64::consts::TAU * env("IPSE_SEA_HZ", 0.0);
+        let zeta = env("IPSE_SEA_ZETA", 0.1);
+        let model = rig.model();
+        let joints: Vec<_> = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter_map(|(s, &v)| {
+                let (j, _) = model
+                    .joints
+                    .iter()
+                    .enumerate()
+                    .find(|(j, jt)| jt.ndof() == 1 && model.v_offsets[*j] == v)?;
+                let (name, arm) = &rig.joints[j];
+                if !["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n)) || *arm <= 0.0 {
+                    return None;
+                }
+                let k = arm * w * w;
+                let c = 2.0 * zeta * (k * arm).sqrt();
+                Some((s, v, *arm, k, c, pd.kp[s], pd.kd[s], pd.effort[s]))
+            })
+            .collect();
+        let n = joints.len();
+        Some(Self {
+            joints,
+            theta: vec![0.0; n],
+            omega: vec![0.0; n],
+            h: rig.dt,
+            started: false,
+        })
+    }
+
+    /// Read the commanded targets from `x`'s PD slots, advance the rotors,
+    /// and overwrite those slots with the link targets that reproduce the
+    /// spring torque. `x = [q, v, targets, ...]`.
+    pub fn apply(&mut self, x: &mut [f64], nq: usize, nv: usize) {
+        let base = nq + nv;
+        if !self.started {
+            for (i, &(_, v, ..)) in self.joints.iter().enumerate() {
+                self.theta[i] = x[v];
+                self.omega[i] = x[nq + v];
+            }
+            self.started = true;
+        }
+        for (i, &(s, v, j, k, c, kp, kd, effort)) in self.joints.iter().enumerate() {
+            let (q, qd) = (x[v], x[nq + v]);
+            let cmd = x[base + s];
+            let tau_m = (kp * (cmd - self.theta[i]) - kd * self.omega[i]).clamp(-effort, effort);
+            let tau_s = k * (self.theta[i] - q) + c * (self.omega[i] - qd);
+            self.omega[i] += self.h * (tau_m - tau_s) / j;
+            self.theta[i] += self.h * self.omega[i];
+            let tau_s = k * (self.theta[i] - q) + c * (self.omega[i] - qd);
+            x[base + s] = q + (tau_s + kd * qd) / kp;
+        }
     }
 }
