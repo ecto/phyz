@@ -37,3 +37,7 @@ harness = false
 [[example]]
 name = "train_reach_gpu"
 required-features = ["gpu"]
+
+[[example]]
+name = "train_stand_gpu"
+required-features = ["gpu"]
