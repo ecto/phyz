@@ -42,27 +42,33 @@ fn main() {
     // MPC_MODEL_SWEEPS: the planner's own model with fewer PGS sweeps than
     // the plant (cheaper step and adjoint); it plans around the plant's
     // standing state
-    let planner = std::env::var("MPC_MODEL_SWEEPS")
+    // MPC_MODEL_DT_X: its steps that many plant steps long (pair with
+    // MPC_PLAN_KNOT = MPC_KNOT / MPC_MODEL_DT_X)
+    let dt_x = mpc::env("MPC_MODEL_DT_X", 1);
+    let sweeps_env = std::env::var("MPC_MODEL_SWEEPS")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|sw| {
-            let st = ContactStep::build(&model, &points, &mat, &config, sw);
-            let (ag, ao) = st.adjoint();
-            let fwd = mpc::native(&st.kernel_c_f64().source, st.n_outputs());
-            let back = mpc::native(
-                &ag.to_c_f64(&ao, st.n_inputs() + st.n_outputs()).source,
-                ao.len(),
-            );
-            let mut p = Stand::new(&model, fwd, back, st.nu, points.len());
-            p.rest = task.rest.clone();
-            p.z0 = task.z0;
-            eprintln!(
-                "planner model: {sw} sweeps ({} + {} nodes)",
-                st.live_nodes(),
-                ag.live_set(&ao).len()
-            );
-            p
-        });
+        .and_then(|v| v.parse::<usize>().ok());
+    let planner = (sweeps_env.is_some() || dt_x > 1).then(|| {
+        let sw = sweeps_env.unwrap_or(SWEEPS);
+        let mut pm = model.clone();
+        pm.dt *= dt_x as f64;
+        let st = ContactStep::build(&pm, &points, &mat, &config, sw);
+        let (ag, ao) = st.adjoint();
+        let fwd = mpc::native(&st.kernel_c_f64().source, st.n_outputs());
+        let back = mpc::native(
+            &ag.to_c_f64(&ao, st.n_inputs() + st.n_outputs()).source,
+            ao.len(),
+        );
+        let mut p = Stand::new(&pm, fwd, back, st.nu, points.len());
+        p.rest = task.rest.clone();
+        p.z0 = task.z0;
+        eprintln!(
+            "planner model: {sw} sweeps, dt x{dt_x} ({} + {} nodes)",
+            st.live_nodes(),
+            ag.live_set(&ao).len()
+        );
+        p
+    });
     let planner = planner.as_ref().unwrap_or(&task);
 
     let mut cases = Vec::new();
@@ -74,7 +80,12 @@ fn main() {
             cases.push((s, x));
         }
     }
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // MPC_THREADS: episodes in parallel (default all cores); lower it when
+    // each solve runs its own threads (MPC_SEGMENTS), so timings are honest
+    let threads = std::env::var("MPC_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
     let chunk = cases.len().div_ceil(threads);
     let results: Vec<(f64, f64, f64, f64)> = std::thread::scope(|sc| {
         let hs: Vec<_> = cases
