@@ -7,6 +7,14 @@
 //! Gains come from the rig unless `IPSE_KP_LEG` etc. override them (see
 //! `ipse_rig::Rig::pd`).
 //!
+//! `IPSE_ACT_RES_HZ` / `IPSE_ACT_ZETA` pass the chirp offset through the same
+//! second-order stage `ipse_cem` applies to policy offsets
+//! (`ipse_rig::ActRes`), so the stand-in can be fitted against the robot's
+//! chirp. `IPSE_CHIRP_TSV=PATH` writes every 5th step (the robot's 200 Hz
+//! command rate) in `trace_rate`'s line format, which ipse-deploy's
+//! `chirp_fit` example reads next to the robot's:
+//! `t q0 <cmd> kp <kp> gyro_y <trunk pitch rate> qm <hip q> tau 0`.
+//!
 //! `cargo run --release -p phyz-diff --example ipse_chirp RIG.txt [F0 F1 AMP SECONDS]`
 
 #[path = "common/ipse_rig.rs"]
@@ -72,17 +80,24 @@ fn main() {
     let (mut win, mut wt) = (Vec::new(), 0.0);
     // measured hip pitch q, for actual / commanded
     let mut hq: Vec<f64> = Vec::new();
+    let mut res = ipse_rig::ActRes::from_env(dt);
+    let mut tsv = std::env::var("IPSE_CHIRP_TSV")
+        .ok()
+        .map(|p| std::io::BufWriter::new(std::fs::File::create(p).unwrap()));
     println!("chirp {f0}-{f1} Hz, ±{amp} rad on both hip pitches, {secs} s");
     for k in 0..n {
         let t = k.saturating_sub(settle) as f64 * dt;
         // log chirp, eased in over its first period
         let phase = std::f64::consts::TAU * f0 * secs / r.ln() * (r.powf(t / secs) - 1.0);
         let ease = (t * f0).min(1.0);
-        let c = if k < settle {
+        let cmd = if k < settle {
             0.0
         } else {
             amp * ease * phase.sin()
         };
+        // what the joint's PD sees: the commanded offset, or its filtered
+        // version under the series-compliance stand-in
+        let c = res.as_mut().map_or(cmd, |r| r.step(&[cmd])[0]);
         for (s, &d) in pd.dofs.iter().enumerate() {
             x[nq + nv + s] = rig.q_target[d];
         }
@@ -99,8 +114,23 @@ fn main() {
             println!("fell at t {t:.2} s");
             return;
         }
+        if k >= settle
+            && (k - settle) % 5 == 0
+            && let Some(w) = tsv.as_mut()
+        {
+            use std::io::Write;
+            writeln!(
+                w,
+                "{t:9.4}  q0 {:+.5}  kp {:.0}  gyro_y {:+.5}  qm {:+.5}  tau 0",
+                rig.q_target[hd] + cmd,
+                pd.kp[hips[0]],
+                x[nq + 1],
+                x[hd]
+            )
+            .unwrap();
+        }
         if k >= settle {
-            win.push((c, x[nq + 1]));
+            win.push((cmd, x[nq + 1]));
             hq.push(x[pd.dofs[hips[0]]]);
             if t - wt >= 1.0 {
                 let rms = |f: &dyn Fn(&(f64, f64)) -> f64| {

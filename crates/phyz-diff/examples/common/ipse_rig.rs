@@ -360,3 +360,51 @@ pub fn cem_rows(path: &str) -> Vec<CemRow> {
     }
     rows
 }
+
+/// `IPSE_ACT_RES_HZ` / `IPSE_ACT_ZETA`: the lightly damped second-order
+/// stage `ipse_cem` puts between commanded and effective offsets, a stand-in
+/// for the K1's series compliance (semi-implicit Euler at the rig's dt, unit
+/// DC gain unless `IPSE_ACT_GAIN` scales it — a joint that reaches only a
+/// fraction of its command). `None` when `IPSE_ACT_RES_HZ` is unset or 0.
+pub struct ActRes {
+    wn: f64,
+    zeta: f64,
+    gain: f64,
+    h: f64,
+    y: Vec<f64>,
+    v: Vec<f64>,
+}
+
+impl ActRes {
+    pub fn from_env(dt: f64) -> Option<Self> {
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let wn = std::f64::consts::TAU * env("IPSE_ACT_RES_HZ", 0.0);
+        (wn > 0.0).then(|| Self {
+            wn,
+            zeta: env("IPSE_ACT_ZETA", 0.2),
+            gain: env("IPSE_ACT_GAIN", 1.0),
+            h: dt,
+            y: Vec::new(),
+            v: Vec::new(),
+        })
+    }
+
+    /// One step toward `cmd`; returns the effective offsets.
+    pub fn step(&mut self, cmd: &[f64]) -> &[f64] {
+        if self.y.len() != cmd.len() {
+            self.y = vec![0.0; cmd.len()];
+            self.v = vec![0.0; cmd.len()];
+        }
+        let (wn, z, g, h) = (self.wn, self.zeta, self.gain, self.h);
+        for ((y, v), a) in self.y.iter_mut().zip(self.v.iter_mut()).zip(cmd) {
+            *v += h * (wn * wn * (g * a - *y) - 2.0 * z * wn * *v);
+            *y += h * *v;
+        }
+        &self.y
+    }
+}
