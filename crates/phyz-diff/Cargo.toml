@@ -21,7 +21,7 @@ tang.workspace = true
 tang-la.workspace = true
 tang-expr.workspace = true
 # batched GPU training (example train_reach_gpu); same rev as the tang patch
-tang-gpu = { git = "https://github.com/ecto/tang.git", rev = "cec3a544cb1e754dd8aa081eec7744c3a1692c89", optional = true }
+tang-gpu = { git = "https://github.com/ecto/tang.git", rev = "bfc8003b08d29a2bb1f62b00c771d59a2d9fc3bd", optional = true }
 
 bytemuck = { version = "1", optional = true }
 
