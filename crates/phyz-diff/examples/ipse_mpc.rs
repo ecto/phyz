@@ -186,7 +186,16 @@ impl Plant {
             rest: x,
             z0,
         };
-        let bounds = leg.iter().map(|&l| if l { 0.3 } else { 0.09 }).collect();
+        // IPSE_LEG_BOUND (default 0.3, ipse's clamp; crouch-era policies 0.8);
+        // the upper body gets 0.3x, as in ipse
+        let leg_bound: f64 = std::env::var("IPSE_LEG_BOUND")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.3);
+        let bounds = leg
+            .iter()
+            .map(|&l| if l { leg_bound } else { 0.3 * leg_bound })
+            .collect();
         Self {
             task,
             nt,
