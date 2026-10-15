@@ -340,7 +340,7 @@ fn lbfgs(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
 pub type Objective<'a> = dyn Fn(&[f64], Option<&mut [f64]>) -> f64 + Sync + 'a;
 
 /// L-BFGS on `f(z, grad)` from `z`, in place.
-fn minimize(obj: &Objective<'_>, plan: &mut [f64], iters: usize) {
+pub fn minimize(obj: &Objective<'_>, plan: &mut [f64], iters: usize) {
     let n = plan.len();
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let mut g = vec![0.0; n];

@@ -105,9 +105,14 @@ fn main() {
     };
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut student = Mlp::new(plant.n_obs() + plant.nf, HIDDEN, plant.nu, &mut rng);
-    let mut data: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
+    // DISTILL_LOAD: refit on a saved set instead of collecting;
+    // DISTILL_DATA: where to save the set (labels are the slow part)
+    let mut data: Vec<(Vec<f64>, Vec<f64>)> = std::env::var("DISTILL_LOAD")
+        .map(|p| load(&p))
+        .unwrap_or_default();
+    let collect = std::env::var_os("DISTILL_LOAD").is_none();
     let t = Instant::now();
-    for round in 0..rounds {
+    for round in 0..if collect { rounds } else { 0 } {
         let starts: Vec<Vec<f64>> = (0..EPISODES).map(|_| shove(&mut rng)).collect();
         // round 0 follows the teacher; later rounds the student
         let use_student = round > 0;
@@ -136,6 +141,17 @@ fn main() {
             t.elapsed().as_secs_f64()
         );
     }
+    if let Ok(p) = std::env::var("DISTILL_DATA") {
+        save(&p, &data);
+    }
+    // a longer final fit on everything (DISTILL_EPOCHS, default 120)
+    let loss = fit(
+        &mut student,
+        &data,
+        mpc::env("DISTILL_EPOCHS", 120),
+        &mut rng,
+    );
+    eprintln!("final fit on {} labels: loss {loss:.2e}", data.len());
 
     // the benchmark's 20 shoves
     let mut cases = Vec::new();
@@ -338,4 +354,37 @@ fn fit(student: &mut Mlp, data: &[(Vec<f64>, Vec<f64>)], epochs: usize, rng: &mu
         last = total / (data.len() * data[0].1.len()) as f64;
     }
     last
+}
+
+/// The label set as text: one `obs | target` line per label.
+fn save(path: &str, data: &[(Vec<f64>, Vec<f64>)]) {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for (o, y) in data {
+        for v in o {
+            write!(s, "{v:e} ").unwrap();
+        }
+        s += "|";
+        for v in y {
+            write!(s, " {v:e}").unwrap();
+        }
+        s += "\n";
+    }
+    std::fs::write(path, s).unwrap();
+}
+
+fn load(path: &str) -> Vec<(Vec<f64>, Vec<f64>)> {
+    let parse = |t: &str| {
+        t.split_whitespace()
+            .map(|v| v.parse().unwrap())
+            .collect::<Vec<f64>>()
+    };
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|l| {
+            let (o, y) = l.split_once('|').unwrap();
+            (parse(o), parse(y))
+        })
+        .collect()
 }
