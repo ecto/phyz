@@ -136,9 +136,35 @@ impl Rig {
     /// The driven DOFs (kp > 0) and their law.
     pub fn pd(&self) -> PdLaw {
         let dofs: Vec<usize> = (0..self.kp.len()).filter(|&v| self.kp[v] > 0.0).collect();
+        // IPSE_KP_LEG / IPSE_KD_LEG / IPSE_KP_UPPER / IPSE_KD_UPPER replace
+        // ipse's mass-scaled gains with flat ones, e.g. the hardware's
+        // `hold --kp-leg 90 --kd 6` (upper body kp 5, kd 1)
+        let var = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+        let (kpl, kdl, kpu, kdu) = (
+            var("IPSE_KP_LEG"),
+            var("IPSE_KD_LEG"),
+            var("IPSE_KP_UPPER"),
+            var("IPSE_KD_UPPER"),
+        );
+        let model = self.model();
+        let leg = |v: usize| {
+            model
+                .joints
+                .iter()
+                .enumerate()
+                .find(|(j, jt)| jt.ndof() == 1 && model.v_offsets[*j] == v)
+                .is_some_and(|(_, jt)| ["Hip", "Knee", "Ankle"].iter().any(|n| jt.name.contains(n)))
+        };
+        let pick = |v: usize, base: &[f64], l: Option<f64>, u: Option<f64>| {
+            if leg(v) {
+                l.unwrap_or(base[v])
+            } else {
+                u.unwrap_or(base[v])
+            }
+        };
         PdLaw {
-            kp: dofs.iter().map(|&v| self.kp[v]).collect(),
-            kd: dofs.iter().map(|&v| self.kd[v]).collect(),
+            kp: dofs.iter().map(|&v| pick(v, &self.kp, kpl, kpu)).collect(),
+            kd: dofs.iter().map(|&v| pick(v, &self.kd, kdl, kdu)).collect(),
             effort: dofs.iter().map(|&v| self.effort[v]).collect(),
             dofs,
         }
