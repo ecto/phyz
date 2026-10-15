@@ -106,7 +106,7 @@ fn main() {
     {
         let (nq, nv, nu) = (task.nq, task.nv, task.nu);
         let ns = nq + nv;
-        let mut worst = vec![0.0f64; 11];
+        let mut worst = [0.0f64; 11];
         let mut out = vec![0.0; ns + task.nf];
         let mut off = vec![0.0; nu];
         for (e, x0) in check.iter().enumerate() {
