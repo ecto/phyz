@@ -154,6 +154,15 @@ fn main() {
     );
 }
 
+/// The residual's bound per DOF, rad (`CEMMPC_BOUND`, default 0.1): a trust
+/// region around the CEM policy's own action.
+fn residual_bound() -> f64 {
+    std::env::var("CEMMPC_BOUND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.1)
+}
+
 struct Plant<'a> {
     rig: &'a ipse_rig::Rig,
     model: &'a phyz_model::Model,
@@ -250,7 +259,9 @@ impl Plant<'_> {
             }
             let res: Vec<f64> = if mpc_on {
                 let kk = ((k - SHOVE_AT) % replan) / kn;
-                (0..10).map(|i| 0.3 * plan[kk * 10 + i].tanh()).collect()
+                (0..10)
+                    .map(|i| residual_bound() * plan[kk * 10 + i].tanh())
+                    .collect()
             } else {
                 zero.to_vec()
             };
@@ -283,10 +294,27 @@ impl Plant<'_> {
         let mut x = x0.to_vec();
         x[ns + nt..ns + nt + 6].iter_mut().for_each(|w| *w = 0.0);
         let mut cost = 0.0;
+        let aligned = std::env::var_os("CEMMPC_OLD_LOSS").is_none();
         let loss = |x: &[f64], g: Option<&mut [f64]>| -> f64 {
-            // trunk height, tilt and base speed, as the other benches score
             let z0 = self.rig.q0[5] - 0.0022;
             let (dz, tilt) = (x[5] - z0, x[0] * x[0] + x[1] * x[1]);
+            if aligned {
+                // ipse's CEM objective, in spirit: upright, level, not
+                // rotating; height only when it is lost; the base may move
+                // (a recovery step moves it)
+                let low = dz.min(0.0);
+                let w: f64 = x[nq..nq + 3].iter().map(|v| v * v).sum();
+                if let Some(g) = g {
+                    g[5] += 200.0 * low;
+                    g[0] += 20.0 * x[0];
+                    g[1] += 20.0 * x[1];
+                    for i in 0..3 {
+                        g[nq + i] += 0.2 * x[nq + i];
+                    }
+                }
+                return 100.0 * low * low + 10.0 * tilt + 0.1 * w;
+            }
+            // trunk height, tilt and base speed, as the other benches score
             let vb: f64 = x[nq..nq + 6].iter().map(|v| v * v).sum();
             if let Some(g) = g {
                 g[5] += 200.0 * dz;
@@ -300,7 +328,7 @@ impl Plant<'_> {
         };
         for k in 0..steps {
             let res: Vec<f64> = (0..10)
-                .map(|i| 0.3 * plan[(k / kn) * 10 + i].tanh())
+                .map(|i| residual_bound() * plan[(k / kn) * 10 + i].tanh())
                 .collect();
             self.set_targets(&mut x, true, &res);
             xs[k].copy_from_slice(&x);
@@ -331,7 +359,7 @@ impl Plant<'_> {
             for i in 0..10 {
                 let j = (k / kn) * 10 + i;
                 let th = plan[j].tanh();
-                grad[j] += back[ns + self.slot[i]] * 0.3 * (1.0 - th * th);
+                grad[j] += back[ns + self.slot[i]] * residual_bound() * (1.0 - th * th);
             }
             lam[..ns].copy_from_slice(&back[..ns]);
             lam[ns..].copy_from_slice(&back[ns + self.nu..]);
