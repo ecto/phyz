@@ -18,7 +18,7 @@
 
 #[path = "train_stand.rs"]
 #[allow(dead_code)]
-mod stand;
+pub mod stand;
 
 use std::time::Instant;
 
@@ -27,7 +27,7 @@ use phyz_diff::contact_step::ContactStep;
 use stand::reach::{Adam, Lcg};
 use stand::{OFFSET, SWEEPS, Stand, k1};
 
-fn env(name: &str, default: usize) -> usize {
+pub fn env(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -118,7 +118,7 @@ fn main() {
 /// A tang-expr f64 C kernel (`void k0(const double*, double*, int)`) as a
 /// one-environment closure: compiled with `cc -O1` into a shared library
 /// in the temp directory, reused while the source is unchanged.
-fn native(src: &str, n_out: usize) -> tang_expr::compile::CompiledMany {
+pub fn native(src: &str, n_out: usize) -> tang_expr::compile::CompiledMany {
     use std::hash::{Hash, Hasher};
     let mut hs = std::collections::hash_map::DefaultHasher::new();
     src.hash(&mut hs);
@@ -203,7 +203,7 @@ fn run_episode(
 
 /// Improve `plan` (h x nu raw offsets) from state `x0` by Adam on the
 /// window's cost, exact gradients through the contact steps.
-fn solve(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
+pub fn solve(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
     let (nq, nv, nu, nf) = (task.nq, task.nv, task.nu, task.nf);
     let (ns, ni) = (nq + nv, nq + nv + nu + nf);
     let mut adam = Adam::new(plan.len(), 0.05);
