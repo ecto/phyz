@@ -29,6 +29,7 @@ bytemuck = { version = "1", optional = true }
 gpu = ["dep:tang-gpu", "dep:bytemuck"]
 
 [dev-dependencies]
+libloading = "0.8"
 phyz-urdf.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 

@@ -3146,6 +3146,7 @@ version = "0.4.0"
 dependencies = [
  "bytemuck",
  "criterion",
+ "libloading 0.8.9",
  "phyz-collision",
  "phyz-contact",
  "phyz-math",
