@@ -27,7 +27,17 @@ use phyz_diff::contact_step::ContactStep;
 
 const STEPS: usize = 1500;
 const EPISODES: usize = 32;
-const HIDDEN: usize = 128;
+const HIDDEN: usize = 256;
+
+/// What the student sees: the task's observation (pose error, velocities)
+/// plus the contact solve's warm start (last step's impulses: which sole
+/// points carry load), which the teacher's plan depends on too.
+fn see(task: &Stand, x: &[f64]) -> Vec<f64> {
+    let mut o = task.obs(x);
+    let off = task.nq + task.nv + task.nu;
+    o.extend(x[off..off + task.nf].iter().map(|f| f * 10.0));
+    o
+}
 
 /// The teacher's knobs, unless the caller set them.
 fn teacher_defaults() {
@@ -94,7 +104,7 @@ fn main() {
         x
     };
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let mut student = Mlp::new(plant.n_obs(), HIDDEN, plant.nu, &mut rng);
+    let mut student = Mlp::new(plant.n_obs() + plant.nf, HIDDEN, plant.nu, &mut rng);
     let mut data: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
     let t = Instant::now();
     for round in 0..rounds {
@@ -171,7 +181,7 @@ fn main() {
         );
     }
     // student cost per step
-    let obs = plant.obs(&plant.rest);
+    let obs = see(&plant, &plant.rest);
     let n = 20000;
     let ts = Instant::now();
     for _ in 0..n {
@@ -231,11 +241,11 @@ impl Ctx<'_> {
                 if label {
                     let target: Vec<f64> =
                         plan[..nu].iter().map(|p| mpc::bound() * p.tanh()).collect();
-                    labels.push((task.obs(&x), target));
+                    labels.push((see(task, &x), target));
                 }
             }
             match student {
-                Some(s) => act(s, &task.obs(&x), &mut off),
+                Some(s) => act(s, &see(task, &x), &mut off),
                 None => {
                     let k = (t % replan) / kn;
                     for i in 0..nu {

@@ -336,12 +336,11 @@ fn lbfgs(task: &Stand, x0: &[f64], plan: &mut [f64], h: usize, iters: usize) {
     );
 }
 
+/// `f(z, grad)`: a cost, and its gradient when asked.
+pub type Objective<'a> = dyn Fn(&[f64], Option<&mut [f64]>) -> f64 + Sync + 'a;
+
 /// L-BFGS on `f(z, grad)` from `z`, in place.
-fn minimize(
-    obj: &(dyn Fn(&[f64], Option<&mut [f64]>) -> f64 + Sync),
-    plan: &mut [f64],
-    iters: usize,
-) {
+fn minimize(obj: &Objective<'_>, plan: &mut [f64], iters: usize) {
     let n = plan.len();
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     let mut g = vec![0.0; n];
@@ -444,6 +443,7 @@ fn minimize(
 /// iteration costs one piece, not the horizon. Starts are initialised from
 /// a single-shooting rollout of the warm-started plan (no gaps); warm
 /// starts for the contact solve are taken from that rollout and held.
+#[allow(clippy::needless_range_loop)] // pieces index knots, starts and gaps together
 fn multiple_shooting(
     task: &Stand,
     x0: &[f64],
