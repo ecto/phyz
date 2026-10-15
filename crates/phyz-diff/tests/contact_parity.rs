@@ -595,3 +595,26 @@ fn contact_adjoint_matches_finite_differences() {
         assert!(median < 1e-6, "median {median:e}");
     }
 }
+
+#[test]
+#[ignore]
+fn op_census() {
+    let Some((model, points)) = k1() else { return };
+    let step = ContactStep::build(
+        &model,
+        &points,
+        &material(),
+        &ContactSolverConfig::default(),
+        5,
+    );
+    let (ag, ao) = step.adjoint();
+    for (name, g, o) in [("step", &step.graph, &step.out), ("adjoint", &ag, &ao)] {
+        let mut c = std::collections::BTreeMap::new();
+        for i in g.live_set(o) {
+            let n = format!("{:?}", g.node(tang_expr::ExprId::from_index(i as u32)));
+            *c.entry(n.split('(').next().unwrap().to_string())
+                .or_insert(0) += 1;
+        }
+        eprintln!("{name}: {c:?}");
+    }
+}

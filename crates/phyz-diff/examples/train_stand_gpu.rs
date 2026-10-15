@@ -39,6 +39,16 @@ fn main() {
         unsafe { std::env::set_var("STAND_H", h.to_string()) };
     }
 
+    let device = GpuDevice::new_sync().expect("gpu");
+    // f64 for the contact physics where the device has it: in f32 the
+    // rollout leaves the f64 trajectory within a few steps (STAND_F32=1
+    // forces f32)
+    let f64 = device.shader_f64 && std::env::var_os("STAND_F32").is_none();
+    eprintln!(
+        "device: {} (contact physics in {})",
+        device.name,
+        if f64 { "f64" } else { "f32" }
+    );
     let (model, points) = k1();
     let mat = ContactMaterial {
         friction: 0.8,
@@ -56,7 +66,10 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20000);
     let kern = |g: &tang_expr::ExprGraph, o: &[tang_expr::ExprId], ni: usize| -> Graph {
-        if split == 0 {
+        if f64 {
+            let s = g.to_wgsl_split_f64(o, ni, split.max(1));
+            Graph::Split(s.parts, 2 * s.n_scratch)
+        } else if split == 0 {
             Graph::Whole(
                 g.to_kernel(o, ni, Dialect::Wgsl)
                     .source
@@ -85,8 +98,6 @@ fn main() {
         t.elapsed().as_secs_f64()
     );
 
-    let device = GpuDevice::new_sync().expect("gpu");
-    eprintln!("device: {}", device.name);
     // one cache for every batch size: the graph kernels compile once
     let mut cache = KernelCache::new();
     let mut rng = Lcg(11);
@@ -99,9 +110,9 @@ fn main() {
     }
     let t = Instant::now();
     let check: Vec<Vec<f64>> = (0..16).map(|_| task.push(&mut rng)).collect();
-    let mut small = Gpu::new(&device, &task, &fwd_src, &adj_src, check.len(), h);
+    let mut small = Gpu::new(&device, &task, &fwd_src, &adj_src, check.len(), h, f64);
     let g_gpu = small.grad(&device, &mut cache, &pol, &check);
-    // the forward rollout too: the f32 state after each tenth of the
+    // the forward rollout too: the GPU state after each tenth of the
     // horizon against the f64 CPU rollout under the same policy
     {
         let (nq, nv, nu) = (task.nq, task.nv, task.nu);
@@ -113,12 +124,12 @@ fn main() {
             let mut x = x0.clone();
             for t in 0..=h {
                 if t % (h / 10).max(1) == 0 && t / (h / 10).max(1) <= 10 {
-                    let g = small.xs[t].to_vec_sync(&device);
+                    let g = small.read_state(&device, t);
                     let gx = &g[e * small.d.nx..e * small.d.nx + ns];
                     let d = gx
                         .iter()
                         .zip(&x[..ns])
-                        .map(|(a, b)| (*a as f64 - b).abs())
+                        .map(|(a, b)| (a - b).abs())
                         .fold(0.0, f64::max);
                     let k = t / (h / 10).max(1);
                     worst[k] = worst[k].max(d);
@@ -136,7 +147,7 @@ fn main() {
             }
         }
         eprintln!(
-            "forward f32 GPU vs f64 CPU, worst state gap at each tenth of the horizon: {:?}",
+            "forward GPU vs f64 CPU, worst state gap at each tenth of the horizon: {:?}",
             worst.iter().map(|w| format!("{w:.1e}")).collect::<Vec<_>>()
         );
     }
@@ -150,7 +161,7 @@ fn main() {
     let (na, nb) = (norm(&g_cpu), norm(&g_gpu));
     let diff: Vec<f64> = g_cpu.iter().zip(&g_gpu).map(|(a, b)| a - b).collect();
     eprintln!(
-        "gradient f32 GPU vs f64 CPU ({h} steps): cosine {:.6}, relative error {:.1e}",
+        "gradient GPU vs f64 CPU ({h} steps): cosine {:.6}, relative error {:.1e}",
         dot / (na * nb),
         norm(&diff) / na
     );
@@ -166,7 +177,7 @@ fn main() {
         base_drop * 1e3
     );
 
-    let mut gpu = Gpu::new(&device, &task, &fwd_src, &adj_src, envs, h);
+    let mut gpu = Gpu::new(&device, &task, &fwd_src, &adj_src, envs, h, f64);
     let mut adam = Adam::new(np, 1e-3);
     let t = Instant::now();
     let mut gpu_secs = 0.0;
@@ -209,6 +220,9 @@ struct Dims {
     nout: usize, // step output: q', v', f
     no: usize,
     nh: usize,
+    /// WGSL type of the state chain (`f64` or `f32`) and f32 slots per value.
+    t: &'static str,
+    w: usize,
 }
 
 /// A traced graph as one kernel, or split through a scratch buffer
@@ -310,6 +324,7 @@ impl<'g> Gpu<'g> {
         adj: &'g Graph,
         envs: usize,
         h: usize,
+        f64: bool,
     ) -> Self {
         let (nq, nv, nu, nf) = (task.nq, task.nv, task.nu, task.nf);
         let d = Dims {
@@ -320,12 +335,18 @@ impl<'g> Gpu<'g> {
             nout: nq + nv + nf,
             no: task.n_obs(),
             nh: HIDDEN,
+            t: if f64 { "f64" } else { "f32" },
+            w: if f64 { 2 } else { 1 },
         };
         let layer = [(d.no, d.nh), (d.nh, d.nh), (d.nh, d.nu)];
         let offs = layer_offsets(&layer);
         let rest = wgsl_array("rest", &task.rest);
         let head_store = format!("y[e * {}u + {}u + j]", d.nx, d.ns);
-        let head_act = format!("rest[{}u + j] + {OFFSET:?} * z", d.ns);
+        let head_act = format!(
+            "{t}(rest[{}u + j]) + {t}({OFFSET:?}) * {t}(z)",
+            d.ns,
+            t = d.t
+        );
         let k = Kernels {
             obs: obs_kernel(d, &rest),
             dense: [
@@ -333,7 +354,11 @@ impl<'g> Gpu<'g> {
                 dense_kernel(layer[1], offs[1], "y[k]", "tanh(z)"),
                 format!(
                     "{rest}{}",
-                    dense_kernel(layer[2], offs[2], &head_store, &head_act)
+                    retype(
+                        &dense_kernel(layer[2], offs[2], &head_store, &head_act),
+                        &["y"],
+                        d.t
+                    )
                 ),
             ],
             copy_state: copy_state_kernel(d),
@@ -345,6 +370,8 @@ impl<'g> Gpu<'g> {
             lam: lam_kernel(d),
         };
         let buf = |n: usize| GpuBuffer::from_slice(device, &vec![0.0f32; n.max(1)]);
+        // the state chain, at d.w f32 slots per value
+        let sbuf = |n: usize| buf(n * d.w);
         let np: usize = layer.iter().map(|(a, n)| a * n + n).sum();
         Self {
             fwd,
@@ -355,20 +382,39 @@ impl<'g> Gpu<'g> {
             h,
             d,
             k,
-            xs: (0..=h).map(|_| buf(envs * d.nx)).collect(),
+            xs: (0..=h).map(|_| sbuf(envs * d.nx)).collect(),
             obs: (0..h).map(|_| buf(envs * d.no)).collect(),
             h1: (0..h).map(|_| buf(envs * d.nh)).collect(),
             h2: (0..h).map(|_| buf(envs * d.nh)).collect(),
             params: buf(np),
             grad: buf(np),
-            out: buf(envs * d.nout),
-            lam: buf(envs * d.nout),
-            xin: buf(envs * (d.nx + d.nout)),
-            back: buf(envs * d.nx),
+            out: sbuf(envs * d.nout),
+            lam: sbuf(envs * d.nout),
+            xin: sbuf(envs * (d.nx + d.nout)),
+            back: sbuf(envs * d.nx),
             gz3: buf(envs * nu),
             gz2: buf(envs * d.nh),
             gz1: buf(envs * d.nh),
             gobs: buf(envs * d.no),
+        }
+    }
+
+    /// State values as the chain's buffer words.
+    fn encode(&self, v: &[f64]) -> Vec<f32> {
+        if self.d.w == 2 {
+            bytemuck::cast_slice::<f64, f32>(v).to_vec()
+        } else {
+            v.iter().map(|&x| x as f32).collect()
+        }
+    }
+
+    /// The step input at step `t`, every environment, as f64.
+    fn read_state(&self, device: &GpuDevice, t: usize) -> Vec<f64> {
+        let raw = self.xs[t].to_vec_sync(device);
+        if self.d.w == 2 {
+            bytemuck::cast_slice::<f32, f64>(&raw).to_vec()
+        } else {
+            raw.iter().map(|&x| x as f64).collect()
         }
     }
 
@@ -382,15 +428,13 @@ impl<'g> Gpu<'g> {
     ) -> Vec<f64> {
         assert_eq!(pushes.len(), self.envs);
         let (d, b) = (self.d, self.envs as u32);
-        let x0: Vec<f32> = pushes
-            .iter()
-            .flat_map(|x| x.iter().map(|&v| v as f32))
-            .collect();
-        self.xs[0].write(device, &x0);
+        let x0: Vec<f64> = pushes.iter().flat_map(|x| x.iter().copied()).collect();
+        self.xs[0].write(device, &self.encode(&x0));
         let p32: Vec<f32> = pol.params.iter().map(|&p| p as f32).collect();
         self.params.write(device, &p32);
         self.grad.write(device, &vec![0.0f32; p32.len()]);
-        self.lam.write(device, &vec![0.0f32; self.envs * d.nout]);
+        self.lam
+            .write(device, &vec![0.0f32; self.envs * d.nout * d.w]);
         let n = |k: usize| (k as u32) * b;
         let lw = |l: usize| {
             let layer = [(d.no, d.nh), (d.nh, d.nh), (d.nh, d.nu)];
@@ -561,20 +605,20 @@ fn wgsl_array(name: &str, v: &[f64]) -> String {
 /// Observation `(pose error without x, y; v)`: entry `j` reads state index
 /// `j` (`j < 3`), `j + 2` (pose) or the velocity.
 fn obs_kernel(d: Dims, rest: &str) -> String {
-    let (nq, nx, no) = (d.nq, d.nx, d.no);
-    format!("{rest}{}", header(&["x", "ob"], &[1]))
+    let (nq, nx, no, t) = (d.nq, d.nx, d.no, d.t);
+    format!("{rest}{}", retype(&header(&["x", "ob"], &[1]), &["x"], t))
         + &format!(
             "    let e = k / {no}u; let j = k % {no}u;\n\
              var i = j;\n\
              if (j >= 3u) {{ i = j + 2u; }}\n\
-             if (i < {nq}u) {{ ob[k] = x[e * {nx}u + i] - rest[i]; }} else {{ ob[k] = x[e * {nx}u + i]; }}\n}}\n"
+             if (i < {nq}u) {{ ob[k] = f32(x[e * {nx}u + i] - {t}(rest[i])); }} else {{ ob[k] = f32(x[e * {nx}u + i]); }}\n}}\n"
         )
 }
 
 /// Step output `(q', v', f)` into the next input `(q, v, ·, warm)`.
 fn copy_state_kernel(d: Dims) -> String {
     let (ns, nu, nx, nout) = (d.ns, d.nu, d.nx, d.nout);
-    header(&["o", "xn"], &[1])
+    retype(&header(&["o", "xn"], &[1]), &["o", "xn"], d.t)
         + &format!(
             "    let e = k / {nout}u; let i = k % {nout}u;\n\
              if (i < {ns}u) {{ xn[e * {nx}u + i] = o[k]; }} else {{ xn[e * {nx}u + {nu}u + i] = o[k]; }}\n}}\n"
@@ -585,56 +629,75 @@ fn copy_state_kernel(d: Dims) -> String {
 fn loss_grad_kernel(d: Dims, z0: f64, h: usize) -> String {
     let (nq, ns, nx, nout) = (d.nq, d.ns, d.nx, d.nout);
     let s = 1.0 / h as f64;
-    header(&["xn", "lam"], &[1])
+    retype(&header(&["xn", "lam"], &[1]), &["xn", "lam"], d.t)
         + &format!(
             "    let e = k / {ns}u; let i = k % {ns}u;\n\
              let x = xn[e * {nx}u + i];\n\
-             var g = 0.0;\n\
+             var g: {t} = 0.0;\n\
              if (i == 5u) {{ g = {:?} * (x - {:?}); }}\n\
              else if (i < 2u) {{ g = {:?} * x; }}\n\
              else if (i >= {nq}u && i < {}u) {{ g = {:?} * x; }}\n\
              else if (i >= {}u) {{ g = {:?} * x; }}\n\
              lam[e * {nout}u + i] += g;\n}}\n",
-            (200.0 * s) as f32,
-            z0 as f32,
-            (20.0 * s) as f32,
+            200.0 * s,
+            z0,
+            20.0 * s,
             nq + 6,
-            (2.0 * s) as f32,
+            2.0 * s,
             nq + 6,
-            (0.02 * s) as f32
+            0.02 * s,
+            t = d.t
         )
 }
 
 fn concat_kernel(d: Dims) -> String {
     let (nx, nout) = (d.nx, d.nout);
     let ni = nx + nout;
-    header(&["x", "lam", "xin"], &[2])
-        + &format!(
-            "    let e = k / {ni}u; let j = k % {ni}u;\n\
+    retype(
+        &header(&["x", "lam", "xin"], &[2]),
+        &["x", "lam", "xin"],
+        d.t,
+    ) + &format!(
+        "    let e = k / {ni}u; let j = k % {ni}u;\n\
              if (j < {nx}u) {{ xin[k] = x[e * {nx}u + j]; }} else {{ xin[k] = lam[e * {nout}u + j - {nx}u]; }}\n}}\n"
-        )
+    )
 }
 
 /// The head's pre-activation gradient: `OFFSET ∂/∂ctrl`.
 fn gz3_kernel(d: Dims) -> String {
     let (nu, ns, nx) = (d.nu, d.ns, d.nx);
-    header(&["back", "gz"], &[1])
+    retype(&header(&["back", "gz"], &[1]), &["back"], d.t)
         + &format!(
             "    let e = k / {nu}u; let j = k % {nu}u;\n\
-             gz[k] = {OFFSET:?} * back[e * {nx}u + {ns}u + j];\n}}\n"
+             gz[k] = f32({OFFSET:?} * back[e * {nx}u + {ns}u + j]);\n}}\n"
         )
 }
 
 /// `λ` for the step input state `(q, v, warm)`: the adjoint's `∂/∂q, v` and
 /// `∂/∂warm`, plus the observation's gradient (no x, y entries).
 fn lam_kernel(d: Dims) -> String {
-    let (ns, nu, nx, no, nout) = (d.ns, d.nu, d.nx, d.no, d.nout);
-    header(&["back", "gobs", "lam"], &[2])
-        + &format!(
-            "    let e = k / {nout}u; let i = k % {nout}u;\n\
+    let (ns, nu, nx, no, nout, t) = (d.ns, d.nu, d.nx, d.no, d.nout, d.t);
+    retype(
+        &header(&["back", "gobs", "lam"], &[2]),
+        &["back", "lam"],
+        d.t,
+    ) + &format!(
+        "    let e = k / {nout}u; let i = k % {nout}u;\n\
              if (i >= {ns}u) {{ lam[k] = back[e * {nx}u + {nu}u + i]; return; }}\n\
              var g = back[e * {nx}u + i];\n\
-             if (i < 3u) {{ g += gobs[e * {no}u + i]; }} else if (i >= 5u) {{ g += gobs[e * {no}u + i - 2u]; }}\n\
+             if (i < 3u) {{ g += {t}(gobs[e * {no}u + i]); }} else if (i >= 5u) {{ g += {t}(gobs[e * {no}u + i - 2u]); }}\n\
              lam[k] = g;\n}}\n"
-        )
+    )
+}
+
+/// Declare the storage buffers `names` of a kernel header as `array<t>`.
+fn retype(src: &str, names: &[&str], t: &str) -> String {
+    let mut s = src.to_string();
+    for n in names {
+        s = s.replace(
+            &format!("> {n}: array<f32>;"),
+            &format!("> {n}: array<{t}>;"),
+        );
+    }
+    s
 }
