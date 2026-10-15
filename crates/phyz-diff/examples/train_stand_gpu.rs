@@ -59,12 +59,13 @@ fn main() {
     let t = Instant::now();
     let step = ContactStep::build(&model, &points, &mat, &config, SWEEPS);
     let (ag, ao) = step.adjoint();
-    // STAND_SPLIT nodes per kernel (default 20000; 0 = one kernel each):
-    // shader compilers choke on the 326k-node adjoint as one function
+    // STAND_SPLIT nodes per kernel (default 20000 in f32, 5000 in f64, whose
+    // larger parts lose a 3090's device; 0 = one f32 kernel each): shader
+    // compilers choke on the 326k-node adjoint as one function
     let split: usize = std::env::var("STAND_SPLIT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(20000);
+        .unwrap_or(if f64 { 5000 } else { 20000 });
     let kern = |g: &tang_expr::ExprGraph, o: &[tang_expr::ExprId], ni: usize| -> Graph {
         if f64 {
             let s = g.to_wgsl_split_f64(o, ni, split.max(1));
