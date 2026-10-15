@@ -188,6 +188,7 @@ fn survives(
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action: Vec<f64> = Vec::new();
     let mut lagged: Vec<f64> = Vec::new();
+    let mut lag_v: Vec<f64> = Vec::new();
     for k in 0..shove_at + 2000 {
         for (s, &d) in pd.dofs.iter().enumerate() {
             x[nq + nv + s] = rig.q_target[d];
@@ -231,8 +232,23 @@ fn survives(
             if lagged.len() != action.len() {
                 lagged = vec![0.0; action.len()];
             }
-            for (l, a) in lagged.iter_mut().zip(&action) {
-                *l += (a - *l) / (1.0 + tau);
+            // IPSE_ACT_RES_HZ / IPSE_ACT_ZETA: a lightly damped second-order
+            // stage instead, a stand-in for series compliance (chirp-03's
+            // standing peak at ~8 Hz)
+            let wn = std::f64::consts::TAU * env("IPSE_ACT_RES_HZ", 0.0);
+            if wn > 0.0 {
+                let (zeta, h) = (env("IPSE_ACT_ZETA", 0.2), rig.dt);
+                if lag_v.len() != action.len() {
+                    lag_v = vec![0.0; action.len()];
+                }
+                for ((l, lv), a) in lagged.iter_mut().zip(lag_v.iter_mut()).zip(&action) {
+                    *lv += h * (wn * wn * (a - *l) - 2.0 * zeta * wn * *lv);
+                    *l += h * *lv;
+                }
+            } else {
+                for (l, a) in lagged.iter_mut().zip(&action) {
+                    *l += (a - *l) / (1.0 + tau);
+                }
             }
             for (i, a) in lagged.iter().enumerate() {
                 x[nq + nv + slot[i]] += fade * a;

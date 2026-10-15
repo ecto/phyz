@@ -124,11 +124,19 @@ impl Rig {
             self.joints.len(),
             "joint count differs from ipse's"
         );
+        // IPSE_JOINT_FRICTION N·m of Coulomb friction on the leg joints: the
+        // K1's hips track ~10% of a ±0.01 rad chirp at kp 90 (chirp-03),
+        // which a frictionless plant cannot reproduce
+        let leg_friction = std::env::var("IPSE_JOINT_FRICTION")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
         for (joint, (name, armature)) in model.joints.iter_mut().zip(&self.joints) {
             assert_eq!(&joint.name, name, "joint order differs from ipse's");
             joint.armature = *armature;
             joint.damping = 0.0;
-            joint.friction_loss = 0.0;
+            let leg = ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n));
+            joint.friction_loss = if leg { leg_friction } else { 0.0 };
         }
         model
     }
