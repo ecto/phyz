@@ -101,6 +101,45 @@ fn main() {
     let check: Vec<Vec<f64>> = (0..16).map(|_| task.push(&mut rng)).collect();
     let mut small = Gpu::new(&device, &task, &fwd_src, &adj_src, check.len(), h);
     let g_gpu = small.grad(&device, &mut cache, &pol, &check);
+    // the forward rollout too: the f32 state after each tenth of the
+    // horizon against the f64 CPU rollout under the same policy
+    {
+        let (nq, nv, nu) = (task.nq, task.nv, task.nu);
+        let ns = nq + nv;
+        let mut worst = vec![0.0f64; 11];
+        let mut out = vec![0.0; ns + task.nf];
+        let mut off = vec![0.0; nu];
+        for (e, x0) in check.iter().enumerate() {
+            let mut x = x0.clone();
+            for t in 0..=h {
+                if t % (h / 10).max(1) == 0 && t / (h / 10).max(1) <= 10 {
+                    let g = small.xs[t].to_vec_sync(&device);
+                    let gx = &g[e * small.d.nx..e * small.d.nx + ns];
+                    let d = gx
+                        .iter()
+                        .zip(&x[..ns])
+                        .map(|(a, b)| (*a as f64 - b).abs())
+                        .fold(0.0, f64::max);
+                    let k = t / (h / 10).max(1);
+                    worst[k] = worst[k].max(d);
+                }
+                if t == h {
+                    break;
+                }
+                task.act(&pol, &task.obs(&x), &mut off);
+                for i in 0..nu {
+                    x[ns + i] = task.rest[ns + i] + off[i];
+                }
+                (task.fwd)(&x, &mut out);
+                x[..ns].copy_from_slice(&out[..ns]);
+                x[ns + nu..].copy_from_slice(&out[ns..]);
+            }
+        }
+        eprintln!(
+            "forward f32 GPU vs f64 CPU, worst state gap at each tenth of the horizon: {:?}",
+            worst.iter().map(|w| format!("{w:.1e}")).collect::<Vec<_>>()
+        );
+    }
     eprintln!(
         "kernels compiled + first batch in {:.1}s",
         t.elapsed().as_secs_f64()
