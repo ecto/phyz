@@ -4784,7 +4784,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 [[package]]
 name = "tang"
 version = "0.2.1"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "paste",
 ]
@@ -4792,7 +4792,7 @@ dependencies = [
 [[package]]
 name = "tang-ad"
 version = "0.1.1"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
  "tang-la",
@@ -4801,7 +4801,7 @@ dependencies = [
 [[package]]
 name = "tang-compile"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
  "tang-expr",
@@ -4810,7 +4810,7 @@ dependencies = [
 [[package]]
 name = "tang-compute"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "bytemuck",
  "tang",
@@ -4820,7 +4820,7 @@ dependencies = [
 [[package]]
 name = "tang-expr"
 version = "0.1.1"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
 ]
@@ -4828,7 +4828,7 @@ dependencies = [
 [[package]]
 name = "tang-gpu"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "bytemuck",
  "libloading 0.8.9",
@@ -4843,7 +4843,7 @@ dependencies = [
 [[package]]
 name = "tang-la"
 version = "0.1.1"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
 ]
@@ -4851,7 +4851,7 @@ dependencies = [
 [[package]]
 name = "tang-mesh"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "futures-util",
  "iroh",
@@ -4873,7 +4873,7 @@ dependencies = [
 [[package]]
 name = "tang-optim"
 version = "0.1.1"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
  "tang-ad",
@@ -4883,7 +4883,7 @@ dependencies = [
 [[package]]
 name = "tang-safetensors"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "safetensors",
  "serde_json",
@@ -4895,7 +4895,7 @@ dependencies = [
 [[package]]
 name = "tang-tensor"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
  "tang-la",
@@ -4904,7 +4904,7 @@ dependencies = [
 [[package]]
 name = "tang-train"
 version = "0.1.0"
-source = "git+https://github.com/ecto/tang.git?rev=78dc31fdd3669dca46bae54ff566045e7037e1c4#78dc31fdd3669dca46bae54ff566045e7037e1c4"
+source = "git+https://github.com/ecto/tang.git?rev=d580860b6d90155488f3f4f54cc74279b62e583c#d580860b6d90155488f3f4f54cc74279b62e583c"
 dependencies = [
  "tang",
  "tang-ad",

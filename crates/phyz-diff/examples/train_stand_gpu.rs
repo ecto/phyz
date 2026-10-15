@@ -49,11 +49,26 @@ fn main() {
     let t = Instant::now();
     let step = ContactStep::build(&model, &points, &mat, &config, SWEEPS);
     let (ag, ao) = step.adjoint();
-    let fwd_src = step.kernel(Dialect::Wgsl).source.replace(" k0(", " main(");
-    let adj_src = ag
-        .to_kernel(&ao, step.n_inputs() + step.n_outputs(), Dialect::Wgsl)
-        .source
-        .replace(" k0(", " main(");
+    // STAND_SPLIT nodes per kernel (default 20000; 0 = one kernel each):
+    // shader compilers choke on the 326k-node adjoint as one function
+    let split: usize = std::env::var("STAND_SPLIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20000);
+    let kern = |g: &tang_expr::ExprGraph, o: &[tang_expr::ExprId], ni: usize| -> Graph {
+        if split == 0 {
+            Graph::Whole(
+                g.to_kernel(o, ni, Dialect::Wgsl)
+                    .source
+                    .replace(" k0(", " main("),
+            )
+        } else {
+            let s = g.to_wgsl_split(o, ni, split);
+            Graph::Split(s.parts, s.n_scratch)
+        }
+    };
+    let fwd_src = kern(&step.graph, &step.out, step.n_inputs());
+    let adj_src = kern(&ag, &ao, step.n_inputs() + step.n_outputs());
     let task = Stand::new(
         &model,
         step.compile(),
@@ -62,16 +77,18 @@ fn main() {
         points.len(),
     );
     eprintln!(
-        "K1 contact step {} nodes, adjoint {} nodes; WGSL {} + {} KB; traced in {:.1}s",
+        "K1 contact step {} nodes, adjoint {} nodes; {} + {} kernels; traced in {:.1}s",
         step.live_nodes(),
         ag.live_set(&ao).len(),
-        fwd_src.len() / 1024,
-        adj_src.len() / 1024,
+        fwd_src.kernels(),
+        adj_src.kernels(),
         t.elapsed().as_secs_f64()
     );
 
     let device = GpuDevice::new_sync().expect("gpu");
     eprintln!("device: {}", device.name);
+    // one cache for every batch size: the graph kernels compile once
+    let mut cache = KernelCache::new();
     let mut rng = Lcg(11);
     let mut pol = Mlp::new(task.n_obs(), HIDDEN, task.nu, &mut rng);
     let (w, _) = pol.offsets(2);
@@ -83,7 +100,7 @@ fn main() {
     let t = Instant::now();
     let check: Vec<Vec<f64>> = (0..16).map(|_| task.push(&mut rng)).collect();
     let mut small = Gpu::new(&device, &task, &fwd_src, &adj_src, check.len(), h);
-    let g_gpu = small.grad(&device, &pol, &check);
+    let g_gpu = small.grad(&device, &mut cache, &pol, &check);
     eprintln!(
         "kernels compiled + first batch in {:.1}s",
         t.elapsed().as_secs_f64()
@@ -117,7 +134,7 @@ fn main() {
     for it in 0..iters {
         let pushes: Vec<Vec<f64>> = (0..envs).map(|_| task.push(&mut rng)).collect();
         let tg = Instant::now();
-        let grad = gpu.grad(&device, &pol, &pushes);
+        let grad = gpu.grad(&device, &mut cache, &pol, &pushes);
         gpu_secs += tg.elapsed().as_secs_f64();
         adam.step(&mut pol.params, &grad);
         if it % 20 == 0 || it + 1 == iters {
@@ -155,12 +172,69 @@ struct Dims {
     nh: usize,
 }
 
-struct Gpu {
+/// A traced graph as one kernel, or split through a scratch buffer
+/// (`ExprGraph::to_wgsl_split`: parts, scratch floats per environment).
+enum Graph {
+    Whole(String),
+    Split(Vec<String>, usize),
+}
+
+impl Graph {
+    fn kernels(&self) -> usize {
+        match self {
+            Graph::Whole(_) => 1,
+            Graph::Split(p, _) => p.len(),
+        }
+    }
+
+    fn scratch(&self, device: &GpuDevice, envs: usize) -> GpuBuffer {
+        let n = match self {
+            Graph::Whole(_) => 1,
+            Graph::Split(_, s) => envs * s,
+        };
+        GpuBuffer::from_slice(device, &vec![0.0f32; n])
+    }
+
+    /// Launch over `b` environments, `input` to `output`.
+    fn run(
+        &self,
+        c: &mut KernelCache,
+        device: &GpuDevice,
+        input: &GpuBuffer,
+        scratch: &GpuBuffer,
+        output: &GpuBuffer,
+        b: u32,
+    ) {
+        match self {
+            Graph::Whole(src) => {
+                c.dispatch_buffers(device, src, &[input, output], &[1], &[b, 0, 0, 0], b, 256)
+            }
+            Graph::Split(parts, _) => {
+                for src in parts {
+                    c.dispatch_buffers(
+                        device,
+                        src,
+                        &[input, scratch, output],
+                        &[1, 2],
+                        &[b, 0, 0, 0],
+                        b,
+                        256,
+                    );
+                }
+            }
+        }
+    }
+}
+
+struct Gpu<'g> {
+    fwd: &'g Graph,
+    adj: &'g Graph,
+    fwd_scratch: GpuBuffer,
+    adj_scratch: GpuBuffer,
     envs: usize,
     h: usize,
     d: Dims,
     k: Kernels,
-    cache: KernelCache,
     xs: Vec<GpuBuffer>,
     obs: Vec<GpuBuffer>,
     h1: Vec<GpuBuffer>,
@@ -178,8 +252,6 @@ struct Gpu {
 }
 
 struct Kernels {
-    step: String,
-    adjoint: String,
     obs: String,
     dense: [String; 3],
     copy_state: String,
@@ -191,8 +263,15 @@ struct Kernels {
     lam: String,
 }
 
-impl Gpu {
-    fn new(device: &GpuDevice, task: &Stand, fwd: &str, adj: &str, envs: usize, h: usize) -> Self {
+impl<'g> Gpu<'g> {
+    fn new(
+        device: &GpuDevice,
+        task: &Stand,
+        fwd: &'g Graph,
+        adj: &'g Graph,
+        envs: usize,
+        h: usize,
+    ) -> Self {
         let (nq, nv, nu, nf) = (task.nq, task.nv, task.nu, task.nf);
         let d = Dims {
             nq,
@@ -209,8 +288,6 @@ impl Gpu {
         let head_store = format!("y[e * {}u + {}u + j]", d.nx, d.ns);
         let head_act = format!("rest[{}u + j] + {OFFSET:?} * z", d.ns);
         let k = Kernels {
-            step: fwd.to_string(),
-            adjoint: adj.to_string(),
             obs: obs_kernel(d, &rest),
             dense: [
                 dense_kernel(layer[0], offs[0], "y[k]", "tanh(z)"),
@@ -231,11 +308,14 @@ impl Gpu {
         let buf = |n: usize| GpuBuffer::from_slice(device, &vec![0.0f32; n.max(1)]);
         let np: usize = layer.iter().map(|(a, n)| a * n + n).sum();
         Self {
+            fwd,
+            adj,
+            fwd_scratch: fwd.scratch(device, envs),
+            adj_scratch: adj.scratch(device, envs),
             envs,
             h,
             d,
             k,
-            cache: KernelCache::new(),
             xs: (0..=h).map(|_| buf(envs * d.nx)).collect(),
             obs: (0..h).map(|_| buf(envs * d.no)).collect(),
             h1: (0..h).map(|_| buf(envs * d.nh)).collect(),
@@ -254,7 +334,13 @@ impl Gpu {
     }
 
     /// Mean over `pushes` (start inputs `[q, v, ctrl, warm]`) of `∂loss/∂θ`.
-    fn grad(&mut self, device: &GpuDevice, pol: &Mlp, pushes: &[Vec<f64>]) -> Vec<f64> {
+    fn grad(
+        &mut self,
+        device: &GpuDevice,
+        c: &mut KernelCache,
+        pol: &Mlp,
+        pushes: &[Vec<f64>],
+    ) -> Vec<f64> {
         assert_eq!(pushes.len(), self.envs);
         let (d, b) = (self.d, self.envs as u32);
         let x0: Vec<f32> = pushes
@@ -266,7 +352,6 @@ impl Gpu {
         self.params.write(device, &p32);
         self.grad.write(device, &vec![0.0f32; p32.len()]);
         self.lam.write(device, &vec![0.0f32; self.envs * d.nout]);
-        let c = &mut self.cache;
         let n = |k: usize| (k as u32) * b;
         let lw = |l: usize| {
             let layer = [(d.no, d.nh), (d.nh, d.nh), (d.nh, d.nu)];
@@ -311,15 +396,7 @@ impl Gpu {
                 n(d.nu),
                 WG,
             );
-            c.dispatch_buffers(
-                device,
-                &self.k.step,
-                &[xt, &self.out],
-                &[1],
-                &[b, 0, 0, 0],
-                b,
-                256,
-            );
+            self.fwd.run(c, device, xt, &self.fwd_scratch, &self.out, b);
             c.dispatch_buffers(
                 device,
                 &self.k.copy_state,
@@ -350,15 +427,8 @@ impl Gpu {
                 n(d.nx + d.nout),
                 WG,
             );
-            c.dispatch_buffers(
-                device,
-                &self.k.adjoint,
-                &[&self.xin, &self.back],
-                &[1],
-                &[b, 0, 0, 0],
-                b,
-                256,
-            );
+            self.adj
+                .run(c, device, &self.xin, &self.adj_scratch, &self.back, b);
             c.dispatch_buffers(
                 device,
                 &self.k.gz3,
