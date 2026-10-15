@@ -24,7 +24,6 @@ use phyz_diff::contact_step::ContactStep;
 use stand::reach::{Adam, Lcg, Mlp, TORQUE};
 use stand::{HIDDEN, OFFSET, SWEEPS, Stand, k1};
 
-const ENVS: usize = 32;
 const GAMMA: f64 = 0.995;
 const CRITIC_EPOCHS: usize = 16;
 /// Polyak rate of the target critic that bootstraps the windows.
@@ -36,6 +35,10 @@ fn main() {
         unsafe { std::env::set_var("STAND_H", "600") };
     }
     let episode = stand::horizon();
+    let envs_n: usize = std::env::var("STAND_ENVS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32);
     let window: usize = std::env::var("STAND_W")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -61,7 +64,7 @@ fn main() {
         step.nu,
         points.len(),
     );
-    eprintln!("episodes of {episode} steps, windows of {window}, {ENVS} environments");
+    eprintln!("episodes of {episode} steps, windows of {window}, {envs_n} environments");
 
     let mut rng = Lcg(23);
     let mut pol = Mlp::new(task.n_obs(), HIDDEN, task.nu, &mut rng);
@@ -86,12 +89,12 @@ fn main() {
     let mut adam_p = Adam::new(pol.params.len(), 2e-4);
     let mut adam_v = Adam::new(critic.params.len(), 1e-3);
     // persistent environments: state and step within the episode
-    let mut envs: Vec<(Vec<f64>, usize)> = (0..ENVS).map(|_| (task.push(&mut rng), 0)).collect();
+    let mut envs: Vec<(Vec<f64>, usize)> = (0..envs_n).map(|_| (task.push(&mut rng), 0)).collect();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let t = Instant::now();
     for it in 0..iters {
         // one window per environment, in parallel
-        let chunk = ENVS.div_ceil(threads);
+        let chunk = envs_n.div_ceil(threads);
         let results: Vec<Window> = std::thread::scope(|sc| {
             let hs: Vec<_> = envs
                 .chunks(chunk)
@@ -114,8 +117,8 @@ fn main() {
         for (r, env) in results.into_iter().zip(envs.iter_mut()) {
             grad.iter_mut()
                 .zip(&r.grad)
-                .for_each(|(a, b)| *a += b / ENVS as f64);
-            cost += r.cost / ENVS as f64;
+                .for_each(|(a, b)| *a += b / envs_n as f64);
+            cost += r.cost / envs_n as f64;
             samples.extend(r.samples);
             env.1 += r.steps;
             env.0 = r.last;
@@ -124,6 +127,9 @@ fn main() {
             }
         }
         // a step that blew up (a NaN anywhere in the window) teaches nothing
+        // cosine decay of the policy rate: late updates refine instead of
+        // chasing the critic
+        adam_p.lr = 2e-4 * 0.5 * (1.0 + (std::f64::consts::PI * it as f64 / iters as f64).cos());
         if grad.iter().all(|g| g.is_finite()) {
             adam_p.step(&mut pol.params, &grad);
         }
@@ -159,7 +165,7 @@ fn main() {
     let (base, base_drop) = task.evaluate(&fresh, &zero);
     let (l, drop) = task.evaluate(&fresh, &|o, u| act(&pol, o, u));
     println!(
-        "best policy (update {}), fresh pushes: push recovery over {episode}-step episodes, {iters} updates of {window}-step windows x {ENVS} envs: loss {l:.4} vs PD {base:.4} ({:+.1}%), trunk drop {:.2} vs {:.2} mm",
+        "best policy (update {}), fresh pushes: push recovery over {episode}-step episodes, {iters} updates of {window}-step windows x {envs_n} envs: loss {l:.4} vs PD {base:.4} ({:+.1}%), trunk drop {:.2} vs {:.2} mm",
         best.2,
         100.0 * (l / base - 1.0),
         drop * 1e3,

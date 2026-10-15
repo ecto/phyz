@@ -416,7 +416,7 @@ pub struct Adam {
     m: Vec<f64>,
     v: Vec<f64>,
     t: i32,
-    lr: f64,
+    pub lr: f64,
 }
 
 impl Adam {
