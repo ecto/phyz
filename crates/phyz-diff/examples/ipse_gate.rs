@@ -293,7 +293,7 @@ fn rollout(
     let clamp = env("IPSE_CLAMP", 0.15);
     let ramp = env("IPSE_RAMP", 500.0).max(1.0);
     let mut res = ipse_rig::ActRes::from_env(rig.dt);
-    let mut sea = ipse_rig::Sea::from_env(&rig, &pd);
+    let mut sea = ipse_rig::Sea::from_env(rig, &pd);
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action = vec![0.0; dofs.len()];
     let mut prev: Vec<f64> = Vec::new();
@@ -307,7 +307,7 @@ fn rollout(
             x[nq + nv + s] = rig.q_target[d];
         }
         if k >= SETTLE {
-            if (k - SETTLE) % every == 0 {
+            if (k - SETTLE).is_multiple_of(every) {
                 let ob =
                     ipse_rig::observe_legs(model, &rig.q_target, &x[..nq], &x[nq..nq + nv], dofs);
                 let a = ipse_rig::cem_action(&params, &ob);

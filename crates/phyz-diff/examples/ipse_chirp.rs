@@ -119,7 +119,7 @@ fn main() {
             return;
         }
         if k >= settle
-            && (k - settle) % 5 == 0
+            && (k - settle).is_multiple_of(5)
             && let Some(w) = tsv.as_mut()
         {
             use std::io::Write;

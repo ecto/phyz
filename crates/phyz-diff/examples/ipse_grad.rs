@@ -313,7 +313,29 @@ fn random_shove(rng: &mut Lcg) -> [f64; 3] {
 
 /// One episode's loss and its gradient into `grad`, through the step
 /// adjoint, the 8 Hz stage and each query's hold-and-delay.
-fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [f64]) -> f64 {
+/// (loss, gradient, critic samples) from one worker's episodes.
+type Part = (f64, Vec<f64>, Vec<(Vec<f64>, f64)>);
+
+/// Critic input: the observation plus the fraction of the episode elapsed.
+fn critic_in(p: &Plant, x: &[f64], k: usize) -> Vec<f64> {
+    let mut o = p.obs(x);
+    o.push(k as f64 / EPISODE as f64);
+    o
+}
+
+/// One episode's loss and its gradient into `grad`, through the step
+/// adjoint, the 8 Hz stage and each query's hold-and-delay. With a
+/// `critic`, each truncated window ends at V(x) instead of zero (SHAC), and
+/// `samples` collects (critic input, observed cost-to-go) for fitting it.
+fn episode_grad(
+    p: &Plant,
+    pol: &Mlp,
+    critic: Option<&Mlp>,
+    imp: [f64; 3],
+    window: usize,
+    grad: &mut [f64],
+    samples: &mut Vec<(Vec<f64>, f64)>,
+) -> f64 {
     let (ns, nt, nf) = (p.ns(), p.nt, p.nf);
     let ni = ns + nt + 6 + nf;
     let idx = p.obs_index();
@@ -326,7 +348,10 @@ fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [
     let mut evs: Vec<[f64; 10]> = Vec::with_capacity(EPISODE);
     let mut loss = 0.0;
     let mut steps = EPISODE;
+    // cost incurred at each step (after it), for the critic's targets
+    let mut cost: Vec<f64> = Vec::with_capacity(EPISODE);
     for k in 0..EPISODE {
+        let l0 = loss;
         if k % EVERY == 0 {
             let o = p.obs(&x);
             let c = pol.forward(&o);
@@ -362,10 +387,20 @@ fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [
             // the rest of the episode at the fall's cost
             loss += 1.0 * (EPISODE - k) as f64 / EPISODE as f64;
             steps = k + 1;
+            cost.push(loss - l0);
             break;
         }
+        cost.push(loss - l0);
     }
     xs.push(x);
+    // cost-to-go from the state after step k
+    let mut togo = 0.0;
+    for k in (0..steps).rev() {
+        if k % 10 == 9 {
+            samples.push((critic_in(p, &xs[k + 1], k + 1), togo));
+        }
+        togo += cost[k];
+    }
     let nqry = queries.len();
     // adjoints: step output (q', v', f), the stage (e, ev), each query's action
     let mut lam = vec![0.0; ns + nf];
@@ -374,10 +409,11 @@ fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [
     // jerk terms
     for j in 1..nqry {
         let s = 2.0 * JERK / (EPISODE / EVERY) as f64;
-        for i in 0..10 {
+        let (prev, cur) = la.split_at_mut(j);
+        for (i, (a, b)) in cur[0].iter_mut().zip(prev[j - 1].iter_mut()).enumerate() {
             let d = queries[j].2[i] - queries[j - 1].2[i];
-            la[j][i] += s * d;
-            la[j - 1][i] -= s * d;
+            *a += s * d;
+            *b -= s * d;
         }
     }
     let mut xin = vec![0.0; ni + ns + nf];
@@ -386,10 +422,23 @@ fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [
     let h = p.dt;
     for k in (0..steps).rev() {
         if (k + 1) % window == 0 {
-            // truncate: the next window's state is treated as given
+            // truncate: the next window's state is treated as given, its
+            // future summarized by the critic's value there
             lam.iter_mut().for_each(|v| *v = 0.0);
             le = [0.0; 10];
             lev = [0.0; 10];
+            if let Some(cr) = critic
+                && k + 1 < steps
+            {
+                let ci = critic_in(p, &xs[k + 1], k + 1);
+                let c = cr.forward(&ci);
+                let mut gout = vec![1.0 / TORQUE];
+                let mut scratch = vec![0.0; cr.params.len()];
+                let gin = cr.backward(&ci, &c, &mut gout, &mut scratch);
+                for (m, &i) in idx.iter().enumerate() {
+                    lam[i] += gin[m];
+                }
+            }
         }
         gx.iter_mut().for_each(|g| *g = 0.0);
         p.step_loss(&xs[k + 1], Some(&mut gx));
@@ -444,6 +493,32 @@ fn episode_grad(p: &Plant, pol: &Mlp, imp: [f64; 3], window: usize, grad: &mut [
         }
     }
     loss
+}
+
+/// Regress the critic (`out / TORQUE`) on cost-to-go samples.
+fn fit_critic(
+    cr: &mut Mlp,
+    adam: &mut Adam,
+    data: &[(Vec<f64>, f64)],
+    iters: usize,
+    rng: &mut Lcg,
+) -> f64 {
+    let mut last = 0.0;
+    for _ in 0..iters {
+        let mut g = vec![0.0; cr.params.len()];
+        let mut l = 0.0;
+        for _ in 0..128 {
+            let (x, y) = &data[((rng.next() + 1.0) * 0.5 * (data.len() - 1) as f64) as usize];
+            let c = cr.forward(x);
+            let e = c.out[0] / TORQUE - y;
+            l += e * e;
+            let mut gout = vec![2.0 * e / TORQUE / 128.0];
+            cr.backward(x, &c, &mut gout, &mut g);
+        }
+        adam.step(&mut cr.params, &g);
+        last = l / 128.0;
+    }
+    last
 }
 
 fn eval(p: &Plant, pol: &dyn Act, name: &str) {
@@ -555,7 +630,7 @@ fn main() {
         // the full chained gradient against central differences, one shove
         let imp = [12.0, 0.0, 0.0];
         let mut g = vec![0.0; mlp.params.len()];
-        episode_grad(&p, &mlp, imp, window, &mut g);
+        episode_grad(&p, &mlp, None, imp, window, &mut g, &mut Vec::new());
         let n = mlp.params.len();
         for k in [0, 777, n / 2, n - 300, n - 15, n - 1] {
             let p0 = mlp.params[k];
@@ -563,9 +638,9 @@ fn main() {
             for h in [1e-4, 1e-5] {
                 let mut s = vec![0.0; n];
                 mlp.params[k] = p0 + h;
-                let lp = episode_grad(&p, &mlp, imp, usize::MAX, &mut s);
+                let lp = episode_grad(&p, &mlp, None, imp, usize::MAX, &mut s, &mut Vec::new());
                 mlp.params[k] = p0 - h;
-                let lm = episode_grad(&p, &mlp, imp, usize::MAX, &mut s);
+                let lm = episode_grad(&p, &mlp, None, imp, usize::MAX, &mut s, &mut Vec::new());
                 fd.push((lp - lm) / (2.0 * h));
             }
             mlp.params[k] = p0;
@@ -581,21 +656,59 @@ fn main() {
 
     // 2. fine-tune through the plant
     let mut adam = Adam::new(student.0.params.len(), env("GRAD_LR", 3e-4));
+    let use_critic = env("GRAD_CRITIC", 1.0) > 0.0;
+    let mut critic = Mlp::new(p.n_obs() + 1, HIDDEN, 1, &mut rng);
+    let mut cadam = Adam::new(critic.params.len(), 1e-3);
+    let mut replay: Vec<(Vec<f64>, f64)> = Vec::new();
     let t = Instant::now();
+    if use_critic {
+        // pre-train on the distilled student's own episodes
+        let imps: Vec<[f64; 3]> = (0..64).map(|_| random_shove(&mut rng)).collect();
+        let pol = &student.0;
+        let p = &p;
+        replay = std::thread::scope(|sc| {
+            let hs: Vec<_> = imps
+                .chunks(64usize.div_ceil(threads))
+                .map(|c| {
+                    sc.spawn(move || {
+                        let mut smp = Vec::new();
+                        let mut g = vec![0.0; pol.params.len()];
+                        for &i in c {
+                            episode_grad(p, pol, None, i, usize::MAX, &mut g, &mut smp);
+                        }
+                        smp
+                    })
+                })
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let l = fit_critic(&mut critic, &mut cadam, &replay, 3000, &mut rng);
+        let var = {
+            let m = replay.iter().map(|s| s.1).sum::<f64>() / replay.len() as f64;
+            replay.iter().map(|s| (s.1 - m).powi(2)).sum::<f64>() / replay.len() as f64
+        };
+        eprintln!(
+            "critic pre-trained on {} samples: mse {l:.4} (target variance {var:.4}), {:.0}s",
+            replay.len(),
+            t.elapsed().as_secs_f64()
+        );
+    }
     for it in 0..tune_iters {
         let imps: Vec<[f64; 3]> = (0..batch).map(|_| random_shove(&mut rng)).collect();
         let (pol, p) = (&student.0, &p);
-        let parts: Vec<(f64, Vec<f64>)> = std::thread::scope(|sc| {
+        let cr = use_critic.then_some(&critic);
+        let parts: Vec<Part> = std::thread::scope(|sc| {
             let hs: Vec<_> = imps
                 .chunks(batch.div_ceil(threads))
                 .map(|c| {
                     sc.spawn(move || {
                         let mut g = vec![0.0; pol.params.len()];
+                        let mut smp = Vec::new();
                         let l: f64 = c
                             .iter()
-                            .map(|&i| episode_grad(p, pol, i, window, &mut g))
+                            .map(|&i| episode_grad(p, pol, cr, i, window, &mut g, &mut smp))
                             .sum();
-                        (l, g)
+                        (l, g, smp)
                     })
                 })
                 .collect();
@@ -603,14 +716,24 @@ fn main() {
         });
         let mut grad = vec![0.0; student.0.params.len()];
         let mut loss = 0.0;
-        for (l, g) in parts {
+        for (l, g, smp) in parts {
+            replay.extend(smp);
             loss += l;
             grad.iter_mut()
                 .zip(g)
                 .for_each(|(a, b)| *a += b / batch as f64);
         }
         adam.step(&mut student.0.params, &grad);
+        let mut closs = 0.0;
+        if use_critic {
+            let keep = 60_000;
+            if replay.len() > keep {
+                replay.drain(..replay.len() - keep);
+            }
+            closs = fit_critic(&mut critic, &mut cadam, &replay, 100, &mut rng);
+        }
         if it % 10 == 0 || it + 1 == tune_iters {
+            eprintln!("  critic mse {closs:.4}");
             eprintln!(
                 "tune {it:4}: batch loss {:.4}  |g| {:.2e}  {:.0}s",
                 loss / batch as f64,
@@ -619,7 +742,7 @@ fn main() {
             );
         }
         if (it + 1) % 50 == 0 && it + 1 != tune_iters {
-            eval(&p, &student, &format!("tune{}", it + 1));
+            eval(p, &student, &format!("tune{}", it + 1));
         }
     }
     eval(&p, &teacher, "teacher");

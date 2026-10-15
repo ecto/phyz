@@ -135,6 +135,19 @@ impl Rig {
             assert_eq!(&joint.name, name, "joint order differs from ipse's");
             joint.armature = *armature;
             joint.damping = 0.0;
+            // IPSE_ARMATURE_SCALE / IPSE_JOINT_DAMPING (N·m·s/rad) on the leg
+            // joints: chirp-03's hips move ~3x less than the rig's for the
+            // torque the motors report
+            if ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n)) {
+                let var = |k: &str, d: f64| {
+                    std::env::var(k)
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(d)
+                };
+                joint.armature *= var("IPSE_ARMATURE_SCALE", 1.0);
+                joint.damping = var("IPSE_JOINT_DAMPING", 0.0);
+            }
             let leg = ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n));
             joint.friction_loss = if leg { leg_friction } else { 0.0 };
             // with series-elastic legs the rotor inertia lives on the motor
@@ -424,9 +437,11 @@ impl ActRes {
 /// `IPSE_SEA_ZETA` (c = 2ζ√(kJ)); off when unset. The K1's standing chirp
 /// (chirp-03) shows an 8–9 Hz trunk-pitch peak with the hips following
 /// ~10% of the command, which a rigid link cannot do.
+/// One series-elastic joint: (PD slot, v index, J, k, c, kp, kd, effort).
+type SeaJoint = (usize, usize, f64, f64, f64, f64, f64, f64);
+
 pub struct Sea {
-    /// (PD slot, v index, J, k, c, kp, kd, effort)
-    joints: Vec<(usize, usize, f64, f64, f64, f64, f64, f64)>,
+    joints: Vec<SeaJoint>,
     theta: Vec<f64>,
     omega: Vec<f64>,
     h: f64,
