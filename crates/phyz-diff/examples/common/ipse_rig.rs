@@ -1,0 +1,702 @@
+//! ipse's K1 standing rig, as written by ipse-sim's `k1_rig_dump` example:
+//! the plant parameters a simulator outside ipse needs to match it.
+
+#![allow(dead_code)]
+
+use phyz_contact::ContactMaterial;
+use phyz_diff::contact_step::{ContactPoint, PdLaw};
+use phyz_math::Vec3;
+use phyz_model::Model;
+
+pub struct Rig {
+    pub dt: f64,
+    pub shove: f64,
+    pub shove_dir: String,
+    /// `(name, armature)` per joint, in ipse's order.
+    pub joints: Vec<(String, f64)>,
+    pub kp: Vec<f64>,
+    pub kd: Vec<f64>,
+    pub effort: Vec<f64>,
+    pub q_target: Vec<f64>,
+    pub q0: Vec<f64>,
+    pub v0: Vec<f64>,
+    /// `(body name, half extents, offset)` per foot box.
+    pub feet: Vec<(String, Vec3, Vec3)>,
+    pub friction: f64,
+    pub margin: f64,
+    /// ipse's trajectory: `(t, q)` every 10 ms.
+    pub traj: Vec<(f64, Vec<f64>)>,
+}
+
+impl Rig {
+    pub fn read(path: &str) -> Self {
+        let text = std::fs::read_to_string(path).expect("rig file");
+        let mut r = Rig {
+            dt: 0.001,
+            shove: 0.0,
+            shove_dir: String::new(),
+            joints: Vec::new(),
+            kp: Vec::new(),
+            kd: Vec::new(),
+            effort: Vec::new(),
+            q_target: Vec::new(),
+            q0: Vec::new(),
+            v0: Vec::new(),
+            feet: Vec::new(),
+            friction: 0.5,
+            margin: 0.001,
+            traj: Vec::new(),
+        };
+        let nums = |w: &[&str]| -> Vec<f64> { w.iter().map(|v| v.parse().unwrap()).collect() };
+        // `key value` pairs in a struct's Debug text
+        let field = |line: &str, key: &str| -> f64 {
+            let at = line
+                .find(&format!("{key}: "))
+                .unwrap_or_else(|| panic!("{key} in {line}"))
+                + key.len()
+                + 2;
+            line[at..]
+                .split([',', ' ', '}'])
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        for line in text.lines() {
+            let w: Vec<&str> = line.split_whitespace().collect();
+            match w.first().copied() {
+                Some("meta") => {
+                    r.dt = w[2].parse().unwrap();
+                    r.shove = w[10].parse().unwrap();
+                    r.shove_dir = w[11].to_string();
+                }
+                Some("joint") => r.joints.push((w[2].to_string(), w[10].parse().unwrap())),
+                Some("dof") => {
+                    r.kp.push(w[3].parse().unwrap());
+                    r.kd.push(w[5].parse().unwrap());
+                    r.effort.push(w[7].parse().unwrap());
+                }
+                Some("q_target") => r.q_target = nums(&w[1..]),
+                Some("q0") => r.q0 = nums(&w[1..]),
+                Some("v0") => r.v0 = nums(&w[1..]),
+                Some("foot") => {
+                    let f = |i: usize| w[i].parse::<f64>().unwrap();
+                    r.feet.push((
+                        w[2].to_string(),
+                        Vec3::new(f(4), f(5), f(6)),
+                        Vec3::new(f(8), f(9), f(10)),
+                    ));
+                }
+                Some("material") => {
+                    r.friction = field(line, "friction");
+                    r.margin = field(line, "margin");
+                }
+                Some("traj") => {
+                    let v = nums(&w[1..]);
+                    r.traj.push((v[0], v[1..].to_vec()));
+                }
+                _ => {}
+            }
+        }
+        r
+    }
+
+    /// The K1 as ipse builds it: the floating URDF, vendor armature, no joint
+    /// damping or actuators (the PD is traced by `ContactStep::build_pd`).
+    pub fn model(&self) -> Model {
+        let root = std::env::var_os("IPSE_K1_ASSETS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                    .join("Developer/booster_assets/robots/K1")
+            });
+        let opts = phyz_urdf::UrdfOptions {
+            base: phyz_urdf::BaseKind::Fixed,
+            dt: Some(self.dt),
+            gravity: None,
+        };
+        let mut model = phyz_urdf::load_file(root.join("K1_22dof_floating.urdf"), &opts)
+            .expect("K1 URDF")
+            .model;
+        model.actuators.clear();
+        assert_eq!(
+            model.joints.len(),
+            self.joints.len(),
+            "joint count differs from ipse's"
+        );
+        // IPSE_JOINT_FRICTION N·m of Coulomb friction on the leg joints: the
+        // K1's hips track ~10% of a ±0.01 rad chirp at kp 90 (chirp-03),
+        // which a frictionless plant cannot reproduce
+        let leg_friction = std::env::var("IPSE_JOINT_FRICTION")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        for (joint, (name, armature)) in model.joints.iter_mut().zip(&self.joints) {
+            assert_eq!(&joint.name, name, "joint order differs from ipse's");
+            joint.armature = *armature;
+            joint.damping = 0.0;
+            // IPSE_ARMATURE_SCALE / IPSE_JOINT_DAMPING (N·m·s/rad) on the leg
+            // joints: chirp-03's hips move ~3x less than the rig's for the
+            // torque the motors report
+            if ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n)) {
+                let var = |k: &str, d: f64| {
+                    std::env::var(k)
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(d)
+                };
+                joint.armature *= var("IPSE_ARMATURE_SCALE", 1.0);
+                joint.damping = var("IPSE_JOINT_DAMPING", 0.0);
+            }
+            let leg = ["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n));
+            joint.friction_loss = if leg { leg_friction } else { 0.0 };
+            // with series-elastic legs the rotor inertia lives on the motor
+            // side of the spring ([`Sea`]), not on the link
+            if leg && Sea::enabled() {
+                joint.armature = 0.0;
+            }
+            // Booster's parallel ankle: E4310 rotor reflected ×1.4 on pitch,
+            // ×0.4 on roll (booster_train `BoosterK1AnkleParaWrapperCfg`)
+            if Booster::enabled() && name.contains("Ankle") {
+                joint.armature = 0.0282528 * if name.contains("Pitch") { 1.4 } else { 0.4 };
+            }
+        }
+        model
+    }
+
+    /// The driven DOFs (kp > 0) and their law.
+    pub fn pd(&self) -> PdLaw {
+        let dofs: Vec<usize> = (0..self.kp.len()).filter(|&v| self.kp[v] > 0.0).collect();
+        // IPSE_KP_LEG / IPSE_KD_LEG / IPSE_KP_UPPER / IPSE_KD_UPPER replace
+        // ipse's mass-scaled gains with flat ones, e.g. the hardware's
+        // `hold --kp-leg 90 --kd 6` (upper body kp 5, kd 1)
+        let var = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok());
+        let (kpl, kdl, kpu, kdu) = (
+            var("IPSE_KP_LEG"),
+            var("IPSE_KD_LEG"),
+            var("IPSE_KP_UPPER"),
+            var("IPSE_KD_UPPER"),
+        );
+        let model = self.model();
+        let leg = |v: usize| {
+            model
+                .joints
+                .iter()
+                .enumerate()
+                .find(|(j, jt)| jt.ndof() == 1 && model.v_offsets[*j] == v)
+                .is_some_and(|(_, jt)| ["Hip", "Knee", "Ankle"].iter().any(|n| jt.name.contains(n)))
+        };
+        let pick = |v: usize, base: &[f64], l: Option<f64>, u: Option<f64>| {
+            if leg(v) {
+                l.unwrap_or(base[v])
+            } else {
+                u.unwrap_or(base[v])
+            }
+        };
+        PdLaw {
+            kp: dofs.iter().map(|&v| pick(v, &self.kp, kpl, kpu)).collect(),
+            kd: dofs.iter().map(|&v| pick(v, &self.kd, kdl, kdu)).collect(),
+            effort: dofs.iter().map(|&v| self.effort[v]).collect(),
+            dofs,
+        }
+    }
+
+    /// The four bottom corners of each foot box, in the foot link's frame.
+    pub fn points(&self) -> Vec<ContactPoint> {
+        let model = self.model();
+        let mut pts = Vec::new();
+        for (name, half, off) in &self.feet {
+            let body = model
+                .bodies
+                .iter()
+                .position(|b| &b.name == name)
+                .expect("foot body");
+            for (sx, sy) in [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)] {
+                pts.push(ContactPoint {
+                    body,
+                    local: Vec3::new(off.x + sx * half.x, off.y + sy * half.y, off.z - half.z),
+                });
+            }
+        }
+        pts
+    }
+
+    pub fn material(&self) -> ContactMaterial {
+        // IPSE_FRICTION overrides ipse's 0.5: does a recovery survive a
+        // grippier floor than the one it was trained on?
+        let friction = std::env::var("IPSE_FRICTION")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(self.friction);
+        ContactMaterial {
+            friction,
+            margin: self.margin,
+            ..ContactMaterial::default()
+        }
+    }
+
+    /// ipse's shove force at time `t` (trunk frame, N), over 20 ms from 2 s.
+    pub fn shove_force(&self, t: f64) -> Option<[f64; 3]> {
+        let (start, dur) = (2.0, 0.02);
+        let dt = self.dt;
+        (t >= start - 0.5 * dt && t < start + dur - 0.5 * dt).then(|| {
+            let f = self.shove / dur;
+            if self.shove_dir == "sagittal" {
+                [f, 0.0, 0.0]
+            } else {
+                [0.0, f, 0.0]
+            }
+        })
+    }
+}
+
+/// v indices of the ten DOFs ipse's CEM `LinearPolicy` commands, in its
+/// action order: per side (Left, Right) hip pitch, hip roll, knee, ankle
+/// pitch, ankle roll (`ipse_sim::learn::leg_act_dofs`).
+pub fn cem_dofs(model: &Model) -> Vec<usize> {
+    let v_of = |name: String| {
+        let j = model
+            .joints
+            .iter()
+            .position(|j| j.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        model.v_offsets[j]
+    };
+    ["Left", "Right"]
+        .iter()
+        .flat_map(|s| {
+            [
+                "Hip_Pitch",
+                "Hip_Roll",
+                "Knee_Pitch",
+                "Ankle_Pitch",
+                "Ankle_Roll",
+            ]
+            .map(|p| v_of(format!("{s}_{p}")))
+        })
+        .collect()
+}
+
+/// `ipse_sim::learn::observe_legs`: trunk pitch and roll, base gyro, COM
+/// velocity and centroidal angular momentum in the heading frame, then
+/// `(q - q_target, q̇)` over [`cem_dofs`]. 31 entries.
+pub fn observe_legs(
+    model: &Model,
+    q_target: &[f64],
+    q: &[f64],
+    v: &[f64],
+    dofs: &[usize],
+) -> Vec<f64> {
+    let mut st = model.default_state();
+    st.q.as_mut_slice().copy_from_slice(q);
+    st.v.as_mut_slice().copy_from_slice(v);
+    let (xf, vel) = phyz_rigid::forward_kinematics(model, &st);
+    let trunk = model
+        .bodies
+        .iter()
+        .position(|b| b.name == "Trunk")
+        .expect("Trunk");
+    let r = &xf[trunk].rot;
+    let pitch = (-r[(0, 2)]).atan2(r[(2, 2)]);
+    let roll = r[(1, 2)].atan2(r[(2, 2)]);
+    // COM and its velocity, then the centroidal angular momentum
+    let (mut com, mut cv, mut m) = (Vec3::zeros(), Vec3::zeros(), 0.0);
+    for (i, b) in model.bodies.iter().enumerate() {
+        if b.inertia.mass <= 0.0 {
+            continue;
+        }
+        let rw = xf[i].rot.transpose();
+        com += (xf[i].pos + rw * b.inertia.com) * b.inertia.mass;
+        cv += rw * (vel[i].linear + vel[i].angular.cross(b.inertia.com)) * b.inertia.mass;
+        m += b.inertia.mass;
+    }
+    com *= 1.0 / m;
+    cv *= 1.0 / m;
+    let mut cam = Vec3::zeros();
+    for (i, b) in model.bodies.iter().enumerate() {
+        if b.inertia.mass <= 0.0 {
+            continue;
+        }
+        let rw = xf[i].rot.transpose();
+        let ri = xf[i].pos + rw * b.inertia.com;
+        let vi = rw * (vel[i].linear + vel[i].angular.cross(b.inertia.com));
+        cam +=
+            (ri - com).cross(vi - cv) * b.inertia.mass + rw * (b.inertia.inertia * vel[i].angular);
+    }
+    let rt = r.transpose();
+    let (sy, cy) = rt[(1, 0)].atan2(rt[(0, 0)]).sin_cos();
+    let heading = |w: Vec3| [cy * w.x + sy * w.y, -sy * w.x + cy * w.y, w.z];
+    let mut obs = vec![pitch, roll, v[0], v[1], v[2]];
+    obs.extend(heading(cv));
+    obs.extend(heading(cam));
+    // q index = v index for the K1's 1-DOF joints after the free base
+    for &d in dofs {
+        obs.push(q[d] - q_target[d]);
+        obs.push(v[d]);
+    }
+    obs
+}
+
+/// ipse's CEM `LinearPolicy` action: `clamp(W obs + b, ±0.3)`.
+pub fn cem_action(params: &[f64], obs: &[f64]) -> Vec<f64> {
+    let (no, na) = (obs.len(), 10);
+    (0..na)
+        .map(|i| {
+            let w = &params[i * no..(i + 1) * no];
+            (w.iter().zip(obs).map(|(a, b)| a * b).sum::<f64>() + params[na * no + i])
+                .clamp(-0.3, 0.3)
+        })
+        .collect()
+}
+
+/// A CEM policy file: one parameter per non-comment line.
+pub fn read_cem(path: &str) -> Vec<f64> {
+    std::fs::read_to_string(path)
+        .expect("CEM policy file")
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| l.trim().parse().unwrap())
+        .collect()
+}
+
+/// One recorded CEM row: `(t, v, obs, act)`.
+pub type CemRow = (f64, Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The recorded rows of a CEM dump.
+pub fn cem_rows(path: &str) -> Vec<CemRow> {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut rows: Vec<CemRow> = Vec::new();
+    for line in text.lines() {
+        let w: Vec<&str> = line.split_whitespace().collect();
+        let nums = || {
+            w[2..]
+                .iter()
+                .map(|v| v.parse().unwrap())
+                .collect::<Vec<f64>>()
+        };
+        match w.first().copied() {
+            Some("vel") => rows.push((w[1].parse().unwrap(), nums(), Vec::new(), Vec::new())),
+            Some("obs") => rows.last_mut().unwrap().2 = nums(),
+            Some("act") => rows.last_mut().unwrap().3 = nums(),
+            _ => {}
+        }
+    }
+    rows
+}
+
+/// `IPSE_ACT_RES_HZ` / `IPSE_ACT_ZETA`: the lightly damped second-order
+/// stage `ipse_cem` puts between commanded and effective offsets, a stand-in
+/// for the K1's series compliance (semi-implicit Euler at the rig's dt, unit
+/// DC gain unless `IPSE_ACT_GAIN` scales it — a joint that reaches only a
+/// fraction of its command). `None` when `IPSE_ACT_RES_HZ` is unset or 0.
+pub struct ActRes {
+    wn: f64,
+    zeta: f64,
+    gain: f64,
+    h: f64,
+    y: Vec<f64>,
+    v: Vec<f64>,
+}
+
+impl ActRes {
+    pub fn from_env(dt: f64) -> Option<Self> {
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let wn = std::f64::consts::TAU * env("IPSE_ACT_RES_HZ", 0.0);
+        (wn > 0.0).then(|| Self {
+            wn,
+            zeta: env("IPSE_ACT_ZETA", 0.2),
+            gain: env("IPSE_ACT_GAIN", 1.0),
+            h: dt,
+            y: Vec::new(),
+            v: Vec::new(),
+        })
+    }
+
+    /// One step toward `cmd`; returns the effective offsets.
+    pub fn step(&mut self, cmd: &[f64]) -> &[f64] {
+        if self.y.len() != cmd.len() {
+            self.y = vec![0.0; cmd.len()];
+            self.v = vec![0.0; cmd.len()];
+        }
+        let (wn, z, g, h) = (self.wn, self.zeta, self.gain, self.h);
+        for ((y, v), a) in self.y.iter_mut().zip(self.v.iter_mut()).zip(cmd) {
+            *v += h * (wn * wn * (g * a - *y) - 2.0 * z * wn * *v);
+            *y += h * *v;
+        }
+        &self.y
+    }
+}
+
+/// Series-elastic leg joints: a rotor (the rig's armature as its inertia)
+/// under the servo's PD, coupled to the link through a spring-damper.
+///
+/// The traced step only knows a PD on the link, `kp (target - q) - kd q̇`,
+/// so each step the link target is chosen to make that equal the spring
+/// torque; the rotor itself is integrated here, semi-implicitly. Set by
+/// `IPSE_SEA_HZ` (the rotor-on-spring frequency, k = J ω²) and
+/// `IPSE_SEA_ZETA` (c = 2ζ√(kJ)); off when unset. The K1's standing chirp
+/// (chirp-03) shows an 8–9 Hz trunk-pitch peak with the hips following
+/// ~10% of the command, which a rigid link cannot do.
+/// One series-elastic joint: (PD slot, v index, J, k, c, kp, kd, effort).
+type SeaJoint = (usize, usize, f64, f64, f64, f64, f64, f64);
+
+pub struct Sea {
+    joints: Vec<SeaJoint>,
+    theta: Vec<f64>,
+    omega: Vec<f64>,
+    h: f64,
+    started: bool,
+}
+
+impl Sea {
+    pub fn enabled() -> bool {
+        std::env::var("IPSE_SEA_HZ")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .is_some_and(|f| f > 0.0)
+    }
+
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        if !Self::enabled() {
+            return None;
+        }
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(d)
+        };
+        let w = std::f64::consts::TAU * env("IPSE_SEA_HZ", 0.0);
+        let zeta = env("IPSE_SEA_ZETA", 0.1);
+        let model = rig.model();
+        let joints: Vec<_> = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter_map(|(s, &v)| {
+                let (j, _) = model
+                    .joints
+                    .iter()
+                    .enumerate()
+                    .find(|(j, jt)| jt.ndof() == 1 && model.v_offsets[*j] == v)?;
+                let (name, arm) = &rig.joints[j];
+                if !["Hip", "Knee", "Ankle"].iter().any(|n| name.contains(n)) || *arm <= 0.0 {
+                    return None;
+                }
+                let k = arm * w * w;
+                let c = 2.0 * zeta * (k * arm).sqrt();
+                Some((s, v, *arm, k, c, pd.kp[s], pd.kd[s], pd.effort[s]))
+            })
+            .collect();
+        let n = joints.len();
+        Some(Self {
+            joints,
+            theta: vec![0.0; n],
+            omega: vec![0.0; n],
+            h: rig.dt,
+            started: false,
+        })
+    }
+
+    /// Read the commanded targets from `x`'s PD slots, advance the rotors,
+    /// and overwrite those slots with the link targets that reproduce the
+    /// spring torque. `x = [q, v, targets, ...]`.
+    pub fn apply(&mut self, x: &mut [f64], nq: usize, nv: usize) {
+        let base = nq + nv;
+        if !self.started {
+            for (i, &(_, v, ..)) in self.joints.iter().enumerate() {
+                self.theta[i] = x[v];
+                self.omega[i] = x[nq + v];
+            }
+            self.started = true;
+        }
+        for (i, &(s, v, j, k, c, kp, kd, effort)) in self.joints.iter().enumerate() {
+            let (q, qd) = (x[v], x[nq + v]);
+            let cmd = x[base + s];
+            let tau_m = (kp * (cmd - self.theta[i]) - kd * self.omega[i]).clamp(-effort, effort);
+            let tau_s = k * (self.theta[i] - q) + c * (self.omega[i] - qd);
+            self.omega[i] += self.h * (tau_m - tau_s) / j;
+            self.theta[i] += self.h * self.omega[i];
+            let tau_s = k * (self.theta[i] - q) + c * (self.omega[i] - qd);
+            x[base + s] = q + (tau_s + kd * qd) / kp;
+        }
+    }
+}
+
+/// LuGre friction on the leg joints, integrated outside the traced graph
+/// and injected through the PD target (`target -= F / kp`, the [`Sea`]
+/// trick): a bristle state `z` with stiffness σ0 below breakaway, Stribeck
+/// sliding above it.
+///
+/// ```text
+/// ż = q̇ - σ0 |q̇| z / g(q̇) - σ0 z / c,   g(v) = Fc + (Fs - Fc) exp(-(v/vs)²)
+/// F = σ0 z + σ1 ż + σ2 q̇
+/// ```
+///
+/// Why: the K1's hip pitch moves ~10% of a ±0.01–0.02 rad chirp, flat from
+/// 2 to 13 Hz, hanging (chirp-01) as well as standing (chirp-03) — no load
+/// or contact model can do that, a stuck joint whose pre-sliding stiffness
+/// is ~9 kp can — while the policy runs' large, slow offsets track 0.5–0.9.
+/// `IPSE_LUGRE_S0` (σ0, N·m/rad), `IPSE_LUGRE_FS` (N·m), `IPSE_LUGRE_FC`
+/// (default Fs), `IPSE_LUGRE_VS` (rad/s, default 0.05), `IPSE_LUGRE_S1`,
+/// `IPSE_LUGRE_S2` (N·m·s/rad, default 0), `IPSE_LUGRE_CREEP` (c, N·m·s/rad:
+/// the bristles also relax through a damper, a Maxwell element, so a slow
+/// command creeps through while a fast one meets the stiff σ0 — the
+/// hardware's 7.5 Hz shake moved the hip 0.1× at 5 N·m, far past any
+/// breakaway, while slow sway tracks; default ∞); off unless σ0 and Fs > 0.
+/// The `z` update is the exact solution for q̇ held over the step, so it is
+/// stable at any σ0; the σ0 z torque itself is explicit, which holds to
+/// σ0 ≈ 5000 at dt 1 ms on the K1.
+pub struct LuGre {
+    /// (PD slot, v index, kp)
+    joints: Vec<(usize, usize, f64)>,
+    z: Vec<f64>,
+    s0: f64,
+    s1: f64,
+    s2: f64,
+    fs: f64,
+    fc: f64,
+    vs: f64,
+    /// σ0 / creep damping: the bristles' relaxation rate at rest (1/s)
+    relax: f64,
+    h: f64,
+}
+
+impl LuGre {
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(d)
+        };
+        let (s0, fs) = (env("IPSE_LUGRE_S0", 0.0), env("IPSE_LUGRE_FS", 0.0));
+        if s0 <= 0.0 || fs <= 0.0 {
+            return None;
+        }
+        let model = rig.model();
+        let joints: Vec<_> = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter(|&(_, &v)| {
+                model.joints.iter().enumerate().any(|(j, jt)| {
+                    jt.ndof() == 1
+                        && model.v_offsets[j] == v
+                        && ["Hip", "Knee", "Ankle"].iter().any(|n| jt.name.contains(n))
+                })
+            })
+            .map(|(s, &v)| (s, v, pd.kp[s]))
+            .collect();
+        Some(Self {
+            z: vec![0.0; joints.len()],
+            joints,
+            s0,
+            s1: env("IPSE_LUGRE_S1", 0.0),
+            s2: env("IPSE_LUGRE_S2", 0.0),
+            fs,
+            fc: env("IPSE_LUGRE_FC", fs),
+            vs: env("IPSE_LUGRE_VS", 0.05),
+            relax: match env("IPSE_LUGRE_CREEP", 0.0) {
+                c if c > 0.0 => s0 / c,
+                _ => 0.0,
+            },
+            h: rig.dt,
+        })
+    }
+
+    /// Advance the bristles on `x`'s joint rates and shift the PD slots'
+    /// targets by the friction torque. `x = [q, v, targets, ...]`.
+    pub fn apply(&mut self, x: &mut [f64], nq: usize, nv: usize) {
+        for (i, &(s, v, kp)) in self.joints.iter().enumerate() {
+            let qd = x[nq + v];
+            let g = self.fc + (self.fs - self.fc) * (-(qd / self.vs).powi(2)).exp();
+            let a = self.s0 * qd.abs() / g + self.relax;
+            let z0 = self.z[i];
+            // ż = qd - a z, qd and a held: z → qd/a + (z0 - qd/a) e^{-ah}
+            let z = if a * self.h > 1e-9 {
+                let zs = qd / a;
+                zs + (z0 - zs) * (-a * self.h).exp()
+            } else {
+                z0 + qd * self.h
+            };
+            self.z[i] = z;
+            let f = self.s0 * z + self.s1 * (z - z0) / self.h + self.s2 * qd;
+            x[nq + nv + s] -= f / kp;
+        }
+    }
+}
+
+/// Booster's own K1 actuator model (booster_train `BoosterDelayedPDActuator`):
+/// each leg joint's PD torque limited by a torque–speed curve — full effort
+/// up to a knee speed, falling linearly to zero at the no-load speed. Applied
+/// like [`Sea`]: the link target is rewritten so the traced PD produces the
+/// limited torque. `IPSE_BOOSTER=1` turns it (and the ankle armatures in
+/// [`Rig::model`]) on; the command delay is `IPSE_PLANT_DELAY`.
+pub struct Booster {
+    /// (PD slot, v index, kp, kd, effort, no-load speed, knee speed)
+    joints: Vec<(usize, usize, f64, f64, f64, f64, f64)>,
+}
+
+impl Booster {
+    pub fn enabled() -> bool {
+        std::env::var("IPSE_BOOSTER").is_ok_and(|v| v != "0")
+    }
+
+    /// (effort N·m, no-load rad/s, knee rad/s) per joint name.
+    fn motor(name: &str) -> Option<(f64, f64, f64)> {
+        Some(if name.contains("Hip_Pitch") {
+            (68.0, 14.66, 1.88)
+        } else if name.contains("Hip_Roll") {
+            (43.0, 12.15, 8.38)
+        } else if name.contains("Knee") {
+            (112.0, 12.57, 2.09)
+        } else if name.contains("Hip_Yaw") || name.contains("Ankle") {
+            (38.3, 17.59, 7.85)
+        } else {
+            return None;
+        })
+    }
+
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        if !Self::enabled() {
+            return None;
+        }
+        let model = rig.model();
+        let joints = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter_map(|(s, &v)| {
+                let j = model
+                    .joints
+                    .iter()
+                    .enumerate()
+                    .position(|(j, jt)| jt.ndof() == 1 && model.v_offsets[j] == v)?;
+                let (e, vmax, knee) = Self::motor(&rig.joints[j].0)?;
+                Some((s, v, pd.kp[s], pd.kd[s], e.min(pd.effort[s]), vmax, knee))
+            })
+            .collect();
+        Some(Self { joints })
+    }
+
+    pub fn apply(&self, x: &mut [f64], nq: usize, nv: usize) {
+        let base = nq + nv;
+        for &(s, v, kp, kd, effort, vmax, knee) in &self.joints {
+            let (q, qd) = (x[v], x[nq + v]);
+            let tau = kp * (x[base + s] - q) - kd * qd;
+            let w = qd.abs();
+            let lim = if w <= knee {
+                effort
+            } else {
+                (effort * (vmax - w) / (vmax - knee)).max(0.0)
+            };
+            x[base + s] = q + (tau.clamp(-lim, lim) + kd * qd) / kp;
+        }
+    }
+}

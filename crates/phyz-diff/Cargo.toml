@@ -20,11 +20,27 @@ phyz-contact.workspace = true
 tang.workspace = true
 tang-la.workspace = true
 tang-expr.workspace = true
+# batched GPU training (example train_reach_gpu); same rev as the tang patch
+tang-gpu = { git = "https://github.com/ecto/tang.git", rev = "bfc8003b08d29a2bb1f62b00c771d59a2d9fc3bd", optional = true }
+
+bytemuck = { version = "1", optional = true }
+
+[features]
+gpu = ["dep:tang-gpu", "dep:bytemuck"]
 
 [dev-dependencies]
+libloading = "0.8"
 phyz-urdf.workspace = true
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
 name = "jacobians"
 harness = false
+
+[[example]]
+name = "train_reach_gpu"
+required-features = ["gpu"]
+
+[[example]]
+name = "train_stand_gpu"
+required-features = ["gpu"]

@@ -58,6 +58,19 @@ pub struct ContactPoint {
 /// Newton iterations in the friction-disc step (the CPU path runs to 1e-14).
 pub(crate) const DISC_ITERS: usize = 8;
 
+/// A joint-space PD law, per DOF: `clamp(kp (target - q) - kd q̇, ±effort)`.
+#[derive(Clone, Debug)]
+pub struct PdLaw {
+    /// v indices of the driven DOFs, in target order.
+    pub dofs: Vec<usize>,
+    /// Proportional gains, N·m/rad.
+    pub kp: Vec<f64>,
+    /// Derivative gains, N·m·s/rad.
+    pub kd: Vec<f64>,
+    /// Torque limits, N·m (`f64::INFINITY` for none).
+    pub effort: Vec<f64>,
+}
+
 /// One contact step for a model and a fixed set of contact points.
 pub struct ContactStep {
     /// The traced graph.
@@ -119,6 +132,69 @@ impl ContactStep {
         }
     }
 
+    /// The step with ipse's actuation traced in: `model` has no actuators
+    /// (its `ctrl` is the generalized force), and each DOF in `pd.dofs` gets
+    /// `clamp(kp (target - q) - kd q̇, ±effort)` from a target input, the
+    /// way `ipse_sim::StandingRig::apply_pd` computes it; the free joint's six
+    /// DOFs take a wrench input (`[torque; force]` in the trunk frame), which
+    /// is how ipse applies a shove. Inputs `[q, v, targets (pd.dofs.len()),
+    /// base wrench (6), warm]`; `nu` is `pd.dofs.len() + 6`.
+    pub fn build_pd(
+        model: &Model,
+        points: &[ContactPoint],
+        material: &ContactMaterial,
+        config: &ContactSolverConfig,
+        sweeps: usize,
+        pd: &PdLaw,
+    ) -> Self {
+        assert!(
+            model.actuators.is_empty(),
+            "build_pd: the PD is traced here, so the model has no actuators"
+        );
+        let (nq, nv) = (model.nq, model.nv);
+        let nt = pd.dofs.len();
+        let nu = nt + 6;
+        let np = points.len();
+        // q index of each v DOF (1-DOF joints)
+        let mut q_of_v = vec![usize::MAX; nv];
+        for (j, joint) in model.joints.iter().enumerate() {
+            if joint.ndof() == 1 {
+                q_of_v[model.v_offsets[j]] = model.q_offsets[j];
+            }
+        }
+        let (graph, out) = trace(|| {
+            let var = |i: usize| ExprId::var(i as u16);
+            let lit = ExprId::from_f64;
+            let q: Vec<ExprId> = (0..nq).map(var).collect();
+            let v: Vec<ExprId> = (nq..nq + nv).map(var).collect();
+            let targets: Vec<ExprId> = (nq + nv..nq + nv + nt).map(var).collect();
+            let wrench: Vec<ExprId> = (nq + nv + nt..nq + nv + nu).map(var).collect();
+            let warm: Vec<ExprId> = (nq + nv + nu..nq + nv + nu + 3 * np).map(var).collect();
+            let mut qfrc = vec![ExprId::ZERO; nv];
+            qfrc[..6].copy_from_slice(&wrench);
+            for (k, &d) in pd.dofs.iter().enumerate() {
+                let tau = lit(pd.kp[k]) * (targets[k] - q[q_of_v[d]]) - lit(pd.kd[k]) * v[d];
+                qfrc[d] = if pd.effort[k].is_finite() {
+                    tau.clamp(lit(-pd.effort[k]), lit(pd.effort[k]))
+                } else {
+                    tau
+                };
+            }
+            traced_contact_step(
+                model, points, material, config, sweeps, &q, &v, &qfrc, &warm,
+            )
+        });
+        let (graph, out) = crate::forward::fold_constants(&graph, &out);
+        Self {
+            graph,
+            out,
+            nq,
+            nv,
+            nu,
+            n_points: np,
+        }
+    }
+
     /// Inputs per evaluation.
     pub fn n_inputs(&self) -> usize {
         self.nq + self.nv + self.nu + 3 * self.n_points
@@ -142,6 +218,21 @@ impl ContactStep {
     /// Live nodes in the graph.
     pub fn live_nodes(&self) -> usize {
         self.graph.live_set(&self.out).len()
+    }
+
+    /// The step's reverse-mode adjoint, folded: inputs `[x, λ]` (this
+    /// step's inputs, then an adjoint of its outputs `q', v', f`), outputs
+    /// `λᵀ ∂out/∂x` (`n_inputs`). Gradient flows through the fixed PGS
+    /// sweeps as traced, including the warm start, and only down the taken
+    /// branch of each clamp.
+    pub fn adjoint(&self) -> (ExprGraph, Vec<ExprId>) {
+        let ni = self.n_inputs();
+        let mut g = self.graph.clone();
+        let seeds: Vec<ExprId> = (0..self.n_outputs())
+            .map(|i| g.var((ni + i) as u16))
+            .collect();
+        let grad = g.vjp(&self.out, &seeds, ni);
+        crate::forward::fold_constants(&g, &grad)
     }
 
     /// Compile to an f64 closure.
