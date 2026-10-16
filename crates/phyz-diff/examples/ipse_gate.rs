@@ -289,11 +289,22 @@ fn rollout(
         .map(|d| pd.dofs.iter().position(|p| p == d).unwrap())
         .collect();
     let every = env("IPSE_POLICY_EVERY", 5.0) as usize;
-    let latency = env("IPSE_LATENCY", 5.0) as usize;
+    // IPSE_PLANT_DELAY steps between a command and the joint acting on it,
+    // on top of the policy's own latency (see ipse_chirp)
+    let latency = (env("IPSE_LATENCY", 5.0) + env("IPSE_PLANT_DELAY", 0.0)) as usize;
     let clamp = env("IPSE_CLAMP", 0.15);
     let ramp = env("IPSE_RAMP", 500.0).max(1.0);
+    let (obs_pitch, noise) = (env("IPSE_OBS_PITCH", 0.0), env("IPSE_GYRO_NOISE", 0.0));
+    let mut seed = 0x9e3779b97f4a7c15u64;
+    let mut uniform = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    };
     let mut res = ipse_rig::ActRes::from_env(rig.dt);
     let mut sea = ipse_rig::Sea::from_env(rig, &pd);
+    let mut lugre = ipse_rig::LuGre::from_env(rig, &pd);
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action = vec![0.0; dofs.len()];
     let mut prev: Vec<f64> = Vec::new();
@@ -308,8 +319,18 @@ fn rollout(
         }
         if k >= SETTLE {
             if (k - SETTLE).is_multiple_of(every) {
-                let ob =
+                let mut ob =
                     ipse_rig::observe_legs(model, &rig.q_target, &x[..nq], &x[nq..nq + nv], dofs);
+                // IPSE_OBS_PITCH rad on the trunk pitch the policy sees (an
+                // IMU mount / stance offset the plant does not have) and
+                // IPSE_GYRO_NOISE rad/s uniform on the base and joint rates,
+                // as ipse_cem
+                ob[0] += obs_pitch;
+                if noise > 0.0 {
+                    for i in (2..5).chain((12..ob.len()).step_by(2)) {
+                        ob[i] += noise * uniform();
+                    }
+                }
                 let a = ipse_rig::cem_action(&params, &ob);
                 if k < SHOVE_AT {
                     if !prev.is_empty() {
@@ -351,6 +372,9 @@ fn rollout(
         }
         if let Some(sea) = sea.as_mut() {
             sea.apply(&mut x, nq, nv);
+        }
+        if let Some(l) = lugre.as_mut() {
+            l.apply(&mut x, nq, nv);
         }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);

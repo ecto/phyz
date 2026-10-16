@@ -15,6 +15,9 @@
 //! `chirp_fit` example reads next to the robot's:
 //! `t q0 <cmd> kp <kp> gyro_y <trunk pitch rate> qm <hip q> tau 0`.
 //!
+//! `IPSE_CHIRP_HANG=1` pins the base 0.3 m up (chirp-01, robot hanging): only
+//! the hip channel means anything then.
+//!
 //! `cargo run --release -p phyz-diff --example ipse_chirp RIG.txt [F0 F1 AMP SECONDS]`
 
 #[path = "common/ipse_rig.rs"]
@@ -82,6 +85,16 @@ fn main() {
     let mut hq: Vec<f64> = Vec::new();
     let mut res = ipse_rig::ActRes::from_env(dt);
     let mut sea = ipse_rig::Sea::from_env(&rig, &pd);
+    let mut lugre = ipse_rig::LuGre::from_env(&rig, &pd);
+    let hang = std::env::var("IPSE_CHIRP_HANG").is_ok();
+    let plant_delay: usize = std::env::var("IPSE_PLANT_DELAY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let mut delay = std::collections::VecDeque::new();
+    if hang {
+        x[5] += 0.3;
+    }
     let mut tsv = std::env::var("IPSE_CHIRP_TSV")
         .ok()
         .map(|p| std::io::BufWriter::new(std::fs::File::create(p).unwrap()));
@@ -98,7 +111,15 @@ fn main() {
         };
         // what the joint's PD sees: the commanded offset, or its filtered
         // version under the series-compliance stand-in
-        let c = res.as_mut().map_or(cmd, |r| r.step(&[cmd])[0]);
+        // IPSE_PLANT_DELAY steps before the joint acts on a command: the
+        // robot's hip lags its chirp by ~linear-in-f phase
+        delay.push_back(cmd);
+        let late = if delay.len() > plant_delay {
+            delay.pop_front().unwrap()
+        } else {
+            0.0
+        };
+        let c = res.as_mut().map_or(late, |r| r.step(&[late])[0]);
         for (s, &d) in pd.dofs.iter().enumerate() {
             x[nq + nv + s] = rig.q_target[d];
         }
@@ -111,9 +132,19 @@ fn main() {
         if let Some(sea) = sea.as_mut() {
             sea.apply(&mut x, nq, nv);
         }
+        if let Some(l) = lugre.as_mut() {
+            l.apply(&mut x, nq, nv);
+        }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);
         x[nq + nv + nu..].copy_from_slice(&out[nq + nv..]);
+        // IPSE_CHIRP_HANG: the base pinned 0.3 m up, feet clear of the
+        // floor — chirp-01 was run with the robot hanging
+        if hang {
+            x[..6].copy_from_slice(&rig.q0[..6]);
+            x[5] += 0.3;
+            x[nq..nq + 6].iter_mut().for_each(|v| *v = 0.0);
+        }
         if !x.iter().all(|v| v.is_finite()) || x[5] < 0.35 {
             println!("fell at t {t:.2} s");
             return;

@@ -522,3 +522,107 @@ impl Sea {
         }
     }
 }
+
+/// LuGre friction on the leg joints, integrated outside the traced graph
+/// and injected through the PD target (`target -= F / kp`, the [`Sea`]
+/// trick): a bristle state `z` with stiffness σ0 below breakaway, Stribeck
+/// sliding above it.
+///
+/// ```text
+/// ż = q̇ - σ0 |q̇| z / g(q̇) - σ0 z / c,   g(v) = Fc + (Fs - Fc) exp(-(v/vs)²)
+/// F = σ0 z + σ1 ż + σ2 q̇
+/// ```
+///
+/// Why: the K1's hip pitch moves ~10% of a ±0.01–0.02 rad chirp, flat from
+/// 2 to 13 Hz, hanging (chirp-01) as well as standing (chirp-03) — no load
+/// or contact model can do that, a stuck joint whose pre-sliding stiffness
+/// is ~9 kp can — while the policy runs' large, slow offsets track 0.5–0.9.
+/// `IPSE_LUGRE_S0` (σ0, N·m/rad), `IPSE_LUGRE_FS` (N·m), `IPSE_LUGRE_FC`
+/// (default Fs), `IPSE_LUGRE_VS` (rad/s, default 0.05), `IPSE_LUGRE_S1`,
+/// `IPSE_LUGRE_S2` (N·m·s/rad, default 0), `IPSE_LUGRE_CREEP` (c, N·m·s/rad:
+/// the bristles also relax through a damper, a Maxwell element, so a slow
+/// command creeps through while a fast one meets the stiff σ0 — the
+/// hardware's 7.5 Hz shake moved the hip 0.1× at 5 N·m, far past any
+/// breakaway, while slow sway tracks; default ∞); off unless σ0 and Fs > 0.
+/// The `z` update is the exact solution for q̇ held over the step, so it is
+/// stable at any σ0; the σ0 z torque itself is explicit, which holds to
+/// σ0 ≈ 5000 at dt 1 ms on the K1.
+pub struct LuGre {
+    /// (PD slot, v index, kp)
+    joints: Vec<(usize, usize, f64)>,
+    z: Vec<f64>,
+    s0: f64,
+    s1: f64,
+    s2: f64,
+    fs: f64,
+    fc: f64,
+    vs: f64,
+    /// σ0 / creep damping: the bristles' relaxation rate at rest (1/s)
+    relax: f64,
+    h: f64,
+}
+
+impl LuGre {
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        let env = |k: &str, d: f64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(d)
+        };
+        let (s0, fs) = (env("IPSE_LUGRE_S0", 0.0), env("IPSE_LUGRE_FS", 0.0));
+        if s0 <= 0.0 || fs <= 0.0 {
+            return None;
+        }
+        let model = rig.model();
+        let joints: Vec<_> = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter(|&(_, &v)| {
+                model.joints.iter().enumerate().any(|(j, jt)| {
+                    jt.ndof() == 1
+                        && model.v_offsets[j] == v
+                        && ["Hip", "Knee", "Ankle"].iter().any(|n| jt.name.contains(n))
+                })
+            })
+            .map(|(s, &v)| (s, v, pd.kp[s]))
+            .collect();
+        Some(Self {
+            z: vec![0.0; joints.len()],
+            joints,
+            s0,
+            s1: env("IPSE_LUGRE_S1", 0.0),
+            s2: env("IPSE_LUGRE_S2", 0.0),
+            fs,
+            fc: env("IPSE_LUGRE_FC", fs),
+            vs: env("IPSE_LUGRE_VS", 0.05),
+            relax: match env("IPSE_LUGRE_CREEP", 0.0) {
+                c if c > 0.0 => s0 / c,
+                _ => 0.0,
+            },
+            h: rig.dt,
+        })
+    }
+
+    /// Advance the bristles on `x`'s joint rates and shift the PD slots'
+    /// targets by the friction torque. `x = [q, v, targets, ...]`.
+    pub fn apply(&mut self, x: &mut [f64], nq: usize, nv: usize) {
+        for (i, &(s, v, kp)) in self.joints.iter().enumerate() {
+            let qd = x[nq + v];
+            let g = self.fc + (self.fs - self.fc) * (-(qd / self.vs).powi(2)).exp();
+            let a = self.s0 * qd.abs() / g + self.relax;
+            let z0 = self.z[i];
+            // ż = qd - a z, qd and a held: z → qd/a + (z0 - qd/a) e^{-ah}
+            let z = if a * self.h > 1e-9 {
+                let zs = qd / a;
+                zs + (z0 - zs) * (-a * self.h).exp()
+            } else {
+                z0 + qd * self.h
+            };
+            self.z[i] = z;
+            let f = self.s0 * z + self.s1 * (z - z0) / self.h + self.s2 * qd;
+            x[nq + nv + s] -= f / kp;
+        }
+    }
+}
