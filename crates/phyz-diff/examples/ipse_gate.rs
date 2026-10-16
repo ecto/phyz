@@ -305,6 +305,7 @@ fn rollout(
     let mut res = ipse_rig::ActRes::from_env(rig.dt);
     let mut sea = ipse_rig::Sea::from_env(rig, &pd);
     let mut lugre = ipse_rig::LuGre::from_env(rig, &pd);
+    let booster = ipse_rig::Booster::from_env(rig, &pd);
     let mut pending: std::collections::VecDeque<(usize, Vec<f64>)> = Default::default();
     let mut action = vec![0.0; dofs.len()];
     let mut prev: Vec<f64> = Vec::new();
@@ -375,6 +376,9 @@ fn rollout(
         }
         if let Some(l) = lugre.as_mut() {
             l.apply(&mut x, nq, nv);
+        }
+        if let Some(b) = booster.as_ref() {
+            b.apply(&mut x, nq, nv);
         }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);

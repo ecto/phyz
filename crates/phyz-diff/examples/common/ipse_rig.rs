@@ -155,6 +155,11 @@ impl Rig {
             if leg && Sea::enabled() {
                 joint.armature = 0.0;
             }
+            // Booster's parallel ankle: E4310 rotor reflected ×1.4 on pitch,
+            // ×0.4 on roll (booster_train `BoosterK1AnkleParaWrapperCfg`)
+            if Booster::enabled() && name.contains("Ankle") {
+                joint.armature = 0.0282528 * if name.contains("Pitch") { 1.4 } else { 0.4 };
+            }
         }
         model
     }
@@ -623,6 +628,75 @@ impl LuGre {
             self.z[i] = z;
             let f = self.s0 * z + self.s1 * (z - z0) / self.h + self.s2 * qd;
             x[nq + nv + s] -= f / kp;
+        }
+    }
+}
+
+/// Booster's own K1 actuator model (booster_train `BoosterDelayedPDActuator`):
+/// each leg joint's PD torque limited by a torque–speed curve — full effort
+/// up to a knee speed, falling linearly to zero at the no-load speed. Applied
+/// like [`Sea`]: the link target is rewritten so the traced PD produces the
+/// limited torque. `IPSE_BOOSTER=1` turns it (and the ankle armatures in
+/// [`Rig::model`]) on; the command delay is `IPSE_PLANT_DELAY`.
+pub struct Booster {
+    /// (PD slot, v index, kp, kd, effort, no-load speed, knee speed)
+    joints: Vec<(usize, usize, f64, f64, f64, f64, f64)>,
+}
+
+impl Booster {
+    pub fn enabled() -> bool {
+        std::env::var("IPSE_BOOSTER").is_ok_and(|v| v != "0")
+    }
+
+    /// (effort N·m, no-load rad/s, knee rad/s) per joint name.
+    fn motor(name: &str) -> Option<(f64, f64, f64)> {
+        Some(if name.contains("Hip_Pitch") {
+            (68.0, 14.66, 1.88)
+        } else if name.contains("Hip_Roll") {
+            (43.0, 12.15, 8.38)
+        } else if name.contains("Knee") {
+            (112.0, 12.57, 2.09)
+        } else if name.contains("Hip_Yaw") || name.contains("Ankle") {
+            (38.3, 17.59, 7.85)
+        } else {
+            return None;
+        })
+    }
+
+    pub fn from_env(rig: &Rig, pd: &PdLaw) -> Option<Self> {
+        if !Self::enabled() {
+            return None;
+        }
+        let model = rig.model();
+        let joints = pd
+            .dofs
+            .iter()
+            .enumerate()
+            .filter_map(|(s, &v)| {
+                let j = model
+                    .joints
+                    .iter()
+                    .enumerate()
+                    .position(|(j, jt)| jt.ndof() == 1 && model.v_offsets[j] == v)?;
+                let (e, vmax, knee) = Self::motor(&rig.joints[j].0)?;
+                Some((s, v, pd.kp[s], pd.kd[s], e.min(pd.effort[s]), vmax, knee))
+            })
+            .collect();
+        Some(Self { joints })
+    }
+
+    pub fn apply(&self, x: &mut [f64], nq: usize, nv: usize) {
+        let base = nq + nv;
+        for &(s, v, kp, kd, effort, vmax, knee) in &self.joints {
+            let (q, qd) = (x[v], x[nq + v]);
+            let tau = kp * (x[base + s] - q) - kd * qd;
+            let w = qd.abs();
+            let lim = if w <= knee {
+                effort
+            } else {
+                (effort * (vmax - w) / (vmax - knee)).max(0.0)
+            };
+            x[base + s] = q + (tau.clamp(-lim, lim) + kd * qd) / kp;
         }
     }
 }

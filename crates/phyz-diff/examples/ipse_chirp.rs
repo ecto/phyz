@@ -86,6 +86,7 @@ fn main() {
     let mut res = ipse_rig::ActRes::from_env(dt);
     let mut sea = ipse_rig::Sea::from_env(&rig, &pd);
     let mut lugre = ipse_rig::LuGre::from_env(&rig, &pd);
+    let booster = ipse_rig::Booster::from_env(&rig, &pd);
     let hang = std::env::var("IPSE_CHIRP_HANG").is_ok();
     let plant_delay: usize = std::env::var("IPSE_PLANT_DELAY")
         .ok()
@@ -134,6 +135,9 @@ fn main() {
         }
         if let Some(l) = lugre.as_mut() {
             l.apply(&mut x, nq, nv);
+        }
+        if let Some(b) = booster.as_ref() {
+            b.apply(&mut x, nq, nv);
         }
         fwd(&x, &mut out);
         x[..nq + nv].copy_from_slice(&out[..nq + nv]);
