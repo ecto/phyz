@@ -12,6 +12,10 @@ fn main() {
             .file("cuda/phyz_kernels.cu")
             .file("cuda/phyz_train.cu")
             .flag("-xc++")
+            // Bit-identity tests compare fused vs unfused kernels; GCC defaults
+            // to -ffp-contract=fast for GNU C++, so FMA contraction can differ
+            // per kernel when the target has FMA. Keep rounding strict.
+            .flag_if_supported("-ffp-contract=off")
             .std("c++14")
             .opt_level(2)
             .warnings(true)
