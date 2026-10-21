@@ -204,10 +204,13 @@ pub fn aba_with_external_forces(
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt)
-                + implicit_friction(model, joint, state.v[v_idx]);
+            let mut d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
+            // Opt-in only: an `Explicit` joint skips this entirely (not `+ 0.0`),
+            // so the default path is bit-for-bit the pre-opt-in expression.
+            if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+                d_i += c;
+            }
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -310,10 +313,13 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + armature[v_idx]
-                + implicit_damping(joint, model.dt)
-                + implicit_friction(model, joint, state.v[v_idx]);
+            let mut d_i =
+                s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
+            // Opt-in only: an `Explicit` joint skips this entirely (not `+ 0.0`),
+            // so the default path is bit-for-bit the pre-opt-in expression.
+            if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+                d_i += c;
+            }
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
@@ -394,10 +400,12 @@ fn implicit_damping(joint: &phyz_model::Joint, dt: f64) -> f64 {
 /// selects [`phyz_model::FrictionLossIntegration::Implicit`]. Single-DOF
 /// joints only, matching where the friction force itself is applied.
 #[inline]
-fn implicit_friction(model: &Model, joint: &phyz_model::Joint, qd: f64) -> f64 {
+fn implicit_friction(model: &Model, joint: &phyz_model::Joint, qd: f64) -> Option<f64> {
     match joint.friction_loss_integration {
-        phyz_model::FrictionLossIntegration::Explicit => 0.0,
-        phyz_model::FrictionLossIntegration::Implicit => model.dt * joint.friction_loss_secant(qd),
+        phyz_model::FrictionLossIntegration::Explicit => None,
+        phyz_model::FrictionLossIntegration::Implicit => {
+            Some(model.dt * joint.friction_loss_secant(qd))
+        }
     }
 }
 
@@ -410,14 +418,19 @@ fn implicit_friction(model: &Model, joint: &phyz_model::Joint, qd: f64) -> f64 {
 /// would inject joint velocity the next step's friction then has to remove —
 /// the same chatter the implicit treatment exists to eliminate. With it, the
 /// whole step is the linearly-implicit `(M + dt·C) Δv = dt·τ + Jᵀf`.
-pub fn implicit_friction_diag(model: &Model, state: &State) -> DVec {
-    let mut d = DVec::zeros(model.nv);
+///
+/// `None` when no joint opts in, so callers can skip the term entirely and the
+/// default path stays bit-for-bit unchanged.
+pub fn implicit_friction_diag(model: &Model, state: &State) -> Option<DVec> {
+    let mut d: Option<DVec> = None;
     for (ji, joint) in model.joints.iter().enumerate() {
         if joint.ndof() != 1 {
             continue;
         }
         let v_idx = model.v_offsets[ji];
-        d[v_idx] = implicit_friction(model, joint, state.v[v_idx]);
+        if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+            d.get_or_insert_with(|| DVec::zeros(model.nv))[v_idx] = c;
+        }
     }
     d
 }

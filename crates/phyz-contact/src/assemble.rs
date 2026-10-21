@@ -57,9 +57,11 @@ pub fn assemble(
     // Opt-in implicit dry friction (`FrictionLossIntegration::Implicit`): the
     // contact impulse sees the same `M + dt·C` the dynamics step integrates.
     // Identically zero for the default explicit treatment.
-    let ifric = phyz_rigid::implicit_friction_diag(model, state);
-    for i in 0..nv {
-        mass[(i, i)] += ifric[i];
+    // Skipped entirely (no `+ 0.0`) when nothing opts in.
+    if let Some(ifric) = phyz_rigid::implicit_friction_diag(model, state) {
+        for i in 0..nv {
+            mass[(i, i)] += ifric[i];
+        }
     }
     let inv_mass = invert_symmetric(&mass);
 

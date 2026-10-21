@@ -442,6 +442,9 @@ pub(crate) fn aba_gen<T: Scalar>(
     // the secant coefficient `friction_loss·tanh(qd/s)/qd`
     // (`Joint::friction_loss_secant`), carried through `T` so reverse mode sees
     // its velocity dependence.
+    let implicit = |joint: &Joint| {
+        joint.friction_loss_integration == phyz_model::FrictionLossIntegration::Implicit
+    };
     let ifric =
         |joint: &Joint, v_idx: usize| -> T { implicit_friction_gen(model, joint, v[v_idx]) };
 
@@ -467,10 +470,10 @@ pub(crate) fn aba_gen<T: Scalar>(
             let s_i = s[0];
             let ia = &i_a[i];
             let u_i = qfrc[v_idx] - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + T::from_f64(armature[v_idx])
-                + idamp(joint)
-                + ifric(joint, v_idx);
+            let mut d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            if implicit(joint) {
+                d_i += ifric(joint, v_idx);
+            }
             if d_i.to_f64().abs() < 1e-20 {
                 continue;
             }
@@ -557,10 +560,10 @@ pub(crate) fn aba_gen<T: Scalar>(
             let s = motion_cols::<T>(joint);
             let s_i = s[0];
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i))
-                + T::from_f64(armature[v_idx])
-                + idamp(joint)
-                + ifric(joint, v_idx);
+            let mut d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            if implicit(joint) {
+                d_i += ifric(joint, v_idx);
+            }
             if d_i.to_f64().abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
                 continue;
@@ -724,6 +727,9 @@ pub(crate) fn add_implicit_friction_diag_gen<T: Scalar>(model: &Model, v: &[T], 
     let nv = model.nv;
     for (ji, joint) in model.joints.iter().enumerate() {
         if joint.ndof() != 1 {
+            continue;
+        }
+        if joint.friction_loss_integration != phyz_model::FrictionLossIntegration::Implicit {
             continue;
         }
         let i = model.v_offsets[ji];
