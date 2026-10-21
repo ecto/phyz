@@ -66,8 +66,49 @@ pub struct Joint {
     pub effort_limit: Option<f64>,
     /// Velocity limit, if the source declares one. Descriptive only.
     pub velocity_limit: Option<f64>,
+    /// How the step integrates [`Self::friction_loss`]. Defaults to
+    /// [`FrictionLossIntegration::Explicit`], the historical physics; see the
+    /// enum for why [`FrictionLossIntegration::Implicit`] exists.
+    pub friction_loss_integration: FrictionLossIntegration,
     /// Name of the joint in the source file (empty if unnamed).
     pub name: String,
+}
+
+/// Integration scheme for the `tanh`-regularised dry joint friction.
+///
+/// The force law is the same in both: `-friction_loss·tanh(qd/s)`. What
+/// differs is when it is evaluated.
+///
+/// **Explicit** applies it at the start-of-step velocity. Near rest the force
+/// is a viscous damper of coefficient `friction_loss/s` (`50 N·m·s` for a
+/// `0.05` friction loss), and an explicit damper is stable only for
+/// `dt·c/M < 2`. A light joint — a hand, a head, an arm with millirad
+/// armature — breaks that by orders of magnitude at millisecond steps. The
+/// step map is then locally expanding around rest, the `tanh` saturation
+/// bounds it, and the joint rattles chaotically at `|qd| ~ s`. Trajectories
+/// are deterministic but not differentiable at any usable resolution: on the
+/// K1 standing rig a `1e-9` relative mass change grows by `~1.5×` per 2 ms
+/// step until it saturates, so finite differences never converge and an
+/// exact adjoint is (correctly) `1e10`–`1e17`.
+///
+/// **Implicit** keeps the explicit force and adds `dt·c(qd)` — the secant
+/// coefficient [`crate::Joint::friction_loss_secant`] — to the joint's
+/// diagonal in ABA, exactly as `dt·damping` already is for viscous damping.
+/// That is a linearly-implicit (semi-implicit Euler) treatment of the same
+/// force: the friction-only update becomes `v' = v/(1 + dt·c/M)`, stable for
+/// every `dt`, and smooth in the state, so gradients exist. It changes the
+/// trajectory at `O(dt)` near rest (the joint creeps to a stop instead of
+/// chattering), which is why it is opt-in and named rather than a silent
+/// default change.
+///
+/// CPU only (`phyz_rigid::aba` and its `phyz-diff` mirror): `phyz-gpu`'s kernels implement `Explicit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrictionLossIntegration {
+    /// Force evaluated at the start-of-step velocity (historical default).
+    #[default]
+    Explicit,
+    /// Secant coefficient moved onto the ABA diagonal (`dt·c(qd)`).
+    Implicit,
 }
 
 impl Default for Joint {
@@ -86,10 +127,15 @@ impl Default for Joint {
             friction_loss: 0.0,
             effort_limit: None,
             velocity_limit: None,
+            friction_loss_integration: FrictionLossIntegration::Explicit,
             name: String::new(),
         }
     }
 }
+
+/// Velocity scale of the `tanh` regularisation of dry joint friction
+/// ([`Joint::friction_loss`]): the force is `-friction_loss·tanh(qd/scale)`.
+pub const FRICTION_LOSS_VEL_SCALE: f64 = 1e-3;
 
 /// Default stiffness of the soft joint-limit force.
 ///
@@ -239,11 +285,36 @@ impl Joint {
                 // joint at rest does not chatter under an explicit integrator.
                 // A proper implementation is a box constraint on the friction
                 // force, which lands with the constraint solver.
-                const FRICTION_VEL_SCALE: f64 = 1e-3;
-                f += -self.friction_loss * fp::tanh(qd / FRICTION_VEL_SCALE);
+                f += -self.friction_loss * fp::tanh(qd / FRICTION_LOSS_VEL_SCALE);
             }
         }
         f
+    }
+
+    /// Secant damping coefficient of the regularised dry friction at `qd`:
+    /// `c(qd) = friction_loss · tanh(qd/s) / qd` (`s` =
+    /// [`FRICTION_LOSS_VEL_SCALE`]), so the friction force is exactly
+    /// `-c(qd)·qd`. Smooth and even in `qd`, `friction_loss/s` at rest, and `0`
+    /// for a frictionless or multi-DOF joint.
+    ///
+    /// This is the coefficient [`crate::FrictionLossIntegration::Implicit`]
+    /// moves onto the integrator's diagonal. The *secant* rather than the
+    /// tangent slope is deliberate: with the tangent, a step that starts in the
+    /// steep part of the `tanh` overshoots far past zero; with the secant the
+    /// friction-only update is `v' = v / (1 + dt·c/M)`, which shrinks `|v|`
+    /// monotonically for every `dt`.
+    pub fn friction_loss_secant(&self, qd: f64) -> f64 {
+        if self.ndof() != 1 || self.friction_loss <= 0.0 {
+            return 0.0;
+        }
+        let x = qd / FRICTION_LOSS_VEL_SCALE;
+        let ratio = if x.abs() < 1e-4 {
+            // tanh(x)/x = 1 - x²/3 + 2x⁴/15 - …; the series is exact to f64 here.
+            1.0 - x * x / 3.0
+        } else {
+            fp::tanh(x) / x
+        };
+        self.friction_loss / FRICTION_LOSS_VEL_SCALE * ratio
     }
 
     /// Compute the joint transform for the given joint position(s).

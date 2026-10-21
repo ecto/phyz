@@ -204,8 +204,13 @@ pub fn aba_with_external_forces(
 
             let ia = &i_a[i];
             let u_i = phyz_i - s_i.dot(&p_a[i]);
-            let d_i =
+            let mut d_i =
                 s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
+            // Opt-in only: an `Explicit` joint skips this entirely (not `+ 0.0`),
+            // so the default path is bit-for-bit the pre-opt-in expression.
+            if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+                d_i += c;
+            }
 
             if d_i.abs() < 1e-20 {
                 continue;
@@ -308,8 +313,13 @@ pub fn aba_with_external_forces(
         if ndof == 1 {
             let s_i = joint.motion_subspace();
             let ia = &i_a[i];
-            let d_i =
+            let mut d_i =
                 s_i.dot(&ia.mul_vec(&s_i)) + armature[v_idx] + implicit_damping(joint, model.dt);
+            // Opt-in only: an `Explicit` joint skips this entirely (not `+ 0.0`),
+            // so the default path is bit-for-bit the pre-opt-in expression.
+            if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+                d_i += c;
+            }
 
             if d_i.abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
@@ -382,6 +392,47 @@ pub fn aba_with_external_forces(
 #[inline]
 fn implicit_damping(joint: &phyz_model::Joint, dt: f64) -> f64 {
     dt * joint.damping
+}
+
+/// Opt-in implicit dry friction: `dt · c(qd)` on the diagonal, where `c` is
+/// the secant coefficient of the `tanh` friction law
+/// ([`phyz_model::Joint::friction_loss_secant`]). Zero unless the joint
+/// selects [`phyz_model::FrictionLossIntegration::Implicit`]. Single-DOF
+/// joints only, matching where the friction force itself is applied.
+#[inline]
+fn implicit_friction(model: &Model, joint: &phyz_model::Joint, qd: f64) -> Option<f64> {
+    match joint.friction_loss_integration {
+        phyz_model::FrictionLossIntegration::Explicit => None,
+        phyz_model::FrictionLossIntegration::Implicit => {
+            Some(model.dt * joint.friction_loss_secant(qd))
+        }
+    }
+}
+
+/// The opt-in implicit dry-friction diagonal, `dt·c(qd)` per DOF (zero for
+/// every joint left at [`phyz_model::FrictionLossIntegration::Explicit`]).
+///
+/// Unlike `dt·damping`, this term is also added to the mass matrix the contact
+/// solver uses (`phyz_contact::assemble`): `c` reaches `50 N·m·s` on a typical
+/// joint, so a contact impulse distributed as if the joint were frictionless
+/// would inject joint velocity the next step's friction then has to remove —
+/// the same chatter the implicit treatment exists to eliminate. With it, the
+/// whole step is the linearly-implicit `(M + dt·C) Δv = dt·τ + Jᵀf`.
+///
+/// `None` when no joint opts in, so callers can skip the term entirely and the
+/// default path stays bit-for-bit unchanged.
+pub fn implicit_friction_diag(model: &Model, state: &State) -> Option<DVec> {
+    let mut d: Option<DVec> = None;
+    for (ji, joint) in model.joints.iter().enumerate() {
+        if joint.ndof() != 1 {
+            continue;
+        }
+        let v_idx = model.v_offsets[ji];
+        if let Some(c) = implicit_friction(model, joint, state.v[v_idx]) {
+            d.get_or_insert_with(|| DVec::zeros(model.nv))[v_idx] = c;
+        }
+    }
+    d
 }
 
 /// Outer product of two 6D spatial vectors, returning a SpatialMat.

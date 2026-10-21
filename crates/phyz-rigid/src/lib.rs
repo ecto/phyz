@@ -25,7 +25,7 @@ pub mod jacobian;
 pub mod kinematics;
 pub mod rnea;
 
-pub use aba::{aba, aba_with_external_forces};
+pub use aba::{aba, aba_with_external_forces, implicit_friction_diag};
 pub use crba::crba;
 pub use energy::{kinetic_energy, potential_energy, total_energy};
 pub use ik::{IkConfig, IkGoal, IkGoalKind, IkSolution, residual_vector, solve_ik};

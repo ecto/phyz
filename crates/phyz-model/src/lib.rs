@@ -21,7 +21,7 @@ pub mod validate;
 
 pub use body::{Attachment, Body, GeomInstance, Geometry};
 pub use heightfield::Heightfield;
-pub use joint::{Joint, JointType};
+pub use joint::{FRICTION_LOSS_VEL_SCALE, FrictionLossIntegration, Joint, JointType};
 pub use material::{ContactMaterial, SolImp, SolRef};
 pub use model::{Actuator, Model, ModelBuilder};
 pub use state::State;

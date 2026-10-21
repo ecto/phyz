@@ -438,6 +438,15 @@ pub(crate) fn aba_gen<T: Scalar>(
     }
 
     let idamp = |joint: &Joint| T::from_f64(model.dt * joint.damping);
+    // Mirror of `phyz_rigid::aba`'s opt-in `implicit_friction`: `dt·c(qd)` with
+    // the secant coefficient `friction_loss·tanh(qd/s)/qd`
+    // (`Joint::friction_loss_secant`), carried through `T` so reverse mode sees
+    // its velocity dependence.
+    let implicit = |joint: &Joint| {
+        joint.friction_loss_integration == phyz_model::FrictionLossIntegration::Implicit
+    };
+    let ifric =
+        |joint: &Joint, v_idx: usize| -> T { implicit_friction_gen(model, joint, v[v_idx]) };
 
     // -- Pass 2 --
     for i in (0..nb).rev() {
@@ -461,7 +470,10 @@ pub(crate) fn aba_gen<T: Scalar>(
             let s_i = s[0];
             let ia = &i_a[i];
             let u_i = qfrc[v_idx] - s_i.dot(&p_a[i]);
-            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            let mut d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            if implicit(joint) {
+                d_i += ifric(joint, v_idx);
+            }
             if d_i.to_f64().abs() < 1e-20 {
                 continue;
             }
@@ -548,7 +560,10 @@ pub(crate) fn aba_gen<T: Scalar>(
             let s = motion_cols::<T>(joint);
             let s_i = s[0];
             let ia = &i_a[i];
-            let d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            let mut d_i = s_i.dot(&ia.mul_vec(&s_i)) + T::from_f64(armature[v_idx]) + idamp(joint);
+            if implicit(joint) {
+                d_i += ifric(joint, v_idx);
+            }
             if d_i.to_f64().abs() < 1e-20 {
                 acc[i] = a_parent + c_bias[i];
                 continue;
@@ -685,6 +700,43 @@ pub(crate) fn crba_gen<T: Scalar>(
 
 /// Mirror of `phyz_contact::assemble`'s `invert_symmetric`: Gauss-Jordan with
 /// partial pivoting, singular columns left as identity rows.
+/// Generic mirror of `phyz_rigid::aba`'s opt-in `implicit_friction`:
+/// `dt·c(qd)` with the secant coefficient `friction_loss·tanh(qd/s)/qd`
+/// (`Joint::friction_loss_secant`), carried through `T` so reverse mode sees its
+/// velocity dependence. Zero for an `Explicit` joint.
+pub(crate) fn implicit_friction_gen<T: Scalar>(model: &Model, joint: &Joint, qd: T) -> T {
+    if joint.friction_loss_integration != phyz_model::FrictionLossIntegration::Implicit
+        || joint.ndof() != 1
+        || joint.friction_loss <= 0.0
+    {
+        return T::ZERO;
+    }
+    let s = phyz_model::FRICTION_LOSS_VEL_SCALE;
+    let x = qd / T::from_f64(s);
+    let ratio = if x.to_f64().abs() < 1e-4 {
+        T::from_f64(1.0) - x * x / T::from_f64(3.0)
+    } else {
+        x.tanh() / x
+    };
+    T::from_f64(model.dt * joint.friction_loss / s) * ratio
+}
+
+/// Mirror of `phyz_contact::assemble`'s `phyz_rigid::implicit_friction_diag`
+/// term on the (flat, row-major) mass matrix.
+pub(crate) fn add_implicit_friction_diag_gen<T: Scalar>(model: &Model, v: &[T], mass: &mut [T]) {
+    let nv = model.nv;
+    for (ji, joint) in model.joints.iter().enumerate() {
+        if joint.ndof() != 1 {
+            continue;
+        }
+        if joint.friction_loss_integration != phyz_model::FrictionLossIntegration::Implicit {
+            continue;
+        }
+        let i = model.v_offsets[ji];
+        mass[i * nv + i] += implicit_friction_gen(model, joint, v[i]);
+    }
+}
+
 pub(crate) fn invert_sym_gen<T: Scalar>(m: &[T], n: usize) -> Vec<T> {
     let mut a = m.to_vec();
     let mut inv = vec![T::ZERO; n * n];

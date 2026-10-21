@@ -1338,7 +1338,8 @@ fn eval_pieces_gen<T: Scalar>(
     let dim = 3 * n;
 
     // Mass matrix and inverse (mirror of `assemble`'s crba + invert).
-    let mass = crba_gen(model, inertias, q);
+    let mut mass = crba_gen(model, inertias, q);
+    crate::model_generic::add_implicit_friction_diag_gen(model, v, &mut mass);
     let inv_mass = invert_sym_gen(&mass, nv);
 
     // Per-contact 3 × nv constraint Jacobian, rows [normal, u, w].
