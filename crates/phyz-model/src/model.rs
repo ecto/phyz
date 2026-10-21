@@ -154,6 +154,13 @@ pub struct Model {
 }
 
 impl Model {
+    /// Set [`crate::Joint::friction_loss_integration`] on every joint.
+    pub fn set_friction_loss_integration(&mut self, mode: crate::FrictionLossIntegration) {
+        for j in &mut self.joints {
+            j.friction_loss_integration = mode;
+        }
+    }
+
     /// Create a default empty state for this model.
     pub fn default_state(&self) -> State {
         State::new_with_nu(self.nq, self.nv, self.nu(), self.bodies.len())
