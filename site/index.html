@@ -221,7 +221,9 @@ pre .mac { color: var(--cyan); }
 .ex-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 .crate-tag { align-self: flex-start; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
 .ex-name { align-self: flex-start; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
-.ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.55; max-width: 44ch; }
+.ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.55; max-width: 46ch; }
+.ex-use { font-size: var(--s-sm); color: var(--fg); line-height: 1.55; max-width: 46ch; margin-top: 8px; }
+.ex-use b { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); margin-right: 8px; }
 .ro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; margin-top: 16px; }
 .ro:has(.ro-item:nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
 .ro-item { min-width: 0; }
@@ -390,17 +392,18 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
   <div class="container-wide">
     <div class="container" style="padding:0; margin-bottom: clamp(4rem, 7vw, 6rem)">
       <h2>Eighteen demos, running in this tab</h2>
-      <p class="lead" style="margin-bottom:0">Every card is a phyz crate compiled to WASM and drawn live. The readouts are the simulation's own numbers. Where a crate has a derivative, the card shows it doing work.</p>
+      <p class="lead" style="margin-bottom:0">Every card is a phyz crate compiled to WASM and drawn live, with the simulation's own numbers under it. Each one says what is happening and what you would use it for.</p>
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">01 · Bodies</span><p>Articulated rigid bodies on Featherstone's spatial algebra. O(n) forward dynamics, analytical Jacobians, contacts through GJK/EPA.</p></div>
+      <div class="ex-group-head"><span class="label-caps">01 · Bodies</span><p>Articulated rigid bodies on Featherstone's spatial algebra: O(n) forward dynamics, contacts through GJK/EPA, energy you can audit. The part of phyz a robot is made of.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-double"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-rigid">phyz-rigid</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/double_pendulum.rs">double_pendulum</a></div>
-            <p class="ex-desc">Two revolute joints with light viscous damping, RK4 at 1 ms. The energy readout is what the damping takes.</p>
+            <p class="ex-desc">Two links on revolute joints, integrated with RK4 at a millisecond. The trail is the lower tip; the energy readout is what the joint damping takes out each second, so the drift you see is physical, not numerical.</p>
+            <p class="ex-use"><b>For</b>Checking a solver: any integrator that loses energy without damping is wrong, and this card is the test.</p>
             <dl class="ro" id="ro-double"></dl>
           </figcaption>
         </figure>
@@ -408,7 +411,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cradle"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-rigid">phyz-rigid</a><a class="ex-name">newtons_cradle</a></div>
-            <p class="ex-desc">Five pendulums with sphere contacts. Momentum crosses the row through four near-elastic collisions a step.</p>
+            <p class="ex-desc">Five pendulums with sphere contacts between the bobs. An impulse enters on the left and crosses the row through four near-elastic collisions in a single step, so the far bob leaves before the near one has visibly moved.</p>
+            <p class="ex-use"><b>For</b>Impact-heavy mechanisms: latches, escapements, anything where contact timing decides the outcome.</p>
             <dl class="ro" id="ro-cradle"></dl>
           </figcaption>
         </figure>
@@ -416,7 +420,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cascade"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-contact">phyz-contact</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/ball_drop.rs">sphere_cascade</a></div>
-            <p class="ex-desc">Twenty spheres dropped into a pile. GJK/EPA narrow phase, penalty contacts, Coulomb friction. Drag to orbit.</p>
+            <p class="ex-desc">Twenty spheres dropped into a loose pile. GJK/EPA finds each contact pair, a penalty law resolves it, Coulomb friction stops the pile spreading. The pile height settles in about two seconds.</p>
+            <p class="ex-use"><b>For</b>Hoppers, bins, parts feeders, and any scene where many rigid bodies have to come to rest against each other.</p>
             <dl class="ro" id="ro-cascade"></dl>
           </figcaption>
         </figure>
@@ -424,13 +429,14 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">02 · Particles</span><p>Discrete elements, the material point method, and mass-spring bodies. Grains, sand, and a jelly.</p></div>
+      <div class="ex-group-head"><span class="label-caps">02 · Particles</span><p>Discrete elements, the material point method, and mass-spring bodies. For the materials that don't have a shape until you simulate them: grains, soils, jellies.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-hourglass"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name">hourglass</a></div>
-            <p class="ex-desc">DEM grains against funnel walls. The neck is five grain diameters wide, so the flow rate is set by arching, not gravity.</p>
+            <p class="ex-desc">Five hundred grains as discrete elements against funnel walls. The neck is five grain diameters wide, which is where arching starts, so the flow rate is set by grains jamming and un-jamming, not by gravity.</p>
+            <p class="ex-use"><b>For</b>Silo and hopper discharge, powder dosing, and the clogging behaviour that continuum models can't see.</p>
             <dl class="ro" id="ro-hourglass"></dl>
           </figcaption>
         </figure>
@@ -438,7 +444,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-granular"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/granular_column.rs">granular_column</a></div>
-            <p class="ex-desc">A column of sand collapses under a Drucker-Prager yield surface. MPM, so the grid carries the stress.</p>
+            <p class="ex-desc">A column of sand collapses under its own weight. The material point method carries stress on a background grid and a Drucker-Prager yield surface decides when it flows, so the run-out distance comes from the friction angle.</p>
+            <p class="ex-use"><b>For</b>Landslides, excavation, wheel-soil interaction, and tuning a soil model against a lab collapse test.</p>
             <dl class="ro" id="ro-granular"></dl>
           </figcaption>
         </figure>
@@ -446,7 +453,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-blob"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name">elastic_blob</a></div>
-            <p class="ex-desc">A disc of particles tied by springs, dropped. It squashes, rings, and settles. Springs are drawn, stretched ones in blue.</p>
+            <p class="ex-desc">A disc of particles tied by springs is dropped and lands on its edge. It squashes, rings, and settles; springs stretched past six percent are drawn in blue so you can see where the strain goes.</p>
+            <p class="ex-use"><b>For</b>Soft grippers, tyres, and padding: anything where a deformable part meets a hard one and you care about contact area.</p>
             <dl class="ro" id="ro-blob"></dl>
           </figcaption>
         </figure>
@@ -454,13 +462,14 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">03 · Fields</span><p>Grids instead of bodies. Maxwell on a Yee lattice, Boltzmann on D2Q9, and a thousand pendulums as one field.</p></div>
+      <div class="ex-group-head"><span class="label-caps">03 · Fields</span><p>Grids instead of bodies: Maxwell on a Yee lattice, Boltzmann on D2Q9, and a thousand pendulums drawn as one surface. Waves, flows, and sweeps.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-slit"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-em">phyz-em</a><a class="ex-name" href="https://github.com/ecto/phyz/tree/main/crates/phyz-em">double_slit</a></div>
-            <p class="ex-desc">A plane wave meets two slits. FDTD on an 80×80 Yee grid with a perfectly matched layer at the edges. Drawn as time-averaged intensity, so what builds up is the fringe pattern.</p>
+            <p class="ex-desc">A plane wave hits a wall with two slits. Maxwell's equations run on an 80×80 Yee grid with an absorbing boundary, and what's drawn is time-averaged intensity, so the picture that builds up is the interference pattern itself.</p>
+            <p class="ex-use"><b>For</b>Antenna and waveguide layouts, photonic structures, and radar cross-section studies at a scale a laptop can run.</p>
             <dl class="ro" id="ro-slit"></dl>
           </figcaption>
         </figure>
@@ -468,7 +477,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-vortex"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-lbm">phyz-lbm</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/lbm_cavity.rs">vortex_street</a></div>
-            <p class="ex-desc">Lattice Boltzmann flow past a cylinder. Vorticity is drawn, so the von Kármán street alternates sign down the wake.</p>
+            <p class="ex-desc">Flow past a cylinder on a D2Q9 lattice Boltzmann grid. Vorticity is drawn, blue one way and coral the other, so the von Kármán street alternating down the wake is visible as it sheds.</p>
+            <p class="ex-use"><b>For</b>Drag on bluff bodies, cooling flow through electronics, and fast 2D flow where a full Navier-Stokes solver is more than you need.</p>
             <dl class="ro" id="ro-vortex"></dl>
           </figcaption>
         </figure>
@@ -476,7 +486,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-wavefield"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-gpu">phyz-gpu</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/gpu_batch.rs">wave_field</a></div>
-            <p class="ex-desc">1,024 pendulums with lengths swept across the grid, released together. Their phases drift apart into a travelling wave. Drag to orbit.</p>
+            <p class="ex-desc">1,024 pendulums whose lengths sweep across the grid, all released at once. Their periods differ slightly, so their phases drift apart into a travelling wave and then back into step: a batched simulation drawn as one field.</p>
+            <p class="ex-use"><b>For</b>Parameter sweeps: run a thousand variants of a model at once and see the whole response surface, which is what the GPU batch path does at scale.</p>
             <dl class="ro" id="ro-wavefield"></dl>
           </figcaption>
         </figure>
@@ -484,13 +495,14 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">04 · Robots</span><p>Articulated trees under control. Torques in, the same O(n) dynamics out, one body or a hundred at once.</p></div>
+      <div class="ex-group-head"><span class="label-caps">04 · Robots</span><p>Articulated trees under control. Torques in, the same O(n) dynamics out, one body or a hundred at once. This is what the controller runs against.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-ant"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-mjcf">phyz-mjcf</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/ant.rs">ant_trot</a></div>
-            <p class="ex-desc">An eight-joint quadruped, torso fixed, trotting in the air. Each joint is a PD servo chasing a gait; the torques go through the articulated-body algorithm. Drag to orbit.</p>
+            <p class="ex-desc">An eight-joint quadruped with the torso fixed. Each joint is a PD servo chasing a trot, diagonal legs in phase; the torques go in as control inputs and the articulated-body algorithm gives back the motion. Drag to orbit.</p>
+            <p class="ex-use"><b>For</b>Gait design and controller tuning before touching hardware, with the same O(n) dynamics the robot's own controller can run.</p>
             <dl class="ro" id="ro-ant"></dl>
           </figcaption>
         </figure>
@@ -498,7 +510,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cartpole"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">phyz-env</a><a class="ex-name" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">cartpole</a></div>
-            <p class="ex-desc">The classic control benchmark. A PD law on angle and position holds the pole up and brings the cart home.</p>
+            <p class="ex-desc">The classic control benchmark: a pole balanced on a cart by a PD law on angle and position. It recovers from a quarter-radian push, brings the cart back to centre, and resets every fourteen seconds.</p>
+            <p class="ex-use"><b>For</b>A first test for any controller or learned policy, and a sanity check that the dynamics match the textbook.</p>
             <dl class="ro" id="ro-cartpole"></dl>
           </figcaption>
         </figure>
@@ -506,7 +519,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-policy"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">phyz-env</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/gpu_batch.rs">policy_sweep</a></div>
-            <p class="ex-desc">One hundred inverted pendulums, each with a different PD gain pair. The ones that stand up light up. A policy search, batched.</p>
+            <p class="ex-desc">One hundred inverted pendulums, each with a different pair of PD gains. The ones that stand up light up; the ones that don't fall. The grid is the gain space, read directly.</p>
+            <p class="ex-use"><b>For</b>Batched policy search and reinforcement learning: thousands of environments stepping together is how training data gets made.</p>
             <dl class="ro" id="ro-policy"></dl>
           </figcaption>
         </figure>
@@ -514,13 +528,14 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">05 · Gradients</span><p>Every simulation on this page is differentiable. These three put the gradient to work, and two of them differentiate through contact.</p></div>
+      <div class="ex-group-head"><span class="label-caps">05 · Gradients</span><p>Every simulation on this page is differentiable. These three put the gradient to work, and two of them differentiate through contact, which is where most engines stop.</p></div>
       <div class="examples-grid">
         <figure class="ex ex-interactive">
           <canvas id="ex-massadj"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-diff">phyz-diff</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/crates/phyz-diff/src/rollout/adjoint.rs">shape_adjoint</a></div>
-            <p class="ex-desc">A spinning box lands somewhere. One adjoint pass through the whole rollout gives ∂(landing)/∂(every corner) and ∂/∂mass, exact, in one backward sweep. The arrows are the corner gradients: move a corner that way and it lands further right.</p>
+            <p class="ex-desc">A spinning box lands somewhere. One backward pass through the whole rollout returns ∂(landing)/∂(every corner) and ∂/∂mass, exactly. The arrows on the corners are those gradients: move a corner that way and it lands further right. Drag sideways to change the spin.</p>
+            <p class="ex-use"><b>For</b>Design optimisation with physics in the loop: let the shape or the mass distribution be the thing you optimise, not just the controller.</p>
             <dl class="ro" id="ro-massadj"></dl>
             <span class="ex-hint">drag sideways to change the spin</span>
           </figcaption>
@@ -529,7 +544,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-contactadj"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-diff">phyz-diff</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/crates/phyz-diff/src/contact_adjoint.rs">contact_adjoint</a></div>
-            <p class="ex-desc">A block on a slope, with the same convex Coulomb contact the simulator ships, differentiated through the solve. Below the friction angle it sticks and d(slide)/dμ is exactly zero. Tip it past and the derivative switches on.</p>
+            <p class="ex-desc">A block on a slope with the convex Coulomb contact the simulator ships, differentiated through the contact solve. Below the friction angle it sticks and d(slide)/dμ is exactly zero; past it, the derivative switches on and matches the closed form. Drag up and down to tilt.</p>
+            <p class="ex-use"><b>For</b>System identification of friction and restitution from real contact data, and gradient-based control through impacts.</p>
             <dl class="ro" id="ro-contactadj"></dl>
             <span class="ex-hint">drag up and down to tilt the slope</span>
           </figcaption>
@@ -538,7 +554,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-paramfit"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-real2sim">phyz-real2sim</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/real2sim_pendulum.rs">real2sim</a></div>
-            <p class="ex-desc">Pull the pendulum back and let go: that's the recording, in bone. The model starts with the wrong length, in blue, and gradient descent on the trajectory error pulls it onto your swing.</p>
+            <p class="ex-desc">Pull the pendulum back and let go: that's the recording, in bone. The model starts with the wrong length, in blue, and gradient descent on the trajectory error pulls it onto your swing. Mass gets a gradient too, and it's zero, because a pendulum's period doesn't depend on it.</p>
+            <p class="ex-use"><b>For</b>Fitting a simulator to a real robot's logs so that what you plan in sim holds on the floor.</p>
             <dl class="ro" id="ro-paramfit"></dl>
             <span class="ex-hint">drag the bob and release</span>
           </figcaption>
@@ -547,13 +564,14 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">06 · Soft</span><p>Position-based dynamics with real compliance: metres per newton, so the stretch you see is a material property, not an iteration count.</p></div>
+      <div class="ex-group-head"><span class="label-caps">06 · Soft</span><p>Position-based dynamics with real compliance, metres per newton, so the stretch you see is a material property and not an iteration count. Cloth, cables, and anything that hangs.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-flag"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cloth_flag</a></div>
-            <p class="ex-desc">A 28×18 cloth pinned down one edge, in a gusting wind. Structural, shear and bending constraints at 8 substeps a frame. Edges turn blue where they're stretched. Drag to orbit.</p>
+            <p class="ex-desc">A 28×18 cloth pinned down one edge in a gusting wind. Position-based dynamics with real compliance, in metres per newton: structural, shear and bending constraints at eight substeps a frame. Edges turn blue where they're stretched. Drag to orbit.</p>
+            <p class="ex-use"><b>For</b>Sails, banners, tarps and cable-stayed fabric where the wind load matters more than the stitch.</p>
             <dl class="ro" id="ro-flag"></dl>
           </figcaption>
         </figure>
@@ -561,7 +579,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-drape"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cloth_drape</a></div>
-            <p class="ex-desc">A square cloth dropped over a sphere onto a floor. The crate itself has no collisions; this card projects particles out of the sphere after each step, which is all PBD needs. Drag to orbit.</p>
+            <p class="ex-desc">A square cloth dropped over a sphere onto a floor. The solver has no collisions of its own, so this card projects particles out of the sphere between short solver calls, which is all position-based dynamics needs. Drag to orbit.</p>
+            <p class="ex-use"><b>For</b>Garments, covers and packaging: how a flexible sheet settles over a rigid thing underneath.</p>
             <dl class="ro" id="ro-drape"></dl>
           </figcaption>
         </figure>
@@ -569,7 +588,8 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cable"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cable</a></div>
-            <p class="ex-desc">Two metres of cable hung across 1.6 m of span. It falls into a catenary and hangs there; the readout is how much the links stretch under their own weight, which is compliance × tension and nothing else.</p>
+            <p class="ex-desc">Two metres of cable hung across 1.6 metres of span. It falls into a catenary and hangs there; the readout is how much the links stretch under their own weight, which is compliance times tension and nothing else.</p>
+            <p class="ex-use"><b>For</b>Tethers, hoses and power cables on robots and cranes, where sag and tension have to be right before anything else is.</p>
             <dl class="ro" id="ro-cable"></dl>
           </figcaption>
         </figure>
