@@ -73,6 +73,7 @@ export const wasmdiffgradientsim_current_y: (a: number) => number;
 export const wasmdiffgradientsim_iteration: (a: number) => number;
 export const wasmdiffgradientsim_loss_history: (a: number) => [number, number];
 export const wasmdiffgradientsim_new: () => number;
+export const wasmdiffgradientsim_set_target_x: (a: number, b: number) => void;
 export const wasmdiffgradientsim_step_n: (a: number, b: number) => void;
 export const wasmdiffgradientsim_target_x: (a: number) => number;
 export const wasmdiffgradientsim_theta0: (a: number) => number;

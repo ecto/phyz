@@ -492,6 +492,14 @@ export class WasmDiffGradientSim {
         return WasmDiffGradientSim.__wrap(ret);
     }
     /**
+     * Move the target. The descent continues from the current θ₀, so the
+     * loss curve shows the re-fit.
+     * @param {number} x
+     */
+    set_target_x(x) {
+        wasm.wasmdiffgradientsim_set_target_x(this.__wbg_ptr, x);
+    }
+    /**
      * Run one gradient descent step: simulate forward, compute loss gradient, update theta0.
      * @param {number} n
      */
@@ -1366,7 +1374,7 @@ export class WasmLbmSim {
         return ret;
     }
     /**
-     * Velocity magnitude field as flat array [nx*ny].
+     * Velocity magnitude field as flat array `[nx*ny]`.
      * @returns {Float64Array}
      */
     velocity_field() {

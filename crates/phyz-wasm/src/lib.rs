@@ -2095,6 +2095,16 @@ impl WasmMdSim {
                 self.vx[i] += 0.5 * (ax_old[i] + self.ax[i]) * self.dt;
                 self.vy[i] += 0.5 * (ay_old[i] + self.ay[i]) * self.dt;
             }
+            // Speed cap: no particle crosses more than σ/4 per step.
+            let vmax = 0.25 * self.sigma / self.dt;
+            for i in 0..self.n {
+                let v2 = self.vx[i] * self.vx[i] + self.vy[i] * self.vy[i];
+                if v2 > vmax * vmax {
+                    let s = vmax / v2.sqrt();
+                    self.vx[i] *= s;
+                    self.vy[i] *= s;
+                }
+            }
             // Apply velocity damping (thermostat for cooling simulations)
             if self.damping < 1.0 {
                 for i in 0..self.n {
@@ -2176,6 +2186,10 @@ impl WasmMdSim {
                 let dy = self.min_img(self.py[j] - self.py[i]);
                 let r2 = dx * dx + dy * dy;
                 if r2 < rc2 && r2 > 1e-20 {
+                    // Soft core: below 0.8σ the 1/r^12 wall is steeper than the
+                    // integrator can follow at this dt, so clamp the separation
+                    // used for the force. Keeps a hot start from blowing up.
+                    let r2 = r2.max(0.64 * s2);
                     let s2r2 = s2 / r2;
                     let s6 = s2r2 * s2r2 * s2r2;
                     let f = 24.0 * self.epsilon * (2.0 * s6 * s6 - s6) / r2;
@@ -4827,6 +4841,14 @@ impl WasmDiffGradientSim {
         }
     }
 
+    /// Move the target. The descent continues from the current θ₀, so the
+    /// loss curve shows the re-fit.
+    pub fn set_target_x(&mut self, x: f64) {
+        self.target_x = x.clamp(-0.85 * self.length, 0.85 * self.length);
+        self.loss_history.clear();
+        self.iteration = 0;
+    }
+
     /// Run one gradient descent step: simulate forward, compute loss gradient, update theta0.
     pub fn step_n(&mut self, n: usize) {
         for _ in 0..n {
@@ -4834,9 +4856,9 @@ impl WasmDiffGradientSim {
             self.state = self.model.default_state();
             self.state.q[0] = self.theta0;
 
-            // Simulate 500 steps forward
+            // Simulate 250 ms forward: a quarter period, so x_final still depends on θ₀
             let dt = self.model.dt;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let q0 = self.state.q.clone();
                 let v0 = self.state.v.clone();
                 let k1v = aba(&self.model, &self.state);
@@ -4867,7 +4889,7 @@ impl WasmDiffGradientSim {
             let eps = 1e-5;
             let mut sp = self.model.default_state();
             sp.q[0] = self.theta0 + eps;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let acc = aba(&self.model, &sp);
                 sp.v = dv_add_scaled(&sp.v, &acc, dt);
                 let v_tmp = sp.v.clone();
@@ -4878,7 +4900,7 @@ impl WasmDiffGradientSim {
 
             let mut sm = self.model.default_state();
             sm.q[0] = self.theta0 - eps;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let acc = aba(&self.model, &sm);
                 sm.v = dv_add_scaled(&sm.v, &acc, dt);
                 let v_tmp = sm.v.clone();
@@ -5436,7 +5458,7 @@ impl WasmReal2SimFitSim {
         let true_mass = 1.0;
         let true_length = 1.5;
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
 
         // Generate reference trajectory
         let ref_traj = Self::simulate_pendulum(true_mass, true_length, 0.8, dt, n_steps);
@@ -5557,7 +5579,7 @@ impl WasmReal2SimLandscapeSim {
     #[allow(clippy::new_without_default)]
     pub fn new() -> WasmReal2SimLandscapeSim {
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
         let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
 
         let grid_size = 32;
@@ -5676,7 +5698,7 @@ impl WasmReal2SimAdamVsGdSim {
     #[allow(clippy::new_without_default)]
     pub fn new() -> WasmReal2SimAdamVsGdSim {
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
         let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
 
         WasmReal2SimAdamVsGdSim {
