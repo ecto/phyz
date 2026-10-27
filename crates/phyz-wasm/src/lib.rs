@@ -3,21 +3,21 @@ use wasm_bindgen::prelude::*;
 mod quantum;
 pub use quantum::*;
 
+use phyz_contact::{ContactMaterial, ContactSolverConfig};
+use phyz_diff::rollout::DofLayout;
 use phyz_diff::semi_implicit_step_jacobians;
 use phyz_diff::symbolic::CompiledStepJacobians;
 use phyz_diff::{
-    AdjointRollout, CollisionMesh, ContactSetup, ConvexContactRollout,
-    FinalStateObjective, GroundContact, adjoint_rollout_gradient, convex_adjoint_gradient,
+    AdjointRollout, CollisionMesh, ContactSetup, ConvexContactRollout, FinalStateObjective,
+    GroundContact, adjoint_rollout_gradient, convex_adjoint_gradient,
     convex_rollout_objective_and_state, rollout_objective,
 };
-use phyz_contact::{ContactMaterial, ContactSolverConfig};
-use phyz_model::Geometry;
-use phyz_diff::rollout::DofLayout;
-use std::cell::RefCell;
-use phyz_xpbd::{Constraint, ParticleSystem, XpbdSolver};
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
+use phyz_model::Geometry;
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
+use phyz_xpbd::{Constraint, ParticleSystem, XpbdSolver};
+use std::cell::RefCell;
 
 /// DVec addition: &a + &b
 fn dv_add(a: &DVec, b: &DVec) -> DVec {
@@ -78,7 +78,11 @@ impl WasmSim {
         let mut state = model.default_state();
         state.q[0] = 0.8;
 
-        WasmSim { model, state, jac: None }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// Double pendulum with viscous damping.
@@ -127,7 +131,11 @@ impl WasmSim {
         state.q[0] = std::f64::consts::FRAC_PI_4 * 2.4;
         state.q[1] = std::f64::consts::FRAC_PI_4 * 1.6;
 
-        WasmSim { model, state, jac: None }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// N-link chain with viscous damping.
@@ -174,7 +182,11 @@ impl WasmSim {
             state.q[i] = 0.05;
         }
 
-        WasmSim { model, state, jac: None }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// Step the simulation forward n times using RK4.
@@ -5298,7 +5310,11 @@ impl WasmMjcfAntSim {
         for _ in 0..n {
             let t = self.state.time;
             for leg in 0..4 {
-                let phase = if leg % 2 == 0 { 0.0 } else { std::f64::consts::PI };
+                let phase = if leg % 2 == 0 {
+                    0.0
+                } else {
+                    std::f64::consts::PI
+                };
                 let hip_t = 0.45 + 0.35 * (omega * t + phase).sin();
                 let shin_t = -0.9 + 0.35 * (omega * t + phase + std::f64::consts::FRAC_PI_2).sin();
                 for (j, target) in [(leg * 2, hip_t), (leg * 2 + 1, shin_t)] {
@@ -5620,7 +5636,13 @@ impl WasmReal2SimFitSim {
     /// from the same wrong guess.
     pub fn set_release(&mut self, q0: f64) {
         self.release = q0.clamp(-2.6, 2.6);
-        self.ref_traj = Self::simulate_pendulum(self.true_mass, self.true_length, self.release, self.dt, self.n_steps);
+        self.ref_traj = Self::simulate_pendulum(
+            self.true_mass,
+            self.true_length,
+            self.release,
+            self.dt,
+            self.n_steps,
+        );
         self.est_mass = 2.0;
         self.est_length = 1.0;
         self.loss_history.clear();
@@ -5630,7 +5652,13 @@ impl WasmReal2SimFitSim {
         self.release
     }
     pub fn est_trajectory(&self) -> Vec<f64> {
-        Self::simulate_pendulum(self.est_mass, self.est_length, self.release, self.dt, self.n_steps)
+        Self::simulate_pendulum(
+            self.est_mass,
+            self.est_length,
+            self.release,
+            self.dt,
+            self.n_steps,
+        )
     }
     pub fn ref_trajectory(&self) -> Vec<f64> {
         self.ref_traj.clone()
@@ -6369,7 +6397,6 @@ impl WasmCompileFusionSim {
     }
 }
 
-
 // ================================================================
 // phyz-diff: trajectory adjoint on a box drop
 // ================================================================
@@ -6405,7 +6432,11 @@ impl WasmMassAdjointSim {
                 "box",
                 -1,
                 SpatialTransform::identity(),
-                SpatialInertia::new(mass, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::zeros(),
+                    Mat3::from_diagonal(&Vec3::new(i, i, i)),
+                ),
             )
             .build();
         let mut sim = WasmMassAdjointSim {
@@ -6451,8 +6482,15 @@ impl WasmMassAdjointSim {
 
     fn compute(&mut self) {
         let (q0, v0) = self.initial();
-        let meshes = vec![CollisionMesh { body: 0, vertices: self.corners_vec() }];
-        let ground = GroundContact { height: 0.0, stiffness: 2500.0, damping: 25.0 };
+        let meshes = vec![CollisionMesh {
+            body: 0,
+            vertices: self.corners_vec(),
+        }];
+        let ground = GroundContact {
+            height: 0.0,
+            stiffness: 2500.0,
+            damping: 25.0,
+        };
         let ctrl = |_t: usize| DVec::zeros(6);
         let value = |q: &[f64], _v: &[f64]| q[0];
         let gradient = |q: &[f64], v: &[f64]| {
@@ -6460,10 +6498,16 @@ impl WasmMassAdjointSim {
             gq[0] = 1.0;
             (gq, vec![0.0; v.len()])
         };
-        let obj = FinalStateObjective { value: &value, gradient: &gradient };
+        let obj = FinalStateObjective {
+            value: &value,
+            gradient: &gradient,
+        };
         let rollout = AdjointRollout {
             model: &self.model,
-            contact: Some(ContactSetup { ground, meshes: &meshes }),
+            contact: Some(ContactSetup {
+                ground,
+                meshes: &meshes,
+            }),
             q0: q0.clone(),
             v0: v0.clone(),
             steps: self.steps,
@@ -6472,7 +6516,10 @@ impl WasmMassAdjointSim {
         let g = adjoint_rollout_gradient(&rollout, &obj);
         self.objective = g.objective;
         self.d_inertia = g.d_inertia[0].to_vec();
-        self.d_vertices = g.d_vertices[0].iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+        self.d_vertices = g.d_vertices[0]
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
 
         // Trajectory samples for drawing: the rollout is the same code path.
         let cell = RefCell::new(Vec::new());
@@ -6481,13 +6528,19 @@ impl WasmMassAdjointSim {
             0.0
         };
         let zero_grad = |q: &[f64], v: &[f64]| (vec![0.0; q.len()], vec![0.0; v.len()]);
-        let probe = FinalStateObjective { value: &capture, gradient: &zero_grad };
+        let probe = FinalStateObjective {
+            value: &capture,
+            gradient: &zero_grad,
+        };
         let mut traj = Vec::with_capacity(self.samples * 7);
         for s in 0..self.samples {
             let k = ((s + 1) * self.steps) / self.samples;
             let r = AdjointRollout {
                 model: &self.model,
-                contact: Some(ContactSetup { ground, meshes: &meshes }),
+                contact: Some(ContactSetup {
+                    ground,
+                    meshes: &meshes,
+                }),
                 q0: q0.clone(),
                 v0: v0.clone(),
                 steps: k,
@@ -6523,7 +6576,10 @@ impl WasmMassAdjointSim {
         self.d_vertices.clone()
     }
     pub fn corners(&self) -> Vec<f64> {
-        self.corners_vec().iter().flat_map(|p| [p.x, p.y, p.z]).collect()
+        self.corners_vec()
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect()
     }
     /// `samples × [x, y, z, qw, qx, qy, qz]`.
     pub fn trajectory(&self) -> Vec<f64> {
@@ -6591,16 +6647,25 @@ impl WasmContactAdjointSim {
                 "box",
                 -1,
                 SpatialTransform::identity(),
-                SpatialInertia::new(mass, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::zeros(),
+                    Mat3::from_diagonal(&Vec3::new(i, i, i)),
+                ),
             )
             .build();
-        model.bodies[0].geometry = Some(Geometry::Box { half_extents: Vec3::new(self.half, self.half, self.half) });
+        model.bodies[0].geometry = Some(Geometry::Box {
+            half_extents: Vec3::new(self.half, self.half, self.half),
+        });
         model
     }
 
     fn compute(&mut self) {
         let model = self.model();
-        let material = ContactMaterial { friction: self.friction, ..ContactMaterial::default() };
+        let material = ContactMaterial {
+            friction: self.friction,
+            ..ContactMaterial::default()
+        };
         let ctrl = |_t: usize| DVec::zeros(6);
         let value = |q: &[f64], _v: &[f64]| q[3];
         let gradient = |q: &[f64], v: &[f64]| {
@@ -6608,7 +6673,10 @@ impl WasmContactAdjointSim {
             gq[3] = 1.0;
             (gq, vec![0.0; v.len()])
         };
-        let obj = FinalStateObjective { value: &value, gradient: &gradient };
+        let obj = FinalStateObjective {
+            value: &value,
+            gradient: &gradient,
+        };
         let mk = |steps: usize| ConvexContactRollout {
             model: &model,
             ground_height: 0.0,
@@ -6684,7 +6752,6 @@ impl WasmContactAdjointSim {
     }
 }
 
-
 // ================================================================
 // phyz-xpbd: cloth and cables
 // ================================================================
@@ -6709,14 +6776,29 @@ pub struct WasmClothSim {
 
 #[wasm_bindgen]
 impl WasmClothSim {
-    fn grid(w: usize, h: usize, spacing: f64, origin: Vec3, horizontal: bool, compliance: f64) -> WasmClothSim {
+    fn grid(
+        w: usize,
+        h: usize,
+        spacing: f64,
+        origin: Vec3,
+        horizontal: bool,
+        compliance: f64,
+    ) -> WasmClothSim {
         let mut p = ParticleSystem::new();
         for j in 0..h {
             for i in 0..w {
                 let (x, y, z) = if horizontal {
-                    (origin.x + i as f64 * spacing, origin.y, origin.z + j as f64 * spacing)
+                    (
+                        origin.x + i as f64 * spacing,
+                        origin.y,
+                        origin.z + j as f64 * spacing,
+                    )
                 } else {
-                    (origin.x + i as f64 * spacing, origin.y - j as f64 * spacing, origin.z)
+                    (
+                        origin.x + i as f64 * spacing,
+                        origin.y - j as f64 * spacing,
+                        origin.z,
+                    )
                 };
                 p.add(Vec3::new(x, y, z), 0.02);
             }
@@ -6729,12 +6811,22 @@ impl WasmClothSim {
         for j in 0..h {
             for i in 0..w {
                 if i + 1 < w {
-                    cs.push(Constraint::distance(idx(i, j), idx(i + 1, j), spacing, compliance));
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i + 1, j),
+                        spacing,
+                        compliance,
+                    ));
                     edges.extend([idx(i, j) as u32, idx(i + 1, j) as u32]);
                     rest.push(spacing);
                 }
                 if j + 1 < h {
-                    cs.push(Constraint::distance(idx(i, j), idx(i, j + 1), spacing, compliance));
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i, j + 1),
+                        spacing,
+                        compliance,
+                    ));
                     edges.extend([idx(i, j) as u32, idx(i, j + 1) as u32]);
                     rest.push(spacing);
                 }
@@ -6746,24 +6838,50 @@ impl WasmClothSim {
         let d = spacing * std::f64::consts::SQRT_2;
         for j in 0..h.saturating_sub(1) {
             for i in 0..w.saturating_sub(1) {
-                cs.push(Constraint::distance(idx(i, j), idx(i + 1, j + 1), d, compliance * 4.0));
-                cs.push(Constraint::distance(idx(i + 1, j), idx(i, j + 1), d, compliance * 4.0));
+                cs.push(Constraint::distance(
+                    idx(i, j),
+                    idx(i + 1, j + 1),
+                    d,
+                    compliance * 4.0,
+                ));
+                cs.push(Constraint::distance(
+                    idx(i + 1, j),
+                    idx(i, j + 1),
+                    d,
+                    compliance * 4.0,
+                ));
             }
         }
         for j in 0..h {
             for i in 0..w {
                 if i + 2 < w {
-                    cs.push(Constraint::distance(idx(i, j), idx(i + 2, j), 2.0 * spacing, compliance * 40.0));
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i + 2, j),
+                        2.0 * spacing,
+                        compliance * 40.0,
+                    ));
                 }
                 if j + 2 < h {
-                    cs.push(Constraint::distance(idx(i, j), idx(i, j + 2), 2.0 * spacing, compliance * 40.0));
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i, j + 2),
+                        2.0 * spacing,
+                        compliance * 40.0,
+                    ));
                 }
             }
         }
         WasmClothSim {
             particles: p,
             constraints: cs,
-            solver: XpbdSolver { dt: 1.0 / 60.0, substeps: 8, iterations: 1, damping: 0.6, ..XpbdSolver::default() },
+            solver: XpbdSolver {
+                dt: 1.0 / 60.0,
+                substeps: 8,
+                iterations: 1,
+                damping: 0.6,
+                ..XpbdSolver::default()
+            },
             edges,
             rest,
             n_struct,
@@ -6830,16 +6948,25 @@ impl WasmClothSim {
                 let acc: Vec<Vec3> = (0..n)
                     .map(|i| {
                         let x = self.particles.positions[i].x;
-                        Vec3::new(0.0, 0.0, self.wind * (0.6 + 0.4 * ((x * 5.0 + self.time * 3.0).sin())))
+                        Vec3::new(
+                            0.0,
+                            0.0,
+                            self.wind * (0.6 + 0.4 * ((x * 5.0 + self.time * 3.0).sin())),
+                        )
                     })
                     .collect();
-                self.solver.step_with_forces(&mut self.particles, &mut self.constraints, &acc);
+                self.solver
+                    .step_with_forces(&mut self.particles, &mut self.constraints, &acc);
             } else if self.sphere.is_some() || self.floor.is_some() {
                 // Collisions are not the crate's job, so they are done here as
                 // position projections between short solver calls. Each
                 // projection also cancels the inward velocity, otherwise gravity
                 // keeps integrating into the obstacle and the cloth tunnels.
-                let sub = XpbdSolver { dt: self.solver.dt / 4.0, substeps: 2, ..self.solver };
+                let sub = XpbdSolver {
+                    dt: self.solver.dt / 4.0,
+                    substeps: 2,
+                    ..self.solver
+                };
                 for _ in 0..4 {
                     sub.step(&mut self.particles, &mut self.constraints);
                     if let Some((c, r)) = self.sphere {
@@ -6850,10 +6977,11 @@ impl WasmClothSim {
                             if len < rr && len > 1e-9 {
                                 let nrm = d * (1.0 / len);
                                 self.particles.positions[i] = c + nrm * rr;
-                                let vn = self.particles.velocities[i].dot(&nrm);
+                                let vn = self.particles.velocities[i].dot(nrm);
                                 if vn < 0.0 {
                                     // drop the inward part and most of the slide: a rough sphere
-                                    self.particles.velocities[i] = (self.particles.velocities[i] - nrm * vn) * 0.35;
+                                    self.particles.velocities[i] =
+                                        (self.particles.velocities[i] - nrm * vn) * 0.35;
                                 }
                                 self.particles.prev_positions[i] = self.particles.positions[i];
                             }
@@ -6865,7 +6993,7 @@ impl WasmClothSim {
                                 self.particles.positions[i].y = y;
                                 if self.particles.velocities[i].y < 0.0 {
                                     self.particles.velocities[i].y = 0.0;
-                                    self.particles.velocities[i] = self.particles.velocities[i] * 0.5;
+                                    self.particles.velocities[i] *= 0.5;
                                 }
                                 self.particles.prev_positions[i] = self.particles.positions[i];
                             }
@@ -6880,7 +7008,11 @@ impl WasmClothSim {
     }
 
     pub fn positions(&self) -> Vec<f64> {
-        self.particles.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect()
+        self.particles
+            .positions
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect()
     }
     /// Structural edges as index pairs.
     pub fn edges(&self) -> Vec<u32> {
@@ -6898,7 +7030,13 @@ impl WasmClothSim {
             .collect()
     }
     pub fn pinned(&self) -> Vec<u32> {
-        self.particles.inv_mass.iter().enumerate().filter(|(_, w)| **w == 0.0).map(|(i, _)| i as u32).collect()
+        self.particles
+            .inv_mass
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w == 0.0)
+            .map(|(i, _)| i as u32)
+            .collect()
     }
     pub fn num_particles(&self) -> usize {
         self.particles.len()
@@ -6917,10 +7055,11 @@ impl WasmClothSim {
     }
     /// `[cx, cy, cz, r]` for the drape, empty otherwise.
     pub fn sphere(&self) -> Vec<f64> {
-        self.sphere.map(|(c, r)| vec![c.x, c.y, c.z, r]).unwrap_or_default()
+        self.sphere
+            .map(|(c, r)| vec![c.x, c.y, c.z, r])
+            .unwrap_or_default()
     }
     pub fn floor_y(&self) -> f64 {
         self.floor.unwrap_or(f64::NAN)
     }
 }
-
