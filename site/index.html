@@ -112,8 +112,8 @@ a:hover { background: var(--flame-ink); color: #fff; }
 #theme-toggle:hover { color: var(--flame-ink); }
 
 /* ── hero ── */
-.hero { position: relative; padding: clamp(6rem, 12vw, 9rem) 0 clamp(3rem, 6vw, 4.5rem); overflow: hidden; }
-.hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .45; }
+.hero { position: relative; padding: clamp(7rem, 14vw, 11rem) 0 clamp(5rem, 8vw, 7rem); overflow: hidden; }
+.hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .hero-content { position: relative; z-index: 1; }
 .hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 2rem; }
 .hero-mark { width: 64px; height: 64px; color: var(--flame-ink); }
@@ -144,14 +144,14 @@ a.hero-btn:hover, button.hero-btn:hover, .hero-cmd:hover { background: var(--fla
 :root[data-theme="dark"] .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
 
 /* ── sections ── */
-section { padding: clamp(4rem, 9vw, 7rem) 0; }
+section { padding: clamp(5rem, 11vw, 9rem) 0; }
 h2 { font-size: var(--s-lg); line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1rem; }
-.lead { font-size: var(--s-body); color: var(--fg); max-width: 60ch; margin: 0 0 2.75rem; line-height: 1.62; }
+.lead { font-size: var(--s-body); color: var(--fg); max-width: 60ch; margin: 0 0 3.5rem; line-height: 1.62; }
 
 /* ── proof strip: readouts with a hairline left edge ── */
 .proof { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 1.25rem; }
 @media (max-width: 640px) { .proof { grid-template-columns: 1fr; gap: 1.5rem 0; } }
-.proof-item { display: flex; flex-direction: column; gap: 6px; border-left: 0.5px solid var(--border); padding-left: 14px; }
+.proof-item { display: flex; flex-direction: column; gap: 6px; }
 .proof-val { font-family: var(--mono); font-size: var(--s-xl); font-weight: 500; line-height: 1.1; }
 .proof-val small { font-size: var(--s-sm); color: var(--muted); }
 .proof-label { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
@@ -195,28 +195,23 @@ pre .mac { color: var(--cyan); }
 .ex canvas { width: 100%; aspect-ratio: 4 / 3; background: var(--viz-bg); display: block; cursor: grab; touch-action: none; }
 .ex canvas:active { cursor: grabbing; }
 .ex-interactive canvas { cursor: crosshair; }
-.ex-hero { margin-bottom: clamp(3rem, 6vw, 4.5rem); }
-.ex-hero canvas { aspect-ratio: 21 / 9; }
-.ex-hero .ex-meta { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1.5rem 3rem; align-items: start; }
-.ex-hero .ex-head { grid-column: 1 / -1; }
-.ex-hero .ro { margin-top: 0; }
-.ex-meta { padding-top: 12px; }
+.ex-meta { padding-top: 16px; }
 .ex-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
 .crate-tag { align-self: flex-start; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
 .ex-name { align-self: flex-start; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
 .ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.55; max-width: 44ch; }
-.ro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; margin-top: 12px; }
+.ro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 16px; margin-top: 16px; }
 .ro:has(.ro-item:nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 10px; }
-.ex-hero .ro:has(.ro-item:nth-child(4)) { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.ro-item { border-left: 0.5px solid var(--border); padding-left: 9px; min-width: 0; }
+.ro-item { min-width: 0; }
 .ro dt { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ro dd { font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); font-variant-numeric: tabular-nums; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ro dd { font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .ex-hint { display: inline-block; margin-top: 10px; font-family: var(--mono); font-size: var(--s-xs); color: var(--flame-ink); }
 .ex-hint::before { content: "↳ "; }
-.ex-group { margin-top: clamp(3rem, 6vw, 4.5rem); }
-.ex-group-head { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 1rem 2rem; align-items: baseline; border-top: 0.5px solid var(--border); padding-top: 14px; margin-bottom: 1.5rem; }
+.ex-group { margin-top: clamp(5rem, 9vw, 7.5rem); }
+.ex-group:first-of-type { margin-top: 0; }
+.ex-group-head { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 1rem 2rem; align-items: baseline; margin-bottom: 2.25rem; }
 .ex-group-head p { font-size: var(--s-sm); color: var(--muted); max-width: 60ch; }
-.examples-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px 24px; }
+.examples-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 56px 32px; }
 
 /* ── footer ── */
 .site-foot { text-align: center; padding: clamp(5rem, 11vw, 9rem) 1rem 4rem; color: var(--muted); font-size: var(--s-sm); }
@@ -230,9 +225,6 @@ pre .mac { color: var(--cyan); }
 @media (max-width: 1100px) { .examples-grid { grid-template-columns: repeat(2, 1fr); } .ex-group-head { grid-template-columns: 1fr; gap: 6px; } }
 @media (max-width: 700px) {
   .examples-grid { grid-template-columns: 1fr; }
-  .ex-hero canvas { aspect-ratio: 4 / 3; }
-  .ex-hero .ex-meta { grid-template-columns: 1fr; }
-  .ex-hero .ro:has(.ro-item:nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .container-wide { padding: 0 16px; }
   .hero h1 { font-size: 48px; }
   .hero-mark { width: 48px; height: 48px; }
@@ -287,7 +279,7 @@ pre .mac { color: var(--cyan); }
 </header>
 
 <!-- Proof -->
-<section style="padding-top:0">
+<section style="padding-top:0; padding-bottom: clamp(3rem, 6vw, 5rem)">
   <div class="container">
     <div class="proof">
       <div class="proof-item">
@@ -307,7 +299,7 @@ pre .mac { color: var(--cyan); }
 </section>
 
 <!-- Pitch -->
-<section class="pitch" style="padding-top:0">
+<section class="pitch">
   <div class="container">
     <h2>What it is</h2>
     <p>
@@ -368,21 +360,12 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
 </section>
 
 <!-- Crate Examples -->
-<section class="examples" style="padding-top:0">
+<section class="examples">
   <div class="container-wide">
-    <div class="container" style="padding:0; margin-bottom: 2.75rem">
-      <h2>Sixteen demos, running in this tab</h2>
+    <div class="container" style="padding:0; margin-bottom: clamp(4rem, 7vw, 6rem)">
+      <h2>Fifteen demos, running in this tab</h2>
       <p class="lead" style="margin-bottom:0">Every card is a phyz crate compiled to WASM and drawn live. The readouts are the simulation's own numbers. Where a crate has a derivative, the card shows it doing work.</p>
     </div>
-
-    <figure class="ex ex-hero">
-      <canvas id="ex-ensemble"></canvas>
-      <figcaption class="ex-meta">
-        <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-gpu">phyz-gpu</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/ensemble_pendulum.rs">ensemble_divergence</a></div>
-        <p class="ex-desc">One hundred double pendulums, released from the same angle to one part in a million. The same batched articulated-body algorithm that runs thousands of environments on the GPU, here on one thread. Five are traced.</p>
-        <dl class="ro" id="ro-ensemble"></dl>
-      </figcaption>
-    </figure>
 
     <div class="ex-group">
       <div class="ex-group-head"><span class="label-caps">01 · Bodies</span><p>Articulated rigid bodies on Featherstone's spatial algebra. O(n) forward dynamics, analytical Jacobians, contacts through GJK/EPA.</p></div>
@@ -528,7 +511,7 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <canvas id="ex-lossland"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-real2sim">phyz-real2sim</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/real2sim_pendulum.rs">loss_landscape</a></div>
-            <p class="ex-desc">The same fit from above: loss over the mass–length plane, blue where it's low. The valley runs flat along mass, which is what an unidentifiable parameter looks like.</p>
+            <p class="ex-desc">The same fit from above: log loss over the mass–length plane, blue where it's low, contours a decade apart. The valley runs flat along mass, which is what an unidentifiable parameter looks like.</p>
             <dl class="ro" id="ro-lossland"></dl>
           </figcaption>
         </figure>
@@ -556,7 +539,7 @@ window.vizPalette = () => {
   const cs = getComputedStyle(document.documentElement);
   const hex = n => parseInt(cs.getPropertyValue(n).trim().slice(1), 16);
   return {
-    bg: hex('--viz-bg'), fg: hex('--viz-fg'), muted: hex('--viz-muted'), ground: hex('--viz-ground'),
+    page: hex('--bg'), bg: hex('--viz-bg'), fg: hex('--viz-fg'), muted: hex('--viz-muted'), ground: hex('--viz-ground'),
     flame: hex('--viz-flame'), cyan: hex('--viz-cyan'), amber: hex('--viz-amber'),
     coral: hex('--viz-coral'), orange: hex('--viz-orange'), purple: hex('--viz-purple'),
   };
@@ -564,67 +547,6 @@ window.vizPalette = () => {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if (!document.documentElement.dataset.theme) window.dispatchEvent(new Event('themechange'));
 });
-</script>
-
-<!-- Hero background: lightweight 2D trace (no WASM needed) -->
-<script>
-(function() {
-  const canvas = document.getElementById('sim');
-  const ctx = canvas.getContext('2d');
-  let w, h, dpr;
-  function resize() {
-    dpr = window.devicePixelRatio || 1;
-    const rect = canvas.parentElement.getBoundingClientRect();
-    w = rect.width; h = rect.height;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-  resize();
-  window.addEventListener('resize', resize);
-  const g = 9.81, l1 = 0.35, l2 = 0.30, m1 = 1.0, m2 = 1.0;
-  let th1 = Math.PI*0.75, th2 = Math.PI*0.5, w1 = 0, w2 = 0;
-  const dt = 0.004, spf = 4, trail = [], maxTrail = 600;
-  function derivs(t1,t2,o1,o2) {
-    const s=Math.sin(t1-t2),c=Math.cos(t1-t2),den=2*m1+m2-m2*Math.cos(2*(t1-t2));
-    return [o1,o2,
-      (-g*(2*m1+m2)*Math.sin(t1)-m2*g*Math.sin(t1-2*t2)-2*s*m2*(o2*o2*l2+o1*o1*l1*c))/(l1*den),
-      (2*s*(o1*o1*l1*(m1+m2)+g*(m1+m2)*Math.cos(t1)+o2*o2*l2*m2*c))/(l2*den)];
-  }
-  function step() {
-    for (let i=0;i<spf;i++) {
-      const k1=derivs(th1,th2,w1,w2);
-      const k2=derivs(th1+dt/2*k1[0],th2+dt/2*k1[1],w1+dt/2*k1[2],w2+dt/2*k1[3]);
-      const k3=derivs(th1+dt/2*k2[0],th2+dt/2*k2[1],w1+dt/2*k2[2],w2+dt/2*k2[3]);
-      const k4=derivs(th1+dt*k3[0],th2+dt*k3[1],w1+dt*k3[2],w2+dt*k3[3]);
-      th1+=dt/6*(k1[0]+2*k2[0]+2*k3[0]+k4[0]);
-      th2+=dt/6*(k1[1]+2*k2[1]+2*k3[1]+k4[1]);
-      w1+=dt/6*(k1[2]+2*k2[2]+2*k3[2]+k4[2]);
-      w2+=dt/6*(k1[3]+2*k2[3]+2*k3[3]+k4[3]);
-    }
-    const sc=Math.min(w,h)*0.9,ox=w*0.7,oy=h*0.35;
-    trail.push([ox+l1*sc*Math.sin(th1)+l2*sc*Math.sin(th2),oy+l1*sc*Math.cos(th1)+l2*sc*Math.cos(th2)]);
-    if(trail.length>maxTrail) trail.shift();
-  }
-  let tr=0,tg=0,tb=0,fr=0,fg_=0,fb=0;
-  function readTheme(){ const p=window.vizPalette(); [tr,tg,tb]=[p.flame>>16&255,p.flame>>8&255,p.flame&255]; [fr,fg_,fb]=[p.fg>>16&255,p.fg>>8&255,p.fg&255]; }
-  readTheme(); window.addEventListener('themechange', readTheme);
-  function draw() {
-    ctx.clearRect(0,0,w,h);
-    for(let i=1;i<trail.length;i++){
-      ctx.beginPath();ctx.moveTo(trail[i-1][0],trail[i-1][1]);ctx.lineTo(trail[i][0],trail[i][1]);
-      ctx.strokeStyle=`rgba(${tr},${tg},${tb},${i/trail.length*0.55})`;ctx.lineWidth=0.8;ctx.stroke();
-    }
-    const sc=Math.min(w,h)*0.9,ox=w*0.7,oy=h*0.35;
-    const x1=ox+l1*sc*Math.sin(th1),y1=oy+l1*sc*Math.cos(th1);
-    const x2=x1+l2*sc*Math.sin(th2),y2=y1+l2*sc*Math.cos(th2);
-    ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);
-    ctx.strokeStyle=`rgba(${fr},${fg_},${fb},0.22)`;ctx.lineWidth=1;ctx.stroke();
-    ctx.fillStyle=`rgba(${fr},${fg_},${fb},0.3)`;
-    [[ox,oy],[x1,y1],[x2,y2]].forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fill();});
-  }
-  (function loop(){step();draw();requestAnimationFrame(loop);})();
-})();
 </script>
 
 <!-- Three.js examples powered by phyz WASM -->
@@ -648,7 +570,6 @@ import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEn
 let P = window.vizPalette();
 window.addEventListener('themechange', () => {
   P = window.vizPalette();
-  sharedRenderer.setClearColor(P.bg);
   for (const e of vizEntries.values()) e.initialized = false;
 });
 const rgb = hex => [(hex >> 16 & 255) / 255, (hex >> 8 & 255) / 255, (hex & 255) / 255];
@@ -670,7 +591,6 @@ function rampDiv(v) {
 const sharedCanvas = document.createElement('canvas');
 const sharedRenderer = new THREE.WebGLRenderer({ canvas: sharedCanvas, antialias: true });
 sharedRenderer.setPixelRatio(1);
-sharedRenderer.setClearColor(P.bg);
 
 const vizEntries = new Map();
 const visibleSet = new Set();
@@ -725,6 +645,7 @@ function globalLoop() {
     const dpr = window.devicePixelRatio || 1;
     const pw = Math.floor(w * dpr), ph = Math.floor(h * dpr);
     sharedRenderer.setSize(pw, ph, false);
+    sharedRenderer.setClearColor(entry.clearColor ?? P.bg);
     entry.camera.aspect = w / h;
     entry.camera.updateProjectionMatrix();
     entry.controls.update();
@@ -884,32 +805,29 @@ await init();
 // =========================================
 // hero: phyz-gpu ensemble divergence
 // =========================================
-registerViz('ex-ensemble', () => {
+registerViz('sim', () => {
   const sim = WasmEnsembleSim.new();
   const N = sim.num_instances();
-  const { scene, camera, controls, canvas } = createScene('ex-ensemble', { rotate: false });
+  const { scene, camera, controls, canvas } = createScene('sim', { rotate: false });
   camera.aspect = canvas.getBoundingClientRect().width / canvas.getBoundingClientRect().height;
-  fit(camera, controls, 0, -0.85, 0, 2.3, 1.5);
-
-  scene.add(dot(0.025, P.fg));
-  const dots = points(N, 3.5, { color: P.flame }); scene.add(dots.obj);
+  // pivot sits right of the copy: target is left of the pivot, so the pivot lands at ~70% of the width
+  const wide = camera.aspect > 1.2;
+  fit(camera, controls, wide ? -1.9 : 0, -0.6, 0, wide ? 2.6 : 2.2, 2.4);
+  scene.add(dot(0.03, P.fg));
+  const dots = points(N, 3, { color: P.flame }); scene.add(dots.obj);
   const traced = [0, 25, 50, 75, 99];
   const colors = [P.flame, P.cyan, P.amber, P.coral, P.purple];
-  const trails = traced.map((_, k) => trail(600, colors[k], 0.55));
+  const trails = traced.map((_, k) => trail(700, colors[k], 0.4));
   trails.forEach(t => scene.add(t.line));
-
   return { scene, camera, controls, canvas, update() {
+    if (sim.time() > 40) return 0; // settled into noise: the stall detector restarts it
     sim.step_n(16);
     const pos = sim.endpoint_positions();
-    let mx = 0, my = 0;
-    for (let i = 0; i < N; i++) { dots.setPos(i, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]); mx += pos[i * 3]; my += pos[i * 3 + 1]; }
-    mx /= N; my /= N;
-    let s2 = 0;
-    for (let i = 0; i < N; i++) { const dx = pos[i * 3] - mx, dy = pos[i * 3 + 1] - my; s2 += dx * dx + dy * dy; }
+    for (let i = 0; i < N; i++) dots.setPos(i, pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
     dots.commit();
     traced.forEach((i, k) => trails[k].push(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]));
-    readout('ensemble', [['t', secs(sim.time())], ['envs', String(N)], ['δθ₀', '1e-6 rad'], ['spread', `${Math.sqrt(s2 / N).toFixed(3)} m`]]);
-  }};
+    return 1;
+  }, clearColor: P.page };
 });
 
 // =========================================
@@ -981,12 +899,13 @@ registerViz('ex-cascade', () => {
   }
   let prev = 0;
   return { scene, camera, controls, canvas, update() {
+    if (sim.time() > 9) return 0; // settled: the stall detector re-drops the pile
     sim.step_n(32);
     const p = sim.positions();
     let top = 0;
     for (let i = 0; i < N; i++) { spheres[i].position.set(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]); top = Math.max(top, p[i * 3 + 1]); }
     readout('cascade', [['t', secs(sim.time())], ['bodies', String(N)], ['pile height', `${top.toFixed(2)} m`]]);
-    const d = Math.abs(p[1] - prev); prev = p[1]; return d;
+    return 1;
   }};
 });
 
@@ -1293,6 +1212,7 @@ registerViz('ex-paramfit', () => {
   let prevL = 0, prevM = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
+    if (sim.iteration() > 190) return 0; // converged: restart the fit
     const e = sim.est_trajectory();
     for (let i = 0; i < T; i++) est.set(i, X(i), Y(e[i]), 0.01);
     est.commit(T);
@@ -1308,17 +1228,36 @@ registerViz('ex-lossland', () => {
   fit(camera, controls, 0, 0, 0, 1, 1);
   const f = field(N, N, 2, 2); scene.add(f.mesh);
   const g = sim.grid(); const gmin = Math.min(...g), gmax = Math.max(...g);
-  const lo = Math.log(1e-3), hi = Math.log(gmax - gmin + 1e-3);
+  // the grid is already log-loss, so a linear ramp over it reads as decades
   for (let i = 0; i < N * N; i++) {
-    const t = (Math.log(g[i] - gmin + 1e-3) - lo) / (hi - lo); // 0 at the minimum
-    f.px(i, rampSeq(1 - t));
+    const t = (g[i] - gmin) / (gmax - gmin + 1e-10); // 0 at the minimum
+    f.px(i, rampSeq(Math.pow(1 - t, 1.5)));
   }
   f.commit();
+  // contour hairlines by marching squares, levels spaced in log loss
+  const levels = [0.1, 0.22, 0.36, 0.52, 0.7, 0.88].map(t => gmin + t * (gmax - gmin));
+  const segs = [];
+  const X = c => (c / (N - 1)) * 2 - 1, Y = r => (r / (N - 1)) * 2 - 1;
+  for (const lv of levels) for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const v = [g[r * N + c], g[r * N + c + 1], g[(r + 1) * N + c + 1], g[(r + 1) * N + c]];
+    const P4 = [[X(c), Y(r)], [X(c + 1), Y(r)], [X(c + 1), Y(r + 1)], [X(c), Y(r + 1)]];
+    const cross = [];
+    for (let k = 0; k < 4; k++) {
+      const a = v[k], b = v[(k + 1) % 4];
+      if ((a < lv) !== (b < lv)) { const t = (lv - a) / (b - a); cross.push([P4[k][0] + (P4[(k + 1) % 4][0] - P4[k][0]) * t, P4[k][1] + (P4[(k + 1) % 4][1] - P4[k][1]) * t]); }
+    }
+    if (cross.length === 2) segs.push(cross[0], cross[1]);
+    else if (cross.length === 4) segs.push(cross[0], cross[1], cross[2], cross[3]);
+  }
+  const contours = segments(segs.length / 2, P.fg, 0.5); scene.add(contours.line);
+  for (let k = 0; k < segs.length / 2; k++) contours.set(k, segs[k * 2][0], segs[k * 2][1], 0.005, segs[k * 2 + 1][0], segs[k * 2 + 1][1], 0.005);
+  contours.commit();
   const path = polyline(200, P.fg, 0.9); scene.add(path.line);
   const head = dot(0.035, P.fg); scene.add(head);
   let prevL = 0, prevM = 0;
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
+    if (sim.path_m().length > 190) return 0; // converged: restart the descent
     const pm = sim.path_m(), pl = sim.path_l(), n = Math.min(pm.length, 200);
     for (let i = 0; i < n; i++) path.set(i, ((pm[i] - 0.3) / 2.7) * 2 - 1, ((pl[i] - 0.5) / 2.0) * 2 - 1, 0.01);
     path.commit(n);
