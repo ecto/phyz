@@ -1,6 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_wasmclothsim_free: (a: number, b: number) => void;
 export const __wbg_wasmcompilefusionsim_free: (a: number, b: number) => void;
 export const __wbg_wasmcompileirsim_free: (a: number, b: number) => void;
 export const __wbg_wasmcompilewgslsim_free: (a: number, b: number) => void;
@@ -39,6 +40,21 @@ export const __wbg_wasmrubegoldbergsim_free: (a: number, b: number) => void;
 export const __wbg_wasmsim_free: (a: number, b: number) => void;
 export const __wbg_wasmwavefieldsim_free: (a: number, b: number) => void;
 export const __wbg_wasmworldsim_free: (a: number, b: number) => void;
+export const wasmclothsim_cable: () => number;
+export const wasmclothsim_drape: () => number;
+export const wasmclothsim_edges: (a: number) => [number, number];
+export const wasmclothsim_flag: () => number;
+export const wasmclothsim_floor_y: (a: number) => number;
+export const wasmclothsim_kinetic_energy: (a: number) => number;
+export const wasmclothsim_num_constraints: (a: number) => number;
+export const wasmclothsim_num_particles: (a: number) => number;
+export const wasmclothsim_pinned: (a: number) => [number, number];
+export const wasmclothsim_positions: (a: number) => [number, number];
+export const wasmclothsim_sphere: (a: number) => [number, number];
+export const wasmclothsim_step_n: (a: number, b: number) => void;
+export const wasmclothsim_stretch: (a: number) => [number, number];
+export const wasmclothsim_time: (a: number) => number;
+export const wasmclothsim_wind: (a: number) => number;
 export const wasmcompilefusionsim_a_count: (a: number) => number;
 export const wasmcompilefusionsim_a_names: (a: number) => [number, number];
 export const wasmcompilefusionsim_b_count: (a: number) => number;

@@ -29,5 +29,6 @@ phyz-model.workspace = true
 phyz-rigid.workspace = true
 phyz-diff.workspace = true
 phyz-contact.workspace = true
+phyz-xpbd.workspace = true
 phyz-regge.workspace = true
 phyz-quantum.workspace = true

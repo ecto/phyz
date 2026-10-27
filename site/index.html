@@ -116,7 +116,21 @@ a:hover { background: var(--flame-ink); color: #fff; }
 .hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .hero-content { position: relative; z-index: 1; }
 .hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 2rem; }
-.hero-mark { width: 64px; height: 64px; color: var(--flame-ink); }
+.hero-mark { width: 128px; height: 64px; color: var(--flame-ink); }
+@keyframes phyz-bounce {
+  0%   { transform: translateY(-4px) scaleY(1); animation-timing-function: cubic-bezier(0.55, 0.06, 0.68, 0.19); }
+  45%  { transform: translateY(16px) scaleY(1); animation-timing-function: linear; }
+  50%  { transform: translateY(17px) scaleY(0.6); animation-timing-function: linear; }
+  55%  { transform: translateY(16px) scaleY(1); animation-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1); }
+  100% { transform: translateY(-4px) scaleY(1); }
+}
+@keyframes phyz-shadow {
+  0%, 100% { transform: scaleX(0.55); opacity: 0.2; }
+  50%      { transform: scaleX(1.1); opacity: 0.55; }
+}
+.g-phyz-ball { transform-origin: 50% 100%; transform-box: fill-box; animation: phyz-bounce 1.1s infinite; }
+.g-phyz-shadow ellipse { transform-origin: center; transform-box: fill-box; animation: phyz-shadow 1.1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .g-phyz-ball, .g-phyz-shadow ellipse { animation: none; } }
 .hero h1 { font-family: var(--sans); font-size: var(--s-display); line-height: 1; font-weight: 600; letter-spacing: -0.035em; }
 .hero h1 .dot { color: var(--flame-ink); }
 .hero-claim { font-size: var(--s-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 1.1rem; max-width: 24ch; }
@@ -235,7 +249,7 @@ pre .mac { color: var(--cyan); }
   .examples-grid { grid-template-columns: 1fr; }
   .container-wide { padding: 0 16px; }
   .hero h1 { font-size: 48px; }
-  .hero-mark { width: 48px; height: 48px; }
+  .hero-mark { width: 96px; height: 48px; }
   pre { font-size: 12px; padding: 14px 16px; }
 }
 
@@ -257,13 +271,11 @@ pre .mac { color: var(--cyan); }
   <canvas id="sim"></canvas>
   <div class="container hero-content">
     <div class="hero-brand">
-      <svg class="hero-mark" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
-        <circle cx="32" cy="8" r="3" fill="currentColor" stroke="none"/>
-        <path d="M32 8 L20 34"/>
-        <circle cx="20" cy="34" r="3" fill="currentColor" stroke="none"/>
-        <path d="M20 34 L44 52"/>
-        <circle cx="44" cy="52" r="4.5" fill="currentColor" stroke="none"/>
-        <path d="M44 52 C 54 44, 56 30, 46 22" stroke-opacity=".45" stroke-dasharray="2 4"/>
+      <!-- the phyz glyph from campedersen.com: a ball bouncing on a line -->
+      <svg class="hero-mark" viewBox="0 0 64 32" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+        <line x1="2" y1="28" x2="62" y2="28"/>
+        <g class="g-phyz-shadow"><ellipse cx="32" cy="29" rx="4" ry="0.8" fill="currentColor" stroke="none" opacity="0.35"/></g>
+        <g class="g-phyz-ball"><circle cx="32" cy="8" r="3.5" fill="currentColor" stroke="none"/></g>
       </svg>
       <h1>phyz<span class="dot">.</span></h1>
     </div>
@@ -377,7 +389,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
 <section class="examples">
   <div class="container-wide">
     <div class="container" style="padding:0; margin-bottom: clamp(4rem, 7vw, 6rem)">
-      <h2>Fifteen demos, running in this tab</h2>
+      <h2>Eighteen demos, running in this tab</h2>
       <p class="lead" style="margin-bottom:0">Every card is a phyz crate compiled to WASM and drawn live. The readouts are the simulation's own numbers. Where a crate has a derivative, the card shows it doing work.</p>
     </div>
 
@@ -533,6 +545,36 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
         </figure>
       </div>
     </div>
+
+    <div class="ex-group">
+      <div class="ex-group-head"><span class="label-caps">06 · Soft</span><p>Position-based dynamics with real compliance: metres per newton, so the stretch you see is a material property, not an iteration count.</p></div>
+      <div class="examples-grid">
+        <figure class="ex">
+          <canvas id="ex-flag"></canvas>
+          <figcaption class="ex-meta">
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cloth_flag</a></div>
+            <p class="ex-desc">A 28×18 cloth pinned down one edge, in a gusting wind. Structural, shear and bending constraints at 8 substeps a frame. Edges turn blue where they're stretched. Drag to orbit.</p>
+            <dl class="ro" id="ro-flag"></dl>
+          </figcaption>
+        </figure>
+        <figure class="ex">
+          <canvas id="ex-drape"></canvas>
+          <figcaption class="ex-meta">
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cloth_drape</a></div>
+            <p class="ex-desc">A square cloth dropped over a sphere onto a floor. The crate itself has no collisions; this card projects particles out of the sphere after each step, which is all PBD needs. Drag to orbit.</p>
+            <dl class="ro" id="ro-drape"></dl>
+          </figcaption>
+        </figure>
+        <figure class="ex">
+          <canvas id="ex-cable"></canvas>
+          <figcaption class="ex-meta">
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cable</a></div>
+            <p class="ex-desc">Two metres of cable hung across 1.6 m of span. It falls into a catenary and hangs there; the readout is how much the links stretch under their own weight, which is compliance × tension and nothing else.</p>
+            <dl class="ro" id="ro-cable"></dl>
+          </figcaption>
+        </figure>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -578,7 +620,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmEmSim, WasmLbmSim, WasmDiffGradientSim, WasmReal2SimFitSim, WasmHourglassSim, WasmMjcfAntSim, WasmMjcfCartpoleSim, WasmMassAdjointSim, WasmContactAdjointSim } from './pkg/phyz_wasm.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmEmSim, WasmLbmSim, WasmDiffGradientSim, WasmReal2SimFitSim, WasmHourglassSim, WasmMjcfAntSim, WasmMjcfCartpoleSim, WasmMassAdjointSim, WasmContactAdjointSim, WasmClothSim } from './pkg/phyz_wasm.js';
 
 // ---- Palette ----
 // Everything reads the theme's --viz-* tokens. Scenes are torn down and rebuilt
@@ -1261,17 +1303,24 @@ registerViz('ex-massadj', () => {
     arrows.commit(); heads.commit();
   };
   canvas.style.pointerEvents = 'auto';
-  let drag = null; const hit = new THREE.Vector3();
+  controls.enabled = false;
+  let drag = null, lastCompute = 0;
+  const apply = w => { sim.set_spin(w); refresh(); lastCompute = performance.now(); };
   canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); drag = { x: e.clientX, spin: sim.spin() }; });
-  canvas.addEventListener('pointermove', e => { if (!drag) return; drag.pending = drag.spin + (e.clientX - drag.x) / 40; });
-  canvas.addEventListener('pointerup', () => { if (drag && drag.pending !== undefined) { sim.set_spin(drag.pending); refresh(); } drag = null; });
+  canvas.addEventListener('pointermove', e => {
+    if (!drag) return;
+    drag.pending = Math.max(-9, Math.min(9, drag.spin + (e.clientX - drag.x) / 22));
+    if (performance.now() - lastCompute > 120) apply(drag.pending); // live while dragging, throttled
+  });
+  const end = () => { if (drag && drag.pending !== undefined) apply(drag.pending); drag = null; };
+  canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
   const di = () => sim.d_inertia();
   return { scene, camera, controls, canvas, update() {
     const cycle = dur * 1000 * 2.5 + 1500;
     const u = ((performance.now() - t0) % cycle) / (dur * 1000 * 2.5);
     place(Math.min(S - 1, Math.floor(u * S)));
     const g = di();
-    readout('massadj', [['spin', `${sim.spin().toFixed(1)} rad/s`], ['x_T', `${sim.objective().toFixed(3)} m`], ['∂x_T/∂m', `${g[0].toFixed(3)} m/kg`], ['∂x_T/∂c_z', `${g[3].toFixed(2)}`]]);
+    readout('massadj', [['spin', `${(drag && drag.pending !== undefined ? drag.pending : sim.spin()).toFixed(1)} rad/s`], ['x_T', `${sim.objective().toFixed(3)} m`], ['∂x_T/∂m', `${g[0].toFixed(3)} m/kg`], ['∂x_T/∂c_z', `${g[3].toFixed(2)}`]]);
   }};
 });
 
@@ -1304,6 +1353,7 @@ registerViz('ex-contactadj', () => {
     box.commit(5);
   };
   canvas.style.pointerEvents = 'auto';
+  controls.enabled = false;
   let drag = null;
   canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); drag = { y: e.clientY, a: sim.alpha() }; });
   canvas.addEventListener('pointermove', e => { if (!drag) return; drag.pending = drag.a + (drag.y - e.clientY) / 220; g.rotation.z = -Math.max(0.05, Math.min(1.0, drag.pending)); });
@@ -1326,24 +1376,72 @@ registerViz('ex-paramfit', () => {
   const refRod = segments(1, P.muted), estRod = segments(1, P.flame, 0.9); scene.add(refRod.line, estRod.line);
   const refBob = dot(0.06, P.fg), estBob = dot(0.05, P.flame); scene.add(refBob, estBob);
   const refTrail = trail(90, P.fg, 0.25), estTrail = trail(90, P.flame, 0.35); scene.add(refTrail.line, estTrail.line);
-  let ref = sim.ref_trajectory(), est = sim.est_trajectory(), k = 0, drag = false; const hit = new THREE.Vector3();
+  let ref = sim.ref_trajectory(), est = sim.est_trajectory(), drag = false, frame = 0, t0 = performance.now(); const hit = new THREE.Vector3();
+  const DT = 0.002; // the fit's timestep: playback is real time
   const pend = (rod, bob, L, a, z) => { const x = L * Math.sin(a), y = -L * Math.cos(a); rod.set(0, 0, 0, z, x, y, z); rod.commit(); bob.position.set(x, y, z); return [x, y]; };
   canvas.style.pointerEvents = 'auto';
   canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); drag = true; });
   canvas.addEventListener('pointermove', e => { if (drag && pointerToPlane(e, canvas, camera, hit)) { drag = Math.atan2(hit.x, -hit.y); } });
-  canvas.addEventListener('pointerup', () => { if (typeof drag === 'number') { sim.set_release(drag); ref = sim.ref_trajectory(); k = 0; } drag = false; });
+  canvas.addEventListener('pointerup', () => { if (typeof drag === 'number') { sim.set_release(drag); ref = sim.ref_trajectory(); est = sim.est_trajectory(); t0 = performance.now(); } drag = false; });
+  controls.enabled = false;
   let prevL = 0;
   return { scene, camera, controls, canvas, update() {
     if (typeof drag === 'number') { pend(refRod, refBob, tl, drag, 0); pend(estRod, estBob, sim.est_length(), drag, 0.01); return 1; }
-    if (sim.iteration() > 220) { sim.set_release(sim.release()); k = 0; } // converged: fit the same recording again from the wrong guess
-    sim.step_n(1); est = sim.est_trajectory();
-    k = (k + 6) % T;
+    if (frame++ % 2 === 0) {
+      if (sim.iteration() > 260) sim.set_release(sim.release()); // converged: fit the same recording again from the wrong guess
+      sim.step_n(1); est = sim.est_trajectory();
+    }
+    const k = Math.floor(((performance.now() - t0) / 1000) / DT) % T;
     const [rx, ry] = pend(refRod, refBob, tl, ref[k], 0); refTrail.push(rx, ry);
     const [ex, ey] = pend(estRod, estBob, sim.est_length(), est[k], 0.01); estTrail.push(ex, ey, 0.01);
     readout('paramfit', [['release', `${sim.release().toFixed(2)} rad`], ['L', `${sim.est_length().toFixed(2)} → ${tl.toFixed(2)}`], ['loss', sim.current_loss().toExponential(2)], ['iter', String(sim.iteration())]]);
     const d = Math.abs(sim.est_length() - prevL); prevL = sim.est_length(); return d;
   }};
 });
+
+// =========================================
+// 06 soft
+// =========================================
+function clothCard(id, sim, view, extra) {
+  const N = sim.num_particles(), E = sim.edges(), nE = E.length / 2;
+  const { scene, camera, controls, canvas } = createScene(id, { rotate: true });
+  fit(camera, controls, view.cx, view.cy, view.cz, view.hw, view.hh, view.dir);
+  const mesh = segments(nE, P.fg, 0.55); scene.add(mesh.line);
+  const taut = segments(nE, P.flame); scene.add(taut.line);
+  const pins = sim.pinned();
+  const pinDots = points(pins.length, 4, { color: P.flame }); scene.add(pinDots.obj);
+  const sph = sim.sphere();
+  if (sph.length) {
+    const ring = []; for (let k = 0; k <= 48; k++) { const a = k / 48 * Math.PI * 2; ring.push([sph[0] + sph[3] * Math.cos(a), sph[1], sph[2] + sph[3] * Math.sin(a)]); }
+    scene.add(hairline(ring, P.muted));
+    const ring2 = []; for (let k = 0; k <= 48; k++) { const a = k / 48 * Math.PI * 2; ring2.push([sph[0] + sph[3] * Math.cos(a), sph[1] + sph[3] * Math.sin(a), sph[2]]); }
+    scene.add(hairline(ring2, P.muted));
+  }
+  if (!Number.isNaN(sim.floor_y())) scene.add(ground(2.2, 11, sim.floor_y()));
+  const nStruct = sim.stretch().length;
+  let t0 = performance.now();
+  return { scene, camera, controls, canvas, update() {
+    if (view.loopAfter && sim.time() > view.loopAfter) return 0; // settled: restart
+    sim.step_n(1);
+    const p = sim.positions(), st = sim.stretch();
+    let smax = 0;
+    for (let k = 0; k < nE; k++) {
+      const a = E[2 * k], b = E[2 * k + 1];
+      const s = k < nStruct ? st[k] : 0;
+      smax = Math.max(smax, s);
+      const hot = s > 0.012;
+      (hot ? taut : mesh).set(k, p[a * 3], p[a * 3 + 1], p[a * 3 + 2], p[b * 3], p[b * 3 + 1], p[b * 3 + 2]);
+      (hot ? mesh : taut).set(k, 0, 0, 0, 0, 0, 0);
+    }
+    mesh.commit(); taut.commit();
+    pins.forEach((i, k) => pinDots.setPos(k, p[i * 3], p[i * 3 + 1], p[i * 3 + 2])); pinDots.commit();
+    readout(id.slice(3), [['t', secs(sim.time())], ['particles', String(N)], ['constraints', String(sim.num_constraints())], extra(sim, smax)]);
+    return 1;
+  }};
+}
+registerViz('ex-flag', () => clothCard('ex-flag', WasmClothSim.flag(), { cx: 0, cy: 0, cz: 0.35, hw: 1.0, hh: 0.75, dir: [0.9, 0.35, 1] }, (sim, smax) => ['wind', `${sim.wind().toFixed(1)} m/s²`]));
+registerViz('ex-drape', () => clothCard('ex-drape', WasmClothSim.drape(), { cx: 0, cy: -0.05, cz: 0, hw: 0.9, hh: 0.75, dir: [1, 0.6, 1], loopAfter: 7 }, (sim, smax) => ['max stretch', `${(smax * 100).toFixed(2)} %`]));
+registerViz('ex-cable', () => clothCard('ex-cable', WasmClothSim.cable(), { cx: 0, cy: -0.15, cz: 0, hw: 1.0, hh: 0.8, dir: [0, 0, 1], loopAfter: 12 }, (sim, smax) => ['max stretch', `${(smax * 100).toFixed(3)} %`]));
 
 // ---- Observe every canvas ----
 for (const id of vizEntries.keys()) {

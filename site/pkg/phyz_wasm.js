@@ -75,6 +75,153 @@ export class QuantumSolver {
 if (Symbol.dispose) QuantumSolver.prototype[Symbol.dispose] = QuantumSolver.prototype.free;
 
 /**
+ * A particle cloth or cable on the XPBD solver: compliance is a material
+ * property (metres per newton), so the stretch you see is `α·f` and nothing
+ * else. The crate has no collisions; the drape variant adds a sphere and a
+ * floor by projecting positions after each frame.
+ */
+export class WasmClothSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmClothSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmClothSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmClothSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmclothsim_free(ptr, 0);
+    }
+    /**
+     * A cable pinned at both ends with slack, falling into a catenary.
+     * @returns {WasmClothSim}
+     */
+    static cable() {
+        const ret = wasm.wasmclothsim_cable();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * A square cloth dropped over a sphere, with a floor underneath.
+     * @returns {WasmClothSim}
+     */
+    static drape() {
+        const ret = wasm.wasmclothsim_drape();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * Structural edges as index pairs.
+     * @returns {Uint32Array}
+     */
+    edges() {
+        const ret = wasm.wasmclothsim_edges(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * A flag: 28×18, pinned down its left edge, in a gusting wind.
+     * @returns {WasmClothSim}
+     */
+    static flag() {
+        const ret = wasm.wasmclothsim_flag();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    floor_y() {
+        const ret = wasm.wasmclothsim_floor_y(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    kinetic_energy() {
+        const ret = wasm.wasmclothsim_kinetic_energy(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    num_constraints() {
+        const ret = wasm.wasmclothsim_num_constraints(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    num_particles() {
+        const ret = wasm.wasmclothsim_num_particles(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Uint32Array}
+     */
+    pinned() {
+        const ret = wasm.wasmclothsim_pinned(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmclothsim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * `[cx, cy, cz, r]` for the drape, empty otherwise.
+     * @returns {Float64Array}
+     */
+    sphere() {
+        const ret = wasm.wasmclothsim_sphere(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} frames
+     */
+    step_n(frames) {
+        wasm.wasmclothsim_step_n(this.__wbg_ptr, frames);
+    }
+    /**
+     * Relative stretch of each structural edge, `(len − rest) / rest`.
+     * @returns {Float64Array}
+     */
+    stretch() {
+        const ret = wasm.wasmclothsim_stretch(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmclothsim_time(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    wind() {
+        const ret = wasm.wasmclothsim_wind(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmClothSim.prototype[Symbol.dispose] = WasmClothSim.prototype.free;
+
+/**
  * Fusion viz: two kernels side-by-side, fuse them, animate the merge.
  */
 export class WasmCompileFusionSim {
@@ -3535,6 +3682,9 @@ function __wbg_get_imports() {
 const QuantumSolverFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_quantumsolver_free(ptr >>> 0, 1));
+const WasmClothSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmclothsim_free(ptr >>> 0, 1));
 const WasmCompileFusionSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcompilefusionsim_free(ptr >>> 0, 1));

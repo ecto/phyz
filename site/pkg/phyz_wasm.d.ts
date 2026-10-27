@@ -14,6 +14,51 @@ export class QuantumSolver {
 }
 
 /**
+ * A particle cloth or cable on the XPBD solver: compliance is a material
+ * property (metres per newton), so the stretch you see is `α·f` and nothing
+ * else. The crate has no collisions; the drape variant adds a sphere and a
+ * floor by projecting positions after each frame.
+ */
+export class WasmClothSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * A cable pinned at both ends with slack, falling into a catenary.
+     */
+    static cable(): WasmClothSim;
+    /**
+     * A square cloth dropped over a sphere, with a floor underneath.
+     */
+    static drape(): WasmClothSim;
+    /**
+     * Structural edges as index pairs.
+     */
+    edges(): Uint32Array;
+    /**
+     * A flag: 28×18, pinned down its left edge, in a gusting wind.
+     */
+    static flag(): WasmClothSim;
+    floor_y(): number;
+    kinetic_energy(): number;
+    num_constraints(): number;
+    num_particles(): number;
+    pinned(): Uint32Array;
+    positions(): Float64Array;
+    /**
+     * `[cx, cy, cz, r]` for the drape, empty otherwise.
+     */
+    sphere(): Float64Array;
+    step_n(frames: number): void;
+    /**
+     * Relative stretch of each structural edge, `(len − rest) / rest`.
+     */
+    stretch(): Float64Array;
+    time(): number;
+    wind(): number;
+}
+
+/**
  * Fusion viz: two kernels side-by-side, fuse them, animate the merge.
  */
 export class WasmCompileFusionSim {
@@ -827,6 +872,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_wasmclothsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcompilefusionsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcompileirsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcompilewgslsim_free: (a: number, b: number) => void;
@@ -865,6 +911,21 @@ export interface InitOutput {
     readonly __wbg_wasmsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmwavefieldsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmworldsim_free: (a: number, b: number) => void;
+    readonly wasmclothsim_cable: () => number;
+    readonly wasmclothsim_drape: () => number;
+    readonly wasmclothsim_edges: (a: number) => [number, number];
+    readonly wasmclothsim_flag: () => number;
+    readonly wasmclothsim_floor_y: (a: number) => number;
+    readonly wasmclothsim_kinetic_energy: (a: number) => number;
+    readonly wasmclothsim_num_constraints: (a: number) => number;
+    readonly wasmclothsim_num_particles: (a: number) => number;
+    readonly wasmclothsim_pinned: (a: number) => [number, number];
+    readonly wasmclothsim_positions: (a: number) => [number, number];
+    readonly wasmclothsim_sphere: (a: number) => [number, number];
+    readonly wasmclothsim_step_n: (a: number, b: number) => void;
+    readonly wasmclothsim_stretch: (a: number) => [number, number];
+    readonly wasmclothsim_time: (a: number) => number;
+    readonly wasmclothsim_wind: (a: number) => number;
     readonly wasmcompilefusionsim_a_count: (a: number) => number;
     readonly wasmcompilefusionsim_a_names: (a: number) => [number, number];
     readonly wasmcompilefusionsim_b_count: (a: number) => number;

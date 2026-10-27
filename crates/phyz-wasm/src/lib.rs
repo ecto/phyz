@@ -14,6 +14,7 @@ use phyz_contact::{ContactMaterial, ContactSolverConfig};
 use phyz_model::Geometry;
 use phyz_diff::rollout::DofLayout;
 use std::cell::RefCell;
+use phyz_xpbd::{Constraint, ParticleSystem, XpbdSolver};
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
@@ -6682,3 +6683,244 @@ impl WasmContactAdjointSim {
         self.steps as f64 * 1e-3
     }
 }
+
+
+// ================================================================
+// phyz-xpbd: cloth and cables
+// ================================================================
+
+/// A particle cloth or cable on the XPBD solver: compliance is a material
+/// property (metres per newton), so the stretch you see is `α·f` and nothing
+/// else. The crate has no collisions; the drape variant adds a sphere and a
+/// floor by projecting positions after each frame.
+#[wasm_bindgen]
+pub struct WasmClothSim {
+    particles: ParticleSystem,
+    constraints: Vec<Constraint>,
+    solver: XpbdSolver,
+    edges: Vec<u32>,
+    rest: Vec<f64>,
+    n_struct: usize,
+    time: f64,
+    wind: f64,
+    sphere: Option<(Vec3, f64)>,
+    floor: Option<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmClothSim {
+    fn grid(w: usize, h: usize, spacing: f64, origin: Vec3, horizontal: bool, compliance: f64) -> WasmClothSim {
+        let mut p = ParticleSystem::new();
+        for j in 0..h {
+            for i in 0..w {
+                let (x, y, z) = if horizontal {
+                    (origin.x + i as f64 * spacing, origin.y, origin.z + j as f64 * spacing)
+                } else {
+                    (origin.x + i as f64 * spacing, origin.y - j as f64 * spacing, origin.z)
+                };
+                p.add(Vec3::new(x, y, z), 0.02);
+            }
+        }
+        let idx = |i: usize, j: usize| j * w + i;
+        let mut cs = Vec::new();
+        let mut edges = Vec::new();
+        let mut rest = Vec::new();
+        // structural
+        for j in 0..h {
+            for i in 0..w {
+                if i + 1 < w {
+                    cs.push(Constraint::distance(idx(i, j), idx(i + 1, j), spacing, compliance));
+                    edges.extend([idx(i, j) as u32, idx(i + 1, j) as u32]);
+                    rest.push(spacing);
+                }
+                if j + 1 < h {
+                    cs.push(Constraint::distance(idx(i, j), idx(i, j + 1), spacing, compliance));
+                    edges.extend([idx(i, j) as u32, idx(i, j + 1) as u32]);
+                    rest.push(spacing);
+                }
+            }
+        }
+        let n_struct = cs.len();
+        // shear and (distance-based) bending: the dihedral constraint is skipped
+        // at exactly-flat rest, which is where a cloth starts
+        let d = spacing * std::f64::consts::SQRT_2;
+        for j in 0..h.saturating_sub(1) {
+            for i in 0..w.saturating_sub(1) {
+                cs.push(Constraint::distance(idx(i, j), idx(i + 1, j + 1), d, compliance * 4.0));
+                cs.push(Constraint::distance(idx(i + 1, j), idx(i, j + 1), d, compliance * 4.0));
+            }
+        }
+        for j in 0..h {
+            for i in 0..w {
+                if i + 2 < w {
+                    cs.push(Constraint::distance(idx(i, j), idx(i + 2, j), 2.0 * spacing, compliance * 40.0));
+                }
+                if j + 2 < h {
+                    cs.push(Constraint::distance(idx(i, j), idx(i, j + 2), 2.0 * spacing, compliance * 40.0));
+                }
+            }
+        }
+        WasmClothSim {
+            particles: p,
+            constraints: cs,
+            solver: XpbdSolver { dt: 1.0 / 60.0, substeps: 8, iterations: 1, damping: 0.6, ..XpbdSolver::default() },
+            edges,
+            rest,
+            n_struct,
+            time: 0.0,
+            wind: 0.0,
+            sphere: None,
+            floor: None,
+        }
+    }
+
+    /// A flag: 28×18, pinned down its left edge, in a gusting wind.
+    pub fn flag() -> WasmClothSim {
+        let (w, h, s) = (28usize, 18usize, 0.05);
+        let mut c = Self::grid(w, h, s, Vec3::new(-0.7, 0.45, 0.0), false, 2e-4);
+        for j in 0..h {
+            c.particles.pin(j * w);
+        }
+        c
+    }
+
+    /// A square cloth dropped over a sphere, with a floor underneath.
+    pub fn drape() -> WasmClothSim {
+        let (w, h, s) = (26usize, 26usize, 0.05);
+        let mut c = Self::grid(w, h, s, Vec3::new(-0.625, 0.55, -0.625), true, 2e-4);
+        c.sphere = Some((Vec3::new(0.0, 0.0, 0.0), 0.3));
+        c.floor = Some(-0.45);
+        c
+    }
+
+    /// A cable pinned at both ends with slack, falling into a catenary.
+    pub fn cable() -> WasmClothSim {
+        let n = 40usize;
+        let span = 1.6;
+        let len = 2.0;
+        let s = len / (n - 1) as f64;
+        let mut c = Self::grid(n, 1, s, Vec3::new(-len / 2.0, 0.4, 0.0), false, 5e-5);
+        // start straight across the span: links are compressed, not stretched,
+        // and gravity pays the slack out into the catenary
+        for i in 0..n {
+            let x = -span / 2.0 + span * i as f64 / (n - 1) as f64;
+            c.particles.positions[i] = Vec3::new(x, 0.4, 0.0);
+            c.particles.prev_positions[i] = c.particles.positions[i];
+        }
+        for i in 0..n {
+            c.particles.set_mass(i, 0.05);
+        }
+        // pin after setting masses: set_mass writes inv_mass and would un-pin
+        c.particles.pin(0);
+        c.particles.pin(n - 1);
+        c.solver.damping = 1.2;
+        c
+    }
+
+    pub fn step_n(&mut self, frames: usize) {
+        let n = self.particles.len();
+        for _ in 0..frames {
+            // gusting wind along +z, for the flag
+            self.wind = if self.sphere.is_none() && self.floor.is_none() && n > 40 {
+                3.0 + 2.5 * (self.time * 1.7).sin() + 1.5 * (self.time * 4.3).sin()
+            } else {
+                0.0
+            };
+            if self.wind != 0.0 {
+                let acc: Vec<Vec3> = (0..n)
+                    .map(|i| {
+                        let x = self.particles.positions[i].x;
+                        Vec3::new(0.0, 0.0, self.wind * (0.6 + 0.4 * ((x * 5.0 + self.time * 3.0).sin())))
+                    })
+                    .collect();
+                self.solver.step_with_forces(&mut self.particles, &mut self.constraints, &acc);
+            } else if self.sphere.is_some() || self.floor.is_some() {
+                // Collisions are not the crate's job, so they are done here as
+                // position projections between short solver calls. Each
+                // projection also cancels the inward velocity, otherwise gravity
+                // keeps integrating into the obstacle and the cloth tunnels.
+                let sub = XpbdSolver { dt: self.solver.dt / 4.0, substeps: 2, ..self.solver };
+                for _ in 0..4 {
+                    sub.step(&mut self.particles, &mut self.constraints);
+                    if let Some((c, r)) = self.sphere {
+                        let rr = r + 0.012;
+                        for i in 0..n {
+                            let d = self.particles.positions[i] - c;
+                            let len = d.norm();
+                            if len < rr && len > 1e-9 {
+                                let nrm = d * (1.0 / len);
+                                self.particles.positions[i] = c + nrm * rr;
+                                let vn = self.particles.velocities[i].dot(&nrm);
+                                if vn < 0.0 {
+                                    // drop the inward part and most of the slide: a rough sphere
+                                    self.particles.velocities[i] = (self.particles.velocities[i] - nrm * vn) * 0.35;
+                                }
+                                self.particles.prev_positions[i] = self.particles.positions[i];
+                            }
+                        }
+                    }
+                    if let Some(y) = self.floor {
+                        for i in 0..n {
+                            if self.particles.positions[i].y < y {
+                                self.particles.positions[i].y = y;
+                                if self.particles.velocities[i].y < 0.0 {
+                                    self.particles.velocities[i].y = 0.0;
+                                    self.particles.velocities[i] = self.particles.velocities[i] * 0.5;
+                                }
+                                self.particles.prev_positions[i] = self.particles.positions[i];
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.solver.step(&mut self.particles, &mut self.constraints);
+            }
+            self.time += self.solver.dt;
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        self.particles.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect()
+    }
+    /// Structural edges as index pairs.
+    pub fn edges(&self) -> Vec<u32> {
+        self.edges.clone()
+    }
+    /// Relative stretch of each structural edge, `(len − rest) / rest`.
+    pub fn stretch(&self) -> Vec<f64> {
+        (0..self.n_struct)
+            .map(|k| {
+                let a = self.edges[2 * k] as usize;
+                let b = self.edges[2 * k + 1] as usize;
+                let len = (self.particles.positions[a] - self.particles.positions[b]).norm();
+                (len - self.rest[k]) / self.rest[k]
+            })
+            .collect()
+    }
+    pub fn pinned(&self) -> Vec<u32> {
+        self.particles.inv_mass.iter().enumerate().filter(|(_, w)| **w == 0.0).map(|(i, _)| i as u32).collect()
+    }
+    pub fn num_particles(&self) -> usize {
+        self.particles.len()
+    }
+    pub fn num_constraints(&self) -> usize {
+        self.constraints.len()
+    }
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+    pub fn wind(&self) -> f64 {
+        self.wind
+    }
+    pub fn kinetic_energy(&self) -> f64 {
+        self.particles.kinetic_energy()
+    }
+    /// `[cx, cy, cz, r]` for the drape, empty otherwise.
+    pub fn sphere(&self) -> Vec<f64> {
+        self.sphere.map(|(c, r)| vec![c.x, c.y, c.z, r]).unwrap_or_default()
+    }
+    pub fn floor_y(&self) -> f64 {
+        self.floor.unwrap_or(f64::NAN)
+    }
+}
+
