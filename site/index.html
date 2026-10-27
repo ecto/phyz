@@ -2,375 +2,314 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<script>try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>phyz - Multi-physics differentiable simulation</title>
+<title>phyz — multi-physics differentiable simulation in Rust</title>
 <meta name="description" content="A differentiable simulation engine for rigid bodies, particles, electromagnetic fields, molecular dynamics, and beyond. Pure Rust. GPU-accelerated.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap');
+/* ── muni "Pilot Light" treatment, as on tang: warm paper by day, warm black by night.
+   One flame per page. tang's flame is safety orange; phyz's is neon green. ── */
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #faf9f7;
-  --fg: #1a1a1a;
-  --fg-muted: #555;
-  --fg-faint: #999;
-  --accent: #4a5fd7;
-  --accent-hover: #3a4fc0;
-  --code-bg: #f0efed;
-  --border: #e0dfdd;
-  --mono: 'IBM Plex Mono', 'Menlo', monospace;
-  --serif: 'IBM Plex Serif', 'Georgia', serif;
+  --track: 0.12em;
+  --s-xs: 10.5px; --s-sm: 12.5px; --s-body: 15px; --s-md: 17px; --s-lg: 21px; --s-xl: 26px; --s-display: 72px;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  --bg: #ffffff;
+  --fg: #1c1917;
+  --muted: #8a7658;
+  --surface: #faf7f1;
+  --raised: #ffffff;
+  --border: #cfc4b2;
+  --border-muted: #e6dfd3;
+
+  /* the flame */
+  --flame: #39ff14;
+  --flame-ink: color-mix(in oklab, #39ff14 42%, #000);
+  --flame-50: color-mix(in oklab, #39ff14 14%, #fff);
+
+  /* the rest of the neon set, darkened for paper */
+  --cyan:   color-mix(in oklab, #00f0ff 55%, #000);
+  --amber:  color-mix(in oklab, #ffd400 60%, #000);
+  --coral:  color-mix(in oklab, #ff2052 75%, #000);
+  --orange: color-mix(in oklab, #ff5f00 80%, #000);
+  --purple: oklch(0.58 0.22 300);
+
+  /* what the canvases read */
+  --viz-bg: #faf7f1;
+  --viz-fg: #1c1917;
+  --viz-muted: #a08d70;
+  --viz-ground: #e6dfd3;
+  --viz-flame: #1f9a0c;
+  --viz-cyan: #0a8f99;
+  --viz-amber: #b58f00;
+  --viz-coral: #d81b45;
+  --viz-orange: #e05400;
+  --viz-purple: #7c4dff;
 }
 
-html {
-  font-size: 18px;
-  -webkit-font-smoothing: antialiased;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+    --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+    --flame-ink: #39ff14; --flame-50: color-mix(in oklab, #39ff14 14%, #0b0907);
+    --cyan: #00f0ff; --amber: #ffd400; --coral: #ff2052; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+    --viz-bg: #15110d; --viz-fg: #e8e1d2; --viz-muted: #6b5a44; --viz-ground: #2a2119;
+    --viz-flame: #39ff14; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+  --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+  --flame-ink: #39ff14; --flame-50: color-mix(in oklab, #39ff14 14%, #0b0907);
+  --cyan: #00f0ff; --amber: #ffd400; --coral: #ff2052; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+  --viz-bg: #15110d; --viz-fg: #e8e1d2; --viz-muted: #6b5a44; --viz-ground: #2a2119;
+  --viz-flame: #39ff14; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
 }
 
+html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--serif);
-  line-height: 1.7;
+  font-family: var(--sans);
+  font-size: var(--s-body);
+  line-height: 1.62;
+  font-variant-numeric: tabular-nums;
 }
+::selection { background: var(--flame-ink); color: #000; }
+code, pre, kbd { font-family: var(--mono); }
 
-::selection {
-  background: var(--accent);
-  color: white;
-}
+.container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+.container-wide { max-width: 1280px; margin: 0 auto; padding: 0 40px; }
 
-.container {
-  max-width: 680px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
+/* links, as in master-plan.typ: no underline; hover fills with the flame, black text */
+a, a:visited { color: var(--flame-ink); text-decoration: none; padding: 0 2px; margin: 0 -2px; transition: background .12s, color .12s; }
+a:hover { background: var(--flame-ink); color: #000; }
 
-.container-wide {
-  max-width: 100%;
-  margin: 0 auto;
-  padding: 0 40px;
-}
-
-
-/* ---- Hero ---- */
-
-.hero {
-  position: relative;
-  padding: 120px 0 100px;
-  overflow: hidden;
-}
-
-.hero canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0.12;
-  pointer-events: none;
-}
-
-.hero-content {
-  position: relative;
-  z-index: 1;
-}
-
-.wordmark {
+/* caps labels */
+.label-caps {
   font-family: var(--mono);
-  font-size: 4.5rem;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-  line-height: 1;
-  margin-bottom: 20px;
-}
-
-.tagline {
-  font-family: var(--serif);
-  font-size: 1.35rem;
-  color: var(--fg-muted);
-  line-height: 1.5;
-  margin-bottom: 8px;
-}
-
-.tagline-sub {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--fg-faint);
-  letter-spacing: 0.04em;
-  margin-bottom: 36px;
-}
-
-.install {
-  display: inline-block;
-  font-family: var(--mono);
-  font-size: 0.85rem;
-  background: var(--fg);
-  color: var(--bg);
-  padding: 10px 20px;
-  border: none;
-  cursor: pointer;
-  transition: background 0.15s;
-  letter-spacing: 0.01em;
-}
-
-.install:hover {
-  background: var(--accent);
-}
-
-.install-copied {
-  background: var(--accent) !important;
-}
-
-
-/* ---- Sections ---- */
-
-section {
-  padding: 80px 0;
-}
-
-
-/* ---- Pitch ---- */
-
-.pitch p {
-  font-size: 1.05rem;
-  margin-bottom: 1.5em;
-  color: var(--fg);
-}
-
-.pitch p:last-child {
-  margin-bottom: 0;
-}
-
-
-/* ---- Code ---- */
-
-.section-label {
-  font-family: var(--mono);
-  font-size: 0.8rem;
+  font-size: var(--s-xs);
   font-weight: 500;
-  color: var(--fg-faint);
-  letter-spacing: 0.05em;
+  letter-spacing: var(--track);
   text-transform: uppercase;
-  margin-bottom: 20px;
+  color: var(--muted);
 }
+
+/* ── theme toggle ── */
+#theme-toggle {
+  position: fixed; top: 16px; right: 16px; z-index: 50;
+  width: 36px; height: 36px; display: grid; place-items: center;
+  border: 0.5px solid var(--border-muted); background: var(--bg); color: var(--fg); cursor: pointer;
+}
+#theme-toggle:hover { color: var(--flame-ink); }
+
+/* ── hero ── */
+.hero { position: relative; padding: clamp(6rem, 12vw, 9rem) 0 clamp(3rem, 6vw, 4.5rem); overflow: hidden; }
+.hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .45; }
+.hero-content { position: relative; z-index: 1; }
+.hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 2rem; }
+.hero-mark { width: 64px; height: 64px; color: var(--flame-ink); }
+.hero h1 { font-family: var(--sans); font-size: var(--s-display); line-height: 1; font-weight: 600; letter-spacing: -0.035em; }
+.hero h1 .dot { color: var(--flame-ink); }
+.hero-claim { font-size: var(--s-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 1.1rem; max-width: 24ch; }
+.hero-claim .hero-sub { color: var(--muted); font-weight: 500; }
+.flame-rule { width: 22%; height: 2px; background: var(--flame-ink); margin: 0 0 1.1rem; }
+.hero-note { color: var(--muted); font-size: var(--s-body); margin-bottom: 2rem; max-width: 52ch; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1.25rem; }
+.hero-cmd, a.hero-btn, button.hero-btn {
+  display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; margin: 0;
+  background: var(--surface); color: var(--fg); font-family: var(--sans); font-size: var(--s-sm);
+  border: 0; cursor: pointer; transition: background .15s, color .15s;
+}
+.hero-cmd code { font-size: 13px; }
+.hero-dollar { color: var(--muted); font-family: var(--mono); }
+.hero-hint { color: var(--muted); font-size: var(--s-xs); margin-left: 6px; }
+.hero-cmd:hover .hero-hint { color: var(--flame-ink); }
+a.hero-btn:hover, button.hero-btn:hover, .hero-cmd:hover { background: var(--flame-ink); color: #000; }
+.hero-cmd:hover .hero-dollar, .hero-cmd:hover .hero-hint { color: #000; }
+.hero-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* pills: master-plan neon, tinted fill, no rule */
+.pill { --ink: color-mix(in oklab, var(--pill) 55%, #000); display: inline-block; padding: 3px 9px; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; color: var(--ink); background: color-mix(in oklab, var(--pill) 16%, transparent); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); } }
+:root[data-theme="dark"] .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
+
+/* ── sections ── */
+section { padding: clamp(4rem, 9vw, 7rem) 0; }
+h2 { font-size: var(--s-lg); line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1rem; }
+.lead { font-size: var(--s-body); color: var(--fg); max-width: 60ch; margin: 0 0 2.75rem; line-height: 1.62; }
+
+/* ── proof strip: readouts with a hairline left edge ── */
+.proof { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 1.25rem; }
+@media (max-width: 640px) { .proof { grid-template-columns: 1fr; gap: 1.5rem 0; } }
+.proof-item { display: flex; flex-direction: column; gap: 6px; border-left: 0.5px solid var(--border); padding-left: 14px; }
+.proof-val { font-family: var(--mono); font-size: var(--s-xl); font-weight: 500; line-height: 1.1; }
+.proof-val small { font-size: var(--s-sm); color: var(--muted); }
+.proof-label { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+
+/* ── pitch ── */
+.pitch p { max-width: 62ch; margin-bottom: 1rem; }
+.pitch p:last-child { margin-bottom: 0; }
+
+/* ── code ── */
+.fig { margin: 0; }
+.fig-title { font-size: var(--s-md); font-weight: 500; margin: 0 0 .9rem; }
+.fig-cap { font-size: var(--s-sm); color: var(--muted); max-width: 72%; margin-top: .85rem; line-height: 1.6; }
+@media (max-width: 640px) { .fig-cap { max-width: 100%; } }
+body { counter-reset: fig; }
+.fig-cap { counter-increment: fig; }
+.fig-n { font-weight: 600; font-size: var(--s-xs); color: var(--fg); margin-right: .7em; }
+.fig-n::before { content: "Fig " counter(fig); }
+.fig-lead { color: var(--fg); font-weight: 500; }
 
 pre {
   font-family: var(--mono);
-  font-size: 0.78rem;
-  line-height: 1.65;
-  background: var(--code-bg);
-  padding: 24px 28px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  tab-size: 4;
+  background: var(--surface);
+  color: var(--fg);
+  padding: 18px 20px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+pre .kw { color: var(--purple); }
+pre .fn { color: var(--flame-ink); }
+pre .str { color: var(--amber); }
+pre .num { color: var(--coral); }
+pre .cm { color: var(--muted); }
+pre .ty { color: var(--cyan); }
+pre .mac { color: var(--cyan); }
 
-pre .kw { color: #7c4dff; }
-pre .fn { color: #1a1a1a; font-weight: 500; }
-pre .str { color: #2e7d32; }
-pre .num { color: #c62828; }
-pre .cm { color: #999; font-style: italic; }
-pre .ty { color: #4a5fd7; }
-pre .mac { color: #6d4c41; }
+/* ── examples ── */
+.examples-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px 24px; }
+.example-card { display: flex; flex-direction: column; }
+.example-card canvas { width: 100%; aspect-ratio: 4 / 3; background: var(--viz-bg); display: block; cursor: grab; }
+.example-card canvas:active { cursor: grabbing; }
+.example-meta { padding-top: 10px; }
+.crate-tag { display: block; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.example-meta .label { display: inline-block; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); margin-bottom: 4px; }
+.example-meta .desc { display: block; font-size: var(--s-sm); color: var(--muted); line-height: 1.55; }
+.example-meta .stat { display: block; font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); margin-top: 6px; }
+.crate-also { display: block; font-size: var(--s-xs); color: var(--muted); margin-top: 6px; }
+.crate-also a { color: var(--muted); }
+.crate-also a:hover { color: #000; }
 
+/* ── footer ── */
+.site-foot { text-align: center; padding: clamp(5rem, 11vw, 9rem) 1rem 4rem; color: var(--muted); font-size: var(--s-sm); }
+.foot-logo { display: inline-block; color: var(--orange); margin-bottom: 1.25rem; transition: opacity .2s; padding: 0; margin-left: 0; margin-right: 0; }
+.foot-logo:hover { background: none; color: var(--orange); opacity: .8; }
+.foot-logo svg { width: 96px; height: auto; display: block; }
+.site-foot p { margin: 0 auto .6rem; max-width: 52ch; }
+.foot-links { display: flex; justify-content: center; gap: .6rem; }
 
-/* ---- Crate Examples ---- */
-
-.crate-tag {
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  font-weight: 500;
-  color: var(--fg-faint);
-  text-decoration: none;
-  display: block;
-  margin-bottom: 2px;
-  transition: color 0.15s;
-}
-
-.crate-tag:hover {
-  color: var(--accent);
-}
-
-.examples-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-}
-
-.example-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.example-card canvas {
-  width: 100%;
-  aspect-ratio: 4 / 3;
-  background: var(--code-bg);
-  display: block;
-  cursor: grab;
-  border-radius: 4px;
-}
-
-.example-card canvas:active {
-  cursor: grabbing;
-}
-
-.example-meta {
-  padding-top: 12px;
-}
-
-.example-meta .label {
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  font-weight: 500;
-  display: block;
-  margin-bottom: 4px;
-}
-
-.example-meta .desc {
-  font-family: var(--serif);
-  font-size: 0.82rem;
-  color: var(--fg-muted);
-  line-height: 1.5;
-}
-
-.example-meta .stat {
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  color: var(--fg-faint);
-  margin-top: 6px;
-  display: block;
-}
-
-a.label {
-  color: var(--fg);
-  text-decoration: none;
-  border-bottom: 1px solid var(--border);
-  transition: color 0.15s, border-color 0.15s;
-}
-
-a.label:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.crate-also {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--fg-faint);
-  margin-top: 12px;
-  display: block;
-}
-
-.crate-also a {
-  color: var(--fg-muted);
-  text-decoration: none;
-  border-bottom: 1px solid var(--border);
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.crate-also a:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-
-
-/* ---- Footer ---- */
-
-footer {
-  padding: 60px 0 80px;
-}
-
-footer .footer-inner {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-footer a {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--fg-muted);
-  text-decoration: none;
-  transition: color 0.15s;
-}
-
-footer a:hover {
-  color: var(--accent);
-}
-
-footer .license {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--fg-faint);
-}
-
-
-/* ---- Responsive ---- */
-
-@media (max-width: 1100px) {
-  .examples-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
+/* ── responsive ── */
+@media (max-width: 1100px) { .examples-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 700px) {
   .examples-grid { grid-template-columns: 1fr; }
   .container-wide { padding: 0 16px; }
+  .hero h1 { font-size: 48px; }
+  .hero-mark { width: 48px; height: 48px; }
+  pre { font-size: 12px; padding: 14px 16px; }
 }
 
-@media (max-width: 600px) {
-  .wordmark { font-size: 3rem; }
-  .tagline { font-size: 1.1rem; }
-  .hero { padding: 80px 0 60px; }
-  section { padding: 56px 0; }
-
-  pre { font-size: 0.72rem; padding: 18px 16px; }
-}
+/* offscreen: pause CSS animation too */
+.offscreen, .offscreen * { animation-play-state: paused !important; }
 </style>
 </head>
 <body>
+<button id="theme-toggle" aria-label="Toggle dark mode" onclick="(() => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark';
+  try { localStorage.setItem('theme', r.dataset.theme); } catch (e) {}
+  window.dispatchEvent(new Event('themechange'));
+})()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button>
 
 <!-- Hero -->
-<div class="hero">
+<header class="hero">
   <canvas id="sim"></canvas>
   <div class="container hero-content">
-    <div class="wordmark">phyz</div>
-    <div class="tagline">Multi-physics differentiable simulation.</div>
-    <div class="tagline-sub">Pure Rust. GPU-accelerated. Hackable.</div>
-    <button class="install" onclick="copyInstall(this)" title="Copy to clipboard">cargo add phyz</button>
+    <div class="hero-brand">
+      <svg class="hero-mark" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true">
+        <circle cx="32" cy="8" r="3" fill="currentColor" stroke="none"/>
+        <path d="M32 8 L20 34"/>
+        <circle cx="20" cy="34" r="3" fill="currentColor" stroke="none"/>
+        <path d="M20 34 L44 52"/>
+        <circle cx="44" cy="52" r="4.5" fill="currentColor" stroke="none"/>
+        <path d="M44 52 C 54 44, 56 30, 46 22" stroke-opacity=".45" stroke-dasharray="2 4"/>
+      </svg>
+      <h1>phyz<span class="dot">.</span></h1>
+    </div>
+    <p class="hero-claim">Simulate the physical world.<br><span class="hero-sub">Differentiate all of it.</span></p>
+    <div class="flame-rule"></div>
+    <p class="hero-note">Rigid bodies, particles, fields, molecules, lattices. One engine, in Rust, with analytical gradients through every step and thousands of environments on the GPU.</p>
+    <div class="hero-actions">
+      <button class="hero-cmd" id="cargo-copy" title="Copy"><span class="hero-dollar">$</span><code>cargo add phyz</code><span class="hero-hint" id="cargo-hint">Copy</span></button>
+      <a class="hero-btn" href="https://github.com/ecto/phyz">GitHub →</a>
+      <a class="hero-btn" href="https://docs.rs/phyz">docs.rs →</a>
+    </div>
+    <div class="hero-pills">
+      <span class="pill" style="--pill:#39ff14">pure Rust</span>
+      <span class="pill" style="--pill:#00f0ff">WASM</span>
+      <span class="pill" style="--pill:#ffd400">wgpu</span>
+      <span class="pill" style="--pill:#ff5f00">CUDA</span>
+      <span class="pill" style="--pill:#ff2052">MJCF</span>
+    </div>
   </div>
-</div>
+</header>
+
+<!-- Proof -->
+<section style="padding-top:0">
+  <div class="container">
+    <div class="proof">
+      <div class="proof-item">
+        <div class="proof-val">O(n)</div>
+        <div class="proof-label">Forward dynamics on Featherstone's spatial algebra, with analytical Jacobians at every step</div>
+      </div>
+      <div class="proof-item">
+        <div class="proof-val">37<small>&nbsp;crates</small></div>
+        <div class="proof-label">Rigid, contact, particle, EM, MD, QFT, gravity, LBM, Regge, real2sim. Each depends only on what it needs</div>
+      </div>
+      <div class="proof-item">
+        <div class="proof-val">1000s<small>&nbsp;of envs</small></div>
+        <div class="proof-label">Batched on the GPU through wgpu or CUDA, or in this tab through WASM</div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <!-- Pitch -->
-<section class="pitch">
+<section class="pitch" style="padding-top:0">
   <div class="container">
+    <h2>What it is</h2>
     <p>
       phyz is a differentiable simulation engine for articulated rigid bodies,
       particles, electromagnetic fields, molecular dynamics, and beyond.
-      Every algorithm computes gradients for optimization,
-      control, and learning.
+      Every algorithm computes gradients for optimization, control, and learning.
     </p>
     <p>
-      Built on Featherstone's spatial algebra, phyz runs O(n) forward dynamics
-      with analytical Jacobians. Plug in semi-implicit Euler, RK4, or your own
-      solver. Load MuJoCo MJCF models. Batch thousands of environments on GPU.
+      Plug in semi-implicit Euler, RK4, or your own solver. Load MuJoCo MJCF models.
+      Fit simulation parameters to real trajectories. Batch thousands of environments on the GPU.
     </p>
-    <p>
-      phyz is early, ambitious, and open source.
-    </p>
+    <p>phyz is early, ambitious, and open source.</p>
   </div>
 </section>
 
 <!-- Code -->
-<section class="code-section">
+<section style="padding-top:0">
   <div class="container">
-    <h2 class="section-label">Code</h2>
+    <h2>A double pendulum, with gradients</h2>
+    <p class="lead">Build a model, step it, and ask for the Jacobian of the next state with respect to this one. Chain those through a trajectory and you have end-to-end gradients.</p>
+    <figure class="fig">
 <pre><span class="kw">use</span> phyz::{<span class="ty">ModelBuilder</span>, <span class="ty">Simulator</span>, <span class="ty">Vec3</span>};
 <span class="kw">use</span> phyz_diff::<span class="fn">analytical_step_jacobians</span>;
 
@@ -400,12 +339,18 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
 <span class="kw">let</span> tip = state.body_position(<span class="num">1</span>);
 <span class="mac">println!</span>(<span class="str">"tip = ({:.3}, {:.3})"</span>, tip.x, tip.y);
 <span class="mac">println!</span>(<span class="str">"sensitivity ‖∂q'/∂q₀‖ = {:.2e}"</span>, jac.dq_dq0.norm());</pre>
+      <p class="fig-cap"><span class="fig-n"></span><span class="fig-lead">Step and differentiate.</span> The same call that advances the state hands back ∂q′/∂q and ∂q′/∂τ. Nothing here is finite differences.</p>
+    </figure>
   </div>
 </section>
 
 <!-- Crate Examples -->
-<section class="examples">
+<section class="examples" style="padding-top:0">
   <div class="container-wide">
+    <div class="container" style="padding:0; margin-bottom: 2.75rem">
+      <h2>Every crate, running in this tab</h2>
+      <p class="lead" style="margin-bottom:0">Each card is a phyz crate compiled to WASM and drawn live. Drag to orbit. The readout under each one is the simulation's own state.</p>
+    </div>
     <div class="examples-grid">
 
       <div class="example-card">
@@ -681,24 +626,32 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
 </section>
 
 <!-- Footer -->
-<footer>
-  <div class="container footer-inner">
-    <a href="https://github.com/ecto/phyz">GitHub</a>
-    <a href="https://docs.rs/phyz">docs.rs</a>
-    <span class="license">MIT</span>
-  </div>
+<footer class="site-foot">
+  <a href="https://muni.works" class="foot-logo" aria-label="Municipal Robotics"><svg viewBox="-60 -60 880 400" fill="none"><g stroke="currentColor" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"> <path d="M 20 240 L 20 100 C 20 50, 80 50, 100 50 C 140 50, 160 70, 160 100"/> <path d="M 160 240 L 160 100"/> <path d="M 160 100 C 160 50, 220 50, 240 50 C 280 50, 300 70, 300 100 L 300 240 C 300 270, 330 280, 370 280 C 410 280, 440 270, 440 240 L 440 100"/> <path d="M 440 100 C 440 50, 500 50, 520 50 C 560 50, 600 70, 600 100 L 600 240 C 600 270, 630 280, 670 280 C 710 280, 740 270, 740 240 L 740 100"/> </g></svg></a>
+  <p>phyz is built by <a href="https://muni.works">Municipal Robotics</a> alongside <a href="https://tang.rs">tang</a> and <a href="https://vcad.io">vcad</a>. Usable by everyone.</p>
+  <p class="foot-links"><a href="https://github.com/ecto/phyz">GitHub</a><span>·</span><a href="https://docs.rs/phyz">docs.rs</a><span>·</span><a href="https://github.com/ecto/phyz/blob/main/LICENSE">MIT licensed</a><span>·</span><a href="https://muni.works">muni.works</a></p>
 </footer>
 
 <script>
-function copyInstall(el) {
+document.getElementById('cargo-copy').addEventListener('click', () => {
   navigator.clipboard.writeText('cargo add phyz');
-  el.textContent = 'copied';
-  el.classList.add('install-copied');
-  setTimeout(() => {
-    el.textContent = 'cargo add phyz';
-    el.classList.remove('install-copied');
-  }, 1500);
-}
+  const hint = document.getElementById('cargo-hint');
+  hint.textContent = 'Copied';
+  setTimeout(() => { hint.textContent = 'Copy'; }, 1500);
+});
+// what the canvases read: the theme's viz tokens, as hex ints for three.js
+window.vizPalette = () => {
+  const cs = getComputedStyle(document.documentElement);
+  const hex = n => parseInt(cs.getPropertyValue(n).trim().slice(1), 16);
+  return {
+    bg: hex('--viz-bg'), fg: hex('--viz-fg'), muted: hex('--viz-muted'), ground: hex('--viz-ground'),
+    flame: hex('--viz-flame'), cyan: hex('--viz-cyan'), amber: hex('--viz-amber'),
+    coral: hex('--viz-coral'), orange: hex('--viz-orange'), purple: hex('--viz-purple'),
+  };
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (!document.documentElement.dataset.theme) window.dispatchEvent(new Event('themechange'));
+});
 </script>
 
 <!-- Hero background: lightweight 2D trace (no WASM needed) -->
@@ -741,18 +694,21 @@ function copyInstall(el) {
     trail.push([ox+l1*sc*Math.sin(th1)+l2*sc*Math.sin(th2),oy+l1*sc*Math.cos(th1)+l2*sc*Math.cos(th2)]);
     if(trail.length>maxTrail) trail.shift();
   }
+  let tr=0,tg=0,tb=0,fr=0,fg_=0,fb=0;
+  function readTheme(){ const p=window.vizPalette(); [tr,tg,tb]=[p.flame>>16&255,p.flame>>8&255,p.flame&255]; [fr,fg_,fb]=[p.fg>>16&255,p.fg>>8&255,p.fg&255]; }
+  readTheme(); window.addEventListener('themechange', readTheme);
   function draw() {
     ctx.clearRect(0,0,w,h);
     for(let i=1;i<trail.length;i++){
       ctx.beginPath();ctx.moveTo(trail[i-1][0],trail[i-1][1]);ctx.lineTo(trail[i][0],trail[i][1]);
-      ctx.strokeStyle=`rgba(74,95,215,${i/trail.length*0.7})`;ctx.lineWidth=0.8;ctx.stroke();
+      ctx.strokeStyle=`rgba(${tr},${tg},${tb},${i/trail.length*0.55})`;ctx.lineWidth=0.8;ctx.stroke();
     }
     const sc=Math.min(w,h)*0.9,ox=w*0.7,oy=h*0.35;
     const x1=ox+l1*sc*Math.sin(th1),y1=oy+l1*sc*Math.cos(th1);
     const x2=x1+l2*sc*Math.sin(th2),y2=y1+l2*sc*Math.cos(th2);
     ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(x1,y1);ctx.lineTo(x2,y2);
-    ctx.strokeStyle='rgba(26,26,26,0.25)';ctx.lineWidth=1;ctx.stroke();
-    ctx.fillStyle='rgba(26,26,26,0.3)';
+    ctx.strokeStyle=`rgba(${fr},${fg_},${fb},0.22)`;ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle=`rgba(${fr},${fg_},${fb},0.3)`;
     [[ox,oy],[x1,y1],[x2,y2]].forEach(([x,y])=>{ctx.beginPath();ctx.arc(x,y,2,0,Math.PI*2);ctx.fill();});
   }
   (function loop(){step();draw();requestAnimationFrame(loop);})();
@@ -775,10 +731,15 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmWorldSim, WasmEmSim, WasmMdSim, WasmQftSim, WasmLorentzSim, WasmGravitySim, WasmGuardianSim, WasmLbmSim, WasmProbSim, WasmDiffGradientSim, WasmDiffJacobianSim, WasmDiffSensitivitySim, WasmMjcfAntSim, WasmMjcfCartpoleSim, WasmMjcfEditorSim, WasmReal2SimFitSim, WasmReal2SimLandscapeSim, WasmReal2SimAdamVsGdSim, WasmReggeCurvatureSim, WasmReggeSymmetrySim, WasmReggeActionSim, WasmCompileIrSim, WasmCompileWgslSim, WasmCompileFusionSim, WasmHourglassSim, WasmRagdollSim, WasmGravitySandboxSim, WasmGripperSim, WasmRubeGoldbergSim } from './pkg/phyz_wasm.js';
 
 // ---- Shared ----
-const BG = 0xfaf9f7;
-const ACCENT = 0x4a5fd7;
-const DARK = 0x1a1a1a;
-const MUTED = 0x888888;
+// Theme palette (see --viz-* in the stylesheet). Scenes are rebuilt on theme change.
+let P = window.vizPalette();
+let BG = P.bg, ACCENT = P.flame, DARK = P.fg, MUTED = P.muted;
+window.addEventListener('themechange', () => {
+  P = window.vizPalette();
+  BG = P.bg; ACCENT = P.flame; DARK = P.fg; MUTED = P.muted;
+  sharedRenderer.setClearColor(BG);
+  for (const e of vizEntries.values()) e.initialized = false;
+});
 
 // Single shared WebGL renderer. Renders each scene to an offscreen canvas,
 // then blits to the visible canvas via 2D drawImage. One WebGL context total.
@@ -914,7 +875,7 @@ function pushTrail(trail, x, y, z) {
 
 function makeGround(width, depth, y) {
   const geo = new THREE.BoxGeometry(width, 0.02, depth);
-  const mat = new THREE.MeshStandardMaterial({ color: 0xd0cfcd, roughness: 0.9, metalness: 0.0 });
+  const mat = new THREE.MeshStandardMaterial({ color: P.ground, roughness: 0.9, metalness: 0.0 });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.y = y - 0.01;
   return mesh;
@@ -1065,7 +1026,7 @@ registerViz('ex-bouncing', () => {
   controls.target.set(0, 0.8, 0);
   scene.add(makeGround(3, 1, 0));
   const R = sim.radii()[0];
-  const colors = [0xe74c3c, ACCENT, 0x888888];
+  const colors = [P.coral, ACCENT, P.muted];
   const spheres = [], trails = [];
   for (let i = 0; i < 3; i++) {
     const s = makeSphere(R, colors[i]); scene.add(s); spheres.push(s);
@@ -1143,7 +1104,7 @@ registerViz('ex-cradle', () => {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0,-1,0)]);
     const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.5 }));
     scene.add(line); strings.push(line);
-    const bob = makeSphere(R, 0x999999, { roughness: 0.2, metalness: 0.8 });
+    const bob = makeSphere(R, P.muted, { roughness: 0.2, metalness: 0.8 });
     scene.add(bob); bobs.push(bob);
   }
 
@@ -1225,7 +1186,7 @@ registerViz('ex-ensemble', () => {
   scene.add(new THREE.Points(dotGeo, new THREE.PointsMaterial({ size: 4, color: ACCENT, sizeAttenuation: false, transparent: true, opacity: 0.85 })));
 
   const trailIdx = [0, 25, 50, 75, 99];
-  const trailColors = [0x4a5fd7, 0x7c4dff, 0x2196f3, 0x00897b, 0xe74c3c];
+  const trailColors = [P.flame, P.purple, P.cyan, P.cyan, P.coral];
   const trails = trailIdx.map((_, k) => makeTrail(400, trailColors[k], 0.55));
   trails.forEach(t => scene.add(t.line));
   scene.add(makeSphere(0.03, DARK));
@@ -1263,10 +1224,10 @@ registerViz('ex-policy', () => {
   for (let i = 0; i < N; i++) {
     const row = Math.floor(i / GRID), col = i % GRID;
     const x = (col - 4.5) * cellSize, y = (row - 4.5) * cellSize;
-    const s = makeSphere(0.06, 0x888888);
+    const s = makeSphere(0.06, P.muted);
     s.position.set(x, y, 0); scene.add(s); spheres.push(s);
     const nGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0.1, 0)]);
-    const nLine = new THREE.Line(nGeo, new THREE.LineBasicMaterial({ color: 0xffffff }));
+    const nLine = new THREE.Line(nGeo, new THREE.LineBasicMaterial({ color: P.fg }));
     nLine.position.set(x, y, 0.01); scene.add(nLine); needles.push(nLine);
   }
 
@@ -1388,13 +1349,13 @@ registerViz('ex-elastic', () => {
   const dotPos = new Float32Array(N * 3);
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(dotPos, 3));
-  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, color: 0x2e7d32, sizeAttenuation: false })));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, color: P.cyan, sizeAttenuation: false })));
 
   const nSprings = sim.num_springs();
   const springPos = new Float32Array(nSprings * 6);
   const springGeo = new THREE.BufferGeometry();
   springGeo.setAttribute('position', new THREE.BufferAttribute(springPos, 3));
-  scene.add(new THREE.LineSegments(springGeo, new THREE.LineBasicMaterial({ color: 0x4caf50, transparent: true, opacity: 0.3 })));
+  scene.add(new THREE.LineSegments(springGeo, new THREE.LineBasicMaterial({ color: P.cyan, transparent: true, opacity: 0.3 })));
 
   let _prev = 0;
   return { scene, camera, controls, canvas, update() {
@@ -1441,7 +1402,7 @@ registerViz('ex-hourglass', () => {
   }
   pts.push(pts[0].clone()); // close the loop
   outlineGeo.setFromPoints(pts);
-  scene.add(new THREE.Line(outlineGeo, new THREE.LineBasicMaterial({ color: 0x999999, transparent: true, opacity: 0.5 })));
+  scene.add(new THREE.Line(outlineGeo, new THREE.LineBasicMaterial({ color: P.muted, transparent: true, opacity: 0.5 })));
 
   // Sand particles
   const dotPos = new Float32Array(N * 3);
@@ -1492,7 +1453,7 @@ registerViz('ex-randchain', () => {
     const rod = makeCyl(0.015, lengths[i], MUTED); scene.add(rod); rods.push(rod);
     const j = makeSphere(0.035, c); scene.add(j); joints.push(j);
   }
-  const trail = makeTrail(400, 0x7c4dff, 0.25); scene.add(trail.line);
+  const trail = makeTrail(400, P.purple, 0.25); scene.add(trail.line);
 
   let _prev = 0;
   return { scene, camera, controls, canvas, update() {
@@ -1565,12 +1526,12 @@ registerViz('ex-tendon', () => {
   const rods = [], joints = [];
   for (let i = 0; i < N; i++) {
     const rod = makeCyl(0.018, L, MUTED); scene.add(rod); rods.push(rod);
-    const j = makeSphere(0.035, i === N-1 ? 0xe74c3c : DARK); scene.add(j); joints.push(j);
+    const j = makeSphere(0.035, i === N-1 ? P.coral : DARK); scene.add(j); joints.push(j);
   }
   const tendonGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-  const tendonLine = new THREE.Line(tendonGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.6 }));
+  const tendonLine = new THREE.Line(tendonGeo, new THREE.LineBasicMaterial({ color: P.coral, transparent: true, opacity: 0.6 }));
   scene.add(tendonLine);
-  const trail = makeTrail(300, 0xe74c3c, 0.2); scene.add(trail.line);
+  const trail = makeTrail(300, P.coral, 0.2); scene.add(trail.line);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
@@ -1617,11 +1578,11 @@ registerViz('ex-gripper', () => {
   // Right finger joints + rods
   const rJoints = []; const rRods = [];
   for (let i = 0; i < 3; i++) {
-    const j = makeSphere(0.03, 0x7c4dff); scene.add(j); rJoints.push(j);
+    const j = makeSphere(0.03, P.purple); scene.add(j); rJoints.push(j);
     const r = makeCyl(0.012, 0.25, MUTED); scene.add(r); rRods.push(r);
   }
   // Ball
-  const ball = makeSphere(0.06, 0xe74c3c); scene.add(ball);
+  const ball = makeSphere(0.06, P.coral); scene.add(ball);
   scene.add(makeGround(2, 1, 0));
 
   return { scene, camera, controls, canvas, update() {
@@ -1774,8 +1735,8 @@ function makeMdViz(canvasId, sim, statId, label, baseColor) {
 }
 
 registerViz('ex-argon', () => makeMdViz('ex-argon', WasmMdSim.argon_gas(), 'stat-argon', 'LJ 12-6', ACCENT));
-registerViz('ex-crystal', () => makeMdViz('ex-crystal', WasmMdSim.crystal(), 'stat-crystal', 'phonons', 0x00897b));
-registerViz('ex-polymer', () => makeMdViz('ex-polymer', WasmMdSim.polymer(), 'stat-polymer', 'bonded chain', 0x7c4dff));
+registerViz('ex-crystal', () => makeMdViz('ex-crystal', WasmMdSim.crystal(), 'stat-crystal', 'phonons', P.cyan));
+registerViz('ex-polymer', () => makeMdViz('ex-polymer', WasmMdSim.polymer(), 'stat-polymer', 'bonded chain', P.purple));
 
 // =========================================
 // phyz-md: Cooling Gas → Crystal Formation
@@ -1953,17 +1914,17 @@ registerViz('ex-crossed', () => {
   camera.position.set(0, 1, 5);
   controls.target.set(0, 1, 0);
 
-  const dot = makeSphere(0.06, 0xe74c3c);
+  const dot = makeSphere(0.06, P.coral);
   scene.add(dot);
   const trailMax = 600;
   const trailGeo = new THREE.BufferGeometry();
   const trailPos = new Float32Array(trailMax * 3);
   trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
   trailGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.4 })));
+  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: P.coral, transparent: true, opacity: 0.4 })));
 
   // E and B field arrows
-  const arrowE = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(-2,0,0), 1.0, 0x2e7d32, 0.15, 0.1);
+  const arrowE = new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(-2,0,0), 1.0, P.cyan, 0.15, 0.1);
   const arrowB = new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(-2,0,0), 1.0, ACCENT, 0.15, 0.1);
   scene.add(arrowE); scene.add(arrowB);
 
@@ -1993,14 +1954,14 @@ registerViz('ex-mirror', () => {
   camera.position.set(2, 1, 5);
   controls.target.set(0, 0, 0);
 
-  const dot = makeSphere(0.06, 0x7c4dff);
+  const dot = makeSphere(0.06, P.purple);
   scene.add(dot);
   const trailMax = 800;
   const trailGeo = new THREE.BufferGeometry();
   const trailPos = new Float32Array(trailMax * 3);
   trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
   trailGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x7c4dff, transparent: true, opacity: 0.35 })));
+  scene.add(new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: P.purple, transparent: true, opacity: 0.35 })));
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(6);
@@ -2031,9 +1992,9 @@ registerViz('ex-binary', () => {
 
   const masses = sim.masses();
   const s1 = makeSphere(0.12, ACCENT); scene.add(s1);
-  const s2 = makeSphere(0.12, 0xe74c3c); scene.add(s2);
+  const s2 = makeSphere(0.12, P.coral); scene.add(s2);
   const t1 = makeTrail(500, ACCENT, 0.3); scene.add(t1.line);
-  const t2 = makeTrail(500, 0xe74c3c, 0.3); scene.add(t2.line);
+  const t2 = makeTrail(500, P.coral, 0.3); scene.add(t2.line);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
@@ -2059,7 +2020,7 @@ registerViz('ex-solar', () => {
   controls.target.set(0, 0, 0);
   controls.enableRotate = false;
 
-  const colors = [0xffcc00, 0xe74c3c, ACCENT, 0x2e7d32, 0x7c4dff, 0x00897b];
+  const colors = [P.amber, P.coral, ACCENT, P.cyan, P.purple, P.cyan];
   const radii = [0.2, 0.06, 0.08, 0.1, 0.07, 0.055];
   const spheres = [], trails = [];
   for (let i = 0; i < N; i++) {
@@ -2090,9 +2051,9 @@ registerViz('ex-precess', () => {
   controls.target.set(0, 0, 0);
   controls.enableRotate = false;
 
-  const sun = makeSphere(0.15, 0xffcc00); scene.add(sun);
-  const planet = makeSphere(0.06, 0xe74c3c); scene.add(planet);
-  const trail = makeTrail(1200, 0xe74c3c, 0.3); scene.add(trail.line);
+  const sun = makeSphere(0.15, P.amber); scene.add(sun);
+  const planet = makeSphere(0.06, P.coral); scene.add(planet);
+  const trail = makeTrail(1200, P.coral, 0.3); scene.add(trail.line);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(32);
@@ -2129,8 +2090,8 @@ registerViz('ex-galaxy', () => {
   scene.add(points);
 
   // Core spheres (larger, brighter)
-  const coreA = makeSphere(0.12, 0xffcc00); scene.add(coreA);
-  const coreB = makeSphere(0.12, 0x4fc3f7); scene.add(coreB);
+  const coreA = makeSphere(0.12, P.amber); scene.add(coreA);
+  const coreB = makeSphere(0.12, P.cyan); scene.add(coreB);
 
   // Velocity→color: low=cool blue, high=warm yellow/white
   function speedColor(v, maxV) {
@@ -2184,15 +2145,15 @@ registerViz('ex-sandbox', () => {
   const trailGroup = new THREE.Group();
   scene.add(trailGroup);
 
-  const bodyColors = [0xffcc00, 0xe74c3c, ACCENT, 0x2e7d32, 0x7c4dff, 0x00897b, 0xff9800, 0x9c27b0];
+  const bodyColors = [P.amber, P.coral, ACCENT, P.cyan, P.purple, P.cyan, P.orange, P.purple];
   let spheres = [];
   let trails = [];
 
   // Central star
-  const star = makeSphere(0.15, 0xffcc00);
+  const star = makeSphere(0.15, P.amber);
   bodyGroup.add(star);
   spheres.push(star);
-  trails.push(makeTrail(400, 0xffcc00, 0.2));
+  trails.push(makeTrail(400, P.amber, 0.2));
   trailGroup.add(trails[0].line);
 
   // Click to add body
@@ -2281,9 +2242,9 @@ registerViz('ex-emonitor', () => {
   const bob = makeSphere(0.08, ACCENT); scene.add(bob);
 
   // Energy bars (3D boxes for KE, PE, Total)
-  const barKE = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: 0xe74c3c }));
+  const barKE = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: P.coral }));
   const barPE = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: ACCENT }));
-  const barTot = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  const barTot = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1, 0.05), new THREE.MeshStandardMaterial({ color: P.cyan }));
   barKE.position.set(1.5, 0, 0); barPE.position.set(1.7, 0, 0); barTot.position.set(1.9, 0, 0);
   scene.add(barKE); scene.add(barPE); scene.add(barTot);
 
@@ -2324,13 +2285,13 @@ registerViz('ex-adaptdt', () => {
 
   // Fixed dt pendulum (left)
   const pivot1 = makeSphere(0.03, DARK); pivot1.position.set(-1.0, 0, 0); scene.add(pivot1);
-  const rod1 = makeCyl(0.018, L, 0xe74c3c); scene.add(rod1);
-  const bob1 = makeSphere(0.07, 0xe74c3c); scene.add(bob1);
+  const rod1 = makeCyl(0.018, L, P.coral); scene.add(rod1);
+  const bob1 = makeSphere(0.07, P.coral); scene.add(bob1);
 
   // Adaptive dt pendulum (right)
   const pivot2 = makeSphere(0.03, DARK); pivot2.position.set(1.0, 0, 0); scene.add(pivot2);
-  const rod2 = makeCyl(0.018, L, 0x2e7d32); scene.add(rod2);
-  const bob2 = makeSphere(0.07, 0x2e7d32); scene.add(bob2);
+  const rod2 = makeCyl(0.018, L, P.cyan); scene.add(rod2);
+  const bob2 = makeSphere(0.07, P.cyan); scene.add(bob2);
 
   let _prev = 0;
   return { scene, camera, controls, canvas, update() {
@@ -2372,8 +2333,8 @@ registerViz('ex-correction', () => {
 
   scene.add(makeSphere(0.04, DARK));
   const rod = makeCyl(0.02, L, MUTED); scene.add(rod);
-  const bob = makeSphere(0.08, 0x2e7d32); scene.add(bob);
-  const trail = makeTrail(300, 0x2e7d32, 0.25); scene.add(trail.line);
+  const bob = makeSphere(0.08, P.cyan); scene.add(bob);
+  const trail = makeTrail(300, P.cyan, 0.25); scene.add(trail.line);
 
   // Energy line chart (using points)
   const histMax = 200;
@@ -2381,7 +2342,7 @@ registerViz('ex-correction', () => {
   const histGeo = new THREE.BufferGeometry();
   histGeo.setAttribute('position', new THREE.BufferAttribute(histPos, 3));
   histGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(histGeo, new THREE.LineBasicMaterial({ color: 0x2e7d32 })));
+  scene.add(new THREE.Line(histGeo, new THREE.LineBasicMaterial({ color: P.cyan })));
 
   let _prev = 0;
   return { scene, camera, controls, canvas, update() {
@@ -2524,8 +2485,8 @@ registerViz('ex-svgd', () => {
   controls.enableRotate = false;
 
   // Target distribution markers
-  const t1 = makeSphere(0.08, 0x2e7d32, { transparent: true, opacity: 0.3 }); t1.position.set(-1, 0, 0); scene.add(t1);
-  const t2 = makeSphere(0.08, 0x2e7d32, { transparent: true, opacity: 0.3 }); t2.position.set(1, 0.5, 0); scene.add(t2);
+  const t1 = makeSphere(0.08, P.cyan, { transparent: true, opacity: 0.3 }); t1.position.set(-1, 0, 0); scene.add(t1);
+  const t2 = makeSphere(0.08, P.cyan, { transparent: true, opacity: 0.3 }); t2.position.set(1, 0.5, 0); scene.add(t2);
 
   const dotPos = new Float32Array(N * 3);
   const geo = new THREE.BufferGeometry();
@@ -2603,7 +2564,7 @@ registerViz('ex-gradtarget', () => {
   const rod = makeCyl(0.02, 1.5, MUTED); scene.add(rod);
   const bob = makeSphere(0.08, ACCENT); scene.add(bob);
   // Target marker
-  const target = makeSphere(0.06, 0x2e7d32, { transparent: true, opacity: 0.5 });
+  const target = makeSphere(0.06, P.cyan, { transparent: true, opacity: 0.5 });
   target.position.set(sim.target_x(), 0, 0);
   scene.add(target);
   // Loss curve as line
@@ -2612,7 +2573,7 @@ registerViz('ex-gradtarget', () => {
   const lossPos = new Float32Array(lossMax * 3);
   lossGeo.setAttribute('position', new THREE.BufferAttribute(lossPos, 3));
   lossGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(lossGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c })));
+  scene.add(new THREE.Line(lossGeo, new THREE.LineBasicMaterial({ color: P.coral })));
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
@@ -2655,7 +2616,7 @@ registerViz('ex-jacheat', () => {
   for (let r = 0; r < 2; r++) {
     for (let c = 0; c < 2; c++) {
       const geo = new THREE.BoxGeometry(cellSize, cellSize, 0.02);
-      const mat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+      const mat = new THREE.MeshStandardMaterial({ color: P.muted });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.position.set(1.3 + c * (cellSize + 0.05), 0.2 - r * (cellSize + 0.05), 0);
       scene.add(mesh);
@@ -2699,10 +2660,10 @@ registerViz('ex-sensitivity', () => {
   scene.add(makeSphere(0.04, DARK));
   const rodA = makeCyl(0.02, 1.5, MUTED); scene.add(rodA);
   const bobA = makeSphere(0.07, ACCENT); scene.add(bobA);
-  const rodB = makeCyl(0.02, 1.5, 0xe74c3c); scene.add(rodB);
-  const bobB = makeSphere(0.07, 0xe74c3c); scene.add(bobB);
+  const rodB = makeCyl(0.02, 1.5, P.coral); scene.add(rodB);
+  const bobB = makeSphere(0.07, P.coral); scene.add(bobB);
   const trailA = makeTrail(300, ACCENT, 0.25); scene.add(trailA.line);
-  const trailB = makeTrail(300, 0xe74c3c, 0.25); scene.add(trailB.line);
+  const trailB = makeTrail(300, P.coral, 0.25); scene.add(trailB.line);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(8);
@@ -2737,7 +2698,7 @@ registerViz('ex-ant', () => {
   const joints = [], rods = [];
   for (let i = 0; i < N; i++) {
     const isEnd = (i % 2 === 1);
-    const j = makeSphere(0.04, isEnd ? 0xe74c3c : DARK);
+    const j = makeSphere(0.04, isEnd ? P.coral : DARK);
     scene.add(j); joints.push(j);
     const rod = makeCyl(0.015, 0.5, MUTED);
     scene.add(rod); rods.push(rod);
@@ -2793,7 +2754,7 @@ registerViz('ex-ragdoll', () => {
     const w = x1 - x0, h = 0.05;
     const step = new THREE.Mesh(
       new THREE.BoxGeometry(w, h, 0.6),
-      new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.8 })
+      new THREE.MeshStandardMaterial({ color: P.ground, roughness: 0.8 })
     );
     step.position.set((x0+x1)/2, y0 - h/2, 0);
     scene.add(step);
@@ -2803,7 +2764,7 @@ registerViz('ex-ragdoll', () => {
   scene.add(makeGround(6, 2, 0));
 
   // Ragdoll joints as spheres
-  const jointColors = [0xe74c3c, DARK, DARK, DARK, ACCENT, ACCENT, ACCENT, ACCENT, 0x2e7d32, 0x2e7d32, 0x2e7d32, 0x2e7d32];
+  const jointColors = [P.coral, DARK, DARK, DARK, ACCENT, ACCENT, ACCENT, ACCENT, P.cyan, P.cyan, P.cyan, P.cyan];
   const jointSizes = [0.06, 0.03, 0.03, 0.03, 0.025, 0.025, 0.025, 0.025, 0.025, 0.03, 0.025, 0.03];
   const joints = [];
   for (let i = 0; i < N; i++) {
@@ -2848,19 +2809,19 @@ registerViz('ex-rube', () => {
   controls.target.set(0, 0.4, 0);
 
   // Ball 1
-  const ball1 = makeSphere(0.05, 0xe74c3c); scene.add(ball1);
+  const ball1 = makeSphere(0.05, P.coral); scene.add(ball1);
   // Ball 2
   const ball2 = makeSphere(0.05, ACCENT); scene.add(ball2);
   // Pendulum rod + bob
   const pendRod = makeCyl(0.01, 0.7, MUTED); scene.add(pendRod);
-  const pendBob = makeSphere(0.06, 0x7c4dff); scene.add(pendBob);
+  const pendBob = makeSphere(0.06, P.purple); scene.add(pendBob);
   const pendAnchor = makeSphere(0.02, DARK); scene.add(pendAnchor);
   // Dominoes
   const dominos = [];
   for (let i = 0; i < nDom; i++) {
     const dom = new THREE.Mesh(
       new THREE.BoxGeometry(dw, dh, 0.08),
-      new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.6 })
+      new THREE.MeshStandardMaterial({ color: P.amber, roughness: 0.6 })
     );
     scene.add(dom); dominos.push(dom);
   }
@@ -2872,15 +2833,15 @@ registerViz('ex-rube', () => {
   // Shelf
   const shelf = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.04, 0.3),
-    new THREE.MeshStandardMaterial({ color: 0xcccccc })
+    new THREE.MeshStandardMaterial({ color: P.ground })
   );
   shelf.position.set(1.2, 0.48, 0); scene.add(shelf);
   // Floor
   scene.add(makeGround(6, 2, 0));
   // Bucket
-  const bucketL = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
-  const bucketR = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
-  const bucketB = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.2), new THREE.MeshStandardMaterial({ color: 0x2e7d32 }));
+  const bucketL = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: P.cyan }));
+  const bucketR = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.2, 0.2), new THREE.MeshStandardMaterial({ color: P.cyan }));
+  const bucketB = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.2), new THREE.MeshStandardMaterial({ color: P.cyan }));
   scene.add(bucketL); scene.add(bucketR); scene.add(bucketB);
 
   // Set initial ramp geometry
@@ -2947,9 +2908,9 @@ registerViz('ex-cartpole', () => {
   cart.position.y = 0.1;
   scene.add(cart);
   // Pole
-  const pole = makeCyl(0.025, 1.0, 0xe74c3c);
+  const pole = makeCyl(0.025, 1.0, P.coral);
   scene.add(pole);
-  const tip = makeSphere(0.05, 0xe74c3c);
+  const tip = makeSphere(0.05, P.coral);
   scene.add(tip);
 
   let _prev = 0;
@@ -3020,7 +2981,7 @@ registerViz('ex-paramfit', () => {
   const lossPos = new Float32Array(lossMax * 3);
   lossGeo.setAttribute('position', new THREE.BufferAttribute(lossPos, 3));
   lossGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(lossGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c })));
+  scene.add(new THREE.Line(lossGeo, new THREE.LineBasicMaterial({ color: P.coral })));
 
   // Axes
   const axMat = new THREE.LineBasicMaterial({ color: MUTED, transparent: true, opacity: 0.3 });
@@ -3028,8 +2989,8 @@ registerViz('ex-paramfit', () => {
   scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-2,-1.5,0), new THREE.Vector3(-2,1.5,0)]), axMat));
 
   // Target params marker
-  const target = makeSphere(0.06, 0x2e7d32); target.position.set(0, 1, 0); scene.add(target);
-  const current = makeSphere(0.06, 0xe74c3c); scene.add(current);
+  const target = makeSphere(0.06, P.cyan); target.position.set(0, 1, 0); scene.add(target);
+  const current = makeSphere(0.06, P.coral); scene.add(current);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
@@ -3086,8 +3047,8 @@ registerViz('ex-lossland', () => {
   const pathPos = new Float32Array(pathMax * 3);
   pathGeo.setAttribute('position', new THREE.BufferAttribute(pathPos, 3));
   pathGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(pathGeo, new THREE.LineBasicMaterial({ color: 0xffffff })));
-  const pathDot = makeSphere(0.04, 0xffffff); scene.add(pathDot);
+  scene.add(new THREE.Line(pathGeo, new THREE.LineBasicMaterial({ color: P.fg })));
+  const pathDot = makeSphere(0.04, P.fg); scene.add(pathDot);
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
@@ -3129,14 +3090,14 @@ registerViz('ex-adamgd', () => {
   const gdPos = new Float32Array(curveMax * 3);
   gdGeo.setAttribute('position', new THREE.BufferAttribute(gdPos, 3));
   gdGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(gdGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c })));
+  scene.add(new THREE.Line(gdGeo, new THREE.LineBasicMaterial({ color: P.coral })));
 
   // Adam curve (green)
   const adamGeo = new THREE.BufferGeometry();
   const adamPos = new Float32Array(curveMax * 3);
   adamGeo.setAttribute('position', new THREE.BufferAttribute(adamPos, 3));
   adamGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(adamGeo, new THREE.LineBasicMaterial({ color: 0x2e7d32 })));
+  scene.add(new THREE.Line(adamGeo, new THREE.LineBasicMaterial({ color: P.cyan })));
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
@@ -3219,7 +3180,7 @@ registerViz('ex-symbars', () => {
   controls.enableRotate = false;
 
   const labels = ['flat\ngauge', 'flat\ntrans', 'RN\ngauge', 'RN\ntrans', 'Kerr\ngauge', 'Kerr\ntrans'];
-  const colors = [ACCENT, ACCENT, 0xe74c3c, 0xe74c3c, 0x2e7d32, 0x2e7d32];
+  const colors = [ACCENT, ACCENT, P.coral, P.coral, P.cyan, P.cyan];
   const maxV = Math.max(...vals, 0.001);
   const bars = [];
 
@@ -3269,14 +3230,14 @@ registerViz('ex-actionland', () => {
   scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(curvePts), new THREE.LineBasicMaterial({ color: ACCENT })));
 
   // GD dot
-  const gdDot = makeSphere(0.06, 0xe74c3c); scene.add(gdDot);
+  const gdDot = makeSphere(0.06, P.coral); scene.add(gdDot);
   // GD path
   const pathMax = 200;
   const pathGeo = new THREE.BufferGeometry();
   const pathPos = new Float32Array(pathMax * 3);
   pathGeo.setAttribute('position', new THREE.BufferAttribute(pathPos, 3));
   pathGeo.setDrawRange(0, 0);
-  scene.add(new THREE.Line(pathGeo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.5 })));
+  scene.add(new THREE.Line(pathGeo, new THREE.LineBasicMaterial({ color: P.coral, transparent: true, opacity: 0.5 })));
 
   return { scene, camera, controls, canvas, update() {
     sim.step_n(1);
@@ -3319,7 +3280,7 @@ registerViz('ex-kernelir', () => {
   controls.target.set(0, -0.5, 0);
   controls.enableRotate = false;
 
-  const nodeColors = [ACCENT, 0x2e7d32, 0x2e7d32, 0x7c4dff, 0xe74c3c, 0xe74c3c, 0x2e7d32];
+  const nodeColors = [ACCENT, P.cyan, P.cyan, P.purple, P.coral, P.coral, P.cyan];
   const nodes = [];
   for (let i = 0; i < N; i++) {
     const d = depths[i];
@@ -3382,7 +3343,7 @@ registerViz('ex-wgslout', () => {
           // Simulated code coloring
           const indent = (lineIdx === 0 || lineIdx === nLines - 1) ? 0 : 20;
           if (x < indent) {
-            data[i] = 250; data[i+1] = 249; data[i+2] = 247;
+            data[i] = P.bg>>16&255; data[i+1] = P.bg>>8&255; data[i+2] = P.bg&255;
           } else {
             const barW = 120 + (lineIdx * 37 % 100);
             if (x < indent + barW) {
@@ -3392,11 +3353,11 @@ registerViz('ex-wgslout', () => {
               data[i+1] = Math.floor(c.g * 255);
               data[i+2] = Math.floor(c.b * 255);
             } else {
-              data[i] = 240; data[i+1] = 239; data[i+2] = 237;
+              data[i] = P.ground>>16&255; data[i+1] = P.ground>>8&255; data[i+2] = P.ground&255;
             }
           }
         } else {
-          data[i] = 240; data[i+1] = 239; data[i+2] = 237;
+          data[i] = P.ground>>16&255; data[i+1] = P.ground>>8&255; data[i+2] = P.ground&255;
         }
         data[i+3] = 255;
       }
@@ -3430,7 +3391,7 @@ registerViz('ex-fusionviz', () => {
   // Create nodes for kernel B (right)
   const bNodes = [];
   for (let i = 0; i < bN; i++) {
-    const s = makeSphere(0.08, 0xe74c3c);
+    const s = makeSphere(0.08, P.coral);
     scene.add(s); bNodes.push(s);
   }
   // Edges within each kernel
@@ -3442,7 +3403,7 @@ registerViz('ex-fusionviz', () => {
   }
   for (let i = 1; i < bN; i++) {
     const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xe74c3c, transparent: true, opacity: 0.4 }));
+    const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: P.coral, transparent: true, opacity: 0.4 }));
     scene.add(line); bEdges.push(line);
   }
 
