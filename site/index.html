@@ -123,6 +123,7 @@ a:hover { background: var(--flame-ink); color: #fff; }
 .hero-claim .hero-sub { color: var(--muted); font-weight: 500; }
 .flame-rule { width: 22%; height: 2px; background: var(--flame-ink); margin: 0 0 1.1rem; }
 .hero-note { color: var(--muted); font-size: var(--s-body); margin-bottom: 2rem; max-width: 52ch; }
+.hero-note + .hero-powered { margin-top: -1.25rem; font-size: var(--s-sm); }
 .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1.25rem; }
 .hero-cmd, a.hero-btn, button.hero-btn {
   display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; margin: 0;
@@ -269,6 +270,7 @@ pre .mac { color: var(--cyan); }
     <p class="hero-claim">Simulate the physical world.<br><span class="hero-sub">Differentiate all of it.</span></p>
     <div class="flame-rule"></div>
     <p class="hero-note">Rigid bodies, particles, fields, molecules, lattices. One engine, in Rust, with analytical gradients through every step and thousands of environments on the GPU.</p>
+    <p class="hero-note hero-powered">Built on <a href="https://tang.rs">tang</a>, which supplies the scalars, the linear algebra, and the differentiable kernels underneath.</p>
     <div class="hero-actions">
       <button class="hero-cmd" id="cargo-copy" title="Copy"><span class="hero-dollar">$</span><code>cargo add phyz</code><span class="hero-hint" id="cargo-hint">Copy</span></button>
       <a class="hero-btn" href="https://github.com/ecto/phyz">GitHub →</a>
@@ -316,6 +318,10 @@ pre .mac { color: var(--cyan); }
     <p>
       Plug in semi-implicit Euler, RK4, or your own solver. Load MuJoCo MJCF models.
       Fit simulation parameters to real trajectories. Batch thousands of environments on the GPU.
+    </p>
+    <p>
+      The numerics come from <a href="https://tang.rs">tang</a>: generic scalars for dual numbers and exact derivatives,
+      dense linear algebra, and a tensor IR that lowers to CUDA, Metal, Vulkan, and WGSL. phyz is the physics on top.
     </p>
     <p>phyz is early, ambitious, and open source.</p>
   </div>
@@ -445,7 +451,7 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           <canvas id="ex-slit"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-em">phyz-em</a><a class="ex-name" href="https://github.com/ecto/phyz/tree/main/crates/phyz-em">double_slit</a></div>
-            <p class="ex-desc">A plane wave meets two slits. FDTD on an 80×80 Yee grid with a perfectly matched layer at the edges. Fringes form in real time.</p>
+            <p class="ex-desc">A plane wave meets two slits. FDTD on an 80×80 Yee grid with a perfectly matched layer at the edges. Drawn as time-averaged intensity, so what builds up is the fringe pattern.</p>
             <dl class="ro" id="ro-slit"></dl>
           </figcaption>
         </figure>
@@ -500,7 +506,7 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">05 · Gradients</span><p>The part no other engine's front page can show. Every simulation above is differentiable. These three use it.</p></div>
+      <div class="ex-group-head"><span class="label-caps">05 · Gradients</span><p>Every simulation on this page is differentiable. These three put the gradient to work.</p></div>
       <div class="examples-grid">
         <figure class="ex ex-interactive">
           <canvas id="ex-gradtarget"></canvas>
@@ -1055,18 +1061,23 @@ registerViz('ex-slit', () => {
   const smooth = new Float32Array(N * N);
   const wall = rgb(P.fg);
   return { scene, camera, controls, canvas, update() {
-    sim.step_n(4);
+    sim.step_n(2);
     const e = sim.field();
+    // Time-averaged intensity ⟨E²⟩, so the picture is the fringe pattern and
+    // nothing flips sign on screen.
     let peak = 0;
     for (let i = 0; i < N * N; i++) {
       if (mask[i] < 0.5) { f.px(i, wall); continue; }
-      smooth[i] = smooth[i] * 0.7 + e[i] * 0.3;
-      const v = Math.max(-1, Math.min(1, smooth[i] * 0.7));
-      peak = Math.max(peak, Math.abs(smooth[i]));
-      f.px(i, rampDiv(v));
+      smooth[i] = smooth[i] * 0.97 + e[i] * e[i] * 0.03;
+      peak = Math.max(peak, smooth[i]);
+    }
+    const inv = 1 / Math.max(peak, 1e-6);
+    for (let i = 0; i < N * N; i++) {
+      if (mask[i] < 0.5) continue;
+      f.px(i, rampSeq(Math.sqrt(smooth[i] * inv)));
     }
     f.commit();
-    readout('slit', [['t', `${sim.time().toFixed(2)} s`], ['grid', `${N}×${N} Yee`], ['|E| peak', peak.toFixed(2)]]);
+    readout('slit', [['t', `${sim.time().toFixed(2)} s`], ['grid', `${N}×${N} Yee`], ['⟨E²⟩ peak', peak.toFixed(2)]]);
   }};
 });
 
