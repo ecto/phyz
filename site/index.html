@@ -415,7 +415,7 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">02 · Particles</span><p>Material point method and discrete elements. Sand, water, and five hundred grains through a neck.</p></div>
+      <div class="ex-group-head"><span class="label-caps">02 · Particles</span><p>Discrete elements, the material point method, and mass-spring bodies. Grains, sand, and a jelly.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-hourglass"></canvas>
@@ -434,11 +434,11 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
           </figcaption>
         </figure>
         <figure class="ex">
-          <canvas id="ex-fluid"></canvas>
+          <canvas id="ex-blob"></canvas>
           <figcaption class="ex-meta">
-            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/water_container.rs">fluid_dam</a></div>
-            <p class="ex-desc">Dam break. Weakly compressible water on the same MPM grid as the sand, with a different constitutive model.</p>
-            <dl class="ro" id="ro-fluid"></dl>
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name">elastic_blob</a></div>
+            <p class="ex-desc">A disc of particles tied by springs, dropped. It squashes, rings, and settles. Springs are drawn, stretched ones in blue.</p>
+            <dl class="ro" id="ro-blob"></dl>
           </figcaption>
         </figure>
       </div>
@@ -475,14 +475,22 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">04 · Worlds</span><p>Several physics in one scene, and many scenes at once. This is what the robot work needs.</p></div>
+      <div class="ex-group-head"><span class="label-caps">04 · Robots</span><p>Articulated trees under control. Torques in, the same O(n) dynamics out, one body or a hundred at once.</p></div>
       <div class="examples-grid">
         <figure class="ex">
-          <canvas id="ex-rube"></canvas>
+          <canvas id="ex-ant"></canvas>
           <figcaption class="ex-meta">
-            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-coupling">phyz-coupling</a><a class="ex-name">rube_goldberg</a></div>
-            <p class="ex-desc">A ball rolls down a ramp into dominoes, which swing a pendulum, which knocks a second ball into a bucket. One world, four solvers.</p>
-            <dl class="ro" id="ro-rube"></dl>
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-mjcf">phyz-mjcf</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/ant.rs">ant_trot</a></div>
+            <p class="ex-desc">An eight-joint quadruped, torso fixed, trotting in the air. Each joint is a PD servo chasing a gait; the torques go through the articulated-body algorithm. Drag to orbit.</p>
+            <dl class="ro" id="ro-ant"></dl>
+          </figcaption>
+        </figure>
+        <figure class="ex">
+          <canvas id="ex-cartpole"></canvas>
+          <figcaption class="ex-meta">
+            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">phyz-env</a><a class="ex-name" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">cartpole</a></div>
+            <p class="ex-desc">The classic control benchmark. A PD law on angle and position holds the pole up and brings the cart home.</p>
+            <dl class="ro" id="ro-cartpole"></dl>
           </figcaption>
         </figure>
         <figure class="ex">
@@ -491,15 +499,6 @@ state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span cl
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">phyz-env</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/examples/gpu_batch.rs">policy_sweep</a></div>
             <p class="ex-desc">One hundred inverted pendulums, each with a different PD gain pair. The ones that stand up light up. A policy search, batched.</p>
             <dl class="ro" id="ro-policy"></dl>
-          </figcaption>
-        </figure>
-        <figure class="ex ex-interactive">
-          <canvas id="ex-sandbox"></canvas>
-          <figcaption class="ex-meta">
-            <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-gravity">phyz-gravity</a><a class="ex-name">orbit_sandbox</a></div>
-            <p class="ex-desc">Softened N-body gravity around a star. Click anywhere to add a body on a circular orbit. Bodies that meet merge.</p>
-            <dl class="ro" id="ro-sandbox"></dl>
-            <span class="ex-hint">click to add a body</span>
           </figcaption>
         </figure>
       </div>
@@ -641,7 +640,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmEmSim, WasmLbmSim, WasmDiffGradientSim, WasmReal2SimFitSim, WasmReal2SimLandscapeSim, WasmHourglassSim, WasmGravitySandboxSim, WasmRubeGoldbergSim } from './pkg/phyz_wasm.js';
+import init, { WasmSim, WasmParticleSim, WasmCradleSim, WasmWaveFieldSim, WasmEnsembleSim, WasmPolicyGridSim, WasmMpmSim, WasmEmSim, WasmLbmSim, WasmDiffGradientSim, WasmReal2SimFitSim, WasmReal2SimLandscapeSim, WasmHourglassSim, WasmMjcfAntSim, WasmMjcfCartpoleSim } from './pkg/phyz_wasm.js';
 
 // ---- Palette ----
 // Everything reads the theme's --viz-* tokens. Scenes are torn down and rebuilt
@@ -1046,7 +1045,36 @@ function mpmCard(id, sim, labelExtra) {
   }};
 }
 registerViz('ex-granular', () => mpmCard('ex-granular', WasmMpmSim.granular_column(), ['yield', 'Drucker-Prager']));
-registerViz('ex-fluid', () => mpmCard('ex-fluid', WasmMpmSim.fluid_dam(), ['model', 'weakly compressible']));
+registerViz('ex-blob', () => {
+  const sim = WasmMpmSim.elastic_blob();
+  const N = sim.num_particles(), S = sim.num_springs();
+  const { scene, camera, controls, canvas } = createScene('ex-blob', { rotate: false });
+  fit(camera, controls, 0, 0.42, 0, 0.7, 0.5);
+  scene.add(ground(1.6, 8, 0));
+  const springs = segments(S, P.muted, 0.6); scene.add(springs.line);
+  const stretched = segments(S, P.flame); scene.add(stretched.line);
+  const pts = points(N, 3, { color: P.fg }); scene.add(pts.obj);
+  const e0 = sim.spring_endpoints(), rest = new Float64Array(S);
+  for (let k = 0; k < S; k++) rest[k] = Math.hypot(e0[k * 4 + 2] - e0[k * 4], e0[k * 4 + 3] - e0[k * 4 + 1]);
+  let prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(48);
+    const p = sim.positions(), e = sim.spring_endpoints();
+    let top = 0;
+    for (let i = 0; i < N; i++) { pts.setPos(i, p[i * 2], p[i * 2 + 1]); top = Math.max(top, p[i * 2 + 1]); }
+    pts.commit();
+    let nStretch = 0;
+    for (let k = 0; k < S; k++) {
+      const x0 = e[k * 4], y0 = e[k * 4 + 1], x1 = e[k * 4 + 2], y1 = e[k * 4 + 3];
+      const long = Math.hypot(x1 - x0, y1 - y0) > rest[k] * 1.06;
+      if (long) { nStretch++; stretched.set(k, x0, y0, 0.01, x1, y1, 0.01); springs.set(k, 0, 0, 0, 0, 0, 0); }
+      else { springs.set(k, x0, y0, 0, x1, y1, 0); stretched.set(k, 0, 0, 0, 0, 0, 0); }
+    }
+    springs.commit(); stretched.commit();
+    readout('blob', [['t', secs(sim.time())], ['springs', String(S)], ['stretched', `${nStretch}`], ['height', `${top.toFixed(2)} m`]]);
+    const d = Math.abs(p[1] - prev); prev = p[1]; return d;
+  }};
+});
 
 // =========================================
 // 03 fields
@@ -1092,7 +1120,7 @@ registerViz('ex-vortex', () => {
   const vel = sim.velocity_field();
   const wall = rgb(P.fg);
   return { scene, camera, controls, canvas, update() {
-    sim.step_n(4);
+    sim.step_n(16);
     const w = sim.vorticity_field();
     let peak = 0;
     for (let i = 0; i < nx * ny; i++) {
@@ -1130,47 +1158,53 @@ registerViz('ex-wavefield', () => {
 // =========================================
 // 04 worlds
 // =========================================
-registerViz('ex-rube', () => {
-  const sim = WasmRubeGoldbergSim.new();
-  const nDom = sim.num_dominoes(), dh = sim.domino_height(), dw = sim.domino_width();
-  const { scene, camera, controls, canvas } = createScene('ex-rube', { rotate: false });
-  const s0 = sim.state();
-  const ri = 8 + nDom * 3;
-  const xs = [s0[0], s0[2], s0[ri], s0[ri + 2], s0[ri + 4]];
-  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-  fit(camera, controls, cx, 0.45, 0, (Math.max(...xs) - Math.min(...xs)) / 2 + 0.3, 0.7);
-  scene.add(ground(6, 30, 0));
-
-  const ball1 = dot(0.05, P.coral), ball2 = dot(0.05, P.flame), bob = dot(0.06, P.purple), anchor = dot(0.02, P.fg);
-  scene.add(ball1, ball2, bob, anchor);
-  const rod = segments(1, P.muted); scene.add(rod.line);
-  const dominoes = [];
-  for (let i = 0; i < nDom; i++) {
-    const d = new THREE.Mesh(new THREE.PlaneGeometry(dw, dh), flat(P.amber));
-    scene.add(d); dominoes.push(d);
-  }
-  scene.add(hairline([[s0[ri], s0[ri + 1], 0], [s0[ri + 2], s0[ri + 3], 0]], P.muted));
-  scene.add(hairline([[0.9, 0.48, 0], [1.5, 0.48, 0]], P.muted));
-  const bx = s0[ri + 4], by = s0[ri + 5], bw = s0[ri + 6];
-  scene.add(hairline([[bx - bw / 2, by + 0.2, 0], [bx - bw / 2, by, 0], [bx + bw / 2, by, 0], [bx + bw / 2, by + 0.2, 0]], P.cyan));
-  let prev = [0, 0, 0];
-
+registerViz('ex-ant', () => {
+  const sim = WasmMjcfAntSim.new();
+  const N = sim.nbodies();
+  const { scene, camera, controls, canvas } = createScene('ex-ant');
+  fit(camera, controls, 0, -0.5, 0, 0.8, 0.75, [0.9, 0.55, 1]);
+  const torso = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[0.4, 0, 0.4], [-0.4, 0, 0.4], [-0.4, 0, -0.4], [0.4, 0, -0.4]].map(p => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: P.fg }));
+  scene.add(torso);
+  const rods = segments(N, P.muted); scene.add(rods.line);
+  const joints = points(N, 4, { color: P.fg }); scene.add(joints.obj);
+  const feet = points(4, 5, { color: P.flame }); scene.add(feet.obj);
   return { scene, camera, controls, canvas, update() {
     sim.step_n(16);
-    const s = sim.state();
-    ball1.position.set(s[0], s[1], 0); ball2.position.set(s[2], s[3], 0);
-    anchor.position.set(s[4], s[5], 0); bob.position.set(s[6], s[7], 0);
-    rod.set(0, s[4], s[5], 0, s[6], s[7], 0); rod.commit();
-    let down = 0;
-    for (let i = 0; i < nDom; i++) {
-      const x = s[8 + i * 3], y = s[9 + i * 3], a = s[10 + i * 3];
-      dominoes[i].position.set(x + (dh / 2) * Math.sin(a), y + (dh / 2) * Math.cos(a), 0);
-      dominoes[i].rotation.z = -a;
-      if (Math.abs(a) > 0.6) down++;
+    const e = sim.body_endpoint_positions(), j = sim.joint_positions(), tau = sim.torques();
+    let tsum = 0;
+    for (let i = 0; i < N; i++) {
+      const px = i % 2 ? e[(i - 1) * 3] : j[i * 3], py = i % 2 ? e[(i - 1) * 3 + 1] : j[i * 3 + 1], pz = i % 2 ? e[(i - 1) * 3 + 2] : j[i * 3 + 2];
+      rods.set(i, px, py, pz, e[i * 3], e[i * 3 + 1], e[i * 3 + 2]);
+      joints.setPos(i, px, py, pz);
+      if (i % 2) feet.setPos((i - 1) / 2, e[i * 3], e[i * 3 + 1], e[i * 3 + 2]);
+      tsum += Math.abs(tau[i]);
     }
-    const inBucket = Math.abs(s[2] - bx) < bw / 2 && s[3] < by + 0.2;
-    readout('rube', [['t', secs(sim.time())], ['dominoes down', `${down} / ${nDom}`], ['ball in bucket', inBucket ? 'yes' : 'not yet']]);
-    const d = Math.abs(s[0] - prev[0]) + Math.abs(s[2] - prev[1]) + Math.abs(s[6] - prev[2]); prev = [s[0], s[2], s[6]]; return sim.time() < 2 ? 1 : d;
+    rods.commit(); joints.commit(); feet.commit();
+    readout('ant', [['t', secs(sim.time())], ['joints', String(N)], ['Σ|τ|', `${tsum.toFixed(2)} N·m`], ['gait', 'trot, 1.2 Hz']]);
+  }};
+});
+
+registerViz('ex-cartpole', () => {
+  let sim = WasmMjcfCartpoleSim.new();
+  const { scene, camera, controls, canvas } = createScene('ex-cartpole', { rotate: false });
+  fit(camera, controls, 0, 0.55, 0, 1.3, 0.8);
+  scene.add(hairline([[-1.6, 0, 0], [1.6, 0, 0]], P.ground));
+  const cart = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-0.2, 0, 0], [0.2, 0, 0], [0.2, 0.18, 0], [-0.2, 0.18, 0]].map(p => new THREE.Vector3(...p))), new THREE.LineBasicMaterial({ color: P.fg }));
+  scene.add(cart);
+  const pole = segments(1, P.muted); scene.add(pole.line);
+  const tip = dot(0.045, P.flame); scene.add(tip);
+  const home = dot(0.02, P.ground); scene.add(home);
+  const tr = trail(300, P.flame, 0.35); scene.add(tr.line);
+  let prev = 0;
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    if (Math.abs(sim.pole_angle()) > 1.2 || Math.abs(sim.cart_x()) > 1.5 || sim.time() > 14) sim = WasmMjcfCartpoleSim.new();
+    const x = sim.cart_x(), tx = sim.pole_tip_x(), ty = sim.pole_tip_y() + 0.18;
+    cart.position.x = x;
+    pole.set(0, x, 0.18, 0, tx, ty, 0); pole.commit();
+    tip.position.set(tx, ty, 0); tr.push(tx, ty);
+    readout('cartpole', [['t', secs(sim.time())], ['θ', `${(sim.pole_angle() * 180 / Math.PI).toFixed(1)}°`], ['x', `${x.toFixed(2)} m`]]);
+    const d = Math.abs(x - prev); prev = x; return 1;
   }};
 });
 
@@ -1203,42 +1237,6 @@ registerViz('ex-policy', () => {
     needles.commit(); tips.commit();
     readout('policy', [['t', secs(sim.time())], ['balanced', `${up} / ${N}`], ['sweep', 'kp × kd']]);
     const d = Math.abs(a[0] - prev); prev = a[0]; return d;
-  }};
-});
-
-registerViz('ex-sandbox', () => {
-  const sim = WasmGravitySandboxSim.new();
-  const { scene, camera, controls, canvas } = createScene('ex-sandbox', { rotate: false });
-  fit(camera, controls, 0, 0, 0, 3.2, 3.2);
-  const colors = [P.flame, P.cyan, P.amber, P.coral, P.purple, P.orange];
-  const bodies = [], trails = [];
-  const addVisual = (i, r, color) => {
-    const b = dot(r, color); scene.add(b); bodies.push(b);
-    const t = polyline(400, color, 0.35); scene.add(t.line); trails.push(t);
-  };
-  addVisual(0, 0.12, P.fg);
-  const orbit = (x, y, m = 0.3) => {
-    const r = Math.hypot(x, y); const v = Math.sqrt(10 * 10 / r) * 0.7;
-    sim.add_body(x, y, -v * y / r, v * x / r, m);
-    addVisual(sim.num_bodies() - 1, 0.045, colors[(sim.num_bodies() - 2) % colors.length]);
-  };
-  orbit(1.4, 0.3); orbit(-2.2, 0.9); orbit(0.6, -2.6, 0.5);
-  canvas.style.pointerEvents = 'auto';
-  const hit = new THREE.Vector3();
-  canvas.addEventListener('click', e => { if (pointerToPlane(e, canvas, camera, hit) && Math.hypot(hit.x, hit.y) > 0.2) orbit(hit.x, hit.y); });
-
-  return { scene, camera, controls, canvas, update() {
-    sim.step_n(16);
-    const N = sim.num_bodies(), p = sim.positions(), m = sim.masses();
-    while (bodies.length > N) { scene.remove(bodies.pop()); scene.remove(trails.pop().line); }
-    for (let i = 0; i < N; i++) {
-      bodies[i].position.set(p[i * 2], p[i * 2 + 1], 0);
-      bodies[i].scale.setScalar(Math.max(0.5, Math.cbrt(m[i] / 0.3)) * (i === 0 ? 0.35 : 1));
-      const t = sim.trail_for(i), n = Math.min(t.length / 2, 400), off = t.length / 2 - n;
-      for (let j = 0; j < n; j++) trails[i].set(j, t[(off + j) * 2], t[(off + j) * 2 + 1]);
-      trails[i].commit(n);
-    }
-    readout('sandbox', [['t', secs(sim.time())], ['bodies', String(N)], ['G', '10, softened']]);
   }};
 });
 

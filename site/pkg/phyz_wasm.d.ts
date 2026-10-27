@@ -373,8 +373,17 @@ export class WasmMjcfAntSim {
     joint_positions(): Float64Array;
     nbodies(): number;
     static new(): WasmMjcfAntSim;
+    /**
+     * Trot gait: diagonal leg pairs in phase, hips and shins a quarter cycle
+     * apart, each joint driven by a PD servo toward its target angle. The
+     * torques go in through `ctrl`, so this is the same ABA the robot uses.
+     */
     step_n(n: number): void;
     time(): number;
+    /**
+     * Current joint torques from the gait servo.
+     */
+    torques(): Float64Array;
 }
 
 /**
@@ -914,6 +923,7 @@ export interface InitOutput {
     readonly wasmmjcfantsim_nbodies: (a: number) => number;
     readonly wasmmjcfantsim_new: () => number;
     readonly wasmmjcfantsim_step_n: (a: number, b: number) => void;
+    readonly wasmmjcfantsim_torques: (a: number) => [number, number];
     readonly wasmmjcfcartpolesim_new: () => number;
     readonly wasmmjcfcartpolesim_pole_angle: (a: number) => number;
     readonly wasmmjcfcartpolesim_pole_tip_x: (a: number) => number;

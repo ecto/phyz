@@ -1666,6 +1666,9 @@ export class WasmMjcfAntSim {
         return WasmMjcfAntSim.__wrap(ret);
     }
     /**
+     * Trot gait: diagonal leg pairs in phase, hips and shins a quarter cycle
+     * apart, each joint driven by a PD servo toward its target angle. The
+     * torques go in through `ctrl`, so this is the same ABA the robot uses.
      * @param {number} n
      */
     step_n(n) {
@@ -1677,6 +1680,16 @@ export class WasmMjcfAntSim {
     time() {
         const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Current joint torques from the gait servo.
+     * @returns {Float64Array}
+     */
+    torques() {
+        const ret = wasm.wasmmjcfantsim_torques(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
 }
 if (Symbol.dispose) WasmMjcfAntSim.prototype[Symbol.dispose] = WasmMjcfAntSim.prototype.free;

@@ -176,6 +176,7 @@ export const wasmmjcfantsim_joint_positions: (a: number) => [number, number];
 export const wasmmjcfantsim_nbodies: (a: number) => number;
 export const wasmmjcfantsim_new: () => number;
 export const wasmmjcfantsim_step_n: (a: number, b: number) => void;
+export const wasmmjcfantsim_torques: (a: number) => [number, number];
 export const wasmmjcfcartpolesim_new: () => number;
 export const wasmmjcfcartpolesim_pole_angle: (a: number) => number;
 export const wasmmjcfcartpolesim_pole_tip_x: (a: number) => number;
