@@ -12,7 +12,7 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 /* ── muni "Pilot Light" treatment, as on tang: warm paper by day, warm black by night.
-   One flame per page. tang's flame is safety orange; phyz's is neon green. ── */
+   One flame per page. tang's flame is safety orange; phyz's is electric blue. ── */
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -31,9 +31,9 @@
   --border-muted: #e6dfd3;
 
   /* the flame */
-  --flame: #39ff14;
-  --flame-ink: color-mix(in oklab, #39ff14 42%, #000);
-  --flame-50: color-mix(in oklab, #39ff14 14%, #fff);
+  --flame: #3d8bff;
+  --flame-ink: color-mix(in oklab, #3d8bff 72%, #000);
+  --flame-50: color-mix(in oklab, #3d8bff 14%, #fff);
 
   /* the rest of the neon set, darkened for paper */
   --cyan:   color-mix(in oklab, #00f0ff 55%, #000);
@@ -47,7 +47,7 @@
   --viz-fg: #1c1917;
   --viz-muted: #a08d70;
   --viz-ground: #e6dfd3;
-  --viz-flame: #1f9a0c;
+  --viz-flame: #1f5fd6;
   --viz-cyan: #0a8f99;
   --viz-amber: #b58f00;
   --viz-coral: #d81b45;
@@ -59,19 +59,19 @@
   :root:not([data-theme="light"]) {
     --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
     --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
-    --flame-ink: #39ff14; --flame-50: color-mix(in oklab, #39ff14 14%, #0b0907);
+    --flame-ink: #3d8bff; --flame-50: color-mix(in oklab, #3d8bff 14%, #0b0907);
     --cyan: #00f0ff; --amber: #ffd400; --coral: #ff2052; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
     --viz-bg: #15110d; --viz-fg: #e8e1d2; --viz-muted: #6b5a44; --viz-ground: #2a2119;
-    --viz-flame: #39ff14; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
+    --viz-flame: #3d8bff; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
   --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
-  --flame-ink: #39ff14; --flame-50: color-mix(in oklab, #39ff14 14%, #0b0907);
+  --flame-ink: #3d8bff; --flame-50: color-mix(in oklab, #3d8bff 14%, #0b0907);
   --cyan: #00f0ff; --amber: #ffd400; --coral: #ff2052; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
   --viz-bg: #15110d; --viz-fg: #e8e1d2; --viz-muted: #6b5a44; --viz-ground: #2a2119;
-  --viz-flame: #39ff14; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
+  --viz-flame: #3d8bff; --viz-cyan: #00f0ff; --viz-amber: #ffd400; --viz-coral: #ff2052; --viz-orange: #ff5f00; --viz-purple: #b388ff;
 }
 
 html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; }
@@ -83,7 +83,7 @@ body {
   line-height: 1.62;
   font-variant-numeric: tabular-nums;
 }
-::selection { background: var(--flame-ink); color: #000; }
+::selection { background: var(--flame-ink); color: #fff; }
 code, pre, kbd { font-family: var(--mono); }
 
 .container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
@@ -91,7 +91,7 @@ code, pre, kbd { font-family: var(--mono); }
 
 /* links, as in master-plan.typ: no underline; hover fills with the flame, black text */
 a, a:visited { color: var(--flame-ink); text-decoration: none; padding: 0 2px; margin: 0 -2px; transition: background .12s, color .12s; }
-a:hover { background: var(--flame-ink); color: #000; }
+a:hover { background: var(--flame-ink); color: #fff; }
 
 /* caps labels */
 .label-caps {
@@ -133,8 +133,8 @@ a:hover { background: var(--flame-ink); color: #000; }
 .hero-dollar { color: var(--muted); font-family: var(--mono); }
 .hero-hint { color: var(--muted); font-size: var(--s-xs); margin-left: 6px; }
 .hero-cmd:hover .hero-hint { color: var(--flame-ink); }
-a.hero-btn:hover, button.hero-btn:hover, .hero-cmd:hover { background: var(--flame-ink); color: #000; }
-.hero-cmd:hover .hero-dollar, .hero-cmd:hover .hero-hint { color: #000; }
+a.hero-btn:hover, button.hero-btn:hover, .hero-cmd:hover { background: var(--flame-ink); color: #fff; }
+.hero-cmd:hover .hero-dollar, .hero-cmd:hover .hero-hint { color: #fff; }
 .hero-pills { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* pills: master-plan neon, tinted fill, no rule */
@@ -201,7 +201,7 @@ pre .mac { color: var(--cyan); }
 .example-meta .stat { display: block; font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); margin-top: 6px; }
 .crate-also { display: block; font-size: var(--s-xs); color: var(--muted); margin-top: 6px; }
 .crate-also a { color: var(--muted); }
-.crate-also a:hover { color: #000; }
+.crate-also a:hover { color: #fff; }
 
 /* ── footer ── */
 .site-foot { text-align: center; padding: clamp(5rem, 11vw, 9rem) 1rem 4rem; color: var(--muted); font-size: var(--s-sm); }
@@ -258,7 +258,7 @@ pre .mac { color: var(--cyan); }
       <a class="hero-btn" href="https://docs.rs/phyz">docs.rs →</a>
     </div>
     <div class="hero-pills">
-      <span class="pill" style="--pill:#39ff14">pure Rust</span>
+      <span class="pill" style="--pill:#3d8bff">pure Rust</span>
       <span class="pill" style="--pill:#00f0ff">WASM</span>
       <span class="pill" style="--pill:#ffd400">wgpu</span>
       <span class="pill" style="--pill:#ff5f00">CUDA</span>
