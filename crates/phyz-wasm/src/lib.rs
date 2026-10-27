@@ -5,6 +5,15 @@ pub use quantum::*;
 
 use phyz_diff::semi_implicit_step_jacobians;
 use phyz_diff::symbolic::CompiledStepJacobians;
+use phyz_diff::{
+    AdjointRollout, CollisionMesh, ContactSetup, ConvexContactRollout,
+    FinalStateObjective, GroundContact, adjoint_rollout_gradient, convex_adjoint_gradient,
+    convex_rollout_objective_and_state, rollout_objective,
+};
+use phyz_contact::{ContactMaterial, ContactSolverConfig};
+use phyz_model::Geometry;
+use phyz_diff::rollout::DofLayout;
+use std::cell::RefCell;
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
@@ -5502,6 +5511,8 @@ pub struct WasmReal2SimFitSim {
     lr: f64,
     dt: f64,
     n_steps: usize,
+    /// Release angle of the recording (rad). The fit simulates from the same one.
+    release: f64,
 }
 
 #[wasm_bindgen]
@@ -5514,7 +5525,8 @@ impl WasmReal2SimFitSim {
         let n_steps = 1200; // ~one period, so the fit has a full swing to match
 
         // Generate reference trajectory
-        let ref_traj = Self::simulate_pendulum(true_mass, true_length, 0.8, dt, n_steps);
+        let release = 0.8;
+        let ref_traj = Self::simulate_pendulum(true_mass, true_length, release, dt, n_steps);
 
         WasmReal2SimFitSim {
             ref_traj,
@@ -5527,6 +5539,7 @@ impl WasmReal2SimFitSim {
             lr: 0.02,
             dt,
             n_steps,
+            release,
         }
     }
 
@@ -5545,7 +5558,7 @@ impl WasmReal2SimFitSim {
     }
 
     fn compute_loss(&self, mass: f64, length: f64) -> f64 {
-        let traj = Self::simulate_pendulum(mass, length, 0.8, self.dt, self.n_steps);
+        let traj = Self::simulate_pendulum(mass, length, self.release, self.dt, self.n_steps);
         let mut loss = 0.0;
         for (a, b) in traj.iter().zip(self.ref_traj.iter()) {
             loss += (a - b).powi(2);
@@ -5602,8 +5615,21 @@ impl WasmReal2SimFitSim {
         self.iteration as f64
     }
     /// Current estimated trajectory (for overlay rendering)
+    /// Re-record the reference from a new release angle and restart the fit
+    /// from the same wrong guess.
+    pub fn set_release(&mut self, q0: f64) {
+        self.release = q0.clamp(-2.6, 2.6);
+        self.ref_traj = Self::simulate_pendulum(self.true_mass, self.true_length, self.release, self.dt, self.n_steps);
+        self.est_mass = 2.0;
+        self.est_length = 1.0;
+        self.loss_history.clear();
+        self.iteration = 0;
+    }
+    pub fn release(&self) -> f64 {
+        self.release
+    }
     pub fn est_trajectory(&self) -> Vec<f64> {
-        Self::simulate_pendulum(self.est_mass, self.est_length, 0.8, self.dt, self.n_steps)
+        Self::simulate_pendulum(self.est_mass, self.est_length, self.release, self.dt, self.n_steps)
     }
     pub fn ref_trajectory(&self) -> Vec<f64> {
         self.ref_traj.clone()
@@ -6339,5 +6365,320 @@ impl WasmCompileFusionSim {
     }
     pub fn time(&self) -> f64 {
         self.time
+    }
+}
+
+
+// ================================================================
+// phyz-diff: trajectory adjoint on a box drop
+// ================================================================
+
+/// A box dropped onto a penalty ground with spin and sideways speed. One
+/// adjoint pass gives dJ/dπ for the box's ten inertia parameters and ∂J/∂x for
+/// each of its eight corners, with J = where it ends up along x.
+#[wasm_bindgen]
+pub struct WasmMassAdjointSim {
+    model: Model,
+    half: f64,
+    spin: f64,
+    vx: f64,
+    steps: usize,
+    samples: usize,
+    objective: f64,
+    d_inertia: Vec<f64>,
+    d_vertices: Vec<f64>,
+    traj: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmMassAdjointSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmMassAdjointSim {
+        let half = 0.15;
+        let mass = 1.0;
+        let i = mass * 2.0 / 3.0 * half * half;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+            .dt(0.002)
+            .add_free_body(
+                "box",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::new(mass, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))),
+            )
+            .build();
+        let mut sim = WasmMassAdjointSim {
+            model,
+            half,
+            spin: 4.0,
+            vx: 1.2,
+            steps: 450,
+            samples: 45,
+            objective: 0.0,
+            d_inertia: vec![0.0; 10],
+            d_vertices: vec![0.0; 24],
+            traj: vec![],
+        };
+        sim.compute();
+        sim
+    }
+
+    fn corners_vec(&self) -> Vec<Vec3> {
+        let h = self.half;
+        let mut v = Vec::with_capacity(8);
+        for &sx in &[-1.0, 1.0] {
+            for &sy in &[-1.0, 1.0] {
+                for &sz in &[-1.0, 1.0] {
+                    v.push(Vec3::new(sx * h, sy * h, sz * h));
+                }
+            }
+        }
+        v
+    }
+
+    fn initial(&self) -> (Vec<f64>, Vec<f64>) {
+        let layout = DofLayout::of(&self.model);
+        let mut q0 = layout.neutral_q(&self.model); // [x, y, z, qw, qx, qy, qz]
+        q0[0] = -1.2;
+        q0[2] = 1.1;
+        let tilt: f64 = 0.35;
+        q0[3] = (tilt / 2.0).cos();
+        q0[5] = (tilt / 2.0).sin();
+        let v0 = vec![0.0, self.spin, 0.0, self.vx, 0.0, 0.0];
+        (q0, v0)
+    }
+
+    fn compute(&mut self) {
+        let (q0, v0) = self.initial();
+        let meshes = vec![CollisionMesh { body: 0, vertices: self.corners_vec() }];
+        let ground = GroundContact { height: 0.0, stiffness: 2500.0, damping: 25.0 };
+        let ctrl = |_t: usize| DVec::zeros(6);
+        let value = |q: &[f64], _v: &[f64]| q[0];
+        let gradient = |q: &[f64], v: &[f64]| {
+            let mut gq = vec![0.0; q.len()];
+            gq[0] = 1.0;
+            (gq, vec![0.0; v.len()])
+        };
+        let obj = FinalStateObjective { value: &value, gradient: &gradient };
+        let rollout = AdjointRollout {
+            model: &self.model,
+            contact: Some(ContactSetup { ground, meshes: &meshes }),
+            q0: q0.clone(),
+            v0: v0.clone(),
+            steps: self.steps,
+            ctrl: &ctrl,
+        };
+        let g = adjoint_rollout_gradient(&rollout, &obj);
+        self.objective = g.objective;
+        self.d_inertia = g.d_inertia[0].to_vec();
+        self.d_vertices = g.d_vertices[0].iter().flat_map(|p| [p.x, p.y, p.z]).collect();
+
+        // Trajectory samples for drawing: the rollout is the same code path.
+        let cell = RefCell::new(Vec::new());
+        let capture = |q: &[f64], _v: &[f64]| {
+            *cell.borrow_mut() = q.to_vec();
+            0.0
+        };
+        let zero_grad = |q: &[f64], v: &[f64]| (vec![0.0; q.len()], vec![0.0; v.len()]);
+        let probe = FinalStateObjective { value: &capture, gradient: &zero_grad };
+        let mut traj = Vec::with_capacity(self.samples * 7);
+        for s in 0..self.samples {
+            let k = ((s + 1) * self.steps) / self.samples;
+            let r = AdjointRollout {
+                model: &self.model,
+                contact: Some(ContactSetup { ground, meshes: &meshes }),
+                q0: q0.clone(),
+                v0: v0.clone(),
+                steps: k,
+                ctrl: &ctrl,
+            };
+            rollout_objective(&r, &probe);
+            traj.extend_from_slice(&cell.borrow()[..7]);
+        }
+        self.traj = traj;
+    }
+
+    /// Initial spin about y (rad/s). Recomputes the rollout and its adjoint.
+    pub fn set_spin(&mut self, w: f64) {
+        self.spin = w.clamp(-9.0, 9.0);
+        self.compute();
+    }
+    pub fn spin(&self) -> f64 {
+        self.spin
+    }
+    pub fn half(&self) -> f64 {
+        self.half
+    }
+    /// J: final x of the box.
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+    /// dJ/dπ: `[m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+    pub fn d_inertia(&self) -> Vec<f64> {
+        self.d_inertia.clone()
+    }
+    /// ∂J/∂corner, body frame, 8 × xyz, same order as `corners()`.
+    pub fn d_vertices(&self) -> Vec<f64> {
+        self.d_vertices.clone()
+    }
+    pub fn corners(&self) -> Vec<f64> {
+        self.corners_vec().iter().flat_map(|p| [p.x, p.y, p.z]).collect()
+    }
+    /// `samples × [x, y, z, qw, qx, qy, qz]`.
+    pub fn trajectory(&self) -> Vec<f64> {
+        self.traj.clone()
+    }
+    pub fn num_samples(&self) -> usize {
+        self.samples
+    }
+    pub fn duration(&self) -> f64 {
+        self.steps as f64 * self.model.dt
+    }
+}
+
+// ================================================================
+// phyz-diff: adjoint through the convex contact solve
+// ================================================================
+
+/// A box on a slope, simulated with the same convex Coulomb contact the
+/// simulator ships, differentiated through the solve. J = distance slid.
+/// Below the friction angle the block sticks and dJ/dμ is exactly zero.
+#[wasm_bindgen]
+pub struct WasmContactAdjointSim {
+    half: f64,
+    alpha: f64,
+    friction: f64,
+    steps: usize,
+    samples: usize,
+    objective: f64,
+    d_friction: f64,
+    d_v0x: f64,
+    d_q0z: f64,
+    refused: bool,
+    traj: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmContactAdjointSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmContactAdjointSim {
+        let mut sim = WasmContactAdjointSim {
+            half: 0.05,
+            alpha: 0.5,
+            friction: 0.4,
+            steps: 700,
+            samples: 35,
+            objective: 0.0,
+            d_friction: 0.0,
+            d_v0x: 0.0,
+            d_q0z: 0.0,
+            refused: false,
+            traj: vec![],
+        };
+        sim.compute();
+        sim
+    }
+
+    fn model(&self) -> Model {
+        let mass = 1.0;
+        let i = mass * 2.0 / 3.0 * self.half * self.half;
+        let a = self.alpha;
+        let mut model = ModelBuilder::new()
+            .gravity(Vec3::new(GRAVITY * a.sin(), 0.0, -GRAVITY * a.cos()))
+            .dt(1e-3)
+            .add_free_body(
+                "box",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::new(mass, Vec3::zeros(), Mat3::from_diagonal(&Vec3::new(i, i, i))),
+            )
+            .build();
+        model.bodies[0].geometry = Some(Geometry::Box { half_extents: Vec3::new(self.half, self.half, self.half) });
+        model
+    }
+
+    fn compute(&mut self) {
+        let model = self.model();
+        let material = ContactMaterial { friction: self.friction, ..ContactMaterial::default() };
+        let ctrl = |_t: usize| DVec::zeros(6);
+        let value = |q: &[f64], _v: &[f64]| q[3];
+        let gradient = |q: &[f64], v: &[f64]| {
+            let mut gq = vec![0.0; q.len()];
+            gq[3] = 1.0;
+            (gq, vec![0.0; v.len()])
+        };
+        let obj = FinalStateObjective { value: &value, gradient: &gradient };
+        let mk = |steps: usize| ConvexContactRollout {
+            model: &model,
+            ground_height: 0.0,
+            material: material.clone(),
+            config: ContactSolverConfig::gradients(),
+            q0: DVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, self.half]),
+            v0: DVec::zeros(6),
+            steps,
+            ctrl: &ctrl,
+        };
+        match convex_adjoint_gradient(&mk(self.steps), &obj) {
+            Ok(g) => {
+                self.objective = g.objective;
+                self.d_friction = g.d_friction;
+                self.d_v0x = g.d_v0[3];
+                self.d_q0z = g.d_q0[5];
+                self.refused = false;
+            }
+            Err(_) => {
+                self.refused = true;
+                self.objective = convex_rollout_objective_and_state(&mk(self.steps), &obj).0;
+            }
+        }
+        let mut traj = Vec::with_capacity(self.samples * 2);
+        for s in 0..self.samples {
+            let k = ((s + 1) * self.steps) / self.samples;
+            let (_, st) = convex_rollout_objective_and_state(&mk(k), &obj);
+            traj.push(st.q[3]);
+            traj.push(st.q[1]);
+        }
+        self.traj = traj;
+    }
+
+    /// Slope angle (rad). Recomputes.
+    pub fn set_alpha(&mut self, a: f64) {
+        self.alpha = a.clamp(0.05, 1.0);
+        self.compute();
+    }
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+    pub fn friction(&self) -> f64 {
+        self.friction
+    }
+    pub fn half(&self) -> f64 {
+        self.half
+    }
+    /// J: distance slid along the slope.
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+    pub fn d_friction(&self) -> f64 {
+        self.d_friction
+    }
+    pub fn d_v0x(&self) -> f64 {
+        self.d_v0x
+    }
+    pub fn d_q0z(&self) -> f64 {
+        self.d_q0z
+    }
+    pub fn refused(&self) -> bool {
+        self.refused
+    }
+    /// `samples × [x along slope, pitch]`.
+    pub fn trajectory(&self) -> Vec<f64> {
+        self.traj.clone()
+    }
+    pub fn num_samples(&self) -> usize {
+        self.samples
+    }
+    pub fn duration(&self) -> f64 {
+        self.steps as f64 * 1e-3
     }
 }

@@ -68,6 +68,39 @@ export class WasmCompileWgslSim {
     time(): number;
 }
 
+/**
+ * A box on a slope, simulated with the same convex Coulomb contact the
+ * simulator ships, differentiated through the solve. J = distance slid.
+ * Below the friction angle the block sticks and dJ/dμ is exactly zero.
+ */
+export class WasmContactAdjointSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    alpha(): number;
+    d_friction(): number;
+    d_q0z(): number;
+    d_v0x(): number;
+    duration(): number;
+    friction(): number;
+    half(): number;
+    static new(): WasmContactAdjointSim;
+    num_samples(): number;
+    /**
+     * J: distance slid along the slope.
+     */
+    objective(): number;
+    refused(): boolean;
+    /**
+     * Slope angle (rad). Recomputes.
+     */
+    set_alpha(a: number): void;
+    /**
+     * `samples × [x along slope, pitch]`.
+     */
+    trajectory(): Float64Array;
+}
+
 export class WasmCradleSim {
     private constructor();
     free(): void;
@@ -340,6 +373,43 @@ export class WasmLorentzSim {
     trail_len(): number;
 }
 
+/**
+ * A box dropped onto a penalty ground with spin and sideways speed. One
+ * adjoint pass gives dJ/dπ for the box's ten inertia parameters and ∂J/∂x for
+ * each of its eight corners, with J = where it ends up along x.
+ */
+export class WasmMassAdjointSim {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    corners(): Float64Array;
+    /**
+     * dJ/dπ: `[m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+     */
+    d_inertia(): Float64Array;
+    /**
+     * ∂J/∂corner, body frame, 8 × xyz, same order as `corners()`.
+     */
+    d_vertices(): Float64Array;
+    duration(): number;
+    half(): number;
+    static new(): WasmMassAdjointSim;
+    num_samples(): number;
+    /**
+     * J: final x of the box.
+     */
+    objective(): number;
+    /**
+     * Initial spin about y (rad/s). Recomputes the rollout and its adjoint.
+     */
+    set_spin(w: number): void;
+    spin(): number;
+    /**
+     * `samples × [x, y, z, qw, qx, qy, qz]`.
+     */
+    trajectory(): Float64Array;
+}
+
 export class WasmMdSim {
     private constructor();
     free(): void;
@@ -575,14 +645,18 @@ export class WasmReal2SimFitSim {
     current_loss(): number;
     est_length(): number;
     est_mass(): number;
-    /**
-     * Current estimated trajectory (for overlay rendering)
-     */
     est_trajectory(): Float64Array;
     iteration(): number;
     loss_history(): Float64Array;
     static new(): WasmReal2SimFitSim;
     ref_trajectory(): Float64Array;
+    release(): number;
+    /**
+     * Current estimated trajectory (for overlay rendering)
+     * Re-record the reference from a new release angle and restart the fit
+     * from the same wrong guess.
+     */
+    set_release(q0: number): void;
     step_n(n: number): void;
     time(): number;
     true_length(): number;
@@ -756,6 +830,7 @@ export interface InitOutput {
     readonly __wbg_wasmcompilefusionsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcompileirsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcompilewgslsim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmcontactadjointsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmcradlesim_free: (a: number, b: number) => void;
     readonly __wbg_wasmdiffgradientsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmdiffjacobiansim_free: (a: number, b: number) => void;
@@ -769,6 +844,7 @@ export interface InitOutput {
     readonly __wbg_wasmhourglasssim_free: (a: number, b: number) => void;
     readonly __wbg_wasmlbmsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmlorentzsim_free: (a: number, b: number) => void;
+    readonly __wbg_wasmmassadjointsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmmdsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmmjcfantsim_free: (a: number, b: number) => void;
     readonly __wbg_wasmmjcfcartpolesim_free: (a: number, b: number) => void;
@@ -813,6 +889,17 @@ export interface InitOutput {
     readonly wasmcompilewgslsim_next: (a: number) => void;
     readonly wasmcompilewgslsim_source_lines: (a: number) => number;
     readonly wasmcompilewgslsim_time: (a: number) => number;
+    readonly wasmcontactadjointsim_d_friction: (a: number) => number;
+    readonly wasmcontactadjointsim_d_q0z: (a: number) => number;
+    readonly wasmcontactadjointsim_d_v0x: (a: number) => number;
+    readonly wasmcontactadjointsim_duration: (a: number) => number;
+    readonly wasmcontactadjointsim_friction: (a: number) => number;
+    readonly wasmcontactadjointsim_new: () => number;
+    readonly wasmcontactadjointsim_num_samples: (a: number) => number;
+    readonly wasmcontactadjointsim_objective: (a: number) => number;
+    readonly wasmcontactadjointsim_refused: (a: number) => number;
+    readonly wasmcontactadjointsim_set_alpha: (a: number, b: number) => void;
+    readonly wasmcontactadjointsim_trajectory: (a: number) => [number, number];
     readonly wasmcradlesim_bob_positions: (a: number) => [number, number];
     readonly wasmcradlesim_bob_radius: (a: number) => number;
     readonly wasmcradlesim_new: () => number;
@@ -848,7 +935,6 @@ export interface InitOutput {
     readonly wasmemsim_grid_size: (a: number) => number;
     readonly wasmemsim_mask_data: (a: number) => [number, number];
     readonly wasmemsim_step_n: (a: number, b: number) => void;
-    readonly wasmemsim_time: (a: number) => number;
     readonly wasmemsim_waveguide: () => number;
     readonly wasmensemblesim_endpoint_positions: (a: number) => [number, number];
     readonly wasmensemblesim_new: () => number;
@@ -882,10 +968,8 @@ export interface InitOutput {
     readonly wasmguardiansim_energy_monitor: () => number;
     readonly wasmguardiansim_ke: (a: number) => number;
     readonly wasmguardiansim_ke_history: (a: number) => [number, number];
-    readonly wasmguardiansim_length: (a: number) => number;
     readonly wasmguardiansim_pe: (a: number) => number;
     readonly wasmguardiansim_pe_history: (a: number) => [number, number];
-    readonly wasmguardiansim_q2_val: (a: number) => number;
     readonly wasmguardiansim_step_n: (a: number, b: number) => void;
     readonly wasmguardiansim_total_energy: (a: number) => number;
     readonly wasmguardiansim_total_history: (a: number) => [number, number];
@@ -911,6 +995,14 @@ export interface InitOutput {
     readonly wasmlorentzsim_time: (a: number) => number;
     readonly wasmlorentzsim_trail: (a: number) => [number, number];
     readonly wasmlorentzsim_trail_len: (a: number) => number;
+    readonly wasmmassadjointsim_corners: (a: number) => [number, number];
+    readonly wasmmassadjointsim_d_inertia: (a: number) => [number, number];
+    readonly wasmmassadjointsim_d_vertices: (a: number) => [number, number];
+    readonly wasmmassadjointsim_duration: (a: number) => number;
+    readonly wasmmassadjointsim_new: () => number;
+    readonly wasmmassadjointsim_num_samples: (a: number) => number;
+    readonly wasmmassadjointsim_set_spin: (a: number, b: number) => void;
+    readonly wasmmassadjointsim_trajectory: (a: number) => [number, number];
     readonly wasmmdsim_argon_gas: () => number;
     readonly wasmmdsim_bond_endpoints: (a: number) => [number, number];
     readonly wasmmdsim_cooling_gas: () => number;
@@ -930,7 +1022,6 @@ export interface InitOutput {
     readonly wasmmjcfantsim_step_n: (a: number, b: number) => void;
     readonly wasmmjcfantsim_torques: (a: number) => [number, number];
     readonly wasmmjcfcartpolesim_new: () => number;
-    readonly wasmmjcfcartpolesim_pole_angle: (a: number) => number;
     readonly wasmmjcfcartpolesim_pole_tip_x: (a: number) => number;
     readonly wasmmjcfcartpolesim_pole_tip_y: (a: number) => number;
     readonly wasmmjcfcartpolesim_step_n: (a: number, b: number) => void;
@@ -981,16 +1072,17 @@ export interface InitOutput {
     readonly wasmragdollsim_stair_geometry: (a: number) => [number, number];
     readonly wasmragdollsim_step_n: (a: number, b: number) => void;
     readonly wasmreal2simadamvsgdsim_adam_loss: (a: number) => [number, number];
-    readonly wasmreal2simadamvsgdsim_gd_length: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_gd_loss: (a: number) => [number, number];
     readonly wasmreal2simadamvsgdsim_new: () => number;
     readonly wasmreal2simadamvsgdsim_step_n: (a: number, b: number) => void;
     readonly wasmreal2simadamvsgdsim_time: (a: number) => number;
     readonly wasmreal2simfitsim_current_loss: (a: number) => number;
     readonly wasmreal2simfitsim_est_trajectory: (a: number) => [number, number];
+    readonly wasmreal2simfitsim_iteration: (a: number) => number;
     readonly wasmreal2simfitsim_loss_history: (a: number) => [number, number];
     readonly wasmreal2simfitsim_new: () => number;
     readonly wasmreal2simfitsim_ref_trajectory: (a: number) => [number, number];
+    readonly wasmreal2simfitsim_set_release: (a: number, b: number) => void;
     readonly wasmreal2simfitsim_step_n: (a: number, b: number) => void;
     readonly wasmreal2simfitsim_time: (a: number) => number;
     readonly wasmreal2simlandscapesim_grid: (a: number) => [number, number];
@@ -1043,13 +1135,18 @@ export interface InitOutput {
     readonly wasmworldsim_nbodies: (a: number) => number;
     readonly wasmreggecurvaturesim_time: (a: number) => number;
     readonly wasmreggesymmetrysim_time: (a: number) => number;
+    readonly wasmcontactadjointsim_alpha: (a: number) => number;
+    readonly wasmcontactadjointsim_half: (a: number) => number;
     readonly wasmcradlesim_time: (a: number) => number;
     readonly wasmdiffjacobiansim_time: (a: number) => number;
     readonly wasmdiffsensitivitysim_time: (a: number) => number;
+    readonly wasmemsim_time: (a: number) => number;
     readonly wasmgravitysandboxsim_time: (a: number) => number;
     readonly wasmgravitysim_time: (a: number) => number;
     readonly wasmgrippersim_num_particles: (a: number) => number;
     readonly wasmgrippersim_time: (a: number) => number;
+    readonly wasmguardiansim_length: (a: number) => number;
+    readonly wasmguardiansim_q2_val: (a: number) => number;
     readonly wasmguardiansim_q_val: (a: number) => number;
     readonly wasmguardiansim_time: (a: number) => number;
     readonly wasmguardiansim_v_val: (a: number) => number;
@@ -1057,9 +1154,13 @@ export interface InitOutput {
     readonly wasmhourglasssim_time: (a: number) => number;
     readonly wasmlbmsim_grid_nx: (a: number) => number;
     readonly wasmlbmsim_time: (a: number) => number;
+    readonly wasmmassadjointsim_half: (a: number) => number;
+    readonly wasmmassadjointsim_objective: (a: number) => number;
+    readonly wasmmassadjointsim_spin: (a: number) => number;
     readonly wasmmdsim_box_size: (a: number) => number;
     readonly wasmmjcfantsim_time: (a: number) => number;
     readonly wasmmjcfcartpolesim_cart_x: (a: number) => number;
+    readonly wasmmjcfcartpolesim_pole_angle: (a: number) => number;
     readonly wasmmjcfcartpolesim_time: (a: number) => number;
     readonly wasmmjcfeditorsim_n_bodies: (a: number) => number;
     readonly wasmmpmsim_particle_radius: (a: number) => number;
@@ -1075,11 +1176,12 @@ export interface InitOutput {
     readonly wasmragdollsim_time: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_adam_length: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_adam_mass: (a: number) => number;
+    readonly wasmreal2simadamvsgdsim_gd_length: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_gd_mass: (a: number) => number;
     readonly wasmreal2simadamvsgdsim_iteration: (a: number) => number;
     readonly wasmreal2simfitsim_est_length: (a: number) => number;
     readonly wasmreal2simfitsim_est_mass: (a: number) => number;
-    readonly wasmreal2simfitsim_iteration: (a: number) => number;
+    readonly wasmreal2simfitsim_release: (a: number) => number;
     readonly wasmreal2simfitsim_true_length: (a: number) => number;
     readonly wasmreal2simfitsim_true_mass: (a: number) => number;
     readonly wasmreal2simlandscapesim_est_length: (a: number) => number;
