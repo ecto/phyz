@@ -3049,6 +3049,17 @@ export class WasmSim {
         return WasmSim.__wrap(ret);
     }
     /**
+     * One-step Jacobians at the current state, exact (symbolic ABA + integrator).
+     * Returns `[‖∂q′/∂q‖_F, ‖∂v′/∂τ‖_F, ∂q′/∂q row-major (nq×nq)…]`.
+     * @returns {Float64Array}
+     */
+    step_jacobian() {
+        const ret = wasm.wasmsim_step_jacobian(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Step the simulation forward n times using RK4.
      * @param {number} n
      */

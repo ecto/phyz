@@ -706,6 +706,11 @@ export class WasmSim {
      */
     static pendulum(): WasmSim;
     /**
+     * One-step Jacobians at the current state, exact (symbolic ABA + integrator).
+     * Returns `[‖∂q′/∂q‖_F, ‖∂v′/∂τ‖_F, ∂q′/∂q row-major (nq×nq)…]`.
+     */
+    step_jacobian(): Float64Array;
+    /**
      * Step the simulation forward n times using RK4.
      */
     step_n(n: number): void;
@@ -1018,6 +1023,7 @@ export interface InitOutput {
     readonly wasmsim_joint_angles: (a: number) => [number, number];
     readonly wasmsim_joint_positions: (a: number) => [number, number];
     readonly wasmsim_pendulum: () => number;
+    readonly wasmsim_step_jacobian: (a: number) => [number, number];
     readonly wasmsim_step_n: (a: number, b: number) => void;
     readonly wasmsim_total_energy: (a: number) => number;
     readonly wasmwavefieldsim_angles: (a: number) => [number, number];

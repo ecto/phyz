@@ -4,6 +4,7 @@ mod quantum;
 pub use quantum::*;
 
 use phyz_diff::semi_implicit_step_jacobians;
+use phyz_diff::symbolic::CompiledStepJacobians;
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
@@ -30,6 +31,8 @@ fn rk4_combine(a: &DVec, k1: &DVec, k2: &DVec, k3: &DVec, k4: &DVec, dt: f64) ->
 pub struct WasmSim {
     model: Model,
     state: State,
+    /// Exact step Jacobians, traced symbolically through ABA; built on first use.
+    jac: Option<CompiledStepJacobians>,
 }
 
 #[wasm_bindgen]
@@ -65,7 +68,7 @@ impl WasmSim {
         let mut state = model.default_state();
         state.q[0] = 0.8;
 
-        WasmSim { model, state }
+        WasmSim { model, state, jac: None }
     }
 
     /// Double pendulum with viscous damping.
@@ -114,7 +117,7 @@ impl WasmSim {
         state.q[0] = std::f64::consts::FRAC_PI_4 * 2.4;
         state.q[1] = std::f64::consts::FRAC_PI_4 * 1.6;
 
-        WasmSim { model, state }
+        WasmSim { model, state, jac: None }
     }
 
     /// N-link chain with viscous damping.
@@ -161,7 +164,7 @@ impl WasmSim {
             state.q[i] = 0.05;
         }
 
-        WasmSim { model, state }
+        WasmSim { model, state, jac: None }
     }
 
     /// Step the simulation forward n times using RK4.
@@ -178,6 +181,37 @@ impl WasmSim {
 
     pub fn total_energy(&self) -> f64 {
         total_energy(&self.model, &self.state)
+    }
+
+    /// One-step Jacobians at the current state, exact (symbolic ABA + integrator).
+    /// Returns `[‖∂q′/∂q‖_F, ‖∂v′/∂τ‖_F, ∂q′/∂q row-major (nq×nq)…]`.
+    pub fn step_jacobian(&mut self) -> Vec<f64> {
+        if self.jac.is_none() {
+            self.jac = Some(CompiledStepJacobians::build(&self.model));
+        }
+        let nq = self.model.nq;
+        let nv = self.model.nv;
+        let mut inputs = Vec::with_capacity(nq + 2 * nv);
+        inputs.extend_from_slice(self.state.q.as_slice());
+        inputs.extend_from_slice(self.state.v.as_slice());
+        inputs.extend_from_slice(self.state.ctrl.as_slice());
+        let j = self.jac.as_ref().unwrap().eval(&inputs);
+        let fro = |m: &phyz_math::DMat, r: usize, c: usize| -> f64 {
+            let mut acc = 0.0;
+            for i in 0..r {
+                for k in 0..c {
+                    acc += m[(i, k)] * m[(i, k)];
+                }
+            }
+            acc.sqrt()
+        };
+        let mut out = vec![fro(&j.dqnext_dq, nq, nq), fro(&j.dvnext_dctrl, nv, nv)];
+        for i in 0..nq {
+            for k in 0..nq {
+                out.push(j.dqnext_dq[(i, k)]);
+            }
+        }
+        out
     }
 
     pub fn nbodies(&self) -> usize {

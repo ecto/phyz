@@ -190,6 +190,14 @@ pre .cm { color: var(--muted); }
 pre .ty { color: var(--cyan); }
 pre .mac { color: var(--cyan); }
 
+/* ── code beside its demo ── */
+.fig-split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+.fig-split pre { margin: 0; font-size: 12px; }
+.fig-side canvas { width: 100%; aspect-ratio: 1 / 1; background: var(--viz-bg); display: block; }
+.fig-side .ro { margin-top: 16px; }
+.fig-side .fig-cap { max-width: 100%; margin-top: 1.25rem; }
+@media (max-width: 900px) { .fig-split { grid-template-columns: 1fr; } }
+
 /* ── examples: cards, groups, readouts ── */
 .ex { display: flex; flex-direction: column; margin: 0; }
 .ex canvas { width: 100%; aspect-ratio: 4 / 3; background: var(--viz-bg); display: block; cursor: grab; touch-action: none; }
@@ -321,40 +329,46 @@ pre .mac { color: var(--cyan); }
 
 <!-- Code -->
 <section style="padding-top:0">
-  <div class="container">
-    <h2>A double pendulum, with gradients</h2>
-    <p class="lead">Build a model, step it, and ask for the Jacobian of the next state with respect to this one. Chain those through a trajectory and you have end-to-end gradients.</p>
-    <figure class="fig">
+  <div class="container-wide">
+    <div class="container" style="padding:0; margin-bottom: 2.5rem">
+      <h2>A double pendulum, with gradients</h2>
+      <p class="lead" style="margin-bottom:0">Build a model, step it, and ask for the Jacobian of the next state with respect to this one. The simulation on the right is this code, running; the readouts are its numbers.</p>
+    </div>
+    <figure class="fig fig-split">
 <pre><span class="kw">use</span> phyz::{<span class="ty">ModelBuilder</span>, <span class="ty">Simulator</span>, <span class="ty">Vec3</span>};
-<span class="kw">use</span> phyz_diff::<span class="fn">analytical_step_jacobians</span>;
+<span class="kw">use</span> phyz_diff::symbolic::<span class="ty">CompiledStepJacobians</span>;
 
-<span class="cm">// Double pendulum: two revolute joints</span>
+<span class="cm">// Double pendulum: two revolute joints, links hang in −Y.</span>
+<span class="cm">// Joint frames and spatial inertias as in examples/double_pendulum.rs.</span>
 <span class="kw">let</span> model = <span class="ty">ModelBuilder</span>::new()
-    .add_revolute_body(<span class="str">"upper"</span>, -<span class="num">1</span>, <span class="num">1.0</span>, <span class="ty">Vec3</span>::new(<span class="num">0.</span>, <span class="num">0.</span>, -<span class="num">1.</span>))
-    .add_revolute_body(<span class="str">"lower"</span>,  <span class="num">0</span>, <span class="num">0.8</span>, <span class="ty">Vec3</span>::new(<span class="num">0.</span>, <span class="num">0.</span>, -<span class="num">1.</span>))
+    .gravity(<span class="ty">Vec3</span>::new(<span class="num">0.</span>, -<span class="num">9.81</span>, <span class="num">0.</span>))
+    .dt(<span class="num">0.001</span>)
+    .add_revolute_body(<span class="str">"upper"</span>, -<span class="num">1</span>, frame_upper, inertia)
+    .add_revolute_body(<span class="str">"lower"</span>,  <span class="num">0</span>, frame_lower, inertia)
     .build();
 
 <span class="kw">let mut</span> state = model.default_state();
-state.q  = <span class="mac">vec!</span>[<span class="num">0.5</span>, -<span class="num">0.3</span>];  <span class="cm">// joint angles</span>
-state.qd = <span class="mac">vec!</span>[<span class="num">0.0</span>,  <span class="num">0.0</span>];  <span class="cm">// velocities</span>
+state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<span class="num">1</span>] = <span class="num">1.26</span>;  <span class="cm">// joint angles</span>
 
-<span class="cm">// Simulate with analytical Jacobians at every step</span>
+<span class="cm">// Trace ABA + the integrator symbolically, once.</span>
+<span class="cm">// Every eval after that is exact: no finite differences.</span>
+<span class="kw">let</span> jac = <span class="ty">CompiledStepJacobians</span>::build(&amp;model);
 <span class="kw">let</span> sim = <span class="ty">Simulator</span>::rk4();
-<span class="kw">let</span> dt = <span class="num">0.002</span>;
 
-<span class="kw">for</span> _ <span class="kw">in</span> <span class="num">0</span>..<span class="num">500</span> {
-    <span class="kw">let</span> jac = <span class="fn">analytical_step_jacobians</span>(&amp;model, &amp;state, dt);
-    sim.step(&amp;model, &amp;<span class="kw">mut</span> state, dt);
+<span class="kw">loop</span> {
+    sim.step(&amp;model, &amp;<span class="kw">mut</span> state);
+    <span class="kw">let</span> j = jac.eval(&amp;[&amp;state.q[..], &amp;state.v[..], &amp;state.ctrl[..]].concat());
 
-    <span class="cm">// jac.dq_dq0: ∂(next state) / ∂(current state)</span>
-    <span class="cm">// jac.dq_dtau: ∂(next state) / ∂(applied torques)</span>
-    <span class="cm">// → chain rule through the trajectory for end-to-end gradients</span>
-}
-
-<span class="kw">let</span> tip = state.body_position(<span class="num">1</span>);
-<span class="mac">println!</span>(<span class="str">"tip = ({:.3}, {:.3})"</span>, tip.x, tip.y);
-<span class="mac">println!</span>(<span class="str">"sensitivity ‖∂q'/∂q₀‖ = {:.2e}"</span>, jac.dq_dq0.norm());</pre>
-      <p class="fig-cap"><span class="fig-n"></span><span class="fig-lead">Step and differentiate.</span> The same call that advances the state hands back ∂q′/∂q and ∂q′/∂τ. Nothing here is finite differences.</p>
+    <span class="cm">// j.dqnext_dq:    ∂q′/∂q   how this state moves the next</span>
+    <span class="cm">// j.dvnext_dctrl: ∂v′/∂τ   how a torque now moves the next</span>
+    <span class="cm">// chain these through a rollout for end-to-end gradients</span>
+    <span class="mac">println!</span>(<span class="str">"‖∂q′/∂q‖ = {:.3}"</span>, j.dqnext_dq.norm());
+}</pre>
+      <div class="fig-side">
+        <canvas id="ex-code"></canvas>
+        <dl class="ro" id="ro-code"></dl>
+        <p class="fig-cap"><span class="fig-n"></span><span class="fig-lead">Step and differentiate.</span> ∂q′/∂q is the 2×2 drawn under the pendulum: it says how a nudge to either joint now shows up in both joints one millisecond later. Its norm spikes when the lower link whips.</p>
+      </div>
     </figure>
   </div>
 </section>
@@ -828,6 +842,46 @@ registerViz('sim', () => {
     traced.forEach((i, k) => trails[k].push(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]));
     return 1;
   }, clearColor: P.page };
+});
+
+// =========================================
+// the code block's own demo
+// =========================================
+registerViz('ex-code', () => {
+  const sim = WasmSim.double_pendulum();
+  const { scene, camera, controls, canvas } = createScene('ex-code', { rotate: false });
+  fit(camera, controls, 0, -1.05, 0, 2.1, 2.55);
+  const rods = segments(2, P.muted); scene.add(rods.line);
+  const pivot = dot(0.035, P.fg), joint = dot(0.035, P.fg), bob = dot(0.06, P.flame);
+  scene.add(pivot, joint, bob);
+  const tr = trail(600, P.flame, 0.4); scene.add(tr.line);
+  // the 2×2 ∂q′/∂q, drawn as four cells under the swing: fill is |value|, blue positive, coral negative
+  const cs = 0.26, cx0 = -cs / 2 - 0.03, cy0 = -2.55;
+  const cells = [], cellLines = [];
+  for (let i = 0; i < 4; i++) {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(cs - 0.03, cs - 0.03), flat(P.flame, { transparent: true, opacity: 0 }));
+    m.position.set(cx0 + (i % 2) * (cs + 0.03), cy0 + (1 - Math.floor(i / 2)) * (cs + 0.03), 0);
+    scene.add(m); cells.push(m);
+    const e = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => new THREE.Vector3(m.position.x + x * (cs - 0.03) / 2, m.position.y + y * (cs - 0.03) / 2, 0.001))), new THREE.LineBasicMaterial({ color: P.ground }));
+    scene.add(e); cellLines.push(e);
+  }
+  const flameRGB = rgb(P.flame), coralRGB = rgb(P.coral);
+  let frame = 0, J = [0, 0, 1, 0, 0, 1];
+  return { scene, camera, controls, canvas, update() {
+    sim.step_n(16);
+    const e = sim.body_endpoint_positions();
+    const x1 = e[0], y1 = e[1], x2 = e[3], y2 = e[4];
+    joint.position.set(x1, y1, 0); bob.position.set(x2, y2, 0);
+    rods.set(0, 0, 0, 0, x1, y1, 0); rods.set(1, x1, y1, 0, x2, y2, 0); rods.commit();
+    tr.push(x2, y2);
+    if (frame++ % 2 === 0) J = sim.step_jacobian();
+    for (let i = 0; i < 4; i++) {
+      const v = J[2 + i];
+      cells[i].material.color.setRGB(...(v >= 0 ? flameRGB : coralRGB));
+      cells[i].material.opacity = Math.min(Math.abs(v - (i === 0 || i === 3 ? 1 : 0)) * 40 + 0.08, 1);
+    }
+    readout('code', [['t', secs(sim.time())], ['‖∂q′/∂q‖', J[0].toFixed(3)], ['‖∂v′/∂τ‖', J[1].toExponential(2)], ['E', `${sim.total_energy().toFixed(2)} J`]]);
+  }};
 });
 
 // =========================================

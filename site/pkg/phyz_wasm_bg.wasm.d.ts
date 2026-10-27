@@ -271,6 +271,7 @@ export const wasmsim_double_pendulum: () => number;
 export const wasmsim_joint_angles: (a: number) => [number, number];
 export const wasmsim_joint_positions: (a: number) => [number, number];
 export const wasmsim_pendulum: () => number;
+export const wasmsim_step_jacobian: (a: number) => [number, number];
 export const wasmsim_step_n: (a: number, b: number) => void;
 export const wasmsim_total_energy: (a: number) => number;
 export const wasmwavefieldsim_angles: (a: number) => [number, number];
