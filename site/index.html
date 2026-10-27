@@ -219,7 +219,12 @@ pre .mac { color: var(--cyan); }
 .ex-interactive canvas { cursor: crosshair; }
 .ex-meta { padding-top: 16px; }
 .ex-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
-.crate-tag { align-self: flex-start; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.crate-tag { --pill: var(--group-pill, #3d8bff); --ink: color-mix(in oklab, var(--pill) 55%, #000); align-self: flex-start; display: inline-block; padding: 3px 9px; margin-bottom: 6px; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; color: var(--ink); background: color-mix(in oklab, var(--pill) 16%, transparent); }
+.crate-tag:hover { background: var(--pill); color: #000; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .crate-tag { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); } }
+:root[data-theme="dark"] .crate-tag { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
+/* the intro div is the first sibling, so groups start at 2 */
+.ex-group:nth-of-type(2) { --group-pill: #3d8bff; } .ex-group:nth-of-type(3) { --group-pill: #ffd400; } .ex-group:nth-of-type(4) { --group-pill: #00f0ff; } .ex-group:nth-of-type(5) { --group-pill: #ff5f00; } .ex-group:nth-of-type(6) { --group-pill: #ff2052; } .ex-group:nth-of-type(7) { --group-pill: #39ff14; }
 .ex-name { align-self: flex-start; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
 .ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.55; max-width: 46ch; }
 .ex-use { font-size: var(--s-sm); color: var(--fg); line-height: 1.55; max-width: 46ch; margin-top: 8px; }
@@ -436,7 +441,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name">hourglass</a></div>
             <p class="ex-desc">Five hundred grains as discrete elements against funnel walls. The neck is five grain diameters wide, which is where arching starts, so the flow rate is set by grains jamming and un-jamming, not by gravity.</p>
-            <p class="ex-use"><b>For</b>Silo and hopper discharge, powder dosing, and the clogging behaviour that continuum models can't see.</p>
+            <p class="ex-use"><b>For</b>Silo and hopper discharge, powder dosing, and the clogging behavior that continuum models can't see.</p>
             <dl class="ro" id="ro-hourglass"></dl>
           </figcaption>
         </figure>
@@ -454,7 +459,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-particle">phyz-particle</a><a class="ex-name">elastic_blob</a></div>
             <p class="ex-desc">A disc of particles tied by springs is dropped and lands on its edge. It squashes, rings, and settles; springs stretched past six percent are drawn in blue so you can see where the strain goes.</p>
-            <p class="ex-use"><b>For</b>Soft grippers, tyres, and padding: anything where a deformable part meets a hard one and you care about contact area.</p>
+            <p class="ex-use"><b>For</b>Soft grippers, tires, and padding: anything where a deformable part meets a hard one and you care about contact area.</p>
             <dl class="ro" id="ro-blob"></dl>
           </figcaption>
         </figure>
@@ -510,7 +515,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cartpole"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">phyz-env</a><a class="ex-name" href="https://github.com/ecto/phyz/tree/main/crates/phyz-env">cartpole</a></div>
-            <p class="ex-desc">The classic control benchmark: a pole balanced on a cart by a PD law on angle and position. It recovers from a quarter-radian push, brings the cart back to centre, and resets every fourteen seconds.</p>
+            <p class="ex-desc">The classic control benchmark: a pole balanced on a cart by a PD law on angle and position. It recovers from a quarter-radian push, brings the cart back to center, and resets every fourteen seconds.</p>
             <p class="ex-use"><b>For</b>A first test for any controller or learned policy, and a sanity check that the dynamics match the textbook.</p>
             <dl class="ro" id="ro-cartpole"></dl>
           </figcaption>
@@ -535,7 +540,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-diff">phyz-diff</a><a class="ex-name" href="https://github.com/ecto/phyz/blob/main/crates/phyz-diff/src/rollout/adjoint.rs">shape_adjoint</a></div>
             <p class="ex-desc">A spinning box lands somewhere. One backward pass through the whole rollout returns ∂(landing)/∂(every corner) and ∂/∂mass, exactly. The arrows on the corners are those gradients: move a corner that way and it lands further right. Drag sideways to change the spin.</p>
-            <p class="ex-use"><b>For</b>Design optimisation with physics in the loop: let the shape or the mass distribution be the thing you optimise, not just the controller.</p>
+            <p class="ex-use"><b>For</b>Design optimization with physics in the loop: let the shape or the mass distribution be the thing you optimize, not just the controller.</p>
             <dl class="ro" id="ro-massadj"></dl>
             <span class="ex-hint">drag sideways to change the spin</span>
           </figcaption>
@@ -564,13 +569,13 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
     </div>
 
     <div class="ex-group">
-      <div class="ex-group-head"><span class="label-caps">06 · Soft</span><p>Position-based dynamics with real compliance, metres per newton, so the stretch you see is a material property and not an iteration count. Cloth, cables, and anything that hangs.</p></div>
+      <div class="ex-group-head"><span class="label-caps">06 · Soft</span><p>Position-based dynamics with real compliance, meters per newton, so the stretch you see is a material property and not an iteration count. Cloth, cables, and anything that hangs.</p></div>
       <div class="examples-grid">
         <figure class="ex">
           <canvas id="ex-flag"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cloth_flag</a></div>
-            <p class="ex-desc">A 28×18 cloth pinned down one edge in a gusting wind. Position-based dynamics with real compliance, in metres per newton: structural, shear and bending constraints at eight substeps a frame. Edges turn blue where they're stretched. Drag to orbit.</p>
+            <p class="ex-desc">A 28×18 cloth pinned down one edge in a gusting wind. Position-based dynamics with real compliance, in meters per newton: structural, shear and bending constraints at eight substeps a frame. Edges turn blue where they're stretched. Drag to orbit.</p>
             <p class="ex-use"><b>For</b>Sails, banners, tarps and cable-stayed fabric where the wind load matters more than the stitch.</p>
             <dl class="ro" id="ro-flag"></dl>
           </figcaption>
@@ -588,7 +593,7 @@ state.q[<span class="num">0</span>] = <span class="num">1.88</span>;  state.q[<s
           <canvas id="ex-cable"></canvas>
           <figcaption class="ex-meta">
             <div class="ex-head"><a class="crate-tag" href="https://github.com/ecto/phyz/tree/main/crates/phyz-xpbd">phyz-xpbd</a><a class="ex-name">cable</a></div>
-            <p class="ex-desc">Two metres of cable hung across 1.6 metres of span. It falls into a catenary and hangs there; the readout is how much the links stretch under their own weight, which is compliance times tension and nothing else.</p>
+            <p class="ex-desc">Two meters of cable hung across 1.6 meters of span. It falls into a catenary and hangs there; the readout is how much the links stretch under their own weight, which is compliance times tension and nothing else.</p>
             <p class="ex-use"><b>For</b>Tethers, hoses and power cables on robots and cranes, where sag and tension have to be right before anything else is.</p>
             <dl class="ro" id="ro-cable"></dl>
           </figcaption>
