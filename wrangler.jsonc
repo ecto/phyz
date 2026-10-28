@@ -1,11 +1,10 @@
-// phyz.dev — static site in site/ served from Cloudflare Workers assets.
-// deploy: npx wrangler deploy (from an up-to-date origin/main checkout)
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "phyz-site",
   "compatibility_date": "2026-10-01",
   "assets": {
-    "directory": "./site"
+    "directory": "./site",
+    "not_found_handling": "404-page",
+    "html_handling": "drop-trailing-slash"
   },
   "routes": [
     { "pattern": "phyz.dev", "custom_domain": true },
