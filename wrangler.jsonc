@@ -5,5 +5,9 @@
     "directory": "./site",
     "not_found_handling": "404-page",
     "html_handling": "drop-trailing-slash"
-  }
+  },
+  "routes": [
+    { "pattern": "phyz.dev", "custom_domain": true },
+    { "pattern": "www.phyz.dev", "custom_domain": true }
+  ]
 }
