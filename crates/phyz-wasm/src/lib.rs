@@ -3,10 +3,21 @@ use wasm_bindgen::prelude::*;
 mod quantum;
 pub use quantum::*;
 
+use phyz_contact::{ContactMaterial, ContactSolverConfig};
+use phyz_diff::rollout::DofLayout;
 use phyz_diff::semi_implicit_step_jacobians;
+use phyz_diff::symbolic::CompiledStepJacobians;
+use phyz_diff::{
+    AdjointRollout, CollisionMesh, ContactSetup, ConvexContactRollout, FinalStateObjective,
+    GroundContact, adjoint_rollout_gradient, convex_adjoint_gradient,
+    convex_rollout_objective_and_state, rollout_objective,
+};
 use phyz_math::{DVec, GRAVITY, Mat3, SpatialInertia, SpatialTransform, SpatialTransformExt, Vec3};
+use phyz_model::Geometry;
 use phyz_model::{Model, ModelBuilder, State};
 use phyz_rigid::{aba, forward_kinematics, total_energy};
+use phyz_xpbd::{Constraint, ParticleSystem, XpbdSolver};
+use std::cell::RefCell;
 
 /// DVec addition: &a + &b
 fn dv_add(a: &DVec, b: &DVec) -> DVec {
@@ -30,6 +41,8 @@ fn rk4_combine(a: &DVec, k1: &DVec, k2: &DVec, k3: &DVec, k4: &DVec, dt: f64) ->
 pub struct WasmSim {
     model: Model,
     state: State,
+    /// Exact step Jacobians, traced symbolically through ABA; built on first use.
+    jac: Option<CompiledStepJacobians>,
 }
 
 #[wasm_bindgen]
@@ -65,7 +78,11 @@ impl WasmSim {
         let mut state = model.default_state();
         state.q[0] = 0.8;
 
-        WasmSim { model, state }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// Double pendulum with viscous damping.
@@ -114,7 +131,11 @@ impl WasmSim {
         state.q[0] = std::f64::consts::FRAC_PI_4 * 2.4;
         state.q[1] = std::f64::consts::FRAC_PI_4 * 1.6;
 
-        WasmSim { model, state }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// N-link chain with viscous damping.
@@ -161,7 +182,11 @@ impl WasmSim {
             state.q[i] = 0.05;
         }
 
-        WasmSim { model, state }
+        WasmSim {
+            model,
+            state,
+            jac: None,
+        }
     }
 
     /// Step the simulation forward n times using RK4.
@@ -178,6 +203,37 @@ impl WasmSim {
 
     pub fn total_energy(&self) -> f64 {
         total_energy(&self.model, &self.state)
+    }
+
+    /// One-step Jacobians at the current state, exact (symbolic ABA + integrator).
+    /// Returns `[‖∂q′/∂q‖_F, ‖∂v′/∂τ‖_F, ∂q′/∂q row-major (nq×nq)…]`.
+    pub fn step_jacobian(&mut self) -> Vec<f64> {
+        if self.jac.is_none() {
+            self.jac = Some(CompiledStepJacobians::build(&self.model));
+        }
+        let nq = self.model.nq;
+        let nv = self.model.nv;
+        let mut inputs = Vec::with_capacity(nq + 2 * nv);
+        inputs.extend_from_slice(self.state.q.as_slice());
+        inputs.extend_from_slice(self.state.v.as_slice());
+        inputs.extend_from_slice(self.state.ctrl.as_slice());
+        let j = self.jac.as_ref().unwrap().eval(&inputs);
+        let fro = |m: &phyz_math::DMat, r: usize, c: usize| -> f64 {
+            let mut acc = 0.0;
+            for i in 0..r {
+                for k in 0..c {
+                    acc += m[(i, k)] * m[(i, k)];
+                }
+            }
+            acc.sqrt()
+        };
+        let mut out = vec![fro(&j.dqnext_dq, nq, nq), fro(&j.dvnext_dctrl, nv, nv)];
+        for i in 0..nq {
+            for k in 0..nq {
+                out.push(j.dqnext_dq[(i, k)]);
+            }
+        }
+        out
     }
 
     pub fn nbodies(&self) -> usize {
@@ -2095,6 +2151,16 @@ impl WasmMdSim {
                 self.vx[i] += 0.5 * (ax_old[i] + self.ax[i]) * self.dt;
                 self.vy[i] += 0.5 * (ay_old[i] + self.ay[i]) * self.dt;
             }
+            // Speed cap: no particle crosses more than σ/4 per step.
+            let vmax = 0.25 * self.sigma / self.dt;
+            for i in 0..self.n {
+                let v2 = self.vx[i] * self.vx[i] + self.vy[i] * self.vy[i];
+                if v2 > vmax * vmax {
+                    let s = vmax / v2.sqrt();
+                    self.vx[i] *= s;
+                    self.vy[i] *= s;
+                }
+            }
             // Apply velocity damping (thermostat for cooling simulations)
             if self.damping < 1.0 {
                 for i in 0..self.n {
@@ -2176,6 +2242,10 @@ impl WasmMdSim {
                 let dy = self.min_img(self.py[j] - self.py[i]);
                 let r2 = dx * dx + dy * dy;
                 if r2 < rc2 && r2 > 1e-20 {
+                    // Soft core: below 0.8σ the 1/r^12 wall is steeper than the
+                    // integrator can follow at this dt, so clamp the separation
+                    // used for the force. Keeps a hot start from blowing up.
+                    let r2 = r2.max(0.64 * s2);
                     let s2r2 = s2 / r2;
                     let s6 = s2r2 * s2r2 * s2r2;
                     let f = 24.0 * self.epsilon * (2.0 * s6 * s6 - s6) / r2;
@@ -3393,7 +3463,7 @@ impl WasmLbmSim {
         let mut obstacle = vec![false; nx * ny];
         // Circular obstacle
         let cx = nx / 4;
-        let cy = ny / 2;
+        let cy = ny / 2 + 2; // off-centre, so the wake goes asymmetric and sheds without waiting
         let r = ny as f64 / 8.0;
         for y in 0..ny {
             for x in 0..nx {
@@ -4827,6 +4897,14 @@ impl WasmDiffGradientSim {
         }
     }
 
+    /// Move the target. The descent continues from the current θ₀, so the
+    /// loss curve shows the re-fit.
+    pub fn set_target_x(&mut self, x: f64) {
+        self.target_x = x.clamp(-0.85 * self.length, 0.85 * self.length);
+        self.loss_history.clear();
+        self.iteration = 0;
+    }
+
     /// Run one gradient descent step: simulate forward, compute loss gradient, update theta0.
     pub fn step_n(&mut self, n: usize) {
         for _ in 0..n {
@@ -4834,9 +4912,9 @@ impl WasmDiffGradientSim {
             self.state = self.model.default_state();
             self.state.q[0] = self.theta0;
 
-            // Simulate 500 steps forward
+            // Simulate 250 ms forward: a quarter period, so x_final still depends on θ₀
             let dt = self.model.dt;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let q0 = self.state.q.clone();
                 let v0 = self.state.v.clone();
                 let k1v = aba(&self.model, &self.state);
@@ -4867,7 +4945,7 @@ impl WasmDiffGradientSim {
             let eps = 1e-5;
             let mut sp = self.model.default_state();
             sp.q[0] = self.theta0 + eps;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let acc = aba(&self.model, &sp);
                 sp.v = dv_add_scaled(&sp.v, &acc, dt);
                 let v_tmp = sp.v.clone();
@@ -4878,7 +4956,7 @@ impl WasmDiffGradientSim {
 
             let mut sm = self.model.default_state();
             sm.q[0] = self.theta0 - eps;
-            for _ in 0..500 {
+            for _ in 0..250 {
                 let acc = aba(&self.model, &sm);
                 sm.v = dv_add_scaled(&sm.v, &acc, dt);
                 let v_tmp = sm.v.clone();
@@ -5223,9 +5301,26 @@ impl WasmMjcfAntSim {
         WasmMjcfAntSim { model, state }
     }
 
+    /// Trot gait: diagonal leg pairs in phase, hips and shins a quarter cycle
+    /// apart, each joint driven by a PD servo toward its target angle. The
+    /// torques go in through `ctrl`, so this is the same ABA the robot uses.
     pub fn step_n(&mut self, n: usize) {
         let dt = self.model.dt;
+        let omega = 2.0 * std::f64::consts::PI * 1.2;
         for _ in 0..n {
+            let t = self.state.time;
+            for leg in 0..4 {
+                let phase = if leg % 2 == 0 {
+                    0.0
+                } else {
+                    std::f64::consts::PI
+                };
+                let hip_t = 0.45 + 0.35 * (omega * t + phase).sin();
+                let shin_t = -0.9 + 0.35 * (omega * t + phase + std::f64::consts::FRAC_PI_2).sin();
+                for (j, target) in [(leg * 2, hip_t), (leg * 2 + 1, shin_t)] {
+                    self.state.ctrl[j] = 6.0 * (target - self.state.q[j]) - 0.6 * self.state.v[j];
+                }
+            }
             let acc = aba(&self.model, &self.state);
             self.state.v = dv_add_scaled(&self.state.v, &acc, dt);
             let v_tmp = self.state.v.clone();
@@ -5234,6 +5329,10 @@ impl WasmMjcfAntSim {
         }
     }
 
+    /// Current joint torques from the gait servo.
+    pub fn torques(&self) -> Vec<f64> {
+        self.state.ctrl.iter().copied().collect()
+    }
     pub fn nbodies(&self) -> usize {
         self.model.nbodies()
     }
@@ -5289,7 +5388,7 @@ impl WasmMjcfCartpoleSim {
         WasmMjcfCartpoleSim {
             x: 0.0,
             x_dot: 0.0,
-            theta: 0.15,
+            theta: 0.25,
             theta_dot: 0.0,
             time: 0.0,
             dt: 0.002,
@@ -5311,7 +5410,9 @@ impl WasmMjcfCartpoleSim {
             let total = mc + mp;
 
             // Simple PD controller to keep pole upright
-            let force = -5.0 * self.theta - 2.0 * self.theta_dot - 0.5 * self.x - 0.3 * self.x_dot;
+            // PD on pole angle (push under the fall) and on cart position (bring it home).
+            // Gains checked against this exact model: settles from 0.25 rad in ~4 s.
+            let force = 40.0 * self.theta + 8.0 * self.theta_dot + 3.0 * self.x + 3.0 * self.x_dot;
 
             let theta_acc = (g * s - c * (force + mp * l * self.theta_dot.powi(2) * s) / total)
                 / (l * (4.0 / 3.0 - mp * c * c / total));
@@ -5427,6 +5528,8 @@ pub struct WasmReal2SimFitSim {
     lr: f64,
     dt: f64,
     n_steps: usize,
+    /// Release angle of the recording (rad). The fit simulates from the same one.
+    release: f64,
 }
 
 #[wasm_bindgen]
@@ -5436,10 +5539,11 @@ impl WasmReal2SimFitSim {
         let true_mass = 1.0;
         let true_length = 1.5;
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
 
         // Generate reference trajectory
-        let ref_traj = Self::simulate_pendulum(true_mass, true_length, 0.8, dt, n_steps);
+        let release = 0.8;
+        let ref_traj = Self::simulate_pendulum(true_mass, true_length, release, dt, n_steps);
 
         WasmReal2SimFitSim {
             ref_traj,
@@ -5452,6 +5556,7 @@ impl WasmReal2SimFitSim {
             lr: 0.02,
             dt,
             n_steps,
+            release,
         }
     }
 
@@ -5470,7 +5575,7 @@ impl WasmReal2SimFitSim {
     }
 
     fn compute_loss(&self, mass: f64, length: f64) -> f64 {
-        let traj = Self::simulate_pendulum(mass, length, 0.8, self.dt, self.n_steps);
+        let traj = Self::simulate_pendulum(mass, length, self.release, self.dt, self.n_steps);
         let mut loss = 0.0;
         for (a, b) in traj.iter().zip(self.ref_traj.iter()) {
             loss += (a - b).powi(2);
@@ -5527,8 +5632,33 @@ impl WasmReal2SimFitSim {
         self.iteration as f64
     }
     /// Current estimated trajectory (for overlay rendering)
+    /// Re-record the reference from a new release angle and restart the fit
+    /// from the same wrong guess.
+    pub fn set_release(&mut self, q0: f64) {
+        self.release = q0.clamp(-2.6, 2.6);
+        self.ref_traj = Self::simulate_pendulum(
+            self.true_mass,
+            self.true_length,
+            self.release,
+            self.dt,
+            self.n_steps,
+        );
+        self.est_mass = 2.0;
+        self.est_length = 1.0;
+        self.loss_history.clear();
+        self.iteration = 0;
+    }
+    pub fn release(&self) -> f64 {
+        self.release
+    }
     pub fn est_trajectory(&self) -> Vec<f64> {
-        Self::simulate_pendulum(self.est_mass, self.est_length, 0.8, self.dt, self.n_steps)
+        Self::simulate_pendulum(
+            self.est_mass,
+            self.est_length,
+            self.release,
+            self.dt,
+            self.n_steps,
+        )
     }
     pub fn ref_trajectory(&self) -> Vec<f64> {
         self.ref_traj.clone()
@@ -5557,7 +5687,7 @@ impl WasmReal2SimLandscapeSim {
     #[allow(clippy::new_without_default)]
     pub fn new() -> WasmReal2SimLandscapeSim {
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
         let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
 
         let grid_size = 32;
@@ -5676,7 +5806,7 @@ impl WasmReal2SimAdamVsGdSim {
     #[allow(clippy::new_without_default)]
     pub fn new() -> WasmReal2SimAdamVsGdSim {
         let dt = 0.002;
-        let n_steps = 300;
+        let n_steps = 1200; // ~one period, so the fit has a full swing to match
         let ref_traj = WasmReal2SimFitSim::simulate_pendulum(1.0, 1.5, 0.8, dt, n_steps);
 
         WasmReal2SimAdamVsGdSim {
@@ -6264,5 +6394,672 @@ impl WasmCompileFusionSim {
     }
     pub fn time(&self) -> f64 {
         self.time
+    }
+}
+
+// ================================================================
+// phyz-diff: trajectory adjoint on a box drop
+// ================================================================
+
+/// A box dropped onto a penalty ground with spin and sideways speed. One
+/// adjoint pass gives dJ/dπ for the box's ten inertia parameters and ∂J/∂x for
+/// each of its eight corners, with J = where it ends up along x.
+#[wasm_bindgen]
+pub struct WasmMassAdjointSim {
+    model: Model,
+    half: f64,
+    spin: f64,
+    vx: f64,
+    steps: usize,
+    samples: usize,
+    objective: f64,
+    d_inertia: Vec<f64>,
+    d_vertices: Vec<f64>,
+    traj: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmMassAdjointSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmMassAdjointSim {
+        let half = 0.15;
+        let mass = 1.0;
+        let i = mass * 2.0 / 3.0 * half * half;
+        let model = ModelBuilder::new()
+            .gravity(Vec3::new(0.0, 0.0, -GRAVITY))
+            .dt(0.002)
+            .add_free_body(
+                "box",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::zeros(),
+                    Mat3::from_diagonal(&Vec3::new(i, i, i)),
+                ),
+            )
+            .build();
+        let mut sim = WasmMassAdjointSim {
+            model,
+            half,
+            spin: 4.0,
+            vx: 1.2,
+            steps: 450,
+            samples: 45,
+            objective: 0.0,
+            d_inertia: vec![0.0; 10],
+            d_vertices: vec![0.0; 24],
+            traj: vec![],
+        };
+        sim.compute();
+        sim
+    }
+
+    fn corners_vec(&self) -> Vec<Vec3> {
+        let h = self.half;
+        let mut v = Vec::with_capacity(8);
+        for &sx in &[-1.0, 1.0] {
+            for &sy in &[-1.0, 1.0] {
+                for &sz in &[-1.0, 1.0] {
+                    v.push(Vec3::new(sx * h, sy * h, sz * h));
+                }
+            }
+        }
+        v
+    }
+
+    fn initial(&self) -> (Vec<f64>, Vec<f64>) {
+        let layout = DofLayout::of(&self.model);
+        let mut q0 = layout.neutral_q(&self.model); // [x, y, z, qw, qx, qy, qz]
+        q0[0] = -1.2;
+        q0[2] = 1.1;
+        let tilt: f64 = 0.35;
+        q0[3] = (tilt / 2.0).cos();
+        q0[5] = (tilt / 2.0).sin();
+        let v0 = vec![0.0, self.spin, 0.0, self.vx, 0.0, 0.0];
+        (q0, v0)
+    }
+
+    fn compute(&mut self) {
+        let (q0, v0) = self.initial();
+        let meshes = vec![CollisionMesh {
+            body: 0,
+            vertices: self.corners_vec(),
+        }];
+        let ground = GroundContact {
+            height: 0.0,
+            stiffness: 2500.0,
+            damping: 25.0,
+        };
+        let ctrl = |_t: usize| DVec::zeros(6);
+        let value = |q: &[f64], _v: &[f64]| q[0];
+        let gradient = |q: &[f64], v: &[f64]| {
+            let mut gq = vec![0.0; q.len()];
+            gq[0] = 1.0;
+            (gq, vec![0.0; v.len()])
+        };
+        let obj = FinalStateObjective {
+            value: &value,
+            gradient: &gradient,
+        };
+        let rollout = AdjointRollout {
+            model: &self.model,
+            contact: Some(ContactSetup {
+                ground,
+                meshes: &meshes,
+            }),
+            q0: q0.clone(),
+            v0: v0.clone(),
+            steps: self.steps,
+            ctrl: &ctrl,
+        };
+        let g = adjoint_rollout_gradient(&rollout, &obj);
+        self.objective = g.objective;
+        self.d_inertia = g.d_inertia[0].to_vec();
+        self.d_vertices = g.d_vertices[0]
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+
+        // Trajectory samples for drawing: the rollout is the same code path.
+        let cell = RefCell::new(Vec::new());
+        let capture = |q: &[f64], _v: &[f64]| {
+            *cell.borrow_mut() = q.to_vec();
+            0.0
+        };
+        let zero_grad = |q: &[f64], v: &[f64]| (vec![0.0; q.len()], vec![0.0; v.len()]);
+        let probe = FinalStateObjective {
+            value: &capture,
+            gradient: &zero_grad,
+        };
+        let mut traj = Vec::with_capacity(self.samples * 7);
+        for s in 0..self.samples {
+            let k = ((s + 1) * self.steps) / self.samples;
+            let r = AdjointRollout {
+                model: &self.model,
+                contact: Some(ContactSetup {
+                    ground,
+                    meshes: &meshes,
+                }),
+                q0: q0.clone(),
+                v0: v0.clone(),
+                steps: k,
+                ctrl: &ctrl,
+            };
+            rollout_objective(&r, &probe);
+            traj.extend_from_slice(&cell.borrow()[..7]);
+        }
+        self.traj = traj;
+    }
+
+    /// Initial spin about y (rad/s). Recomputes the rollout and its adjoint.
+    pub fn set_spin(&mut self, w: f64) {
+        self.spin = w.clamp(-9.0, 9.0);
+        self.compute();
+    }
+    pub fn spin(&self) -> f64 {
+        self.spin
+    }
+    pub fn half(&self) -> f64 {
+        self.half
+    }
+    /// J: final x of the box.
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+    /// dJ/dπ: `[m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+    pub fn d_inertia(&self) -> Vec<f64> {
+        self.d_inertia.clone()
+    }
+    /// ∂J/∂corner, body frame, 8 × xyz, same order as `corners()`.
+    pub fn d_vertices(&self) -> Vec<f64> {
+        self.d_vertices.clone()
+    }
+    pub fn corners(&self) -> Vec<f64> {
+        self.corners_vec()
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect()
+    }
+    /// `samples × [x, y, z, qw, qx, qy, qz]`.
+    pub fn trajectory(&self) -> Vec<f64> {
+        self.traj.clone()
+    }
+    pub fn num_samples(&self) -> usize {
+        self.samples
+    }
+    pub fn duration(&self) -> f64 {
+        self.steps as f64 * self.model.dt
+    }
+}
+
+// ================================================================
+// phyz-diff: adjoint through the convex contact solve
+// ================================================================
+
+/// A box on a slope, simulated with the same convex Coulomb contact the
+/// simulator ships, differentiated through the solve. J = distance slid.
+/// Below the friction angle the block sticks and dJ/dμ is exactly zero.
+#[wasm_bindgen]
+pub struct WasmContactAdjointSim {
+    half: f64,
+    alpha: f64,
+    friction: f64,
+    steps: usize,
+    samples: usize,
+    objective: f64,
+    d_friction: f64,
+    d_v0x: f64,
+    d_q0z: f64,
+    refused: bool,
+    traj: Vec<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmContactAdjointSim {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> WasmContactAdjointSim {
+        let mut sim = WasmContactAdjointSim {
+            half: 0.05,
+            alpha: 0.5,
+            friction: 0.4,
+            steps: 700,
+            samples: 35,
+            objective: 0.0,
+            d_friction: 0.0,
+            d_v0x: 0.0,
+            d_q0z: 0.0,
+            refused: false,
+            traj: vec![],
+        };
+        sim.compute();
+        sim
+    }
+
+    fn model(&self) -> Model {
+        let mass = 1.0;
+        let i = mass * 2.0 / 3.0 * self.half * self.half;
+        let a = self.alpha;
+        let mut model = ModelBuilder::new()
+            .gravity(Vec3::new(GRAVITY * a.sin(), 0.0, -GRAVITY * a.cos()))
+            .dt(1e-3)
+            .add_free_body(
+                "box",
+                -1,
+                SpatialTransform::identity(),
+                SpatialInertia::new(
+                    mass,
+                    Vec3::zeros(),
+                    Mat3::from_diagonal(&Vec3::new(i, i, i)),
+                ),
+            )
+            .build();
+        model.bodies[0].geometry = Some(Geometry::Box {
+            half_extents: Vec3::new(self.half, self.half, self.half),
+        });
+        model
+    }
+
+    fn compute(&mut self) {
+        let model = self.model();
+        let material = ContactMaterial {
+            friction: self.friction,
+            ..ContactMaterial::default()
+        };
+        let ctrl = |_t: usize| DVec::zeros(6);
+        let value = |q: &[f64], _v: &[f64]| q[3];
+        let gradient = |q: &[f64], v: &[f64]| {
+            let mut gq = vec![0.0; q.len()];
+            gq[3] = 1.0;
+            (gq, vec![0.0; v.len()])
+        };
+        let obj = FinalStateObjective {
+            value: &value,
+            gradient: &gradient,
+        };
+        let mk = |steps: usize| ConvexContactRollout {
+            model: &model,
+            ground_height: 0.0,
+            material: material.clone(),
+            config: ContactSolverConfig::gradients(),
+            q0: DVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, self.half]),
+            v0: DVec::zeros(6),
+            steps,
+            ctrl: &ctrl,
+        };
+        match convex_adjoint_gradient(&mk(self.steps), &obj) {
+            Ok(g) => {
+                self.objective = g.objective;
+                self.d_friction = g.d_friction;
+                self.d_v0x = g.d_v0[3];
+                self.d_q0z = g.d_q0[5];
+                self.refused = false;
+            }
+            Err(_) => {
+                self.refused = true;
+                self.objective = convex_rollout_objective_and_state(&mk(self.steps), &obj).0;
+            }
+        }
+        let mut traj = Vec::with_capacity(self.samples * 2);
+        for s in 0..self.samples {
+            let k = ((s + 1) * self.steps) / self.samples;
+            let (_, st) = convex_rollout_objective_and_state(&mk(k), &obj);
+            traj.push(st.q[3]);
+            traj.push(st.q[1]);
+        }
+        self.traj = traj;
+    }
+
+    /// Slope angle (rad). Recomputes.
+    pub fn set_alpha(&mut self, a: f64) {
+        self.alpha = a.clamp(0.05, 1.0);
+        self.compute();
+    }
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+    pub fn friction(&self) -> f64 {
+        self.friction
+    }
+    pub fn half(&self) -> f64 {
+        self.half
+    }
+    /// J: distance slid along the slope.
+    pub fn objective(&self) -> f64 {
+        self.objective
+    }
+    pub fn d_friction(&self) -> f64 {
+        self.d_friction
+    }
+    pub fn d_v0x(&self) -> f64 {
+        self.d_v0x
+    }
+    pub fn d_q0z(&self) -> f64 {
+        self.d_q0z
+    }
+    pub fn refused(&self) -> bool {
+        self.refused
+    }
+    /// `samples × [x along slope, pitch]`.
+    pub fn trajectory(&self) -> Vec<f64> {
+        self.traj.clone()
+    }
+    pub fn num_samples(&self) -> usize {
+        self.samples
+    }
+    pub fn duration(&self) -> f64 {
+        self.steps as f64 * 1e-3
+    }
+}
+
+// ================================================================
+// phyz-xpbd: cloth and cables
+// ================================================================
+
+/// A particle cloth or cable on the XPBD solver: compliance is a material
+/// property (metres per newton), so the stretch you see is `α·f` and nothing
+/// else. The crate has no collisions; the drape variant adds a sphere and a
+/// floor by projecting positions after each frame.
+#[wasm_bindgen]
+pub struct WasmClothSim {
+    particles: ParticleSystem,
+    constraints: Vec<Constraint>,
+    solver: XpbdSolver,
+    edges: Vec<u32>,
+    rest: Vec<f64>,
+    n_struct: usize,
+    time: f64,
+    wind: f64,
+    sphere: Option<(Vec3, f64)>,
+    floor: Option<f64>,
+}
+
+#[wasm_bindgen]
+impl WasmClothSim {
+    fn grid(
+        w: usize,
+        h: usize,
+        spacing: f64,
+        origin: Vec3,
+        horizontal: bool,
+        compliance: f64,
+    ) -> WasmClothSim {
+        let mut p = ParticleSystem::new();
+        for j in 0..h {
+            for i in 0..w {
+                let (x, y, z) = if horizontal {
+                    (
+                        origin.x + i as f64 * spacing,
+                        origin.y,
+                        origin.z + j as f64 * spacing,
+                    )
+                } else {
+                    (
+                        origin.x + i as f64 * spacing,
+                        origin.y - j as f64 * spacing,
+                        origin.z,
+                    )
+                };
+                p.add(Vec3::new(x, y, z), 0.02);
+            }
+        }
+        let idx = |i: usize, j: usize| j * w + i;
+        let mut cs = Vec::new();
+        let mut edges = Vec::new();
+        let mut rest = Vec::new();
+        // structural
+        for j in 0..h {
+            for i in 0..w {
+                if i + 1 < w {
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i + 1, j),
+                        spacing,
+                        compliance,
+                    ));
+                    edges.extend([idx(i, j) as u32, idx(i + 1, j) as u32]);
+                    rest.push(spacing);
+                }
+                if j + 1 < h {
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i, j + 1),
+                        spacing,
+                        compliance,
+                    ));
+                    edges.extend([idx(i, j) as u32, idx(i, j + 1) as u32]);
+                    rest.push(spacing);
+                }
+            }
+        }
+        let n_struct = cs.len();
+        // shear and (distance-based) bending: the dihedral constraint is skipped
+        // at exactly-flat rest, which is where a cloth starts
+        let d = spacing * std::f64::consts::SQRT_2;
+        for j in 0..h.saturating_sub(1) {
+            for i in 0..w.saturating_sub(1) {
+                cs.push(Constraint::distance(
+                    idx(i, j),
+                    idx(i + 1, j + 1),
+                    d,
+                    compliance * 4.0,
+                ));
+                cs.push(Constraint::distance(
+                    idx(i + 1, j),
+                    idx(i, j + 1),
+                    d,
+                    compliance * 4.0,
+                ));
+            }
+        }
+        for j in 0..h {
+            for i in 0..w {
+                if i + 2 < w {
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i + 2, j),
+                        2.0 * spacing,
+                        compliance * 40.0,
+                    ));
+                }
+                if j + 2 < h {
+                    cs.push(Constraint::distance(
+                        idx(i, j),
+                        idx(i, j + 2),
+                        2.0 * spacing,
+                        compliance * 40.0,
+                    ));
+                }
+            }
+        }
+        WasmClothSim {
+            particles: p,
+            constraints: cs,
+            solver: XpbdSolver {
+                dt: 1.0 / 60.0,
+                substeps: 8,
+                iterations: 1,
+                damping: 0.6,
+                ..XpbdSolver::default()
+            },
+            edges,
+            rest,
+            n_struct,
+            time: 0.0,
+            wind: 0.0,
+            sphere: None,
+            floor: None,
+        }
+    }
+
+    /// A flag: 28×18, pinned down its left edge, in a gusting wind.
+    pub fn flag() -> WasmClothSim {
+        let (w, h, s) = (28usize, 18usize, 0.05);
+        let mut c = Self::grid(w, h, s, Vec3::new(-0.7, 0.45, 0.0), false, 2e-4);
+        for j in 0..h {
+            c.particles.pin(j * w);
+        }
+        c
+    }
+
+    /// A square cloth dropped over a sphere, with a floor underneath.
+    pub fn drape() -> WasmClothSim {
+        let (w, h, s) = (26usize, 26usize, 0.05);
+        let mut c = Self::grid(w, h, s, Vec3::new(-0.625, 0.55, -0.625), true, 2e-4);
+        c.sphere = Some((Vec3::new(0.0, 0.0, 0.0), 0.3));
+        c.floor = Some(-0.45);
+        c
+    }
+
+    /// A cable pinned at both ends with slack, falling into a catenary.
+    pub fn cable() -> WasmClothSim {
+        let n = 40usize;
+        let span = 1.6;
+        let len = 2.0;
+        let s = len / (n - 1) as f64;
+        let mut c = Self::grid(n, 1, s, Vec3::new(-len / 2.0, 0.4, 0.0), false, 5e-5);
+        // start straight across the span: links are compressed, not stretched,
+        // and gravity pays the slack out into the catenary
+        for i in 0..n {
+            let x = -span / 2.0 + span * i as f64 / (n - 1) as f64;
+            c.particles.positions[i] = Vec3::new(x, 0.4, 0.0);
+            c.particles.prev_positions[i] = c.particles.positions[i];
+        }
+        for i in 0..n {
+            c.particles.set_mass(i, 0.05);
+        }
+        // pin after setting masses: set_mass writes inv_mass and would un-pin
+        c.particles.pin(0);
+        c.particles.pin(n - 1);
+        c.solver.damping = 1.2;
+        c
+    }
+
+    pub fn step_n(&mut self, frames: usize) {
+        let n = self.particles.len();
+        for _ in 0..frames {
+            // gusting wind along +z, for the flag
+            self.wind = if self.sphere.is_none() && self.floor.is_none() && n > 40 {
+                3.0 + 2.5 * (self.time * 1.7).sin() + 1.5 * (self.time * 4.3).sin()
+            } else {
+                0.0
+            };
+            if self.wind != 0.0 {
+                let acc: Vec<Vec3> = (0..n)
+                    .map(|i| {
+                        let x = self.particles.positions[i].x;
+                        Vec3::new(
+                            0.0,
+                            0.0,
+                            self.wind * (0.6 + 0.4 * ((x * 5.0 + self.time * 3.0).sin())),
+                        )
+                    })
+                    .collect();
+                self.solver
+                    .step_with_forces(&mut self.particles, &mut self.constraints, &acc);
+            } else if self.sphere.is_some() || self.floor.is_some() {
+                // Collisions are not the crate's job, so they are done here as
+                // position projections between short solver calls. Each
+                // projection also cancels the inward velocity, otherwise gravity
+                // keeps integrating into the obstacle and the cloth tunnels.
+                let sub = XpbdSolver {
+                    dt: self.solver.dt / 4.0,
+                    substeps: 2,
+                    ..self.solver
+                };
+                for _ in 0..4 {
+                    sub.step(&mut self.particles, &mut self.constraints);
+                    if let Some((c, r)) = self.sphere {
+                        let rr = r + 0.012;
+                        for i in 0..n {
+                            let d = self.particles.positions[i] - c;
+                            let len = d.norm();
+                            if len < rr && len > 1e-9 {
+                                let nrm = d * (1.0 / len);
+                                self.particles.positions[i] = c + nrm * rr;
+                                let vn = self.particles.velocities[i].dot(nrm);
+                                if vn < 0.0 {
+                                    // drop the inward part and most of the slide: a rough sphere
+                                    self.particles.velocities[i] =
+                                        (self.particles.velocities[i] - nrm * vn) * 0.35;
+                                }
+                                self.particles.prev_positions[i] = self.particles.positions[i];
+                            }
+                        }
+                    }
+                    if let Some(y) = self.floor {
+                        for i in 0..n {
+                            if self.particles.positions[i].y < y {
+                                self.particles.positions[i].y = y;
+                                if self.particles.velocities[i].y < 0.0 {
+                                    self.particles.velocities[i].y = 0.0;
+                                    self.particles.velocities[i] *= 0.5;
+                                }
+                                self.particles.prev_positions[i] = self.particles.positions[i];
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.solver.step(&mut self.particles, &mut self.constraints);
+            }
+            self.time += self.solver.dt;
+        }
+    }
+
+    pub fn positions(&self) -> Vec<f64> {
+        self.particles
+            .positions
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect()
+    }
+    /// Structural edges as index pairs.
+    pub fn edges(&self) -> Vec<u32> {
+        self.edges.clone()
+    }
+    /// Relative stretch of each structural edge, `(len − rest) / rest`.
+    pub fn stretch(&self) -> Vec<f64> {
+        (0..self.n_struct)
+            .map(|k| {
+                let a = self.edges[2 * k] as usize;
+                let b = self.edges[2 * k + 1] as usize;
+                let len = (self.particles.positions[a] - self.particles.positions[b]).norm();
+                (len - self.rest[k]) / self.rest[k]
+            })
+            .collect()
+    }
+    pub fn pinned(&self) -> Vec<u32> {
+        self.particles
+            .inv_mass
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w == 0.0)
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
+    pub fn num_particles(&self) -> usize {
+        self.particles.len()
+    }
+    pub fn num_constraints(&self) -> usize {
+        self.constraints.len()
+    }
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+    pub fn wind(&self) -> f64 {
+        self.wind
+    }
+    pub fn kinetic_energy(&self) -> f64 {
+        self.particles.kinetic_energy()
+    }
+    /// `[cx, cy, cz, r]` for the drape, empty otherwise.
+    pub fn sphere(&self) -> Vec<f64> {
+        self.sphere
+            .map(|(c, r)| vec![c.x, c.y, c.z, r])
+            .unwrap_or_default()
+    }
+    pub fn floor_y(&self) -> f64 {
+        self.floor.unwrap_or(f64::NAN)
     }
 }

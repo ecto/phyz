@@ -75,6 +75,153 @@ export class QuantumSolver {
 if (Symbol.dispose) QuantumSolver.prototype[Symbol.dispose] = QuantumSolver.prototype.free;
 
 /**
+ * A particle cloth or cable on the XPBD solver: compliance is a material
+ * property (metres per newton), so the stretch you see is `α·f` and nothing
+ * else. The crate has no collisions; the drape variant adds a sphere and a
+ * floor by projecting positions after each frame.
+ */
+export class WasmClothSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmClothSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmClothSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmClothSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmclothsim_free(ptr, 0);
+    }
+    /**
+     * A cable pinned at both ends with slack, falling into a catenary.
+     * @returns {WasmClothSim}
+     */
+    static cable() {
+        const ret = wasm.wasmclothsim_cable();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * A square cloth dropped over a sphere, with a floor underneath.
+     * @returns {WasmClothSim}
+     */
+    static drape() {
+        const ret = wasm.wasmclothsim_drape();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * Structural edges as index pairs.
+     * @returns {Uint32Array}
+     */
+    edges() {
+        const ret = wasm.wasmclothsim_edges(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * A flag: 28×18, pinned down its left edge, in a gusting wind.
+     * @returns {WasmClothSim}
+     */
+    static flag() {
+        const ret = wasm.wasmclothsim_flag();
+        return WasmClothSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    floor_y() {
+        const ret = wasm.wasmclothsim_floor_y(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    kinetic_energy() {
+        const ret = wasm.wasmclothsim_kinetic_energy(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    num_constraints() {
+        const ret = wasm.wasmclothsim_num_constraints(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    num_particles() {
+        const ret = wasm.wasmclothsim_num_particles(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {Uint32Array}
+     */
+    pinned() {
+        const ret = wasm.wasmclothsim_pinned(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    positions() {
+        const ret = wasm.wasmclothsim_positions(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * `[cx, cy, cz, r]` for the drape, empty otherwise.
+     * @returns {Float64Array}
+     */
+    sphere() {
+        const ret = wasm.wasmclothsim_sphere(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @param {number} frames
+     */
+    step_n(frames) {
+        wasm.wasmclothsim_step_n(this.__wbg_ptr, frames);
+    }
+    /**
+     * Relative stretch of each structural edge, `(len − rest) / rest`.
+     * @returns {Float64Array}
+     */
+    stretch() {
+        const ret = wasm.wasmclothsim_stretch(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    time() {
+        const ret = wasm.wasmclothsim_time(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    wind() {
+        const ret = wasm.wasmclothsim_wind(this.__wbg_ptr);
+        return ret;
+    }
+}
+if (Symbol.dispose) WasmClothSim.prototype[Symbol.dispose] = WasmClothSim.prototype.free;
+
+/**
  * Fusion viz: two kernels side-by-side, fuse them, animate the merge.
  */
 export class WasmCompileFusionSim {
@@ -351,6 +498,127 @@ export class WasmCompileWgslSim {
 }
 if (Symbol.dispose) WasmCompileWgslSim.prototype[Symbol.dispose] = WasmCompileWgslSim.prototype.free;
 
+/**
+ * A box on a slope, simulated with the same convex Coulomb contact the
+ * simulator ships, differentiated through the solve. J = distance slid.
+ * Below the friction angle the block sticks and dJ/dμ is exactly zero.
+ */
+export class WasmContactAdjointSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmContactAdjointSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmContactAdjointSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmContactAdjointSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmcontactadjointsim_free(ptr, 0);
+    }
+    /**
+     * @returns {number}
+     */
+    alpha() {
+        const ret = wasm.wasmcompilefusionsim_time(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    d_friction() {
+        const ret = wasm.wasmcontactadjointsim_d_friction(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    d_q0z() {
+        const ret = wasm.wasmcontactadjointsim_d_q0z(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    d_v0x() {
+        const ret = wasm.wasmcontactadjointsim_d_v0x(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    duration() {
+        const ret = wasm.wasmcontactadjointsim_duration(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    friction() {
+        const ret = wasm.wasmcontactadjointsim_friction(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    half() {
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {WasmContactAdjointSim}
+     */
+    static new() {
+        const ret = wasm.wasmcontactadjointsim_new();
+        return WasmContactAdjointSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_samples() {
+        const ret = wasm.wasmcontactadjointsim_num_samples(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * J: distance slid along the slope.
+     * @returns {number}
+     */
+    objective() {
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {boolean}
+     */
+    refused() {
+        const ret = wasm.wasmcontactadjointsim_refused(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Slope angle (rad). Recomputes.
+     * @param {number} a
+     */
+    set_alpha(a) {
+        wasm.wasmcontactadjointsim_set_alpha(this.__wbg_ptr, a);
+    }
+    /**
+     * `samples × [x along slope, pitch]`.
+     * @returns {Float64Array}
+     */
+    trajectory() {
+        const ret = wasm.wasmcontactadjointsim_trajectory(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+}
+if (Symbol.dispose) WasmContactAdjointSim.prototype[Symbol.dispose] = WasmContactAdjointSim.prototype.free;
+
 export class WasmCradleSim {
     static __wrap(ptr) {
         ptr = ptr >>> 0;
@@ -490,6 +758,14 @@ export class WasmDiffGradientSim {
     static new() {
         const ret = wasm.wasmdiffgradientsim_new();
         return WasmDiffGradientSim.__wrap(ret);
+    }
+    /**
+     * Move the target. The descent continues from the current θ₀, so the
+     * loss curve shows the re-fit.
+     * @param {number} x
+     */
+    set_target_x(x) {
+        wasm.wasmdiffgradientsim_set_target_x(this.__wbg_ptr, x);
     }
     /**
      * Run one gradient descent step: simulate forward, compute loss gradient, update theta0.
@@ -743,7 +1019,7 @@ export class WasmEmSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -888,7 +1164,7 @@ export class WasmGravitySandboxSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1149,7 +1425,7 @@ export class WasmGuardianSim {
      * @returns {number}
      */
     length() {
-        const ret = wasm.wasmguardiansim_length(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_friction(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1172,7 +1448,7 @@ export class WasmGuardianSim {
      * @returns {number}
      */
     q2_val() {
-        const ret = wasm.wasmguardiansim_q2_val(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_v0x(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1192,7 +1468,7 @@ export class WasmGuardianSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1366,7 +1642,7 @@ export class WasmLbmSim {
         return ret;
     }
     /**
-     * Velocity magnitude field as flat array [nx*ny].
+     * Velocity magnitude field as flat array `[nx*ny]`.
      * @returns {Float64Array}
      */
     velocity_field() {
@@ -1486,6 +1762,121 @@ export class WasmLorentzSim {
 }
 if (Symbol.dispose) WasmLorentzSim.prototype[Symbol.dispose] = WasmLorentzSim.prototype.free;
 
+/**
+ * A box dropped onto a penalty ground with spin and sideways speed. One
+ * adjoint pass gives dJ/dπ for the box's ten inertia parameters and ∂J/∂x for
+ * each of its eight corners, with J = where it ends up along x.
+ */
+export class WasmMassAdjointSim {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(WasmMassAdjointSim.prototype);
+        obj.__wbg_ptr = ptr;
+        WasmMassAdjointSimFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmMassAdjointSimFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmmassadjointsim_free(ptr, 0);
+    }
+    /**
+     * @returns {Float64Array}
+     */
+    corners() {
+        const ret = wasm.wasmmassadjointsim_corners(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * dJ/dπ: `[m, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Ixz, Iyz]`.
+     * @returns {Float64Array}
+     */
+    d_inertia() {
+        const ret = wasm.wasmmassadjointsim_d_inertia(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * ∂J/∂corner, body frame, 8 × xyz, same order as `corners()`.
+     * @returns {Float64Array}
+     */
+    d_vertices() {
+        const ret = wasm.wasmmassadjointsim_d_vertices(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * @returns {number}
+     */
+    duration() {
+        const ret = wasm.wasmmassadjointsim_duration(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {number}
+     */
+    half() {
+        const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @returns {WasmMassAdjointSim}
+     */
+    static new() {
+        const ret = wasm.wasmmassadjointsim_new();
+        return WasmMassAdjointSim.__wrap(ret);
+    }
+    /**
+     * @returns {number}
+     */
+    num_samples() {
+        const ret = wasm.wasmmassadjointsim_num_samples(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * J: final x of the box.
+     * @returns {number}
+     */
+    objective() {
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Initial spin about y (rad/s). Recomputes the rollout and its adjoint.
+     * @param {number} w
+     */
+    set_spin(w) {
+        wasm.wasmmassadjointsim_set_spin(this.__wbg_ptr, w);
+    }
+    /**
+     * @returns {number}
+     */
+    spin() {
+        const ret = wasm.wasmcompilefusionsim_time(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * `samples × [x, y, z, qw, qx, qy, qz]`.
+     * @returns {Float64Array}
+     */
+    trajectory() {
+        const ret = wasm.wasmmassadjointsim_trajectory(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+}
+if (Symbol.dispose) WasmMassAdjointSim.prototype[Symbol.dispose] = WasmMassAdjointSim.prototype.free;
+
 export class WasmMdSim {
     static __wrap(ptr) {
         ptr = ptr >>> 0;
@@ -1524,7 +1915,7 @@ export class WasmMdSim {
      * @returns {number}
      */
     box_size() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1658,6 +2049,9 @@ export class WasmMjcfAntSim {
         return WasmMjcfAntSim.__wrap(ret);
     }
     /**
+     * Trot gait: diagonal leg pairs in phase, hips and shins a quarter cycle
+     * apart, each joint driven by a PD servo toward its target angle. The
+     * torques go in through `ctrl`, so this is the same ABA the robot uses.
      * @param {number} n
      */
     step_n(n) {
@@ -1669,6 +2063,16 @@ export class WasmMjcfAntSim {
     time() {
         const ret = wasm.wasmcompilefusionsim_progress(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Current joint torques from the gait servo.
+     * @returns {Float64Array}
+     */
+    torques() {
+        const ret = wasm.wasmmjcfantsim_torques(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
 }
 if (Symbol.dispose) WasmMjcfAntSim.prototype[Symbol.dispose] = WasmMjcfAntSim.prototype.free;
@@ -1712,7 +2116,7 @@ export class WasmMjcfCartpoleSim {
      * @returns {number}
      */
     pole_angle() {
-        const ret = wasm.wasmmjcfcartpolesim_pole_angle(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_friction(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -1739,7 +2143,7 @@ export class WasmMjcfCartpoleSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmguardiansim_length(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_friction(this.__wbg_ptr);
         return ret;
     }
 }
@@ -2007,7 +2411,7 @@ export class WasmParticleSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
 }
@@ -2077,7 +2481,7 @@ export class WasmPolicyGridSim {
      * @returns {number}
      */
     time() {
-        const ret = wasm.wasmmjcfcartpolesim_pole_angle(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_friction(this.__wbg_ptr);
         return ret;
     }
 }
@@ -2417,7 +2821,7 @@ export class WasmReal2SimAdamVsGdSim {
      * @returns {number}
      */
     gd_length() {
-        const ret = wasm.wasmreal2simadamvsgdsim_gd_length(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_q0z(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -2433,7 +2837,7 @@ export class WasmReal2SimAdamVsGdSim {
      * @returns {number}
      */
     gd_mass() {
-        const ret = wasm.wasmguardiansim_q2_val(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_v0x(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -2509,7 +2913,6 @@ export class WasmReal2SimFitSim {
         return ret;
     }
     /**
-     * Current estimated trajectory (for overlay rendering)
      * @returns {Float64Array}
      */
     est_trajectory() {
@@ -2522,7 +2925,7 @@ export class WasmReal2SimFitSim {
      * @returns {number}
      */
     iteration() {
-        const ret = wasm.wasmparticlesim_num_particles(this.__wbg_ptr);
+        const ret = wasm.wasmreal2simfitsim_iteration(this.__wbg_ptr);
         return ret >>> 0;
     }
     /**
@@ -2551,6 +2954,22 @@ export class WasmReal2SimFitSim {
         return v1;
     }
     /**
+     * @returns {number}
+     */
+    release() {
+        const ret = wasm.wasmcontactadjointsim_d_q0z(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Current estimated trajectory (for overlay rendering)
+     * Re-record the reference from a new release angle and restart the fit
+     * from the same wrong guess.
+     * @param {number} q0
+     */
+    set_release(q0) {
+        wasm.wasmreal2simfitsim_set_release(this.__wbg_ptr, q0);
+    }
+    /**
      * @param {number} n
      */
     step_n(n) {
@@ -2567,14 +2986,14 @@ export class WasmReal2SimFitSim {
      * @returns {number}
      */
     true_length() {
-        const ret = wasm.wasmemsim_time(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_objective(this.__wbg_ptr);
         return ret;
     }
     /**
      * @returns {number}
      */
     true_mass() {
-        const ret = wasm.wasmmjcfcartpolesim_pole_angle(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_friction(this.__wbg_ptr);
         return ret;
     }
 }
@@ -2895,14 +3314,14 @@ export class WasmRubeGoldbergSim {
      * @returns {number}
      */
     domino_height() {
-        const ret = wasm.wasmreal2simadamvsgdsim_gd_length(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_q0z(this.__wbg_ptr);
         return ret;
     }
     /**
      * @returns {number}
      */
     domino_width() {
-        const ret = wasm.wasmguardiansim_q2_val(this.__wbg_ptr);
+        const ret = wasm.wasmcontactadjointsim_d_v0x(this.__wbg_ptr);
         return ret;
     }
     /**
@@ -3026,6 +3445,17 @@ export class WasmSim {
     static pendulum() {
         const ret = wasm.wasmsim_pendulum();
         return WasmSim.__wrap(ret);
+    }
+    /**
+     * One-step Jacobians at the current state, exact (symbolic ABA + integrator).
+     * Returns `[‖∂q′/∂q‖_F, ‖∂v′/∂τ‖_F, ∂q′/∂q row-major (nq×nq)…]`.
+     * @returns {Float64Array}
+     */
+    step_jacobian() {
+        const ret = wasm.wasmsim_step_jacobian(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
     /**
      * Step the simulation forward n times using RK4.
@@ -3252,6 +3682,9 @@ function __wbg_get_imports() {
 const QuantumSolverFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_quantumsolver_free(ptr >>> 0, 1));
+const WasmClothSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmclothsim_free(ptr >>> 0, 1));
 const WasmCompileFusionSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcompilefusionsim_free(ptr >>> 0, 1));
@@ -3261,6 +3694,9 @@ const WasmCompileIrSimFinalization = (typeof FinalizationRegistry === 'undefined
 const WasmCompileWgslSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcompilewgslsim_free(ptr >>> 0, 1));
+const WasmContactAdjointSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmcontactadjointsim_free(ptr >>> 0, 1));
 const WasmCradleSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmcradlesim_free(ptr >>> 0, 1));
@@ -3300,6 +3736,9 @@ const WasmLbmSimFinalization = (typeof FinalizationRegistry === 'undefined')
 const WasmLorentzSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmlorentzsim_free(ptr >>> 0, 1));
+const WasmMassAdjointSimFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmmassadjointsim_free(ptr >>> 0, 1));
 const WasmMdSimFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_wasmmdsim_free(ptr >>> 0, 1));
